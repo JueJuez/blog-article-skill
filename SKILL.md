@@ -92,7 +92,7 @@ formatted_note = format_note_with_prompt(
 
 **输出管理**：
 ```python
-from assets.output import OutputManager
+from assets.manager import OutputManager
 
 # 创建输出管理器
 manager = OutputManager()

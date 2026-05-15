@@ -40,9 +40,16 @@ class OutputManager:
 
         print(f"\n=== 正在保存到 {len(available_outputs)} 个目标 ===")
 
+        has_failure = False
         for output in available_outputs:
             print(f"\n[{output.name}]")
-            output.save(content, filename)
+            if not output.save(content, filename):
+                has_failure = True
+
+        if has_failure:
+            print("\n⚠️ 外部目标保存失败，降级到本地 notes/")
+            local = LocalOutput()
+            local.save(content, filename)
 
     def save_to(self, content: str, filename: str, target: str) -> bool:
         for output in self.outputs:

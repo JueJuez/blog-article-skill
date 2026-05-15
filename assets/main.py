@@ -6,11 +6,11 @@ from .prompt import format_note_with_prompt, CONTENT_SUMMARY_PROMPT
 from .manager import OutputManager
 
 
-def fetch_web_content(url: str) -> tuple:
+def fetch_web_content(url: str):
     """获取网页内容（模拟WebFetch功能）
     
     Returns:
-        tuple: (title, content)
+        tuple: (title, content) 或 None
     """
     try:
         import requests
@@ -56,10 +56,14 @@ def fetch_web_content(url: str) -> tuple:
             paragraphs = soup.find_all('p')
             content = '\n\n'.join([p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)])
         
+        if not content:
+            print("❌ 抓取的内容为空，请检查链接是否有效或手动粘贴原文")
+            return None
+        
         return (title, content)
     except Exception as e:
         print(f"❌ 获取网页内容失败: {str(e)}")
-        return ("", "")
+        return None
 
 
 def extract_article_title(content: str) -> str:
@@ -102,7 +106,7 @@ def extract_article_title(content: str) -> str:
 def generate_filename(title: str, url: str = "") -> str:
     safe_title = re.sub(r'[\\/:*?"<>|\n\r]', '_', title)
     date_str = datetime.now().strftime('%Y%m%d')
-    filename = f"{safe_title[:50]}——{date_str}.md"
+    filename = f"{safe_title[:50]}-{date_str}.md"
     
     return filename
 
@@ -120,7 +124,7 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
     Returns:
         tuple: (formatted_note, filename)
     """
-    tags = tags or ["文章总结"]
+    tags = list(tags or ["文章总结"])
     if original_url and "转载" not in tags:
         tags.append("转载")
     
@@ -386,14 +390,9 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None)
         print(f"   正在获取链接内容: {url_or_content}")
         original_url = url_or_content
         result = fetch_web_content(url_or_content)
-        if result:
-            original_title, article_content = result
-        else:
-            print("❌ 无法获取网页内容")
+        if not result:
             return None, None, None
-        if not article_content:
-            print("❌ 无法获取网页内容")
-            return None, None, None
+        original_title, article_content = result
     else:
         print("   直接处理输入的文章内容")
         original_url = ""
@@ -407,7 +406,7 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None)
     
     # 步骤3：自动保存
     print("\n💾 步骤3：自动保存到配置的目标位置")
-    tags = tags or ["文章总结"]
+    tags = list(tags or ["文章总结"])
     
     # 提取标签（如果内容中已有标签）
     if article_content:
