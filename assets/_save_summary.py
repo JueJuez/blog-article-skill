@@ -6,14 +6,14 @@
 然后调用本脚本读取并保存到所有配置目标。
 
 使用方法：
-    python _save_summary.py <临时文件路径> --url "原文链接" --author "作者" --tags "AI,技术"
+    python assets/_save_summary.py <临时文件路径> --url "原文链接" --author "作者" --tags "AI,技术"
 
 示例：
     # 方式1：从文件读取并保存（推荐，无引号问题）
-    python _save_summary.py notes/_summary.md --url "https://..." --author "哥飞" --tags "独立开发者,SEO"
+    python assets/_save_summary.py notes/_summary.md --url "https://..." --author "哥飞" --tags "独立开发者,SEO"
 
     # 方式2：直接传入字符串（简短内容可用）
-    python _save_summary.py --direct "总结内容..." --url "https://..." --author "哥飞" --tags "独立开发者,SEO"
+    python assets/_save_summary.py --direct "总结内容..." --url "https://..." --author "哥飞" --tags "独立开发者,SEO"
 
 注意事项：
     - 文件路径必须存在且内容非空
@@ -24,7 +24,7 @@ import sys
 import os
 import argparse
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
@@ -40,7 +40,6 @@ def main():
 
     args = parser.parse_args()
 
-    # 获取总结内容
     summarized_content = ""
     if args.direct:
         summarized_content = args.direct
@@ -53,8 +52,8 @@ def main():
     else:
         print("❌ 请提供总结内容（通过文件路径或 --direct 参数）")
         print("用法:")
-        print(f"  python {os.path.basename(__file__)} <文件路径> --url ... --author ... --tags ...")
-        print(f"  python {os.path.basename(__file__)} --direct \"总结内容...\" --url ... --author ... --tags ...")
+        print(f"  python assets/{os.path.basename(__file__)} <文件路径> --url ... --author ... --tags ...")
+        print(f"  python assets/{os.path.basename(__file__)} --direct \"总结内容...\" --url ... --author ... --tags ...")
         return 1
 
     if not summarized_content.strip():

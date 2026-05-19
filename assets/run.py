@@ -136,16 +136,16 @@ def main():
     3. 将 prompt 和原文拼接后，调用当前 AI 进行结构化总结
     4. 将总结内容写入临时文件，然后调用专用保存脚本：
 
-       方式A - 写入文件 + _save_summary.py（推荐，无引号问题）：
-          # 先将总结内容写入 notes/_summary.md（用 Write 工具）
-          # 然后运行：
-          python _save_summary.py notes/_summary.md --url "原文链接" --author "作者" --tags "AI,技术"
+       方式A - 写入文件 + assets/_save_summary.py（推荐，无引号问题）：
+           # 先将总结内容写入 notes/_summary.md（用 Write 工具）
+           # 然后运行：
+           python assets/_save_summary.py notes/_summary.md --url "原文链接" --author "作者" --tags "AI,技术"
 
        方式B - 直接传入总结内容（简短内容可用）：
-          python _save_summary.py --direct "总结内容..." --url "原文链接" --author "作者" --tags "AI,技术"
+           python assets/_save_summary.py --direct "总结内容..." --url "原文链接" --author "作者" --tags "AI,技术"
 
     注意：避免使用 assets/run.py --summarized 传长文本，PowerShell 内联字符串有引号嵌套问题。
-    使用 _save_summary.py 配合文件路径是最稳的方式。
+    使用 assets/_save_summary.py 配合文件路径是最稳的方式。
         """)
         return 0
 

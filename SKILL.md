@@ -131,12 +131,12 @@ blog-article-skill/
 │   ├── feishu.py          # 飞书知识库输出
 │   ├── manager.py         # 输出管理器
 │   ├── main.py            # 主入口与完整流程
-│   └── run.py             # 命令行入口脚本（稳定执行入口）
+│   ├── run.py             # 命令行入口脚本（稳定执行入口）
+│   └── _save_summary.py   # 外层对话保存入口（解决Shell引号问题）
 ├── references/
 │   └── config.md          # 飞书/Obsidian 配置说明
 ├── .env                   # 配置文件（用户配置）
 ├── .env.example           # 配置示例模板
-├── _save_summary.py       # 外层对话保存入口（解决Shell引号问题）
 ├── pyproject.toml         # 项目依赖配置
 └── SKILL.md               # 技能说明文档
 ```
