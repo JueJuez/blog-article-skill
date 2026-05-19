@@ -1,12 +1,10 @@
 import os
-from dotenv import load_dotenv
 from .base import BaseOutput
 
 
 class LocalOutput(BaseOutput):
     def __init__(self, name: str = "local"):
         super().__init__(name)
-        load_dotenv()
         self.base_path = self._get_base_path()
 
     def _get_base_path(self) -> str:
