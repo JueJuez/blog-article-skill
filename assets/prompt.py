@@ -22,7 +22,7 @@ CONTENT_SUMMARY_PROMPT = """
 
 1. **顶部第一行：标题**
 2. **第二行：话题标签**：根据内容自动生成精准标签，放在最顶部，无空行
-3. **第三行：作者+来源链接**：严格使用超链接格式 `[文字](链接)`，无链接则标注【无来源链接】
+3. **第三行：作者+来源链接**：严格使用格式 `**作者**：xxx | **来源链接**：[原文链接](URL)`，无链接则标注 `【无来源链接】`，无作者则标注 `【作者未知】`
 4. **第四行：可选前置本章概要**：先给核心定位 + 流程公式 + 关键注意事项，严格遵循**先总后分**
 
 ---
@@ -251,18 +251,16 @@ def format_note_with_prompt(content: str, author: str = "", url: str = "", tags:
             formatted = "#" + " #".join(tags) + "\n\n"
         else:
             formatted = ""
-        
-        # 添加作者和链接
+
+        # 添加作者和来源链接（格式：**作者**：xxx | **来源链接**：[原文链接](URL)）
+        author_display = author if author else "【作者未知】"
         if url:
-            if author:
-                formatted += f"[{author}]({url})\n\n"
-            else:
-                formatted += f"[{url}]({url})\n\n"
-        elif author:
-            formatted += f"{author}\n\n"
-        
+            formatted += f"**作者**：{author_display} | **来源链接**：[原文链接]({url})\n\n"
+        else:
+            formatted += f"**作者**：{author_display} | **来源链接**：【无来源链接】\n\n"
+
         formatted += content
     else:
         formatted = content
-    
+
     return formatted
