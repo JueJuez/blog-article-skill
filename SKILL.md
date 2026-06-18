@@ -35,35 +35,13 @@ description: "文章结构化总结与多渠道归档技能：抓取博客链接
 4. Obsidian 输出需要配置 `OBSIDIAN_VAULT_PATH`（见 README）。
 5. 啥都没配的时候，默认存到 `notes/` 目录。
 
-## 3. 执行流程
+## 3. 执行规范（必须先读完再动手）
 
-```
-用户触发 → 抓取内容（或直接用原文） → AI 结构化总结 → 保存到配置的目标
-```
+### 3.1 对话输出规则
 
-### 3.1 内容获取
-- 有链接：调用 `fetch_web_content(url)` 抓取
-- 有原文：直接用
-- 有链接也有原文：用链接
-
-### 3.2 AI 总结
-- 检测有没有配置外部 AI Provider（OpenAI/Claude/Gemini/本地模型）
-- **有外部 Provider**：调用它按 `CONTENT_SUMMARY_PROMPT` 模板做结构化总结
-- **没有外部 Provider**：走降级模式——只抓内容不总结，返回 `need_continue_summary=True`，把原文和 `CONTENT_SUMMARY_PROMPT` 甩给外层对话模型处理
-
-### 3.3 保存
-- 总结完成后，自动保存到所有已配置的目标（本地 + Obsidian + 飞书）
-- 文件名规则：`文章标题-年月日.md`
-- 同名文件自动加序号：`文章标题-1.md`，不会覆盖
-- 非法文件名符号自动过滤：`\ / : * ? " < > |`
-
-## 4. 输出规则（重要）
-
-### 4.1 对话窗口里能说啥
-
-| ✅ 可以说 | ❌ 不能说 |
+| ✅ 可以说 | ❌ 禁止说 |
 |-----------|-----------|
-| 执行进度说明（正在抓取、正在总结...） | 完整的结构化笔记正文 |
+| 执行进度（正在抓取、正在总结...） | 完整的结构化笔记正文 |
 | 抓取状态（成功/失败） | 可直接复制保存的 Markdown 成品 |
 | 异常提示（链接失效、抓取失败等） | 核心要点全文 |
 | 保存结果（已保存到 xxx） | 总结出来的完整内容 |
@@ -73,11 +51,57 @@ description: "文章结构化总结与多渠道归档技能：抓取博客链接
 执行完后只输出一句话：
 > 流程执行完毕，总结成品已自动写入对应文件
 
-### 4.2 文件写入规则
+### 3.2 文件写入规则
 1. **禁止用 Shell 命令写文件**（PowerShell/CMD/bash 都不行）。用 Python 原生文件 IO 写入。
 2. **唯一例外**：调用飞书 CLI 上传到知识库。
 3. 写入编码统一用 **UTF-8**。
 4. 写入失败只报错，不改路径重试。
+
+---
+
+## 4. 执行流程
+
+**⚠️ 必须调用技能函数执行，禁止手动抓取网页或手动生成总结**
+
+```
+用户触发 → 调用 skill_main() → 技能自动完成抓取/总结/保存 → 返回结果
+```
+
+### 4.1 标准流程（推荐）
+
+直接调用 `skill_main()` 一步到位：
+
+```python
+from assets import skill_main
+
+result = skill_main({
+    "content": "https://xxx"  # 或直接传文章原文
+})
+# result['success'] = True 表示完成
+# result['filename'] = 保存的文件名
+```
+
+### 4.2 降级模式处理
+
+如果 `result['need_continue_summary'] == True`，说明没有外部 AI Provider：
+
+1. 用返回的 `result['prompt']` 对 `result['article_content']` 做结构化总结
+2. 调用 `save_summarized_article()` 保存：
+
+```python
+from assets import save_summarized_article
+
+save_summarized_article(
+    summarized_content="你的总结内容",
+    original_url=result['original_url'],
+    tags=result['tags']
+)
+```
+
+### 4.3 文件命名规则
+- 文件名规则：`文章标题-年月日.md`
+- 同名文件自动加序号：`文章标题-1.md`，不会覆盖
+- 非法文件名符号自动过滤：`\ / : * ? " < > |`
 
 ## 5. 异常处理
 
@@ -89,29 +113,7 @@ description: "文章结构化总结与多渠道归档技能：抓取博客链接
 | 飞书 CLI 没装或没配置 | 跳过飞书输出，不影响其他目标 |
 | Obsidian 路径没配置 | 跳过 Obsidian 输出，不影响其他目标 |
 
-## 6. 降级模式（无外部 AI Provider）
-
-啥外部 AI 都没配的时候：
-1. 正常抓取网页内容
-2. 调用 `skill_main()` 返回以下结构，`need_continue_summary` 设为 `True`
-3. **外层对话接手总结**：必须用返回的 `prompt`（即 `CONTENT_SUMMARY_PROMPT`）做结构化总结
-4. 外层总结完了，调用 `save_summary_only()` 或 `save_summarized_article()` 保存
-
-```python
-{
-    'success': True,
-    'need_continue_summary': True,
-    'message': '⚠️ AI Provider 暂不可用，已成功抓取文章内容，请使用 CONTENT_SUMMARY_PROMPT 进行结构化总结',
-    'article_content': '...',
-    'prompt': '...',               # 外层必须用这个 prompt 总结
-    'original_url': '...',
-    'original_title': '...',
-    'author': '...',
-    'tags': [...]
-}
-```
-
-## 7. 核心接口速查（给 AI 调用用）
+## 6. 核心接口速查（给 AI 调用用）
 
 | 函数 | 干啥的 |
 |------|--------|
