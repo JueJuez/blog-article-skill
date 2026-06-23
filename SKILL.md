@@ -5,6 +5,21 @@ description: "文章结构化总结与多渠道归档技能：抓取博客链接
 
 # blog-article-skill
 
+## ⚠️ 执行前强制检查（必须逐项确认，缺一不可）
+
+**执行本技能前，AI 必须逐项确认以下内容：**
+
+- [ ] 我已完整读完本 SKILL.md 文件
+- [ ] 我会调用 `skill_main()` 而不是手动抓取网页
+- [ ] 如果触发降级（`need_continue_summary=True`），我会用返回的 `prompt` 做总结
+- [ ] 总结完成后，我会调用 `save_summarized_article()` 保存到所有配置目标
+- [ ] 我不会在对话框输出完整笔记正文
+- [ ] 执行完后我只输出一句话：「流程执行完毕，总结成品已自动写入对应文件」
+
+**违反任何一项 = 执行失败**
+
+---
+
 ## 1. 什么时候触发
 
 **必须同时满足以下两个条件**，才激活本技能：
@@ -86,16 +101,27 @@ result = skill_main({
 如果 `result['need_continue_summary'] == True`，说明没有外部 AI Provider：
 
 1. 用返回的 `result['prompt']` 对 `result['article_content']` 做结构化总结
-2. 调用 `save_summarized_article()` 保存：
+2. 调用 `skill_continue_summary()` 保存（**推荐**，参数更清晰）：
 
 ```python
-from assets import save_summarized_article
+from assets import skill_main, skill_continue_summary
 
-save_summarized_article(
-    summarized_content="你的总结内容",
-    original_url=result['original_url'],
-    tags=result['tags']
-)
+# 第一步：调用技能
+result = skill_main({"content": "https://xxx"})
+
+# 第二步：如果需要降级
+if result.get('need_continue_summary'):
+    # 用 result['prompt'] 对 result['article_content'] 做总结
+    summary = your_ai_summarize(result['article_content'], result['prompt'])
+
+    # 第三步：保存（必须调用！）
+    save_result = skill_continue_summary(
+        article_content=result['article_content'],
+        summary_content=summary,
+        original_url=result['original_url'],
+        tags=result['tags'],
+        original_title=result['original_title']
+    )
 ```
 
 ### 4.3 文件命名规则
@@ -120,6 +146,7 @@ save_summarized_article(
 | `fetch_web_content(url)` | 抓网页，返回 `(title, content)` 或 `None` |
 | `summarize_and_save(url, author, tags)` | 全自动：抓→总结→保存，一步到位 |
 | `skill_main(params_dict)` | 技能系统入口，处理链接/原文/降级逻辑 |
+| `skill_continue_summary(article_content, summary_content, ...)` | **降级模式专用**：AI 做完总结后调用此函数保存 |
 | `save_summarized_article(content, url, author, tags)` | 保存已总结好的内容到所有目标 |
 | `save_summary_only(input_data)` | 降级模式下，外层总结完后的保存入口 |
 | `CONTENT_SUMMARY_PROMPT` | 结构化总结模板，AI 必须按这个格式输出 |

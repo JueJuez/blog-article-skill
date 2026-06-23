@@ -23,8 +23,8 @@ from .ai_provider import (
 )
 from .main import (
     save_summarized_article, extract_article_title, generate_filename,
-    summarize_and_save, skill_main, fetch_web_content, summarize_content,
-    save_raw_content_to_file, save_summarized_from_file,
+    summarize_and_save, skill_main, skill_continue_summary, fetch_web_content,
+    summarize_content, save_raw_content_to_file, save_summarized_from_file,
     async_fetch_web_content, async_save_summarized_from_file
 )
 
@@ -61,6 +61,7 @@ __all__ = [
     "generate_filename",
     "summarize_and_save",
     "skill_main",
+    "skill_continue_summary",
     "fetch_web_content",
     "summarize_content",
     "save_raw_content_to_file",

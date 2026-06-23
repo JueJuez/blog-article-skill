@@ -699,6 +699,75 @@ def skill_main(input_data: dict) -> dict:
         }
 
 
+def skill_continue_summary(
+    article_content: str,
+    summary_content: str,
+    original_url: str = "",
+    author: str = "",
+    tags: list = None,
+    original_title: str = ""
+) -> dict:
+    """
+    降级模式下，AI 做完总结后的保存入口
+
+    当 skill_main() 返回 need_continue_summary=True 时：
+    1. AI 用返回的 prompt 对 article_content 做结构化总结
+    2. 调用本函数保存总结内容到所有配置目标（本地/Obsidian/飞书）
+
+    Args:
+        article_content: 原始文章内容（来自 skill_main 返回的 article_content）
+        summary_content: AI 生成的结构化总结内容（必须按 CONTENT_SUMMARY_PROMPT 格式）
+        original_url: 原文链接（来自 skill_main 返回的 original_url）
+        author: 作者信息（可选）
+        tags: 标签列表（来自 skill_main 返回的 tags）
+        original_title: 原始文章标题（来自 skill_main 返回的 original_title）
+
+    Returns:
+        dict: 执行结果
+            - success=True: 保存成功
+            - success=False: 保存失败
+
+    示例：
+        result = skill_main({"content": "https://xxx"})
+        if result.get('need_continue_summary'):
+            # AI 做总结...
+            summary = do_summary(result['article_content'], result['prompt'])
+            # 保存
+            save_result = skill_continue_summary(
+                article_content=result['article_content'],
+                summary_content=summary,
+                original_url=result['original_url'],
+                tags=result['tags'],
+                original_title=result['original_title']
+            )
+    """
+    if not summary_content or not summary_content.strip():
+        return {
+            'success': False,
+            'message': '总结内容为空，请提供有效的总结内容'
+        }
+
+    try:
+        formatted_note, filename = save_summarized_article(
+            summarized_content=summary_content,
+            original_url=original_url,
+            author=author,
+            tags=tags or [],
+            original_title=original_title
+        )
+        return {
+            'success': True,
+            'message': '文章总结已自动保存！',
+            'filename': filename,
+            'content': formatted_note
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'message': f'保存失败: {str(e)}'
+        }
+
+
 async def async_fetch_web_content(url: str):
     """异步获取网页内容（使用 aiohttp）"""
     try:
