@@ -12,14 +12,16 @@ class FeishuOutput(BaseOutput):
         self.wiki_parent_node = os.getenv("FEISHU_WIKI_PARENT_NODE", "")
         self._cli_available = None
 
-    def _run_cli_command(self, args: list) -> dict:
+    def _run_cli_command(self, args: list, timeout: int = 90, input_text: str = None) -> dict:
         try:
             result = subprocess.run(
                 ["lark-cli"] + args,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
-                shell=True
+                shell=True,
+                timeout=timeout,
+                input=input_text,
             )
 
             if result.returncode != 0:
@@ -35,19 +37,34 @@ class FeishuOutput(BaseOutput):
         except FileNotFoundError:
             print("✗ 未找到飞书CLI，请先安装: npx @larksuite/cli@latest install")
             return None
+        except subprocess.TimeoutExpired:
+            print("✗ CLI命令执行超时")
+            return None
         except Exception as e:
             print(f"✗ CLI命令执行异常: {str(e)}")
             return None
 
-    async def _run_cli_command_async(self, args: list) -> dict:
+    async def _run_cli_command_async(self, args: list, timeout: int = 90, input_text: str = None) -> dict:
         try:
             process = await asyncio.create_subprocess_exec(
                 "lark-cli", *args,
+                stdin=asyncio.subprocess.PIPE if input_text is not None else None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 shell=True
             )
-            stdout, stderr = await process.communicate()
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(input=input_text.encode("utf-8") if input_text is not None else None),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+                print("✗ CLI命令执行超时")
+                return None
 
             stdout_str = stdout.decode('utf-8') if stdout else ""
             stderr_str = stderr.decode('utf-8') if stderr else ""
@@ -78,27 +95,21 @@ class FeishuOutput(BaseOutput):
         title = os.path.splitext(filename)[0]
 
         try:
-            temp_file = f"{title}.md"
-            with open(temp_file, "w", encoding="utf-8") as f:
-                f.write(content)
-        except Exception as e:
-            print(f"✗ 创建临时文件失败: {str(e)}")
-            return False
-
-        try:
             args = [
                 "docs", "+create",
                 "--title", title,
-                "--markdown", f"@{temp_file}",
+                "--content", "-",
+                "--doc-format", "markdown",
                 "--as", "user"
             ]
 
             if self.wiki_parent_node:
-                args.extend(["--wiki-node", self.wiki_parent_node])
+                args.extend(["--parent-token", self.wiki_parent_node])
             else:
                 args.extend(["--wiki-space", self.wiki_space])
 
-            result = self._run_cli_command(args)
+            # 内容经 stdin 传入（CLI 的 --content - 读取标准输入），避免临时文件与路径限制
+            result = self._run_cli_command(args, input_text=content)
 
             if result and (result.get("ok") or result.get("code") == 0):
                 doc_url = result.get("data", {}).get("doc_url")
@@ -109,18 +120,13 @@ class FeishuOutput(BaseOutput):
                     print(f"✓ 文档链接: {doc_url}")
                 elif node_token:
                     print(f"✓ 节点Token: {node_token}")
-
-                os.unlink(temp_file)
                 return True
             else:
                 error_msg = result.get("error", {}).get("message", "未知错误") if result else "命令执行失败"
                 print(f"✗ 创建文档失败: {error_msg}")
-                os.unlink(temp_file)
                 return False
         except Exception as e:
             print(f"✗ 创建文档失败: {str(e)}")
-            if os.path.exists(temp_file):
-                os.unlink(temp_file)
             return False
 
     async def save_async(self, content: str, filename: str) -> bool:
@@ -132,27 +138,20 @@ class FeishuOutput(BaseOutput):
         title = os.path.splitext(filename)[0]
 
         try:
-            temp_file = f"{title}.md"
-            with open(temp_file, "w", encoding="utf-8") as f:
-                f.write(content)
-        except Exception as e:
-            print(f"✗ 创建临时文件失败: {str(e)}")
-            return False
-
-        try:
             args = [
                 "docs", "+create",
                 "--title", title,
-                "--markdown", f"@{temp_file}",
+                "--content", "-",
+                "--doc-format", "markdown",
                 "--as", "user"
             ]
 
             if self.wiki_parent_node:
-                args.extend(["--wiki-node", self.wiki_parent_node])
+                args.extend(["--parent-token", self.wiki_parent_node])
             else:
                 args.extend(["--wiki-space", self.wiki_space])
 
-            result = await self._run_cli_command_async(args)
+            result = await self._run_cli_command_async(args, input_text=content)
 
             if result and (result.get("ok") or result.get("code") == 0):
                 doc_url = result.get("data", {}).get("doc_url")
@@ -163,20 +162,13 @@ class FeishuOutput(BaseOutput):
                     print(f"✓ 文档链接: {doc_url}")
                 elif node_token:
                     print(f"✓ 节点Token: {node_token}")
-
-                if os.path.exists(temp_file):
-                    os.unlink(temp_file)
                 return True
             else:
                 error_msg = result.get("error", {}).get("message", "未知错误") if result else "命令执行失败"
                 print(f"✗ 创建文档失败: {error_msg}")
-                if os.path.exists(temp_file):
-                    os.unlink(temp_file)
                 return False
         except Exception as e:
             print(f"✗ 创建文档失败: {str(e)}")
-            if os.path.exists(temp_file):
-                os.unlink(temp_file)
             return False
 
     def get_output_path(self, filename: str) -> str:

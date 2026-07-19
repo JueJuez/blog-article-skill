@@ -13,6 +13,9 @@ OPENAI_API_KEY=sk-xxxx
 OBSIDIAN_VAULT_PATH=D:\你的Obsidian库路径
 FEISHU_WIKI_SPACE=你的知识库空间ID
 FEISHU_WIKI_PARENT_NODE=父节点Token
+
+# 视频字幕抓取代理（可选）：仅本机裸跑且需代理时设置，脚本自动映射到 HTTP(S)_PROXY
+# YT_PROXY=http://127.0.0.1:7890
 ```
 
 ## 二、AI Provider 配置
@@ -64,7 +67,7 @@ LOCAL_API_BASE=http://localhost:11434/v1
 ### 验证 Provider 配置
 
 ```python
-from assets import list_available_providers, get_ai_provider
+from articles import list_available_providers, get_ai_provider
 
 # 查看所有可用的 Provider
 print("可用 Provider:", list_available_providers())
@@ -142,14 +145,24 @@ print("当前使用:", provider.name if provider else "无")
 运行以下代码验证配置是否正确：
 
 ```python
-from assets import OutputManager
+from articles import OutputManager
 
 manager = OutputManager()
 available = manager.get_available_outputs()
 print(f"可用输出模块: {[o.name for o in available]}")
 ```
 
-## 七、常见问题
+## 七、视频字幕抓取代理（可选）
+
+YouTube / Bilibili 字幕抓取在 WorkBuddy 沙箱内可直接运行，无需代理。仅当**在本机裸跑脚本**且网络需代理时配置：
+
+```env
+YT_PROXY=http://127.0.0.1:7890   # 本地代理端口（如 Clash 系统代理开启后）
+```
+
+设置后脚本自动映射到 `HTTP_PROXY` / `HTTPS_PROXY` 供底层请求使用。
+
+## 八、常见问题
 
 ### Q: 飞书CLI 安装失败？
 

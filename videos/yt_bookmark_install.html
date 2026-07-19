@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>安装「抓YT字幕」书签</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+       max-width:760px;margin:40px auto;padding:0 20px;color:#1a1a1a;line-height:1.7;background:#fff;}
+  h1{font-size:22px;}
+  .bm{display:inline-block;padding:10px 18px;background:#2563eb;color:#fff !important;
+      border-radius:8px;text-decoration:none;font-weight:600;font-size:15px;
+      box-shadow:0 2px 6px rgba(37,99,235,.3);}
+  .drag{background:#eef2ff;border:1px dashed #93c5fd;border-radius:10px;padding:20px;text-align:center;margin:16px 0;}
+  ol{padding-left:22px;} li{margin:8px 0;}
+  code{background:#f3f4f6;padding:2px 6px;border-radius:4px;font-size:13px;}
+  textarea{width:100%;height:120px;font-family:Consolas,Monaco,monospace;font-size:12px;
+           border:1px solid #d1d5db;border-radius:8px;padding:10px;box-sizing:border-box;color:#111;background:#fafafa;}
+  .tip{color:#6b7280;font-size:13px;}
+  .step{background:#f9fafb;border-radius:10px;padding:16px 20px;margin:14px 0;border:1px solid #eee;}
+  .warn{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;font-size:14px;}
+</style>
+</head>
+<body>
+  <h1>「抓 YT 字幕」书签安装</h1>
+
+  <div class="drag">
+    <p>① 把下面这个按钮 <b>拖到浏览器书签栏</b>：</p>
+    <a class="bm" href="javascript:(async()=&gt;{try{const P=window.ytInitialPlayerResponse;if(!P||!P.videoDetails){alert(&#x27;未找到播放数据，请在视频播放页等页面加载完再点&#x27;);return;}const vid=P.videoDetails.videoId,title=P.videoDetails.title,desc=P.videoDetails.shortDescription||&#x27;&#x27;;const chapters=((P.microformat&amp;&amp;P.microformat.playerMicroformatRenderer&amp;&amp;P.microformat.playerMicroformatRenderer.chapters)||[]).map(c=&gt;({title:(c.title&amp;&amp;c.title.simpleText)||&#x27;&#x27;,start:c.startTimeSeconds||0}));const order=[&#x27;zh-Hans&#x27;,&#x27;zh-Hant&#x27;,&#x27;zh-CN&#x27;,&#x27;zh&#x27;,&#x27;en-US&#x27;,&#x27;en&#x27;];const diag=[];const gt=pr=&gt;(pr&amp;&amp;pr.captions&amp;&amp;pr.captions.playerCaptionsTracklistRenderer&amp;&amp;pr.captions.playerCaptionsTracklistRenderer.captionTracks)||[];let sets=[{src:&#x27;page&#x27;,tracks:gt(P)}];try{const key=window.ytcfg&amp;&amp;ytcfg.get&amp;&amp;ytcfg.get(&#x27;INNERTUBE_API_KEY&#x27;);const ctx=window.ytcfg&amp;&amp;ytcfg.get&amp;&amp;ytcfg.get(&#x27;INNERTUBE_CONTEXT&#x27;);if(key&amp;&amp;ctx){const r=await fetch(&#x27;/youtubei/v1/player?key=&#x27;+key,{method:&#x27;POST&#x27;,credentials:&#x27;include&#x27;,headers:{&#x27;Content-Type&#x27;:&#x27;application/json&#x27;},body:JSON.stringify({context:ctx,videoId:vid})});if(r.ok){sets.push({src:&#x27;innertube&#x27;,tracks:gt(await r.json())});}else{diag.push(&#x27;player http &#x27;+r.status);}}else{diag.push(&#x27;no ytcfg&#x27;);}}catch(e){diag.push(&#x27;player err &#x27;+e.message);}const pick=ts=&gt;{let p=null;for(const l of order){p=ts.find(t=&gt;t.languageCode===l);if(p)break;}return p||ts[0]||null;};const mk=(b,f)=&gt;b+(b.includes(&#x27;?&#x27;)?&#x27;&amp;&#x27;:&#x27;?&#x27;)+&#x27;fmt=&#x27;+f;const ft=async b=&gt;{for(const f of [&#x27;json3&#x27;,&#x27;srv3&#x27;,&#x27;srv1&#x27;]){try{const r=await fetch(mk(b,f),{credentials:&#x27;include&#x27;});if(!r.ok){diag.push(f+&#x27; http &#x27;+r.status);continue;}const t=await r.text();if(!t){diag.push(f+&#x27; empty&#x27;);continue;}let o=&#x27;&#x27;;if(f===&#x27;json3&#x27;){const j=JSON.parse(t);o=(j.events||[]).map(e=&gt;(e.segs||[]).map(s=&gt;s.utf8||&#x27;&#x27;).join(&#x27;&#x27;)).join(&#x27; &#x27;);}else{const x=new DOMParser().parseFromString(t,&#x27;text/xml&#x27;);o=Array.from(x.getElementsByTagName(&#x27;text&#x27;)).map(n=&gt;n.textContent).join(&#x27; &#x27;);}o=o.replace(/\s+/g,&#x27; &#x27;).trim();if(o)return o;diag.push(f+&#x27; parsed-empty&#x27;);}catch(e){diag.push(f+&#x27; err &#x27;+e.message);}}return &#x27;&#x27;;};let text=&#x27;&#x27;,lang=&#x27;&#x27;;for(const s of sets){if(!s.tracks.length){diag.push(s.src+&#x27; no-tracks&#x27;);continue;}const tk=pick(s.tracks);if(!tk){diag.push(s.src+&#x27; no-pick&#x27;);continue;}const t=await ft(tk.baseUrl);if(t){text=t;lang=tk.languageCode;diag.push(&#x27;OK &#x27;+s.src+&#x27;/&#x27;+lang);break;}}if(!text){alert(&#x27;未取到字幕（该视频可能无CC字幕，或需登录）:\n&#x27;+diag.join(&#x27;\n&#x27;));return;}try{const res=await fetch(&#x27;http://127.0.0.1:8899/submit&#x27;,{method:&#x27;POST&#x27;,headers:{&#x27;Content-Type&#x27;:&#x27;application/json&#x27;},body:JSON.stringify({url:location.href,video_id:vid,title,description:desc,chapters,lang,text})});const jr=await res.json().catch(()=&gt;({}));alert((res.ok&amp;&amp;jr.ok?&#x27;字幕已存入笔记!&#x27;:&#x27;取到字幕但本地服务异常&#x27;)+&#x27;\n语言:&#x27;+lang+&#x27; 字数:&#x27;+text.length+&#x27;\n&#x27;+(jr.note_paths?&#x27;存:&#x27;+(jr.note_paths[0]||&#x27;&#x27;):(jr.error||&#x27;&#x27;)));}catch(e){try{await navigator.clipboard.writeText(text);alert(&#x27;本地服务(8899)未启动，字幕已复制到剪贴板(&#x27;+text.length+&#x27;字/&#x27;+lang+&#x27;)。\n开服务后重点，或把剪贴板内容直接粘给助手。&#x27;);}catch(_){alert(&#x27;本地服务未开且剪贴板不可用。已取到字幕，长度&#x27;+text.length+&#x27;。诊断:\n&#x27;+diag.join(&#x27;\n&#x27;));}}}catch(e){alert(&#x27;脚本异常:&#x27;+e.message);}})();">📥 抓YT字幕</a>
+    <p class="tip">拖不动？用下面的文本框手动建书签。</p>
+  </div>
+
+  <div class="step">
+    <b>手动安装（更稳）：</b>
+    <ol>
+      <li>浏览器书签栏右键 → 「添加书签 / 添加网页」</li>
+      <li>名称随便填（如 <code>抓YT字幕</code>）</li>
+      <li>网址 URL 粘贴下面文本框里的<b>整段内容</b>：</li>
+    </ol>
+    <textarea readonly onclick="this.select()">javascript:(async()=&gt;{try{const P=window.ytInitialPlayerResponse;if(!P||!P.videoDetails){alert(&#x27;未找到播放数据，请在视频播放页等页面加载完再点&#x27;);return;}const vid=P.videoDetails.videoId,title=P.videoDetails.title,desc=P.videoDetails.shortDescription||&#x27;&#x27;;const chapters=((P.microformat&amp;&amp;P.microformat.playerMicroformatRenderer&amp;&amp;P.microformat.playerMicroformatRenderer.chapters)||[]).map(c=&gt;({title:(c.title&amp;&amp;c.title.simpleText)||&#x27;&#x27;,start:c.startTimeSeconds||0}));const order=[&#x27;zh-Hans&#x27;,&#x27;zh-Hant&#x27;,&#x27;zh-CN&#x27;,&#x27;zh&#x27;,&#x27;en-US&#x27;,&#x27;en&#x27;];const diag=[];const gt=pr=&gt;(pr&amp;&amp;pr.captions&amp;&amp;pr.captions.playerCaptionsTracklistRenderer&amp;&amp;pr.captions.playerCaptionsTracklistRenderer.captionTracks)||[];let sets=[{src:&#x27;page&#x27;,tracks:gt(P)}];try{const key=window.ytcfg&amp;&amp;ytcfg.get&amp;&amp;ytcfg.get(&#x27;INNERTUBE_API_KEY&#x27;);const ctx=window.ytcfg&amp;&amp;ytcfg.get&amp;&amp;ytcfg.get(&#x27;INNERTUBE_CONTEXT&#x27;);if(key&amp;&amp;ctx){const r=await fetch(&#x27;/youtubei/v1/player?key=&#x27;+key,{method:&#x27;POST&#x27;,credentials:&#x27;include&#x27;,headers:{&#x27;Content-Type&#x27;:&#x27;application/json&#x27;},body:JSON.stringify({context:ctx,videoId:vid})});if(r.ok){sets.push({src:&#x27;innertube&#x27;,tracks:gt(await r.json())});}else{diag.push(&#x27;player http &#x27;+r.status);}}else{diag.push(&#x27;no ytcfg&#x27;);}}catch(e){diag.push(&#x27;player err &#x27;+e.message);}const pick=ts=&gt;{let p=null;for(const l of order){p=ts.find(t=&gt;t.languageCode===l);if(p)break;}return p||ts[0]||null;};const mk=(b,f)=&gt;b+(b.includes(&#x27;?&#x27;)?&#x27;&amp;&#x27;:&#x27;?&#x27;)+&#x27;fmt=&#x27;+f;const ft=async b=&gt;{for(const f of [&#x27;json3&#x27;,&#x27;srv3&#x27;,&#x27;srv1&#x27;]){try{const r=await fetch(mk(b,f),{credentials:&#x27;include&#x27;});if(!r.ok){diag.push(f+&#x27; http &#x27;+r.status);continue;}const t=await r.text();if(!t){diag.push(f+&#x27; empty&#x27;);continue;}let o=&#x27;&#x27;;if(f===&#x27;json3&#x27;){const j=JSON.parse(t);o=(j.events||[]).map(e=&gt;(e.segs||[]).map(s=&gt;s.utf8||&#x27;&#x27;).join(&#x27;&#x27;)).join(&#x27; &#x27;);}else{const x=new DOMParser().parseFromString(t,&#x27;text/xml&#x27;);o=Array.from(x.getElementsByTagName(&#x27;text&#x27;)).map(n=&gt;n.textContent).join(&#x27; &#x27;);}o=o.replace(/\s+/g,&#x27; &#x27;).trim();if(o)return o;diag.push(f+&#x27; parsed-empty&#x27;);}catch(e){diag.push(f+&#x27; err &#x27;+e.message);}}return &#x27;&#x27;;};let text=&#x27;&#x27;,lang=&#x27;&#x27;;for(const s of sets){if(!s.tracks.length){diag.push(s.src+&#x27; no-tracks&#x27;);continue;}const tk=pick(s.tracks);if(!tk){diag.push(s.src+&#x27; no-pick&#x27;);continue;}const t=await ft(tk.baseUrl);if(t){text=t;lang=tk.languageCode;diag.push(&#x27;OK &#x27;+s.src+&#x27;/&#x27;+lang);break;}}if(!text){alert(&#x27;未取到字幕（该视频可能无CC字幕，或需登录）:\n&#x27;+diag.join(&#x27;\n&#x27;));return;}try{const res=await fetch(&#x27;http://127.0.0.1:8899/submit&#x27;,{method:&#x27;POST&#x27;,headers:{&#x27;Content-Type&#x27;:&#x27;application/json&#x27;},body:JSON.stringify({url:location.href,video_id:vid,title,description:desc,chapters,lang,text})});const jr=await res.json().catch(()=&gt;({}));alert((res.ok&amp;&amp;jr.ok?&#x27;字幕已存入笔记!&#x27;:&#x27;取到字幕但本地服务异常&#x27;)+&#x27;\n语言:&#x27;+lang+&#x27; 字数:&#x27;+text.length+&#x27;\n&#x27;+(jr.note_paths?&#x27;存:&#x27;+(jr.note_paths[0]||&#x27;&#x27;):(jr.error||&#x27;&#x27;)));}catch(e){try{await navigator.clipboard.writeText(text);alert(&#x27;本地服务(8899)未启动，字幕已复制到剪贴板(&#x27;+text.length+&#x27;字/&#x27;+lang+&#x27;)。\n开服务后重点，或把剪贴板内容直接粘给助手。&#x27;);}catch(_){alert(&#x27;本地服务未开且剪贴板不可用。已取到字幕，长度&#x27;+text.length+&#x27;。诊断:\n&#x27;+diag.join(&#x27;\n&#x27;));}}}catch(e){alert(&#x27;脚本异常:&#x27;+e.message);}})();</textarea>
+    <p class="tip">点一下文本框会自动全选，然后 Ctrl+C 复制。</p>
+  </div>
+
+  <div class="step">
+    <b>使用：</b>
+    <ol>
+      <li>（可选）先启动本地桥，命令：<br>
+        <code>C:/Users/O1830/.workbuddy/binaries/python/envs/default/Scripts/python.exe -m videos.yt_bridge</code><br>
+        <span class="tip">桥没开也行——字幕会自动复制到剪贴板兜底。</span></li>
+      <li>在你自己的浏览器打开任意 YouTube 视频页（能正常播放的那个）</li>
+      <li>点一下书签栏的「抓YT字幕」</li>
+      <li>成功后弹窗提示：字幕存入笔记 / 或已复制到剪贴板</li>
+    </ol>
+  </div>
+
+  <div class="warn">
+    <b>说明：</b>必须在你自己的浏览器里点（它带扩展代理能上 YouTube）。本助手所在环境因 Clash 代理只认浏览器扩展客户端，无法直连 YouTube，所以由浏览器抓、发回本机处理。
+  </div>
+</body>
+</html>

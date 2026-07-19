@@ -25,8 +25,10 @@ from .main import (
     save_summarized_article, extract_article_title, generate_filename,
     summarize_and_save, skill_main, skill_continue_summary, fetch_web_content,
     summarize_content, save_raw_content_to_file, save_summarized_from_file,
+    call_ai_summary_with_meta, suggest_default_tags,
     async_fetch_web_content, async_save_summarized_from_file
 )
+from . import dedup
 
 __all__ = [
     # Prompt 模块
@@ -64,8 +66,12 @@ __all__ = [
     "skill_continue_summary",
     "fetch_web_content",
     "summarize_content",
+    "call_ai_summary_with_meta",
+    "suggest_default_tags",
     "save_raw_content_to_file",
     "save_summarized_from_file",
     "async_fetch_web_content",
-    "async_save_summarized_from_file"
+    "async_save_summarized_from_file",
+    # 去重
+    "dedup",
 ]

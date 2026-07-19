@@ -4,11 +4,25 @@
 
 ## 功能特性
 
-- **多渠道抓取**：支持微信公众号、百度、掘金、CSDN、知乎等主流平台的文章自动抓取
-- **AI 结构化总结**：内置 `CONTENT_SUMMARY_PROMPT` 模板，提炼为固定模块的结构化笔记
-- **多 Provider 支持**：OpenAI / Anthropic Claude / Google Gemini / 本地 Ollama，也可用当前对话模型降级处理
-- **多渠道输出**：本地文件 / Obsidian / 飞书知识库，自动保存到所有已配置的目标
-- **文件安全**：自动处理文件名冲突、非法字符过滤、UTF-8 编码写入
+### 文章模块（articles）
+- **增强抓取（A1）**：trafilatura（主力）+ readability-lxml（次选）+ 原 bs4 兜底三层提取，自动剥离导航/广告，保留 sina/baijiahao/og:title 标题特例
+- **增量去重（A2）**：按规范化 URL（或正文 hash）持久化索引，重复链接/原文自动跳过，避免重复消耗 token
+- **自适应总结**：内置 `prompts` 模板注册表，支持结构化复盘 / 要点提炼 / 案例拆解 / 观点卡等多种笔记形态，未指定时按标题自动分类
+- **标签建议（A5）**：未指定 tags 时由笔记类型 + 内容关键词自动生成默认标签
+- **Provider 健壮性（A4）**：限流/瞬错自动重试 + 指数退避；总结返回 token 用量并写入笔记 frontmatter
+- **批量目录（A3）**：`--batch <dir>` 对目录下所有 `.md/.txt` 原文逐篇总结
+- **多渠道输出**：本地文件 / Obsidian / 飞书知识库（CLI 走 stdin，安全清理不崩主流程）
+- **WB 内置 AI 适配（A6/C2）**：best-effort 接入 WorkBuddy 内置 AI 作为降级增强，无则静默跳过，绝不阻断
+
+### 视频模块（videos）
+- **字幕自动抓取（P2.1）**：YouTube（youtube-transcript-api v1.x 直连）/ Bilibili（原生 API + yt-dlp 兜底）自动获取字幕，无需手动下载
+- **分块两段式总结（P2.2）**：超长 transcript 按章节/时间窗切分 → 逐块小结 → 二次合并，绝不爆上下文
+- **分集 / playlist 迭代（P2.3）**：自动解析 playlist 逐条总结，并可生成「系列总览」
+- **本地/任意视频 ASR（P3）**：无字幕时经 yt-dlp 抽音频 + faster-whisper 本地免费转写
+- **多模态理解（P4，可选）**：采样帧 + Gemini 视频理解（best-effort，无 Gemini 时优雅跳过）
+
+### 共享模块（shared）
+- **分块引擎（C1）**：`chunk_text` / `chunk_segments` / `two_stage_summarize`，被视频模块复用
 
 ## 快速开始
 
@@ -22,8 +36,13 @@ pip install -e .
 ```bash
 pip install -e ".[openai]"      # OpenAI
 pip install -e ".[anthropic]"   # Anthropic Claude
-pip install -e ".[google]"      # Google Gemini
+pip install -e ".[google]"      # Google Gemini（P4 多模态也需要）
 pip install -e ".[async]"       # 异步抓取（aiohttp）
+pip install -e ".[extract]"     # A1 增强抓取：trafilatura + readability-lxml
+pip install -e ".[video]"       # P2.1 字幕抓取：youtube-transcript-api>=1.0 + yt-dlp
+pip install -e ".[asr]"         # P3 本地转写：faster-whisper（另需 ffmpeg）
+# 一键装全（含视频/多模态）：
+pip install -e ".[extract,video,asr,google]"
 ```
 
 ### 配置
@@ -52,12 +71,15 @@ OPENAI_API_KEY=sk-xxxx
 # 或 本地 Ollama
 # AI_PROVIDER=local
 # LOCAL_API_BASE=http://localhost:11434/v1
+
+# 视频字幕抓取代理（可选）：仅本机裸跑且需代理时设置，脚本自动映射到 HTTP(S)_PROXY
+# YT_PROXY=http://127.0.0.1:7890
 ```
 
 ### 使用示例
 
 ```python
-from assets import summarize_and_save, skill_main
+from articles import summarize_and_save, skill_main
 
 # 全自动：抓取 → AI 总结 → 保存
 summarize_and_save("https://example.com/article", author="作者名", tags=["AI", "技术"])
@@ -74,17 +96,64 @@ result = skill_main({
 
 ```bash
 # 处理链接
-python assets/run.py "https://example.com/article"
+python articles/run.py "https://example.com/article"
 
 # 处理原文
-python assets/run.py --content "文章原文..."
+python articles/run.py --content "文章原文..."
 
 # 指定作者和标签
-python assets/run.py --url "https://example.com" --author "作者" --tags "AI,技术"
+python articles/run.py --url "https://example.com" --author "作者" --tags "AI,技术"
+
+# 批量目录：对目录下所有 .md/.txt 原文逐篇总结
+python articles/run.py --batch ./my_articles/
+
+# 强制重跑（忽略去重，--force）
+python articles/run.py --content "原文..." --force
 
 # 直接保存已总结好的内容（跳过 AI 总结）
-python assets/run.py --summarized "总结内容..." --url "原文链接" --author "作者" --tags "AI,技术"
+python articles/run.py --summarized "总结内容..." --url "原文链接" --author "作者" --tags "AI,技术"
 ```
+
+## 视频总结（videos 模块）
+
+对视频/音频的字幕或 transcript 做结构化笔记，复用 articles 的抓取/保存能力。
+
+```python
+from videos import summarize_video
+
+# P1：直接传字幕/转录文本
+summarize_video({"content": "字幕文本...", "note_type": "key_points"})
+
+# P2.1：YouTube / Bilibili 单视频（自动抓 CC 字幕）
+summarize_video({"url": "https://www.youtube.com/watch?v=xxxx", "note_type": "key_points"})
+
+# P2.3：playlist / 合集（逐条总结 + 系列总览）
+summarize_video({"url": "https://www.youtube.com/playlist?list=PLxxx", "playlist": True})
+
+# P3：本地视频/音频（无字幕 → ASR 转写，需 yt-dlp + ffmpeg + faster-whisper）
+summarize_video({"file": "/path/to/video.mp4", "note_type": "key_points"})
+
+# P4：多模态画面理解（可选，需已配置的 Google Gemini Provider）
+summarize_video({"url": "https://www.youtube.com/watch?v=xxxx", "multimodal": True})
+```
+
+命令行入口：
+
+```bash
+python videos/run.py --url "https://www.youtube.com/watch?v=xxxx"
+python videos/run.py --playlist "https://www.youtube.com/playlist?list=PLxxx"
+python videos/run.py --file "/path/to/video.mp4"
+```
+
+> 任意外部依赖缺失或网络失败，均优雅降级（返回 `need_continue_summary` 或提示），
+> 绝不因某个库不可用而整体崩溃。
+
+### 字幕获取说明（P2.1 实测要点）
+
+- **YouTube**：经 `youtube-transcript-api` 直连获取 CC 字幕，**在 WorkBuddy 沙箱内可直接运行，无需本地代理或浏览器**。库每次调用实时抓取 watch 页并现场生成签名，不存在"URL 过期"问题（旧版手动拼的 `signature` URL 几小时即失效，请勿手搓）。
+- **Bilibili**：走原生 API 链路（view → dm/view → aisubtitle，无需登录 cookie；仅当 AI 字幕缺失时回退 yt-dlp 兜底）。
+- **字幕轨道**：YouTube 公开视频通常只有一条 CC 字幕轨道（可能是中英混合的单一轨道）。`fetch_youtube_transcript` 默认按 `("zh-Hans", "zh", "en")` 优先级自动选择，可通过 `languages` 参数覆盖。
+- **代理（可选）**：本机裸跑且仅有本地代理端口时，设 `YT_PROXY=http://127.0.0.1:7890` 即可复用（见上方配置说明）。
 
 ## API 参考
 
@@ -140,7 +209,7 @@ save_summarized_article(
 ### OutputManager
 
 ```python
-from assets.manager import OutputManager
+from articles.manager import OutputManager
 
 manager = OutputManager()
 
@@ -156,7 +225,7 @@ manager.save_to(content, "文章标题.md", "feishu")    # 飞书
 ### Prompt 模块
 
 ```python
-from assets.prompt import CONTENT_SUMMARY_PROMPT, format_note_with_prompt
+from articles.prompt import CONTENT_SUMMARY_PROMPT, format_note_with_prompt
 
 # 获取结构化总结模板
 prompt = CONTENT_SUMMARY_PROMPT
@@ -174,19 +243,19 @@ note = format_note_with_prompt(
 
 ```bash
 # 方式1：直接传 URL
-python assets/run.py "https://example.com/article"
+python articles/run.py "https://example.com/article"
 
 # 方式2：指定参数
-python assets/run.py --url "https://example.com" --author "作者" --tags "AI,技术"
+python articles/run.py --url "https://example.com" --author "作者" --tags "AI,技术"
 
 # 方式3：传原文
-python assets/run.py --content "文章内容..."
+python articles/run.py --content "文章内容..."
 
 # 方式4：跳过 AI 总结，直接保存已总结好的内容
-python assets/run.py --summarized "总结内容..." --url "原文链接" --author "作者" --tags "AI,技术"
+python articles/run.py --summarized "总结内容..." --url "原文链接" --author "作者" --tags "AI,技术"
 
 # 方式5：从文件读取已总结内容再保存
-python assets/run.py notes/_summary.md --author "作者" --tags "AI,技术"
+python articles/run.py notes/_summary.md --author "作者" --tags "AI,技术"
 ```
 
 ## 输出目标配置
@@ -280,24 +349,45 @@ LOCAL_API_BASE=http://localhost:11434/v1
 
 ```
 blog-article-skill/
-├── assets/
-│   ├── __init__.py          # 模块导出
-│   ├── ai_provider.py       # AI Provider 架构
-│   ├── prompt.py            # 结构化总结 Prompt 模板
-│   ├── base.py              # 输出模块基类
-│   ├── local.py             # 本地文件输出
-│   ├── obsidian.py          # Obsidian 输出
-│   ├── feishu.py            # 飞书知识库输出
-│   ├── manager.py           # 输出管理器
-│   ├── main.py              # 主入口与完整流程
-│   ├── run.py               # 命令行入口
-│   └── _save_summary.py     # 外层对话保存入口
+├── articles/                 # 文章/博客总结模块（A1–A6, C2）
+│   ├── __init__.py           # 模块导出
+│   ├── ai_provider.py        # AI Provider 架构（A4：重试/退避、token 用量）
+│   ├── fetch.py              # 文章抓取（A1：trafilatura/readability/bs4）
+│   ├── dedup.py              # 增量去重（A2）
+│   ├── prompt.py             # 结构化总结 Prompt 模板
+│   ├── base.py               # 输出模块基类
+│   ├── local.py              # 本地文件输出
+│   ├── obsidian.py           # Obsidian 输出
+│   ├── feishu.py             # 飞书知识库输出
+│   ├── manager.py            # 输出管理器
+│   ├── main.py               # 主入口与完整流程
+│   ├── run.py                # 命令行入口
+│   └── _save_summary.py      # 外层对话保存入口
+├── videos/                   # 视频总结模块（P2.1/P2.2/P2.3/P3/P4）
+│   ├── __init__.py
+│   ├── fetch.py              # 字幕抓取（P2.1：YouTube/Bilibili）
+│   ├── asr.py                # 本地语音识别（P3：faster-whisper）
+│   ├── multimodal.py         # 多模态理解（P4：Gemini）
+│   ├── main.py               # 视频总结主流程（分块两段式 P2.2/P2.3）
+│   └── run.py                # 命令行入口
+├── shared/                   # 跨模块共享（C1/C2）
+│   ├── __init__.py
+│   ├── chunking.py           # 文本/字幕分块与两段式总结
+│   └── wb_ai.py              # WorkBuddy 内置 AI 适配器
+├── prompts/                  # 共享笔记模板注册表
+│   ├── __init__.py
+│   ├── templates.py          # NOTE_TEMPLATES + classify_note_type
+│   └── classify.py           # 笔记类型分类
+├── tests/                    # PRD 验收测试（pytest）
+│   └── test_prd.py
+├── notes/                    # 原始/中间笔记（被 gitignore）
 ├── references/
-│   └── config.md            # 配置详细说明
-├── .env.example             # 环境变量模板
-├── pyproject.toml           # 项目依赖
-├── SKILL.md                 # AI 技能规则（供 AI 模型读取）
-└── README.md                # 本文件
+│   ├── config.md             # 配置详细说明
+│   └── PRD.md                # 产品需求文档
+├── .env.example              # 环境变量模板
+├── pyproject.toml            # 项目依赖
+├── SKILL.md                  # AI 技能规则（供 AI 模型读取）
+└── README.md                 # 本文件
 ```
 
 ## 许可证

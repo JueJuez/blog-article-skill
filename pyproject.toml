@@ -26,9 +26,20 @@ anthropic = [
 google = [
     "google-genai>=1.0",
 ]
+extract = [
+    "trafilatura>=1.12",
+    "readability-lxml>=0.7",
+]
+video = [
+    "youtube-transcript-api>=0.6",
+    "yt-dlp>=2024.1",
+]
+asr = [
+    "faster-whisper>=1.0",
+]
 
 [project.scripts]
-blog-article-skill = "assets.run:main"
+blog-article-skill = "articles.run:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

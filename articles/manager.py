@@ -69,7 +69,12 @@ class OutputManager:
         failure_count = 0
         for output in available_outputs:
             print(f"\n[{output.name}]")
-            if output.save(content, filename):
+            try:
+                ok = output.save(content, filename)
+            except Exception as e:
+                ok = False
+                print(f"✗ 输出模块 {output.name} 异常: {str(e)}")
+            if ok:
                 success_count += 1
             else:
                 failure_count += 1

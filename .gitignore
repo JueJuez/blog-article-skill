@@ -4,6 +4,11 @@ __pycache__/
 venv/
 .env
 notes/
+.cache/
+.pytest_cache/
+.workbuddy/
+_test_artifacts/
 *.egg-info/
+nul
 dist/
 build/
