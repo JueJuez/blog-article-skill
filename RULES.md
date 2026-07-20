@@ -36,7 +36,7 @@
 
 ## 2. 项目定位与适用场景
 
-- **一句话定位**：把「文章/视频链接、原文、字幕」自动转成结构化/要点笔记，并归档到本地 `notes/` / Obsidian / 飞书。
+- **一句话定位**：把「文章/视频链接、原文、字幕」自动转成结构化/要点笔记，并归档到 Obsidian / 飞书（本地 `notes/` 仅在两者都未配置时兜底，详见 §3.0）。
 - **触发场景（同时满足）**：① 用户说「总结/提炼/整理/归档/保存笔记」类词；② 给了素材（文章链接、原文粘贴、视频/字幕）。
 - **不触发**：只聊概念没给素材、或纯答疑。
 - **默认行为**：不在对话框输出完整笔记正文，只给 1~3 句核心结论 + 成品路径。
@@ -49,7 +49,7 @@
 
 ### 3.0 多端双写契约（强制 · 解决「新会话不自动存飞书」）
 
-> **这是用户反复强调的红线**：任何总结成品，**必须**同时落到「本地 `notes/` + Obsidian + 飞书」三端（已配置的输出一个不漏）。新会话、新 AI 都必须默认双写，不得只存本地或只存 Obsidian。
+> **这是用户反复强调的红线**：总结成品**必须落 Obsidian + 飞书双端**（已配置的输出一个不漏）。本地 `notes/` **仅在 Obsidian 与飞书都未配置时才作为兜底写入**——用户原话"有 obsidian 和飞书，本地就不需要写了"（代码 `videos.main._local_write_enabled()` 已强制：两者任一可用即不写本地，**AI 不要手动写 `notes/`**）。新会话、新 AI 都必须默认双写双云，不得只存本地或漏飞书。
 
 - **双写是代码保证，不是靠 AI 记性**：
   - 文章路线：`articles.main.save_summarized_article` → `OutputManager.save_all()`，**遍历 `get_available_outputs()` 返回的全部输出**逐一写入（本地 / Obsidian / 飞书）。
@@ -57,15 +57,15 @@
 - **飞书已配好，新会话直接生效**（无需再配）：`.env` 里 `FEISHU_WIKI_SPACE` + `FEISHU_WIKI_PARENT_NODE`（指向「AI 总结笔记」节点）已就绪；user 身份已授权。只要 `lark-cli auth status` 显示 user ready，跑总结就会自动落飞书。
 - **飞书系列课容器逻辑**：飞书下会**先建一个以系列名命名的 wiki 节点**（如「千刀千法」），各集笔记与 `00_系列总览.md` 都挂在这个容器节点下——与 Obsidian 的 `千刀千法/` 文件夹一一对齐。容器建重已做查重 + 进程内缓存，不会重复建。
 - **AI 执行后必须自检双写结果**（防止「以为存了其实没落」）：
-  - [ ] 本地 `notes/` 有文件？
   - [ ] Obsidian vault 对应路径有文件？
   - [ ] 飞书知识库「AI 总结笔记」下出现对应节点（系列课则在「系列名」容器内）？
-  - 任一缺失 → 检查该输出 `is_available()`（路径/授权），缺失是配置问题不是代码问题，补配置后重跑 `save_*` 即可，不要改总结内容。
+  - [ ] 本地 `notes/`：**预期为空**（Obsidian+飞书都可用时 `_local_write_enabled()` 返回 False 不落本地）；仅当两者都未配置时才应有文件。
+  - 任一云端缺失 → 检查该输出 `is_available()`（路径/授权），缺失是配置问题不是代码问题，补配置后重跑 `save_*` 即可；**不要手动写 `notes/`、也不要改总结内容**。
 - **单端失败不影响其他端**：每个输出写入都是独立 try（非致命），某端暂时不可用（如飞书 CLI 掉线）只告警、不中断其他端；恢复后重跑保存即可补齐。
 
 ### 路线 A：文章总结（`articles/`）
 - **入口**：`articles/run.py --url/--content/--batch`；或直接 `from articles import skill_main; skill_main({...})`。
-- **流程**：抓取 `articles.fetch.fetch_web_content` → 去重 `articles.dedup` → 自动分类 `prompts.classify.classify_note_type` → AI 总结 `articles.main.summarize_content` → 多端保存 `articles.manager.OutputManager.save_all`（**遍历所有可用输出：本地 `notes/` + Obsidian + 飞书，详见 §3.0 双写契约**）。
+- **流程**：抓取 `articles.fetch.fetch_web_content` → 去重 `articles.dedup` → 自动分类 `prompts.classify.classify_note_type` → AI 总结 `articles.main.summarize_content` → 多端保存 `articles.manager.OutputManager.save_all`（**遍历所有可用输出（Obsidian + 飞书；本地 `notes/` 仅在两者都未配时兜底），详见 §3.0 双写契约**）。
 - **降级**：无外部 AI 时 `skill_main` 返回 `need_continue_summary` + `prompt` + 原文，交外层（WorkBuddy）总结后调 `skill_continue_summary` / `save_summary_only` 存档。
 - **细节**：见 `SKILL.md`「执行流程」与 `README.md`。
 
@@ -75,7 +75,7 @@
 - **流程**：获取字幕 `videos.fetch.fetch_transcript`（**自动 API→CDP 回退**）→ 分块两段式 `videos.main` + `shared.chunking`（防超长爆上下文）→ AI 总结 → 复用 `articles` 保存。
 - **YouTube 在本机无出口时**：走 CDP 全自动（驱动带代理插件的 Chrome 副本）→ 详见 **`references/youtube-cdp-workflow.md`**（换会话照此执行，AI 只需跑 `videos/run.py --url <youtube>`）。
 - **公共机制**：笔记类型 `prompts/templates.py` 的 `NOTE_TEMPLATES`（structured / key_points / case / opinion）；新增类型只改这一处。AI 调用优先级：外部 Provider → WorkBuddy 内置 AI → 降级。
-- **系列课必生成总览大纲（规则，非开关）**：B站 `ugc_season` 系列课 / 多P 视频处理完成后，`videos.main._generate_series_overview` 自动扫描系列文件夹，抽取每集标题 + `一句话核心结论`，生成 `00_系列总览.md`（**本地 + Obsidian + 飞书 三端双写**，详见 §3.0 双写契约），含「各集导航」表（集号 / 标题 / 一句话核心结论 / 笔记相对链接）。无需 `--overview` 开关即生效；该总览在每集总结后刷新，待总结的 raw 集在表中标「（待总结）」。飞书下总览与各集都挂在「系列名」容器节点内，与 Obsidian 的 `系列名/` 文件夹一一对齐。
+- **系列课必生成总览大纲（规则，非开关）**：B站 `ugc_season` 系列课 / 多P 视频处理完成后，`videos.main._generate_series_overview` 自动扫描系列文件夹，抽取每集标题 + `一句话核心结论`，生成 `00_系列总览.md`（**Obsidian + 飞书 双写，本地仅兜底**，详见 §3.0 双写契约），含「各集导航」表（集号 / 标题 / 一句话核心结论 / 笔记相对链接）。无需 `--overview` 开关即生效；该总览在每集总结后刷新，待总结的 raw 集在表中标「（待总结）」。飞书下总览与各集都挂在「系列名」容器节点内，与 Obsidian 的 `系列名/` 文件夹一一对齐。
 
 ---
 
@@ -87,6 +87,7 @@
 - **串行 → 并行**：多个独立任务（多视频 / 多文件 / 多链接）评估并行（`asyncio.gather` / 线程池），注意限流与去重，避免无意义串行等待。
 - **复用入口，不重复造轮子**：统一走 `fetch_transcript` / `skill_main` / `summarize_video` / `OutputManager` 等既有入口，禁止在多处复制抓取/保存逻辑。
 - **长内容必走两段式分块**：超过单模型上下文的内容，先经 `shared.chunking` 分块再总结，禁止整篇直接喂模型。
+- **大批量 → 子 Agent 隔离主线程（防上下文胀爆）**：当待处理内容达到批量阈值（如 >3 条笔记/视频，或单批原文大到会撑爆主会话上下文）时，**必须**用 Agent 工具派发子 Agent 并行处理，勿把全部原文/中间稿堆在主线程。注意：① 子 Agent 上下文是空白的，派发 prompt 必须**自包含**（嵌入双写契约 Obsidian+飞书不写本地、入口函数 `videos/run.py --url` 或 `skill_main`、`note_type`、YouTube/无字幕规则按需）；② **飞书并发重复坑**：多子 Agent 同时 `save_series` 写飞书会因集级无查重建重复节点（见 §3.0 系列课运维坑）；**安全模式**＝子 Agent 只**返回成品 Markdown 文本＋元数据**（标题/作者/url/tags/note_type），由编排方**串行**调保存入口（`_save_series_note` / `save_all`）落盘，绝不让多子 Agent 并发各自调 `save_series`。
 
 ### 4.2 工程纪律
 - **个人信息保护**：`.env`（含 `OBSIDIAN_VAULT_PATH`、`FEISHU_WIKI_SPACE` 等）与 `notes/` 已被 gitignore，**禁止**手动 `git add` 提交。
@@ -135,7 +136,7 @@
 - [ ] 会话开始：先读 **RULES.md（本文件）** + `SKILL.md`，确认两条路线入口与降级逻辑。
 - [ ] 收到「总结/整理」+ 素材 → 调 `skill_main` / `summarize_video`，**不要手写抓取或手写总结**。
 - [ ] 触发降级（`need_continue_summary`）→ 用返回的 `prompt` 做总结，再调 `skill_continue_summary` / `save_summary_only` 存档。
-- [ ] **存档后自检双写（§3.0 红线）**：确认 本地 `notes/` + Obsidian + 飞书 三端都落盘；飞书 user 身份须 `lark-cli auth status` ready，否则只告警不落飞书。
+- [ ] **存档后自检双写（§3.0 红线）**：确认 **Obsidian + 飞书双端**都落盘；本地 `notes/` **预期为空**（Obsidian+飞书都可用时 `_local_write_enabled()` 返回 False 不落本地），**不要因本地为空而误判失败**；飞书 user 身份须 `lark-cli auth status` ready，否则只告警不落飞书。
 - [ ] 本文件（RULES.md）变更 → 同步进 `MEMORY.md`「规则摘要」并视作平台规则。
 - [ ] 遇到网络/代理问题 → 先查 `references/youtube-cdp-workflow.md`，不要绕去挖代理配置。
 - [ ] YouTube 字幕抓取返回 None 且页面已加载、`captionTracks` 为空 → **原样回「【此视频暂无 CC 字幕，无法为你抓取字幕总结内容。】」并停止**，不补 ASR、不改动代码（§4.4）。
