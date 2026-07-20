@@ -235,7 +235,10 @@ def _read_series_from_feishu(series_title: str) -> list:
         node_title = k.get("title", "")
         obj = k.get("obj_token", "")
         m = re.match(r'^第(\d{2})集_(.*)$', node_title)
-        page = int(m.group(1)) if m else 0
+        if not m:
+            # 跳过非单集节点（如 00_系列总览），避免总览把自己列成"第00集"
+            continue
+        page = int(m.group(1))
         h1 = node_title
         one = "（待总结）"
         if obj:
