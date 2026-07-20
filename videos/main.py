@@ -142,16 +142,29 @@ def _sanitize_filename(name: str) -> str:
     return s[:80] or "未命名"
 
 
+def _local_write_enabled() -> bool:
+    """本地 notes/ 仅在没有配置 obsidian/feishu 时才落盘。
+
+    用户偏好（2026-07-21）：已有 Obsidian + 飞书双云同步，
+    本地 notes/ 不再作为交付目标写入（既不在 OutputManager 的
+    save_all 里、也不在系列课 _save_series_note / 总览里写本地文件）。
+    """
+    mgr = articles_main.OutputManager()
+    names = {o.name.lower() for o in mgr.get_available_outputs()}
+    return not (names & {"obsidian", "feishu"})
+
+
 def _save_series_note(content: str, series_dir: str, base_name: str,
                       author: str, url: str, tags: list, note_type: str) -> str:
-    """把单集总结笔记写入 series 文件夹，并同步到所有已配置输出（Obsidian / 飞书等）。
+    """把单集总结笔记同步到所有已配置输出（Obsidian / 飞书等）。
 
-    满足用户需求：系列课先建一个「系列名」容器（本地=文件夹；Obsidian=同名子文件夹；
+    满足用户需求：系列课先建一个「系列名」容器（Obsidian=同名子文件夹；
     飞书=同名 wiki 节点），里面每集一个文件。
-    - 本地：notes/<系列名>/<第XX集_标题>.md
+    - 本地 notes/<系列名>/<第XX集_标题>.md：仅当没有配置 obsidian/飞书时才落盘
+      （用户偏好：有云同步就不写本地）
     - 各外部输出：<容器>/<第XX集_标题>.md（自动建容器，非致命，失败仅告警）
 
-    Returns 本地绝对路径。
+    Returns 本地绝对路径（有云时不写本地，返回预期路径字符串）。
     """
     formatted = format_note_with_prompt(
         content=content, author=author, url=url,
@@ -159,8 +172,10 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
     )
     filename = f"{base_name}.md"
     path = os.path.join(series_dir, filename)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(formatted)
+    # 有云同步（obsidian/feishu）则不写本地 notes/（用户偏好）
+    if _local_write_enabled():
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(formatted)
 
     # 同步到所有已配置输出（Obsidian / 飞书等）：每个输出下先建「系列名」容器再放笔记
     try:
@@ -188,42 +203,101 @@ def _extract_h1(md: str) -> str:
 
 def _extract_one_liner(md: str) -> str:
     for line in md.splitlines():
-        s = line.strip()
-        if s.startswith('**一句话核心结论'):
+        # 兼容「> **30秒速览**：…」引用块前缀，与新模板对齐
+        s = line.strip().lstrip('>').strip()
+        if s.startswith('**一句话核心结论') or s.startswith('**30秒速览'):
             for sep in ('：', ':'):
                 if sep in s:
                     return s.split(sep, 1)[1].strip().strip('*').strip()
     return ""
 
 
-def _generate_series_overview(series_title: str, series_dir: str, url: str) -> str:
-    """系列课总览大纲：扫描系列文件夹内各集 .md，抽取标题 + 一句话核心结论，
-    生成 00_系列总览.md（本地 + Obsidian）。用户规则：系列课总结必生成总览。
+def _read_series_from_feishu(series_title: str) -> list:
+    """从飞书「系列名」容器读回各集（云真值），抽取 集号 / H1 / 一句话核心结论。
 
-    Returns 本地绝对路径。
+    仅在本地不落盘时调用（用户偏好：有云同步就不写本地，
+    总览改从云读，避免依赖本地未落盘的旧稿）。
+    Returns list of (page, h1, one_liner, note_link)。
     """
-    ep_files = sorted(
-        f for f in os.listdir(series_dir)
-        if re.match(r'^第\d{2}集_.*\.md$', f) and not f.startswith('00_')
-    )
+    from articles.feishu import FeishuOutput
+    f = FeishuOutput()
+    if not f.is_available():
+        return []
+    ctok = f.ensure_series_node(series_title)
+    if not ctok:
+        return []
+    res = f._run_cli_command(["wiki", "+node-list", "--parent-node-token", ctok,
+                                "--space-id", f.wiki_space, "--as", "user",
+                                "--json", "--page-all"])
+    kids = (res.get("data", {}).get("nodes", [])) if res else []
     rows = []
-    for f in ep_files:
-        m = re.match(r'^第(\d{2})集_(.*?)(_raw)?\.md$', f)
+    for k in kids:
+        node_title = k.get("title", "")
+        obj = k.get("obj_token", "")
+        m = re.match(r'^第(\d{2})集_(.*)$', node_title)
         page = int(m.group(1)) if m else 0
-        is_raw = f.endswith('_raw.md')
-        path = os.path.join(series_dir, f)
-        try:
-            with open(path, encoding='utf-8') as fh:
-                md = fh.read()
-        except Exception:
-            md = ""
-        title = _extract_h1(md) or (m.group(2) if m else f)
-        one = '（待总结）' if is_raw else (_extract_one_liner(md) or '（待总结）')
-        # 表格内禁用竖线，避免破坏 markdown 表格
-        title = title.replace('|', '/')
+        h1 = node_title
+        one = "（待总结）"
+        if obj:
+            try:
+                r = f._run_cli_command(["docs", "+fetch", "--doc", obj,
+                                         "--doc-format", "markdown", "--scope", "full",
+                                         "--as", "user", "--json"])
+                content = (r.get("data", {}).get("document", {}).get("content", "")
+                             if isinstance(r, dict) else "")
+                h1 = _extract_h1(content) or node_title
+                one = _extract_one_liner(content) or "（待总结）"
+            except Exception:
+                pass
+        h1 = h1.replace('|', '/')
         one = one.replace('|', '/')
-        note_link = f"[笔记](./{f})"
-        rows.append((page, title, one, note_link))
+        note_link = f"[笔记](./{node_title}.md)"
+        rows.append((page, h1, one, note_link))
+    rows.sort(key=lambda r: r[0])
+    return rows
+
+
+def _generate_series_overview(series_title: str, series_dir: str, url: str) -> str:
+    """系列课总览大纲：抽取各集 标题 + 一句话核心结论，生成 00_系列总览.md。
+
+    用户规则：系列课总结必生成总览。
+    - 本地落盘时：扫描 notes/<系列名>/ 各集 .md（原有逻辑）。
+    - 有云同步（Obsidian/飞书）不写本地时：从飞书容器读回（云真值），
+      避免依赖本地未落盘的旧稿。
+
+    总览本身同步到所有已配置输出（Obsidian/飞书），本地仅当无云时落盘。
+    Returns 本地绝对路径（无云时为 None）。
+    """
+    # 本地不落盘（有云同步）时，从飞书容器读回各集（云真值）；否则读本地
+    if _local_write_enabled():
+        ep_files = sorted(
+            f for f in os.listdir(series_dir)
+            if re.match(r'^第\d{2}集_.*\.md$', f) and not f.startswith('00_')
+        )
+        rows = []
+        for f in ep_files:
+            m = re.match(r'^第(\d{2})集_(.*?)(_raw)?\.md$', f)
+            page = int(m.group(1)) if m else 0
+            is_raw = f.endswith('_raw.md')
+            path = os.path.join(series_dir, f)
+            try:
+                with open(path, encoding='utf-8') as fh:
+                    md = fh.read()
+            except Exception:
+                md = ""
+            title = _extract_h1(md) or (m.group(2) if m else f)
+            one = '（待总结）' if is_raw else (_extract_one_liner(md) or '（待总结）')
+            # 表格内禁用竖线，避免破坏 markdown 表格
+            title = title.replace('|', '/')
+            one = one.replace('|', '/')
+            note_link = f"[笔记](./{f})"
+            rows.append((page, title, one, note_link))
+    else:
+        # 有云同步：从飞书「系列名」容器读回（避免依赖本地未落盘的旧稿）
+        rows = _read_series_from_feishu(series_title)
+        if not rows:
+            print("   ⚠️ 飞书未读到子节点，总览跳过（非致命）")
+            return None
     rows.sort(key=lambda r: r[0])
 
     lines = [
@@ -248,13 +322,15 @@ def _generate_series_overview(series_title: str, series_dir: str, url: str) -> s
     ]
     content = "\n".join(lines)
 
-    overview_path = os.path.join(series_dir, "00_系列总览.md")
-    with open(overview_path, "w", encoding="utf-8") as fh:
-        fh.write(content)
+    overview_name = "00_系列总览.md"
+    # 有云同步则不写本地 notes/（用户偏好）
+    if _local_write_enabled():
+        overview_path = os.path.join(series_dir, overview_name)
+        with open(overview_path, "w", encoding="utf-8") as fh:
+            fh.write(content)
 
     # 同步到所有已配置输出（Obsidian / 飞书等，非致命）
     try:
-        overview_name = "00_系列总览.md"
         series_folder = os.path.basename(series_dir)
         mgr = articles_main.OutputManager()
         for out in mgr.get_available_outputs():
@@ -266,7 +342,7 @@ def _generate_series_overview(series_title: str, series_dir: str, url: str) -> s
     except Exception as e:
         print(f"   ⚠️ 总览外部同步跳过（非致命）：{e}")
 
-    return overview_path
+    return overview_path if _local_write_enabled() else None
 
 
 def _build_subagent_prompt(note_type: str, raw_path: str, md_path: str,
