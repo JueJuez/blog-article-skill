@@ -111,6 +111,16 @@ def test_quality_self_check_redline():
         assert "质量自检红线" in NOTE_TEMPLATES[t]["prompt"], t
 
 
+def test_videos_save_series_note_importable():
+    """回归：videos.main 必须能引用 format_note_with_prompt。
+
+    曾漏导该名，导致 _save_series_note 在调用时抛 NameError，
+    使系列课双写（obsidian + 飞书容器）整条链路挂掉。此测试在导入期即锁定。
+    """
+    import videos.main as vm  # noqa: F401  （导入即验证模块级符号可用）
+    assert hasattr(vm, "format_note_with_prompt"), "videos.main 漏导 format_note_with_prompt，_save_series_note 会 NameError"
+
+
 
 # --------------------------------------------------------------------------
 # UNIVERSAL_RULES 拼接

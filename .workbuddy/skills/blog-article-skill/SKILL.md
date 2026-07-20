@@ -5,16 +5,41 @@ description: "文章/视频结构化总结与多渠道归档技能：抓取链�
 
 # blog-article-skill
 
+> 📌 **项目规则与地图索引见 [`RULES.md`](../../../RULES.md)**（执行前必读；规则以 RULES.md 为准，本文档不重复规则细节）。
+
+## 0. 最短路径：用户给 YouTube 链接时（新会话必须照此执行）
+
+> 本机无 YouTube 出口，走 CDP 全自动。不要绕路。
+
+**只做这两步，不要写临时脚本，不要点 F12，不要 diagnose：**
+
+1. **直接运行**：`videos/run.py --url <youtube_url>` 或调 `videos.fetch.fetch_transcript(<youtube_url>)`。
+2. **看结果**：
+   - 返回了字幕 → 继续总结/保存。
+   - 返回 `None` 且页面能打开（`captionTracks` 为空）→ **原样回用户**：
+     > **【此视频暂无 CC 字幕，无法为你抓取字幕总结内容。】**
+   - 页面都打不开 / 9222 连不上 → 才是 CDP 机制故障，按 `references/youtube-cdp-workflow.md` 修。
+
+**禁止行为**：
+- ❌ 写 `_collect_subtitle.py` / `_debug_tmp.py` 等临时脚本。
+- ❌ API 失败后去“诊断为什么失败”——`fetch_transcript` 内部会自动回退 CDP，失败即表示无字幕或机制不可用，按上表返回即可。
+- ❌ 无 CC 字幕时走 ASR / 改代码“优化/开发”，除非用户明确说要做。
+
+---
+
 ## ⚠️ 执行前强制检查（必须逐项确认，缺一不可）
 
 **执行本技能前，AI 必须逐项确认以下内容：**
 
 - [ ] 我已完整读完本 SKILL.md 文件
+- [ ] 我已完整读完 `RULES.md` 相关章节（尤其是 §4.4 视频字幕抓取终端行为）
+- [ ] 如果用户给的是 YouTube 链接，我已按本文件 §0 的最短路径执行
 - [ ] 我会调用 `skill_main()` 而不是手动抓取网页
 - [ ] 如果触发降级（`need_continue_summary=True`），我会用返回的 `prompt`（已按 note_type 选好）做总结
 - [ ] 总结完成后，我会调用 `save_summarized_article()` 保存到所有配置目标
 - [ ] 默认不在对话框输出完整笔记正文；只输出 1~3 句核心结论与成品文件路径（用户明确要求看全文时才展示）
 - [ ] 执行完后输出一句话总结 + 笔记类型 + 成品路径
+- [ ] **如果 YouTube 返回 None 且页面已加载、无字幕轨道，我会直接回固定文案，不诊断、不走 ASR、不开发兜底**
 
 **违反任何一项 = 执行失败**
 
@@ -30,7 +55,7 @@ description: "文章/视频结构化总结与多渠道归档技能：抓取链�
 **条件二：用户给了以下素材**（任一即可）
 - 一个文章链接（百度、掘金、头条、CSDN、微信公众号等）
 - 直接粘贴了文章原文
-- 一段视频/音频字幕或 transcript（视频模块：YouTube/Bilibili 字幕自动抓取、本地 ASR、Gemini 多模态；YouTube 字幕在 WorkBuddy 沙箱内直连即可，无需代理/浏览器）
+- 一段视频/音频字幕或 transcript（视频模块：YouTube/Bilibili 字幕自动抓取、本地 ASR、Gemini 多模态；**YouTube：WorkBuddy 沙箱直连，或本机经 CDP 驱动带代理的 Chrome 自动抓取——详见 `references/youtube-cdp-workflow.md`**）
 
 ✅ **触发例子**：
 - 「帮我总结这篇文章：https://xxx」
@@ -66,7 +91,7 @@ description: "文章/视频结构化总结与多渠道归档技能：抓取链�
 **默认**不在对话框输出完整笔记正文——完整内容已写入 `notes/` / Obsidian / 飞书，用户需要看时再用 Read 展示对应文件。
 
 执行完后输出一句话总结 + 笔记类型 + 成品路径，例如：
-> 流程执行完毕（笔记类型：要点提炼），总结成品已自动写入 notes/ 与 Obsidian。
+> 流程执行完毕（笔记类型：要点提炼），总结成品已自动写入 notes/ 与 Obsidian 与飞书（飞书已配好、默认双写；详见 RULES.md §3.0 双写契约）。
 
 ### 3.2 文件写入规则
 1. **禁止用 Shell 命令写文件**（PowerShell/CMD/bash 都不行）。用 Python 原生文件 IO 写入。
@@ -141,6 +166,7 @@ if result.get('need_continue_summary'):
 | 文件写入失败 | 返回异常原因，不自动换路径 |
 | 飞书 CLI 没装或没配置 | 跳过飞书输出，不影响其他目标 |
 | Obsidian 路径没配置 | 跳过 Obsidian 输出，不影响其他目标 |
+| YouTube 视频**无 CC 字幕**（`fetch_transcript` 返回 None，且页面已加载、`captionTracks` 为空） | **原样回：「【此视频暂无 CC 字幕，无法为你抓取字幕总结内容。】」并停止**；不补 ASR、不改动代码。详见 `RULES.md` §4.4 与 `references/youtube-cdp-workflow.md` §8 |
 
 ## 6. 核心接口速查（给 AI 调用用）
 
@@ -156,7 +182,7 @@ if result.get('need_continue_summary'):
 | `prompts.list_note_types()` | 列出所有可用笔记类型（key / 名称 / 说明） |
 | `prompts.classify_note_type(title, content)` | 按标题/正文自动判定笔记类型 |
 
-> 以上函数的详细参数说明见 [README.md](README.md#python-api-调用) 或源码注释。
+> 以上函数的详细参数说明见 [README.md](../../../README.md#python-api-调用) 或源码注释。
 
 ---
 
@@ -181,6 +207,9 @@ if result.get('need_continue_summary'):
 blog-article-skill/
 ├── articles/      # 文章/博客总结模块（A1–A6, C2）：抓取 + AI 总结 + 多端保存
 ├── videos/        # 视频总结模块（P2.1/P2.2/P2.3/P3/P4）：字幕抓取 + 分块两段式 + 本地 ASR + 多模态
+│   ├── cdp_launch.py   # 确保本机带代理插件的 Chrome(CDP 副本) 调试端口就绪（每次强制同步配置含 iGuge 扩展 + 启动）
+│   ├── cdp_capture.py  # 经 CDP 拦截 YouTube 字幕响应体（本机无 YouTube 出口时的终极解法）
+│   └── fetch/asr/multimodal/main/run（获取层/ASR/多模态/编排/CLI）
 ├── shared/        # 跨模块共享（C1/C2）：chunking 两段式总结、WorkBuddy 内置 AI 适配器
 ├── prompts/       # 共享笔记模板模块：NOTE_TEMPLATES 注册表 + 自动分类，被 articles/videos 复用
 ├── tests/         # PRD 验收测试（pytest，test_prd.py）

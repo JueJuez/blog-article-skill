@@ -24,7 +24,7 @@ from articles.main import (
     call_ai_summary_with_meta,
     save_summarized_article,
 )
-from prompts.templates import get_note_prompt
+from prompts.templates import get_note_prompt, format_note_with_prompt
 from prompts.classify import classify_note_type
 from shared.chunking import chunk_segments, chunk_text, two_stage_summarize, segments_to_text
 
