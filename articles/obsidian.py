@@ -12,8 +12,9 @@ class ObsidianOutput(BaseOutput):
             return False
 
         try:
-            os.makedirs(self.vault_path, exist_ok=True)
             file_path = os.path.join(self.vault_path, filename)
+            # 关键：建「系列名/」这类子目录（此前只建 vault 根，导致系列课保存 FileNotFoundError）
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)

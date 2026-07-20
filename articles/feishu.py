@@ -6,6 +6,9 @@ from .base import BaseOutput
 
 
 class FeishuOutput(BaseOutput):
+    # 进程内缓存已解析的系列容器 node_token，避免同进程重复建/重复查
+    _series_node_cache: dict = {}
+
     def __init__(self, name: str = "feishu"):
         super().__init__(name)
         self.wiki_space = os.getenv("FEISHU_WIKI_SPACE", "")
@@ -86,7 +89,77 @@ class FeishuOutput(BaseOutput):
             print(f"✗ CLI命令执行异常: {str(e)}")
             return None
 
-    def save(self, content: str, filename: str) -> bool:
+    def _resolve_parent(self, parent_token: str = None) -> list:
+        """返回 --parent-token / --wiki-space 参数列表（优先级：显式 parent_token > 配置父节点 > 空间）。"""
+        if parent_token:
+            return ["--parent-token", parent_token]
+        if self.wiki_parent_node:
+            return ["--parent-token", self.wiki_parent_node]
+        return ["--wiki-space", self.wiki_space]
+
+    def ensure_series_node(self, series_title: str) -> str:
+        """确保「系列名」容器节点存在于父节点下，返回其 node_token（已存在则复用）。
+
+        飞书 wiki 没有独立 folder 类型，容器即一个有子节点的 docx 节点，
+        与用户需求「先生成一个文件叫<系列名>，下面才是课程内容」一致。
+        """
+        if not self.is_available():
+            return ""
+        parent = self.wiki_parent_node
+        space = self.wiki_space
+        cache_key = f"{space}|{parent}|{series_title}"
+        if cache_key in FeishuOutput._series_node_cache:
+            return FeishuOutput._series_node_cache[cache_key]
+        # 1) 查已有子节点，避免重复建
+        try:
+            listing = self._run_cli_command([
+                "wiki", "+node-list",
+                "--parent-node-token", parent,
+                "--space-id", space,
+                "--as", "user", "--json", "--page-all"
+            ])
+            if listing and listing.get("ok"):
+                # 注意：+node-list 返回结构是 data.nodes（非 items）
+                for item in listing.get("data", {}).get("nodes", []):
+                    if item.get("title") == series_title:
+                        return item.get("node_token", "")
+        except Exception:
+            pass
+        # 2) 不存在则创建（docx 节点作为容器）
+        try:
+            result = self._run_cli_command([
+                "wiki", "+node-create",
+                "--title", series_title,
+                "--node-type", "origin",
+                "--obj-type", "docx",
+                "--parent-node-token", parent,
+                "--space-id", space,
+                "--as", "user", "--json"
+            ])
+            if result and result.get("ok"):
+                node = result.get("data", {})
+                token = node.get("node_token") or (node.get("node", {}) or {}).get("node_token")
+                if token:
+                    print(f"   📁 已建飞书容器节点「{series_title}」：{token}")
+                    FeishuOutput._series_node_cache[cache_key] = token
+                    return token
+            else:
+                err = result.get("error", {}).get("message", "未知错误") if result else "命令失败"
+                print(f"   ⚠️ 建飞书容器节点失败：{err}")
+        except Exception as e:
+            print(f"   ⚠️ 建飞书容器节点异常：{e}")
+        return ""
+
+    def save_series(self, content: str, filename: str, series_title: str) -> bool:
+        """系列课保存：先确保父节点下有「系列名」容器，再在其下建文档。"""
+        if not self.is_available():
+            return False
+        parent = self.ensure_series_node(series_title)
+        if not parent:
+            return False
+        return self.save(content, filename, parent_token=parent)
+
+    def save(self, content: str, filename: str, parent_token: str = None) -> bool:
         if not self.is_available():
             return False
 
@@ -103,10 +176,7 @@ class FeishuOutput(BaseOutput):
                 "--as", "user"
             ]
 
-            if self.wiki_parent_node:
-                args.extend(["--parent-token", self.wiki_parent_node])
-            else:
-                args.extend(["--wiki-space", self.wiki_space])
+            args.extend(self._resolve_parent(parent_token))
 
             # 内容经 stdin 传入（CLI 的 --content - 读取标准输入），避免临时文件与路径限制
             result = self._run_cli_command(args, input_text=content)
@@ -129,7 +199,7 @@ class FeishuOutput(BaseOutput):
             print(f"✗ 创建文档失败: {str(e)}")
             return False
 
-    async def save_async(self, content: str, filename: str) -> bool:
+    async def save_async(self, content: str, filename: str, parent_token: str = None) -> bool:
         if not self.is_available():
             return False
 
@@ -146,10 +216,7 @@ class FeishuOutput(BaseOutput):
                 "--as", "user"
             ]
 
-            if self.wiki_parent_node:
-                args.extend(["--parent-token", self.wiki_parent_node])
-            else:
-                args.extend(["--wiki-space", self.wiki_space])
+            args.extend(self._resolve_parent(parent_token))
 
             result = await self._run_cli_command_async(args, input_text=content)
 

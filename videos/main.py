@@ -16,6 +16,7 @@
 """
 
 import os
+import re
 from typing import Optional, List, Dict, Any
 
 import articles.main as articles_main
@@ -127,6 +128,282 @@ def _looks_like_playlist(url: str, input_data: dict) -> bool:
     u = url.lower()
     return ("playlist" in u) or ("list=" in u) or ("bilibili.com/videos" in u) \
         or ("bilibili.com/medialist" in u) or ("/channel/" in u)
+
+
+# ---------------------------------------------------------------------------
+# B站系列课（多P视频）
+# ---------------------------------------------------------------------------
+
+def _sanitize_filename(name: str) -> str:
+    if not name:
+        return "未命名"
+    s = re.sub(r'[\\/:*?"<>|\n\r\t]', '_', name).strip()
+    s = re.sub(r'\s+', ' ', s)
+    return s[:80] or "未命名"
+
+
+def _save_series_note(content: str, series_dir: str, base_name: str,
+                      author: str, url: str, tags: list, note_type: str) -> str:
+    """把单集总结笔记写入 series 文件夹，并同步到所有已配置输出（Obsidian / 飞书等）。
+
+    满足用户需求：系列课先建一个「系列名」容器（本地=文件夹；Obsidian=同名子文件夹；
+    飞书=同名 wiki 节点），里面每集一个文件。
+    - 本地：notes/<系列名>/<第XX集_标题>.md
+    - 各外部输出：<容器>/<第XX集_标题>.md（自动建容器，非致命，失败仅告警）
+
+    Returns 本地绝对路径。
+    """
+    formatted = format_note_with_prompt(
+        content=content, author=author, url=url,
+        tags=tags, add_metadata=False
+    )
+    filename = f"{base_name}.md"
+    path = os.path.join(series_dir, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(formatted)
+
+    # 同步到所有已配置输出（Obsidian / 飞书等）：每个输出下先建「系列名」容器再放笔记
+    try:
+        series_folder = os.path.basename(series_dir)  # 如 "千刀千法"
+        mgr = articles_main.OutputManager()
+        for out in mgr.get_available_outputs():
+            try:
+                if out.save_series(formatted, filename, series_folder):
+                    print(f"   🔗 已同步 {out.name}：{series_folder}/{filename}")
+            except Exception as e:
+                print(f"   ⚠️ {out.name} 同步跳过（非致命）：{e}")
+    except Exception as e:
+        print(f"   ⚠️ 外部同步跳过（非致命）：{e}")
+
+    return path
+
+
+def _extract_h1(md: str) -> str:
+    for line in md.splitlines():
+        s = line.strip()
+        if s.startswith('# ') and not s.startswith('## '):
+            return s[2:].strip()
+    return ""
+
+
+def _extract_one_liner(md: str) -> str:
+    for line in md.splitlines():
+        s = line.strip()
+        if s.startswith('**一句话核心结论'):
+            for sep in ('：', ':'):
+                if sep in s:
+                    return s.split(sep, 1)[1].strip().strip('*').strip()
+    return ""
+
+
+def _generate_series_overview(series_title: str, series_dir: str, url: str) -> str:
+    """系列课总览大纲：扫描系列文件夹内各集 .md，抽取标题 + 一句话核心结论，
+    生成 00_系列总览.md（本地 + Obsidian）。用户规则：系列课总结必生成总览。
+
+    Returns 本地绝对路径。
+    """
+    ep_files = sorted(
+        f for f in os.listdir(series_dir)
+        if re.match(r'^第\d{2}集_.*\.md$', f) and not f.startswith('00_')
+    )
+    rows = []
+    for f in ep_files:
+        m = re.match(r'^第(\d{2})集_(.*?)(_raw)?\.md$', f)
+        page = int(m.group(1)) if m else 0
+        is_raw = f.endswith('_raw.md')
+        path = os.path.join(series_dir, f)
+        try:
+            with open(path, encoding='utf-8') as fh:
+                md = fh.read()
+        except Exception:
+            md = ""
+        title = _extract_h1(md) or (m.group(2) if m else f)
+        one = '（待总结）' if is_raw else (_extract_one_liner(md) or '（待总结）')
+        # 表格内禁用竖线，避免破坏 markdown 表格
+        title = title.replace('|', '/')
+        one = one.replace('|', '/')
+        note_link = f"[笔记](./{f})"
+        rows.append((page, title, one, note_link))
+    rows.sort(key=lambda r: r[0])
+
+    lines = [
+        f"# {series_title} · 系列总览",
+        "",
+        f"> 系列链接：{url}",
+        f"> 共 {len(rows)} 集（每集独立成篇，详见下方链接）",
+        "",
+        "## 各集导航",
+        "",
+        "| 集 | 标题 | 一句话核心结论 | 笔记 |",
+        "| --- | --- | --- | --- |",
+    ]
+    for page, title, one, note_link in rows:
+        lines.append(f"| 第{page:02d}集 | {title} | {one} | {note_link} |")
+    lines += [
+        "",
+        "---",
+        "",
+        "*本总览由 blog-article-skill 自动生成，系列课每集总结后更新。*",
+        "",
+    ]
+    content = "\n".join(lines)
+
+    overview_path = os.path.join(series_dir, "00_系列总览.md")
+    with open(overview_path, "w", encoding="utf-8") as fh:
+        fh.write(content)
+
+    # 同步到所有已配置输出（Obsidian / 飞书等，非致命）
+    try:
+        overview_name = "00_系列总览.md"
+        series_folder = os.path.basename(series_dir)
+        mgr = articles_main.OutputManager()
+        for out in mgr.get_available_outputs():
+            try:
+                if out.save_series(content, overview_name, series_folder):
+                    print(f"   🔗 已同步 {out.name} 总览：{series_folder}/{overview_name}")
+            except Exception as e:
+                print(f"   ⚠️ {out.name} 总览同步跳过（非致命）：{e}")
+    except Exception as e:
+        print(f"   ⚠️ 总览外部同步跳过（非致命）：{e}")
+
+    return overview_path
+
+
+def _build_subagent_prompt(note_type: str, raw_path: str, md_path: str,
+                           url: str, page: int, part: str, series_title: str) -> str:
+    """生成派发子 Agent 用的完整指令（含模板规范）。
+
+    关键改进：把 prompts/templates.py 的统一规范（含 UNIVERSAL_RULES 的案例背景 /
+    连贯性 / markdown 排版要求）完整注入子 Agent prompt，避免之前手写简版漏掉规范
+    导致总结不连贯、缺背景、格式弱。子 Agent 各自独立上下文，互不干扰。
+
+    Args:
+        note_type: 笔记类型（key_points / structured / case / opinion）
+        raw_path: 该集 raw 字幕文件绝对路径
+        md_path:   目标笔记绝对路径（= raw_path 去掉 _raw）
+        url:       系列课链接
+        page:      集号（第几集）
+        part:      分P 标题
+        series_title: 系列名
+    Returns: 可直接作为 Agent 工具 prompt 参数的字符串。
+    """
+    note_prompt = get_note_prompt(note_type)
+    return (
+        "你是「" + series_title + "」B站系列课的单集笔记总结子 Agent。你的上下文是独立的，"
+        "只处理这一集，不要读取项目其他文件（除非本指令要求）。\n\n"
+        "## 任务\n把下面这个 raw 字幕文件，提炼成一篇笔记 Markdown。\n\n"
+        "## 输入文件\nRAW = `" + raw_path + "`\n"
+        "用 Read 工具读取它。文件结构：前 7 行是元数据（`>` 开头：原始字幕 / 系列 / 分P / 链接），忽略；"
+        "第 8 行 `---` 之后是字幕正文（口语化口播，含\"嗯/啊/呃/也就是说\"等填充词与重复，提炼时过滤）；"
+        "你需要的链接在元数据里（`> 链接：...`），原样用在来源行。\n\n"
+        "## 总结规范（必须 100% 遵守，不可精简、不可改格式、不可删减结构）\n"
+        "以下是从项目统一模板中提取的硬性规范，优先级最高：\n\n"
+        + note_prompt + "\n\n"
+        "## 输出结构（顺序固定，严格按上方规范排版）\n"
+        "1. `# <本集标题>`（标题从内容提炼，不要照抄文件名）\n"
+        "2. 标签行（`#标签1 #标签2 ...`，可补本集相关标签）\n"
+        "3. `**作者**：【作者未知】 | **来源链接**：[千刀千法 第" + str(page) + "集](" + url + "`)\n"
+        "4. `**一句话核心结论**：` 这句最该被记住什么\n"
+        "5. `**核心论点**`（3～5 条，每条 `**小标题**` + **背景因果展开** + 证据；"
+        "**必须保留案例完整背景链条（背景→前因→经过→后果），段落间有逻辑衔接，不可只堆结论与零散数字**）\n"
+        "6. `**金句摘录**`（3～5 句原文 `>` 引用，禁止改写）\n"
+        "7. `**可行动项**`（2～4 条 `-` 列表，听完能马上做）\n"
+        "8. `**适合谁看 / 不推荐谁看**`（一句话）\n"
+        "9. 文末一句加粗的话收束全场\n\n"
+        "## 写出与清理\n"
+        "用 Write 工具写入：`" + md_path + "`（即去掉 `_raw` 四字）\n"
+        "写完后删除 raw：用 Bash 执行 `rm \"" + raw_path + "\"`\n"
+        "确认 raw 已删除。\n\n"
+        "## 回报\n回复一句话：已写出 <MD文件名>，约 XXX 字，raw 已删除。"
+    )
+
+
+def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
+    """B站系列课处理：Phase1 全抓取（已由 fetch 完成）→ Phase2 逐集总结。
+
+    用户明确：先把所有集字幕一次性抓完，再逐集做总结（避免逐集重复建连浪费）。
+    每集笔记存到 notes/<系列名>/ 文件夹下，文件名以「第XX集_分P标题」开头。
+
+    Args:
+        series: 已由 fetch.fetch_bilibili_series 抓好字幕的系列结构；为 None 时内部再抓一次。
+    """
+    if series is None:
+        series = fetch.fetch_bilibili_series(url, lang=input_data.get("lang", "zh"))
+    if not series:
+        # 实际是单P，退回单视频逻辑
+        return _handle_single_video(url, input_data)
+
+    print(f"\n📚 识别为 B站系列课（{series.get('kind', '')}）「{series['series_title']}」，"
+          f"已完成全部字幕抓取，开始逐集总结：{url}")
+    series_title = series["series_title"]
+    entries = series["entries"]
+    # 优先用字幕抓取阶段提取到的 UP主（fetch_bilibili_series 已带 author），
+    # 其次回退到调用方显式传入的 author
+    author = series.get("author", "") or input_data.get("author", "")
+    base_tags = input_data.get("tags", []) or [series_title]
+    note_type_arg = input_data.get("note_type", "")
+    force = input_data.get("force", False)
+
+    print(f"\n📁 建立系列文件夹：notes/{_sanitize_filename(series_title)}/")
+    series_dir = os.path.join(articles_main.NOTES_DIR, _sanitize_filename(series_title))
+    os.makedirs(series_dir, exist_ok=True)
+
+    print(f"🧠 Phase 2：逐集总结（共 {len(entries)} 集）...")
+    results: List[Dict] = []
+    degraded_any = False
+    for idx, entry in enumerate(entries, 1):
+        page = entry["page"]
+        part = entry["part"]
+        segs = entry["segments"]
+        ep_title = entry["title"]
+        print(f"\n[{idx}/{len(entries)}] 第{page}集：{part or '(无标题)'}")
+
+        note_type = note_type_arg or classify_note_type(ep_title, segments_to_text(segs))
+        final = _summarize_segments(segs, note_type, ep_title)
+        base = f"第{page:02d}集_{_sanitize_filename(part or '未命名')}"
+
+        if final is None:
+            # AI 不可用：暂存原始字幕，交外层总结（不中断其他集）
+            degraded_any = True
+            raw_text = segments_to_text(segs)
+            raw_path = os.path.join(series_dir, base + "_raw.md")
+            with open(raw_path, "w", encoding="utf-8") as f:
+                f.write(
+                    f"> 原始字幕（AI 不可用，待外层总结）\n"
+                    f"> 系列：{series_title}\n> 分P：第{page}集 {part}\n> 链接：{url}\n\n---\n\n"
+                    + raw_text
+                )
+            results.append({"page": page, "part": part, "raw": os.path.relpath(raw_path, articles_main.NOTES_DIR), "degraded": True})
+            print(f"   ⚠️ AI 不可用，原始字幕已暂存：{raw_path}")
+            continue
+
+        ep_tags = list(base_tags) + [_NOTE_TYPE_TAG.get(note_type, "视频笔记")]
+        path = _save_series_note(final, series_dir, base, author, url, ep_tags, note_type)
+        # 自愈：若此前降级留下 raw，成功总结后清除，避免半成品残留
+        raw_path = os.path.join(series_dir, base + "_raw.md")
+        if os.path.exists(raw_path):
+            try:
+                os.remove(raw_path)
+            except Exception:
+                pass
+        results.append({"page": page, "part": part, "filename": os.path.relpath(path, articles_main.NOTES_DIR)})
+        print(f"   ✅ 已保存：{path}")
+
+    # 系列总览大纲（用户规则：系列课总结必生成，含各集导航 + 一句话核心结论）
+    overview_path = _generate_series_overview(series_title, series_dir, url)
+    print(f"   🧭 系列总览已生成：{overview_path}")
+
+    return {
+        "success": True,
+        "message": (f"系列课「{series_title}」处理完成：{len(entries)} 集"
+                    f"（{len([r for r in results if 'filename' in r])} 篇笔记"
+                    f"{'，'+str(len([r for r in results if r.get('degraded')]))+' 集待外层总结' if degraded_any else ''}）"),
+        "series_dir": series_dir,
+        "series_title": series_title,
+        "results": results,
+        "overview": overview_path,
+        "degraded_any": degraded_any,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +553,14 @@ def summarize_video(input_data: dict) -> dict:
     if url and _looks_like_playlist(url, input_data):
         return _handle_playlist(url, input_data)
 
-    if url and (fetch.is_youtube(url) or fetch.is_bilibili(url)):
+    if url and fetch.is_bilibili(url):
+        # 系列课（ugc_season 或 多P）：先批量抓取再逐集总结；单P 走单视频逻辑
+        series = fetch.fetch_bilibili_series(url, lang=input_data.get("lang", "zh"))
+        if series:
+            return _handle_bilibili_series(url, input_data, series)
+        return _handle_single_video(url, input_data)
+
+    if url and fetch.is_youtube(url):
         return _handle_single_video(url, input_data)
 
     if file_path and os.path.exists(file_path):
