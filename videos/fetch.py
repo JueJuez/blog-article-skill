@@ -525,6 +525,30 @@ def _bili_fetch_page_subtitle(aid: int, cid: int, lang: str = "zh") -> Optional[
     return _bili_download_subtitle_body(sub_url)
 
 
+def _bili_part_redundant(main: str, part: str) -> bool:
+    """判定分P副标题是否冗余（避免拼出「标题 - 标题」式重复）。
+
+    原修复只挡了 part == title 完全相等；实战发现副标题与主标题差一两个
+    错字（如「演绎」vs「演経」）时仍会漏网。这里加三层判定：
+      1) 完全相等；2) 归一（去空白/标点）后互为子串；3) difflib 相似度 ≥ 0.9。
+    真实多P 的副标题（与主标题语义不同）三层均不命中 → 正常拼接。
+    """
+    if not part:
+        return True
+    if part == main:
+        return True
+    import re as _re, difflib as _dl
+    _norm = lambda s: _re.sub(
+        r"[\s\u3000—\-·:：，。？！、~～\"'‘’“”()（）\[\]【】]+", "", s or ""
+    )
+    nm, np_ = _norm(main), _norm(part)
+    if np_ and (np_ in nm or nm in np_):
+        return True
+    if nm and np_ and _dl.SequenceMatcher(None, nm, np_).ratio() >= 0.9:
+        return True
+    return False
+
+
 def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> Optional[Tuple[str, List[Dict], str]]:
     """获取 Bilibili 单集（指定分P）字幕。
 
@@ -559,7 +583,7 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
     if target is None and pages:
         target = pages[0]
     cid = target["cid"] if target else info["cid"]
-    if target and target.get("part") and target["part"] != title:
+    if target and target.get("part") and not _bili_part_redundant(title, target["part"]):
         title = f"{title} - {target['part']}"
 
     segs = _bili_fetch_page_subtitle(aid, cid, lang)
