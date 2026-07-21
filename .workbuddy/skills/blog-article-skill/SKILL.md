@@ -123,7 +123,7 @@ from articles import skill_main
 
 result = skill_main({
     "content": "https://xxx",   # 或直接传文章原文 / 字幕文本
-    "note_type": "key_points"   # 可选：structured / key_points，留空自动分类
+    "note_type": "key_points"   # 可选：structured / key_points / interview / roundup / reading / case / opinion，留空自动分类
 })
 # result['success'] = True 表示完成
 # result['filename'] = 保存的文件名
@@ -200,12 +200,15 @@ if result.get('need_continue_summary'):
 | note_type | 名称 | 适用内容 | 形态特点 |
 |-----------|------|----------|----------|
 | `structured` | 结构化复盘笔记 | 学习/课程/教程/方法论/干货（含教学视频） | 概念→分维度拆解→正反例→步骤→可复用模板（最完整，默认兜底） |
-| `key_points` | 要点提炼笔记 | 公开课/讲座/演讲/播客/访谈/视频口播 | 核心论点+金句+行动项，轻量精炼 |
+| `key_points` | 要点提炼笔记 | 公开课/讲座/演讲/播客/视频口播（非访谈） | 核心论点+金句+行动项，轻量精炼 |
+| `interview` | 访谈笔记 | 专访/对谈/播客访谈/Q&A/深度对话 | 问答对+嘉宾背景+双方分歧表格+金句+行动启发 |
+| `roundup` | 盘点笔记 | N个最佳X/横评/测评/工具对比/选购指南 | 维度×对象对比矩阵+场景结论+选购建议 |
+| `reading` | 读书笔记 | 书评/拆书/读后感/读书笔记/书单 | 全书地图+核心论点拆解+金句+行动启发 |
 | `case` | 案例拆解笔记 | 案例/复盘/产品拆解/实战记录 | 背景→决策→结果→可复用经验 |
 | `opinion` | 观点卡 | 评论/随笔/立场文/辩论/行业观点 | 核心立场+论据+正反双方+我的立场 |
 
-- **自动分类**：调用时不传 `note_type`，技能按 `prompts/classify_note_type(title, content)` 自动判定。优先级：教学/教程类视频（手把手/保姆/实操/从零/教程/课程）经「教学超信号」优先判 `structured`，不再被 `视频` 误判为口播要点；其余口播类（公开课/讲座/演讲/访谈/直播…）→ `key_points`；评论/立场→ `opinion`；案例/复盘→ `case`；兜底 `structured`。
-- **思维模型透镜（提质·按需）**：全部 4 模板共用 `UNIVERSAL_RULES` 第九节（structured 内联第十四节），6 模型按序 LIST（第一性原理→5-Why冰山→二阶思维→脉络还原→奥卡姆剃刀→类比迁移）逐条过、不适用跳过，直接服务「质量高、上下文清晰」且不破去水分红线。
+- **自动分类**：调用时不传 `note_type`，技能按 `prompts/classify_note_type(title, content)` 自动判定。优先级：教学超信号(structured) > 访谈(interview) > 要点(key_points) > 盘点(roundup) > 读书(reading) > 观点(opinion) > 案例(case) > structured 兜底。其中教学/教程类视频（手把手/保姆/实操/从零/教程/课程）经「教学超信号」优先判 `structured`，不再被 `视频` 误判为口播要点；访谈（访谈/对谈/专访/Q&A）已独立成 `interview` 类（不再误判为口播要点）。
+- **思维模型透镜（提质·按需）**：全部 7 模板共用 `UNIVERSAL_RULES` 第九节（structured 内联第十四节），6 模型按序 LIST（第一性原理→5-Why冰山→二阶思维→脉络还原→奥卡姆剃刀→类比迁移）逐条过、不适用跳过，直接服务「质量高、上下文清晰」且不破去水分红线。
 - **手动指定**：传 `note_type` 覆盖自动判定。
 - **扩展**：新增笔记类型只需在 `prompts/templates.py` 的 `NOTE_TEMPLATES` 里加一项，无需改其他代码。
 

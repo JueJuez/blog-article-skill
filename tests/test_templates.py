@@ -26,11 +26,13 @@ from prompts.templates import (
 
 
 # --------------------------------------------------------------------------
-# 全局：4 个类型齐全
+# 全局：全部类型齐全（含 2026-07-21 新增 interview/roundup/reading）
 # --------------------------------------------------------------------------
 
 def test_all_four_types_present():
-    assert set(NOTE_TEMPLATES) == {"structured", "key_points", "case", "opinion"}
+    expected = {"structured", "key_points", "case", "opinion",
+                 "interview", "roundup", "reading"}
+    assert expected <= set(NOTE_TEMPLATES)
 
 
 def test_get_note_prompt_fallback():
@@ -134,6 +136,8 @@ def test_universal_rules_merged_into_light_templates():
 
 def test_list_note_types_shape():
     rows = list_note_types()
-    assert {r["key"] for r in rows} == {"structured", "key_points", "case", "opinion"}
+    expected = {"structured", "key_points", "case", "opinion",
+                "interview", "roundup", "reading"}
+    assert expected <= {r["key"] for r in rows}
     for r in rows:
         assert r["name"] and r["desc"]
