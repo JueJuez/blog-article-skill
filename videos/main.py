@@ -24,7 +24,10 @@ from articles.main import (
     call_ai_summary_with_meta,
     save_summarized_article,
 )
-from prompts.templates import get_note_prompt, format_note_with_prompt
+from prompts.templates import (
+    get_note_prompt, format_note_with_prompt,
+    verify_note, should_gate_retry, build_gate_critique, QUALITY_GATE_SELFCHECK,
+)
 from prompts.classify import classify_note_type
 from shared.chunking import chunk_segments, chunk_text, two_stage_summarize, segments_to_text
 
@@ -86,7 +89,24 @@ def _summarize_segments(segments, note_type: str, title: str = "", visual_contex
                         "（去重、保持结构、控制单篇篇幅、不要重复章节）：")
         return _ai_summarize(merge_prompt, "\n\n---\n\n".join(partials))
 
-    return two_stage_summarize(chunks, summarize_fn, merge_fn)
+    final = two_stage_summarize(chunks, summarize_fn, merge_fn)
+    if final and note_type:
+        # A：质量闸门（第二遍把关）——评分<阈值带反馈重试一次
+        gate_src = _sample_text(segments)[:6000]
+        gate = verify_note(final, gate_src, note_type)
+        if should_gate_retry(gate):
+            crit = build_gate_critique(gate)
+
+            def summarize_fn2(text, i, total):
+                return _ai_summarize(prompt + crit, text)
+
+            def merge_fn2(partials):
+                return _ai_summarize(prompt + crit, "\n\n---\n\n".join(partials))
+
+            retry = two_stage_summarize(chunks, summarize_fn2, merge_fn2)
+            if retry:
+                final = retry
+    return final
 
 
 def _summarize_and_save(segments, source_url: str, title: str, author: str,
@@ -583,7 +603,7 @@ def _finalize_single(title, segments, url, input_data, visual_context: str = "")
             "message": "⚠️ AI Provider 暂不可用，已准备好字幕内容，请外层总结",
             "article_content": article_content,
             "note_type": note_type,
-            "prompt": get_note_prompt(note_type),
+            "prompt": get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK,
             "original_url": url,
             "original_title": title,
             "author": author,

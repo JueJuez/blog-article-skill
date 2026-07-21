@@ -19,6 +19,9 @@ from typing import Optional, List, Dict, Tuple
 YT_RE = re.compile(r"(?:youtube\.com/(?:watch\?v=|embed/|shorts/)|youtu\.be/)([\w-]{11})")
 BILI_RE = re.compile(r"(?:bilibili\.com/video/|b23\.tv/)([BV][A-Za-z0-9]+)")
 
+# B：字幕轻量清洗（保守、不伤实义），统一在获取层出口应用
+from shared.subtitle_clean import preprocess_segments, preprocess_text
+
 
 def is_youtube(url: str) -> bool:
     return bool(YT_RE.search(url or ""))
@@ -162,7 +165,8 @@ def fetch_youtube_transcript(url: str, languages: Tuple[str, ...] = ("zh-Hans", 
         result = _run_with_timeout(_api, timeout=25)
         if result and result[0]:
             segs, title = result
-            print(f"   ✅ YouTube 字幕获取成功（{len(segs)} 条）")
+            segs = preprocess_segments(segs)  # B：字幕轻量清洗
+            print(f"   ✅ YouTube 字幕获取成功（清洗后 {len(segs)} 条）")
             return (title, segs)
     except Exception as e:
         print(f"   ℹ️ YouTube API 路径失败: {e}")
@@ -171,7 +175,9 @@ def fetch_youtube_transcript(url: str, languages: Tuple[str, ...] = ("zh-Hans", 
     if use_cdp_fallback:
         cdp = fetch_youtube_transcript_cdp(url)
         if cdp:
-            return cdp
+            title, text = cdp
+            text = preprocess_text(text)  # B：纯文本字幕清洗
+            return (title, text) if text else None
 
     print("❌ 该视频无可用字幕（页面已加载，但无 CC/自动字幕轨道）。")
     print("   → 按项目约定直接回复用户：【此视频暂无 CC 字幕，无法为你抓取字幕总结内容。】")
@@ -518,11 +524,13 @@ def _bili_fetch_page_subtitle(aid: int, cid: int, lang: str = "zh") -> Optional[
     if not sub_url:
         print("   ⚠️ dm/view 未返回 subtitle_url，降级使用 cookie 认证重拼 URL")
         cookies = _bili_build_cookies_from_env()
-        return _bili_download_subtitle_body(
+        segs = _bili_download_subtitle_body(
             f"https://aisubtitle.hdslb.com/bfs/ai_subtitle/{aid}/{cid}/{chosen['id']}.json",
             cookies=cookies,
         )
-    return _bili_download_subtitle_body(sub_url)
+        return preprocess_segments(segs) if segs else None
+    segs = _bili_download_subtitle_body(sub_url)
+    return preprocess_segments(segs) if segs else None
 
 
 def _bili_part_redundant(main: str, part: str) -> bool:
@@ -641,7 +649,8 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
             if not segs2:
                 print("   FAIL Bilibili 字幕解析后为空")
                 return None
-            print(f"   OK Bilibili 字幕获取成功（{len(segs2)} 条，yt-dlp 兜底）")
+            segs2 = preprocess_segments(segs2)  # B：字幕轻量清洗
+            print(f"   OK Bilibili 字幕获取成功（清洗后 {len(segs2)} 条，yt-dlp 兜底）")
             return (title2, segs2, info.get("author", ""))
     except Exception as e:
         print(f"   FAIL Bilibili yt-dlp 兜底也失败: {e}")

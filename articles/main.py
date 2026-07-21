@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 from .fetch import fetch_web_content  # A1: 增强抓取层
 from .prompt import format_note_with_prompt, CONTENT_SUMMARY_PROMPT, get_note_prompt, classify_note_type
+from prompts.templates import verify_note, should_gate_retry, build_gate_critique, QUALITY_GATE_SELFCHECK
 from .manager import OutputManager
 from . import dedup  # A2: 增量去重
 from shared.wb_ai import call_wb_ai  # C2/A6: 可选 WB 内置 AI
@@ -279,6 +280,17 @@ def summarize_content(content: str, author: str = "", url: str = "", tags: list 
     if not meta or not meta.get("content"):
         return {"summary": None, "usage": None, "model": None, "source": None}
 
+    summary = meta["content"]
+    # A：质量闸门（第二遍把关）——评分<阈值带反馈重试一次
+    if note_type:
+        gate = verify_note(summary, content[:6000], note_type)
+        if should_gate_retry(gate):
+            crit = build_gate_critique(gate)
+            meta2 = call_ai_summary_with_meta(prompt + crit, content_with_metadata)
+            if meta2 and meta2.get("content"):
+                summary = meta2["content"]
+                meta = meta2
+
     print("   ✅ AI总结完成")
     return {
         "summary": meta["content"],
@@ -447,7 +459,7 @@ def skill_main(input_data: dict) -> dict:
                 'success': True, 'need_continue_summary': True,
                 'message': '⚠️ AI Provider 暂不可用，已成功抓取文章内容，请使用对应笔记模板进行总结',
                 'article_content': article_content, 'note_type': note_type,
-                'prompt': get_note_prompt(note_type), 'original_url': original_url,
+                'prompt': get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK, 'original_url': original_url,
                 'original_title': original_title, 'author': author, 'tags': tags,
             }
         else:
