@@ -366,6 +366,8 @@ blog-article-skill/
 ├── videos/                   # 视频总结模块（P2.1/P2.2/P2.3/P3/P4）
 │   ├── __init__.py
 │   ├── fetch.py              # 字幕抓取（P2.1：YouTube/Bilibili）
+│   ├── cdp_launch.py         # 确保本机带代理插件的 Chrome(CDP 副本) 调试端口就绪（强制同步配置 + 启动）
+│   ├── cdp_capture.py        # 经 CDP 拦截 YouTube 字幕响应体（本机无 YouTube 出口时的终极解法）
 │   ├── asr.py                # 本地语音识别（P3：faster-whisper）
 │   ├── multimodal.py         # 多模态理解（P4：Gemini）
 │   ├── main.py               # 视频总结主流程（分块两段式 P2.2/P2.3）
@@ -383,7 +385,9 @@ blog-article-skill/
 ├── notes/                    # 原始/中间笔记（被 gitignore）
 ├── references/
 │   ├── config.md             # 配置详细说明
-│   └── PRD.md                # 产品需求文档
+│   ├── PRD.md                # 产品需求文档
+│   ├── youtube-cdp-workflow.md  # YouTube 字幕 CDP 全自动抓取流程（本机无出口必读）
+│   └── testing_rules.md      # TDD 流程规范（grill_rules 动手时遵循）
 ├── .env.example              # 环境变量模板
 ├── pyproject.toml            # 项目依赖
 ├── SKILL.md                  # AI 技能规则（供 AI 模型读取）

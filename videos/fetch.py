@@ -10,8 +10,10 @@
 
 import os
 import re
+import time
 import tempfile
 import subprocess
+import threading
 from typing import Optional, List, Dict, Tuple
 
 YT_RE = re.compile(r"(?:youtube\.com/(?:watch\?v=|embed/|shorts/)|youtu\.be/)([\w-]{11})")
@@ -29,6 +31,23 @@ def is_bilibili(url: str) -> bool:
 def _yt_video_id(url: str) -> Optional[str]:
     m = YT_RE.search(url or "")
     return m.group(1) if m else None
+
+
+def _run_with_timeout(fn, timeout: float, default=None):
+    """在线程里跑 fn，超时返回 default（用于给 youtube-transcript-api 的网络尝试加超时，
+    避免本机无 YouTube 出口时长时间挂起阻断主流程）。"""
+    res = {"v": default}
+
+    def _t():
+        try:
+            res["v"] = fn()
+        except Exception:
+            res["v"] = default
+
+    th = threading.Thread(target=_t, daemon=True)
+    th.start()
+    th.join(timeout)
+    return res["v"]
 
 
 def _apply_yt_proxy_env() -> None:
@@ -85,44 +104,78 @@ def _ts_to_sec(hms: str, ms: str) -> float:
 # YouTube
 # ---------------------------------------------------------------------------
 
-def fetch_youtube_transcript(url: str, languages: Tuple[str, ...] = ("zh-Hans", "zh", "en")) -> Optional[Tuple[str, List[Dict]]]:
-    """获取 YouTube 视频 CC 字幕。
+def fetch_youtube_transcript_cdp(url: str, port: int = 9222, wait: int = 45) -> Optional[Tuple[str, str]]:
+    """CDP 方案：驱动本机带代理插件的 Chrome 抓字幕（绕过 API 的网络限制）。
 
-    Returns:
-        (title, segments) 或 None
+    返回 (title, transcript_text)；失败返回 None。
+    自动确保 Chrome(CDP 副本) 调试端口就绪（见 videos.cdp_launch）。
     """
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-    except ImportError:
-        print("⚠️ 未安装 youtube-transcript-api（pip install youtube-transcript-api）")
+        from videos.cdp_launch import ensure_chrome_running
+        from videos.cdp_capture import capture_transcript
+    except Exception as e:
+        print(f"   ⚠️ CDP 依赖不可用: {e}")
+        return None
+    if not ensure_chrome_running(port=port):
+        print("   ⚠️ 无法启动/连接 Chrome(CDP)，CDP 字幕抓取跳过")
+        return None
+    try:
+        title, text = capture_transcript(url, port=port, wait=wait)
+        if text:
+            print(f"   ✅ YouTube 字幕(CDP)获取成功（{len(text)} 字）")
+            return (title or _yt_video_id(url) or "", text)
+        print("   ⚠️ CDP 未捕获到字幕（页面已加载但 captionTracks 为空，此视频无 CC/自动字幕）")
+        return None
+    except Exception as e:
+        print(f"   ⚠️ CDP 字幕抓取异常: {e}")
         return None
 
+
+def fetch_youtube_transcript(url: str, languages: Tuple[str, ...] = ("zh-Hans", "zh", "en"),
+                             use_cdp_fallback: bool = True) -> Optional[Tuple]:
+    """获取 YouTube 视频字幕。
+
+    策略（自适应环境）：
+      1. 先试 youtube-transcript-api（WorkBuddy 沙箱可直连、无需浏览器；加超时防止
+         本机无 YouTube 出口时长时间挂起）。
+      2. 失败/超时则回退 CDP 方案（驱动本机带代理插件的 Chrome 抓字幕，本机首选）。
+
+    Returns:
+        (title, segments) 或 (title, transcript_text) 或 None
+        —— 调用方（videos.main）对 List[Dict] 与 str 两种形态都已兼容。
+    """
     vid = _yt_video_id(url)
     if not vid:
         print("❌ 无法从 URL 解析 YouTube 视频 ID")
         return None
 
+    # 1) API 路径（带超时）
     try:
-        # v1.x API：实例方法 fetch() 返回 FetchedTranscript；.to_raw_data()
-        # 还原为旧的 [{"text","start","duration"}] 列表，下方解析逻辑无需改动。
-        # 代理：底层 requests 自动读取系统 HTTP(S)_PROXY。若设置了 YT_PROXY，
-        # 则映射到 HTTP(S)_PROXY 让请求走代理（仅本地有可复用端口时有意义，
-        # 如开启 Clash 系统代理；纯浏览器插件代理无本地端口则仍需 CDP 方案）。
-        _apply_yt_proxy_env()
-        api = YouTubeTranscriptApi()
-        fetched = api.fetch(vid, languages=list(languages))
-        raw = fetched.to_raw_data()
-        segments = [{"text": s.get("text", ""), "start": s.get("start", 0.0),
+        from youtube_transcript_api import YouTubeTranscriptApi
+        def _api():
+            _apply_yt_proxy_env()
+            api = YouTubeTranscriptApi()
+            raw = api.fetch(vid, languages=list(languages)).to_raw_data()
+            segs = [{"text": s.get("text", ""), "start": s.get("start", 0.0),
                      "duration": s.get("duration", 0.0)} for s in raw]
-        if not segments:
-            print("❌ 该视频无可用 CC 字幕")
-            return None
-        title = _yt_title(url) or vid
-        print(f"   ✅ YouTube 字幕获取成功（{len(segments)} 条）")
-        return (title, segments)
+            return (segs, _yt_title(url) or vid)
+        result = _run_with_timeout(_api, timeout=25)
+        if result and result[0]:
+            segs, title = result
+            print(f"   ✅ YouTube 字幕获取成功（{len(segs)} 条）")
+            return (title, segs)
     except Exception as e:
-        print(f"❌ YouTube 字幕获取失败: {e}")
-        return None
+        print(f"   ℹ️ YouTube API 路径失败: {e}")
+
+    # 2) CDP 回退（本机带代理插件的 Chrome）
+    if use_cdp_fallback:
+        cdp = fetch_youtube_transcript_cdp(url)
+        if cdp:
+            return cdp
+
+    print("❌ 该视频无可用字幕（页面已加载，但无 CC/自动字幕轨道）。")
+    print("   → 按项目约定直接回复用户：【此视频暂无 CC 字幕，无法为你抓取字幕总结内容。】")
+    return None
 
 
 def _yt_title(url: str) -> str:
@@ -166,6 +219,12 @@ def _bili_extract_bvid(url: str) -> Optional[str]:
 
 
 def _bili_get_video_info(bvid: str) -> Optional[Dict]:
+    """返回视频基础信息 + 所有分P（多P系列课）列表。
+
+    Returns:
+        {"aid", "cid"(首P), "title", "author"(UP主名),
+         "pages": [{"cid", "page", "part"}, ...]} 或 None
+    """
     import json as _j, urllib.request as _req
     api = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
     r = _req.Request(api, headers={
@@ -177,27 +236,72 @@ def _bili_get_video_info(bvid: str) -> Optional[Dict]:
         data = _j.loads(resp.read())
         if data.get("code") == 0:
             d = data["data"]
-            return {"aid": d["aid"], "cid": d["cid"], "title": d.get("title", "")}
+            pages = [
+                {"cid": p["cid"], "page": p.get("page", i + 1), "part": p.get("part", "")}
+                for i, p in enumerate(d.get("pages", []))
+            ]
+            return {
+                "aid": d["aid"],
+                "cid": d["cid"],
+                "title": d.get("title", ""),
+                # UP主名（view API 的 owner.name），上层据此填充笔记作者
+                "author": d.get("owner", {}).get("name", ""),
+                "pages": pages or [{"cid": d["cid"], "page": 1, "part": ""}],
+                # 系列课（UP主聚合的多个独立视频）：含 sections[].episodes[]
+                "ugc_season": d.get("ugc_season"),
+            }
     except Exception:
         pass
     return None
 
 
-def _bili_get_subtitle_list(aid: int, cid: int) -> Optional[List[Dict]]:
-    import json as _j, urllib.request as _req
+def get_bilibili_pages(url: str) -> Optional[List[Dict]]:
+    """轻量判断：该 B 站视频是否为多P（系列课）。
+
+    Returns:
+        pages 列表（含 cid/page/part）或 None（失败/非B站链接）
+    """
+    bvid = _bili_extract_bvid(url)
+    if not bvid:
+        return None
+    info = _bili_get_video_info(bvid)
+    return info.get("pages") if info else None
+
+
+def _bili_get_subtitle_list(aid: int, cid: int, retries: int = 3) -> Optional[List[Dict]]:
+    """获取分P字幕列表（dm/view API）。
+
+    B站 dm/view 接口偶发限流（code=-429）或瞬时返回空字幕列表，故加带退避的
+    重试，避免把"瞬时限流"误判为"视频无字幕"。
+    """
+    import json as _j, urllib.request as _req, time as _t
     url = f"https://api.bilibili.com/x/v2/dm/view?aid={aid}&oid={cid}&type=1"
-    r = _req.Request(url, headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://www.bilibili.com/",
-    })
-    try:
-        resp = _req.urlopen(r, timeout=15)
-        data = _j.loads(resp.read())
-        subs = data.get("data", {}).get("subtitle", {}).get("subtitles", [])
-        if subs:
-            return subs
-    except Exception:
-        pass
+    for attempt in range(retries):
+        r = _req.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.bilibili.com/",
+        })
+        try:
+            resp = _req.urlopen(r, timeout=15)
+            data = _j.loads(resp.read())
+            # code != 0 多为限流（-429）等瞬时故障，重试
+            if data.get("code") != 0:
+                if attempt < retries - 1:
+                    _t.sleep(1.5 * (attempt + 1))
+                    continue
+                return None
+            subs = data.get("data", {}).get("subtitle", {}).get("subtitles", [])
+            if subs:
+                return subs
+            # 字幕列表为空：B站偶发返回空，重试一次
+            if attempt < retries - 1:
+                _t.sleep(1.5 * (attempt + 1))
+                continue
+        except Exception:
+            if attempt < retries - 1:
+                _t.sleep(1.5 * (attempt + 1))
+                continue
+            return None
     return None
 
 
@@ -387,60 +491,92 @@ def _bili_build_cookies_from_env() -> Optional[str]:
     return _bili_auto_extract_cookies()
 
 
-def fetch_bilibili_transcript(url: str, lang: str = "zh") -> Optional[Tuple[str, List[Dict]]]:
-    """获取 Bilibili 视频字幕（AI 自动生成 + 用户 CC）。
+def _bili_fetch_page_subtitle(aid: int, cid: int, lang: str = "zh") -> Optional[List[Dict]]:
+    """抓取单个分P（page）的字幕，返回片段列表或 None。
 
     策略（按优先级）：
-    1. 原生 API 链路（view -> dm/view -> aisubtitle），支持 SESSDATA/BILIBILI_COOKIES 认证
-    2. yt-dlp 兜底（当用户配置了 cookies-from-browser / --cookies 时）
+    1. 原生 API 链路（dm/view -> aisubtitle CDN，带 auth_key 直链下载）
+    2. cookie 认证重拼 URL（当 dm/view 未返回 subtitle_url 时）
+    """
+    sub_list = _bili_get_subtitle_list(aid, cid)
+    if not sub_list:
+        return None
+    lang_priority = [f"ai-{lang}", lang, "ai-zh", "ai-en", ""]
+    chosen = None
+    for lp in lang_priority:
+        matches = [s for s in sub_list if s.get("lan") == lp]
+        if matches:
+            chosen = matches[0]
+            break
+    if not chosen and sub_list:
+        chosen = sub_list[0]
+    if not chosen:
+        return None
+
+    # dm/view 已返回带 auth_key 的完整 CDN 地址，无需登录即可直链下载
+    sub_url = chosen.get("subtitle_url")
+    if not sub_url:
+        print("   ⚠️ dm/view 未返回 subtitle_url，降级使用 cookie 认证重拼 URL")
+        cookies = _bili_build_cookies_from_env()
+        return _bili_download_subtitle_body(
+            f"https://aisubtitle.hdslb.com/bfs/ai_subtitle/{aid}/{cid}/{chosen['id']}.json",
+            cookies=cookies,
+        )
+    return _bili_download_subtitle_body(sub_url)
+
+
+def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> Optional[Tuple[str, List[Dict]]]:
+    """获取 Bilibili 单集（指定分P）字幕。
+
+    支持：
+    - 多P 视频：URL 带 ?p=N 或传 page=N 抓指定分P，否则默认首P
+    - 原生 API 链路优先，yt-dlp 兜底
+
+    Returns: (title, segments) 或 None
     """
     bvid = _bili_extract_bvid(url)
     if not bvid:
         print("无法从 URL 提取 Bilibili BV 号")
         return None
 
+    # 从 URL 提取 ?p= 参数
+    if page is None:
+        m = re.search(r"[?&]p=(\d+)", url or "")
+        if m:
+            page = int(m.group(1))
+
     info = _bili_get_video_info(bvid)
-    if info:
-        aid, cid, title = info["aid"], info["cid"], info["title"]
-        sub_list = _bili_get_subtitle_list(aid, cid)
-        if sub_list:
-            lang_priority = [f"ai-{lang}", lang, "ai-zh", "ai-en", ""]
-            chosen = None
-            for lp in lang_priority:
-                matches = [s for s in sub_list if s.get("lan") == lp]
-                if matches:
-                    chosen = matches[0]
-                    break
-            if not chosen and sub_list:
-                chosen = sub_list[0]
+    if not info:
+        return None
+    aid = info["aid"]
+    title = info["title"]
+    pages = info.get("pages") or []
 
-            if chosen:
-                # dm/view 已返回带 auth_key 的完整 CDN 地址，无需登录即可直链下载
-                sub_url = chosen.get("subtitle_url")
-                if not sub_url:
-                    print("   ⚠️ dm/view 未返回 subtitle_url，降级使用 cookie 认证重拼 URL")
-                    cookies = _bili_build_cookies_from_env()
-                    segs = _bili_download_subtitle_body(
-                        f"https://aisubtitle.hdslb.com/bfs/ai_subtitle/{aid}/{cid}/{chosen['id']}.json",
-                        cookies=cookies,
-                    )
-                else:
-                    segs = _bili_download_subtitle_body(sub_url)
-                if segs:
-                    print(f"   OK Bilibili 字幕获取成功（{len(segs)} 条，API 原生链路）")
-                    return (title, segs)
-                else:
-                    print("   ⚠️ Bilibili 有字幕但下载失败（auth_key 可能已过期，重试或提供 cookie）。")
-        else:
-            print("   WARN 该视频无 AI 字幕")
+    # 选定目标分P
+    target = None
+    if page and pages:
+        target = next((p for p in pages if p["page"] == page), None)
+    if target is None and pages:
+        target = pages[0]
+    cid = target["cid"] if target else info["cid"]
+    if target and target.get("part"):
+        title = f"{title} - {target['part']}"
 
-    # fallback: yt-dlp
+    segs = _bili_fetch_page_subtitle(aid, cid, lang)
+    if segs:
+        print(f"   OK Bilibili 字幕获取成功（{len(segs)} 条，API 原生链路）")
+        return (title, segs)
+    else:
+        print("   WARN 该分P无 AI 字幕，尝试 yt-dlp 兜底")
+
+    # fallback: yt-dlp（多P场景不细分，仅作最后兜底）
     try:
         import yt_dlp
     except ImportError:
         print("   FAIL 未安装 yt-dlp 且原生 API 也未成功")
         return None
 
+    page_url = f"{url.split('?')[0]}?p={page}" if page else url
     tmpdir = tempfile.mkdtemp(prefix="bili_sub_")
     outtmpl = os.path.join(tmpdir, "%(id)s")
     ydl_opts = {
@@ -456,7 +592,7 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh") -> Optional[Tuple[str,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            vinfo = ydl.extract_info(url, download=False)
+            vinfo = ydl.extract_info(page_url, download=False)
             title2 = vinfo.get("title", "") or title or ""
             subs_found = []
             for f in os.listdir(tmpdir):
@@ -465,10 +601,10 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh") -> Optional[Tuple[str,
             if not subs_found:
                 print("   FAIL Bilibili 字幕获取失败（所有方式均未拿到字幕）")
                 return None
-            segs: List[Dict] = []
+            segs2: List[Dict] = []
             for sub in subs_found:
                 with open(sub, "r", encoding="utf-8", errors="ignore") as fh:
-                    segs.extend(parse_vtt(fh.read()))
+                    segs2.extend(parse_vtt(fh.read()))
             for f in os.listdir(tmpdir):
                 try:
                     os.remove(os.path.join(tmpdir, f))
@@ -478,14 +614,108 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh") -> Optional[Tuple[str,
                 os.rmdir(tmpdir)
             except Exception:
                 pass
-            if not segs:
+            if not segs2:
                 print("   FAIL Bilibili 字幕解析后为空")
                 return None
-            print(f"   OK Bilibili 字幕获取成功（{len(segs)} 条，yt-dlp 兜底）")
-            return (title2, segs)
+            print(f"   OK Bilibili 字幕获取成功（{len(segs2)} 条，yt-dlp 兜底）")
+            return (title2, segs2)
     except Exception as e:
         print(f"   FAIL Bilibili yt-dlp 兜底也失败: {e}")
         return None
+
+
+def _fetch_series_entries(meta_list: List[Dict], lang: str) -> List[Dict]:
+    """根据每集元信息（含 aid/cid 或 bvid）逐集抓取字幕，返回带 segments 的 entries。
+
+    已知 aid/cid 时直抓字幕（仅一次 dm/view + 一次下载，不重复调 view API）；
+    aid/cid 缺失时退回按 bvid 走完整单视频抓取链路兜底。
+    """
+    entries: List[Dict] = []
+    total = len(meta_list)
+    for m in meta_list:
+        page = m.get("page", "?")
+        part = m.get("part", "")
+        print(f"   🎞️ 抓取第 {page}/{total} 集: {part or '(无标题)'}")
+        segs = None
+        if m.get("aid") and m.get("cid"):
+            segs = _bili_fetch_page_subtitle(m["aid"], m["cid"], lang)
+        if not segs and m.get("bvid"):
+            t = fetch_bilibili_transcript(f"https://www.bilibili.com/video/{m['bvid']}", lang=lang)
+            if t:
+                segs = t[1]
+        if segs:
+            entries.append({**m, "segments": segs})
+        else:
+            print(f"   ⚠️ 第 {page} 集无字幕，跳过")
+    return entries
+
+
+def fetch_bilibili_series(url: str, lang: str = "zh") -> Optional[Dict]:
+    """一次性抓取 B 站系列课全部集的字幕。
+
+    支持两种聚合形态：
+    - A. 系列课（ugc_season）：UP主把多个独立 BV 视频聚成系列，每集是独立视频
+    - B. 多P视频：同一 BV 下多个分P（page）
+
+    设计要点（用户需求）：**先一次性抓完全部集字幕，再交给上层逐集总结**，
+    避免逐集重复建连 / 重复解析页面结构造成的性能浪费。
+
+    Returns:
+        {"series_title": str, "bvid": str, "kind": "ugc_season"|"multipart",
+         "entries": [{"page","part","bvid","aid","cid","title","segments"}, ...]}
+        或 None（单P 且非系列课 / 抓取失败）
+    """
+    bvid = _bili_extract_bvid(url)
+    if not bvid:
+        return None
+    info = _bili_get_video_info(bvid)
+    if not info:
+        return None
+    aid = info["aid"]
+    title = info["title"]
+
+    # 形态A：ugc_season 系列课（每集独立 BV）
+    us = info.get("ugc_season")
+    if us and us.get("sections"):
+        series_title = us.get("title") or title
+        meta_list: List[Dict] = []
+        for sec in us["sections"]:
+            for i, ep in enumerate(sec.get("episodes", []), 1):
+                meta_list.append({
+                    "page": i,
+                    "part": ep.get("title", ""),
+                    "bvid": ep.get("bvid"),
+                    "aid": ep.get("aid"),
+                    "cid": ep.get("cid"),
+                    "title": ep.get("title", ""),
+                })
+        if meta_list:
+            entries = _fetch_series_entries(meta_list, lang)
+            if entries:
+                print(f"   ✅ 系列课「{series_title}」全部 {len(entries)} 集字幕抓取完成")
+                return {"series_title": series_title, "bvid": bvid, "kind": "ugc_season", "author": info.get("author", ""), "entries": entries}
+            return None
+
+    # 形态B：多P视频（单 BV 多 page）
+    pages = info.get("pages") or []
+    if len(pages) > 1:
+        series_title = title
+        meta_list = [{
+            "page": p["page"],
+            "part": p.get("part", ""),
+            "bvid": bvid,
+            "aid": aid,
+            "cid": p["cid"],
+            "title": p.get("part") or f"第{p['page']}集",
+        } for p in pages]
+        entries = _fetch_series_entries(meta_list, lang)
+        if entries:
+            print(f"   ✅ 多P视频「{series_title}」全部 {len(entries)} 集字幕抓取完成")
+            return {"series_title": series_title, "bvid": bvid, "kind": "multipart", "author": info.get("author", ""), "entries": entries}
+        return None
+
+    # 单P 且非系列课
+    return None
 
 # ---------------------------------------------------------------------------
 # 统一入口 + playlist

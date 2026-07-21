@@ -38,6 +38,7 @@ def main():
     parser.add_argument('--playlist', action='store_true', help='强制按 playlist 处理')
     parser.add_argument('--overview', action='store_true', help='playlist 模式：额外生成系列总览')
     parser.add_argument('--force', action='store_true', help='忽略去重强制重跑')
+    parser.add_argument('--lang', type=str, default='zh', help='B站字幕语言（默认 zh，可选 en 等）')
 
     args = parser.parse_args()
 
@@ -62,6 +63,7 @@ def main():
         'playlist': args.playlist,
         'overview': args.overview,
         'force': args.force,
+        'lang': args.lang,
     })
 
     if not result.get('success'):
@@ -76,11 +78,15 @@ def main():
 
     if result.get('results') is not None:
         print(f"\n✅ {result.get('message')}")
+        if result.get('series_dir'):
+            print(f"   📂 系列文件夹：{result['series_dir']}")
         for r in result['results']:
-            if 'filename' in r:
-                print(f"   📄 {r.get('title', '')} → {r['filename']}")
+            if r.get('degraded'):
+                print(f"   ⚠️ 第{r.get('page', '?')}集 {r.get('part', '')}: AI 不可用，原始字幕已存 {r.get('raw')}")
+            elif 'filename' in r:
+                print(f"   📄 第{r.get('page', '?')}集 {r.get('part', '')} → {r['filename']}")
             else:
-                print(f"   ⚠️ {r.get('title', '')}: {r.get('error', '')}")
+                print(f"   ⚠️ 第{r.get('page', '?')}集 {r.get('part', '')}: {r.get('error', '')}")
         if result.get('overview'):
             print(f"   🧭 系列总览 → {result['overview']}")
         return 0

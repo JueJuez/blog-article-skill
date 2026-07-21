@@ -154,7 +154,10 @@ print(f"可用输出模块: {[o.name for o in available]}")
 
 ## 七、视频字幕抓取代理（可选）
 
-YouTube / Bilibili 字幕抓取在 WorkBuddy 沙箱内可直接运行，无需代理。仅当**在本机裸跑脚本**且网络需代理时配置：
+YouTube / Bilibili 字幕抓取在 WorkBuddy 沙箱内可直接运行，无需代理。
+
+- **本机且仅有「浏览器扩展代理」（无本地端口）**：无需任何配置。`fetch_transcript` 会先试直连 API（超时约 25s），失败后**自动用 CDP 驱动本机带代理插件的 Chrome 抓取字幕**（见 `references/youtube-cdp-workflow.md`）。这是本机 YouTube 字幕的终极解法。
+- **本机且开了 Clash 等系统代理（有可复用端口）**：可设 `YT_PROXY` 让底层请求走代理。
 
 ```env
 YT_PROXY=http://127.0.0.1:7890   # 本地代理端口（如 Clash 系统代理开启后）
