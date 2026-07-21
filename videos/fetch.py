@@ -525,14 +525,14 @@ def _bili_fetch_page_subtitle(aid: int, cid: int, lang: str = "zh") -> Optional[
     return _bili_download_subtitle_body(sub_url)
 
 
-def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> Optional[Tuple[str, List[Dict]]]:
+def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> Optional[Tuple[str, List[Dict], str]]:
     """获取 Bilibili 单集（指定分P）字幕。
 
     支持：
     - 多P 视频：URL 带 ?p=N 或传 page=N 抓指定分P，否则默认首P
     - 原生 API 链路优先，yt-dlp 兜底
 
-    Returns: (title, segments) 或 None
+    Returns: (title, segments, author) 或 None
     """
     bvid = _bili_extract_bvid(url)
     if not bvid:
@@ -559,13 +559,13 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
     if target is None and pages:
         target = pages[0]
     cid = target["cid"] if target else info["cid"]
-    if target and target.get("part"):
+    if target and target.get("part") and target["part"] != title:
         title = f"{title} - {target['part']}"
 
     segs = _bili_fetch_page_subtitle(aid, cid, lang)
     if segs:
         print(f"   OK Bilibili 字幕获取成功（{len(segs)} 条，API 原生链路）")
-        return (title, segs)
+        return (title, segs, info.get("author", ""))
     else:
         print("   WARN 该分P无 AI 字幕，尝试 yt-dlp 兜底")
 
@@ -618,7 +618,7 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
                 print("   FAIL Bilibili 字幕解析后为空")
                 return None
             print(f"   OK Bilibili 字幕获取成功（{len(segs2)} 条，yt-dlp 兜底）")
-            return (title2, segs2)
+            return (title2, segs2, info.get("author", ""))
     except Exception as e:
         print(f"   FAIL Bilibili yt-dlp 兜底也失败: {e}")
         return None
@@ -721,10 +721,17 @@ def fetch_bilibili_series(url: str, lang: str = "zh") -> Optional[Dict]:
 # 统一入口 + playlist
 # ---------------------------------------------------------------------------
 
-def fetch_transcript(url: str) -> Optional[Tuple[str, List[Dict]]]:
-    """根据 URL 自动分发到对应平台字幕获取。"""
+def fetch_transcript(url: str) -> Optional[Tuple[str, List[Dict], str]]:
+    """根据 URL 自动分发到对应平台字幕获取。
+
+    Returns: (title, segments, author) 或 None
+    """
     if is_youtube(url):
-        return fetch_youtube_transcript(url)
+        r = fetch_youtube_transcript(url)
+        if r is None:
+            return None
+        t, s = r
+        return (t, s, "")
     if is_bilibili(url):
         return fetch_bilibili_transcript(url)
     print("❌ 暂不支持该平台链接（仅支持 YouTube / Bilibili；其他平台请本地文件 → ASR）")

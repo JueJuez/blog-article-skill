@@ -345,6 +345,14 @@ def _generate_series_overview(series_title: str, series_dir: str, url: str) -> s
         )
         lp_input = "\n".join(f"第{r[0]:02d}集 {r[1]} —— {r[2]}" for r in rows)
         learning_path_md = _ai_summarize(lp_prompt, lp_input) or ""
+        # 无 AI 时朴素降级：按发布顺序建议，保证「学习路径」段始终存在（不破总览结构）
+        if not learning_path_md and len(rows) > 1:
+            chain = " → ".join(f"第{r[0]:02d}集 {r[1]}" for r in rows)
+            learning_path_md = (
+                "（无 AI 生成路径，按发布顺序的朴素建议）\n"
+                f"建议从「第{rows[0][0]:02d}集 {rows[0][1]}」开始，依次：{chain}。"
+                "若某集正文标注了先修/依赖，请优先补齐前置集再进入后续。"
+            )
 
     content = _render_series_overview(series_title, url, rows, learning_path_md=learning_path_md)
 
@@ -522,7 +530,7 @@ def _handle_single_video(url: str, input_data: dict, suppress: bool = False):
             "message": "该视频无可用字幕（已尝试原生 API 与 yt-dlp 兜底均失败，可能为限流或确实无字幕）。"
                        "可稍后重试，或粘贴字幕文本 / 本地文件 → ASR 处理。",
         }
-    title, segments = result
+    title, segments, fetched_author = result
     if not segments:
         return {
             "success": False,
@@ -534,6 +542,9 @@ def _handle_single_video(url: str, input_data: dict, suppress: bool = False):
     if input_data.get("multimodal"):
         print("   🖼️ 多模态画面理解（best-effort）...")
         visual_context = multimodal.analyze(url, note_type=input_data.get("note_type", "")) or ""
+    # 优先用字幕抓取阶段提取到的作者（单视频 B站现可透传 UP主），CLI 显式传入次之
+    author = fetched_author or input_data.get("author", "")
+    input_data = {**input_data, "author": author}
     return _finalize_single(title, segments, url, input_data, visual_context=visual_context)
 
 
