@@ -63,6 +63,17 @@
   - 任一云端缺失 → 检查该输出 `is_available()`（路径/授权），缺失是配置问题不是代码问题，补配置后重跑 `save_*` 即可；**不要手动写 `notes/`、也不要改总结内容**。
 - **单端失败不影响其他端**：每个输出写入都是独立 try（非致命），某端暂时不可用（如飞书 CLI 掉线）只告警、不中断其他端；恢复后重跑保存即可补齐。
 
+### 3.1 待归类收件箱约定（强制 · 新笔记落点）
+
+> **用户偏好**：新总结先统一进「待归类」，用户后续手动拖到分类，避免长列表一眼看不到、难管理。Obsidian 与飞书两侧结构对称。
+
+- **单篇新笔记（文件名不含 `/`）默认落「待归类」**：
+  - **Obsidian**：`articles/obsidian.py` 把无子目录的 filename 落 `<vault>/待归类/<filename>`（`OBSIDIAN_INBOX = "待归类"`），`get_output_path` 同步（去重检测不错位）。
+  - **飞书**：`articles/feishu.py` 的 `ensure_inbox_node()` 在父节点下确保存在「待归类」容器节点；单篇 `save` / `save_async` 无显式 `parent_token` 时默认落此节点。
+  - **系列课例外**：自带 `系列名/` 子目录（Obsidian）或走 `save_series` 显式传父节点（飞书），**不进待归类**，保持系列容器结构。
+- **Obsidian 分类文件夹 ↔ 飞书分类节点一一对应**（用户在「AI 总结笔记」下手动维护）：`待归类` + `01_独立开发` / `02_流量变现` / `03_AI提效` / `04_流量获取` / `05_投资交易` / `06_认知成长` / `07_内容创作`，外加 `千刀千法` 系列容器。
+- **历史补平（保持双端对称）**：当 Obsidian 有而飞书缺的笔记，按其在 Obsidian 所属分类**直接补到飞书对应分类节点（不是待归类，因为已分类）**；补前先查重避免重复节点，**串行**保存避免飞书并发重复。
+
 ### 路线 A：文章总结（`articles/`）
 - **入口**：`articles/run.py --url/--content/--batch`；或直接 `from articles import skill_main; skill_main({...})`。
 - **流程**：抓取 `articles.fetch.fetch_web_content` → 去重 `articles.dedup` → 自动分类 `prompts.classify.classify_note_type` → AI 总结 `articles.main.summarize_content` → 多端保存 `articles.manager.OutputManager.save_all`（**遍历所有可用输出（Obsidian + 飞书；本地 `notes/` 仅在两者都未配时兜底），详见 §3.0 双写契约**）。

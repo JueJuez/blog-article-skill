@@ -97,6 +97,58 @@ class FeishuOutput(BaseOutput):
             return ["--parent-token", self.wiki_parent_node]
         return ["--wiki-space", self.wiki_space]
 
+    _inbox_node_cache: dict = {}
+
+    def ensure_inbox_node(self) -> str:
+        """确保「待归类」收件箱节点存在于父节点下，返回其 node_token（已存在则复用）。
+
+        与 ensure_series_node 同理：单篇总结默认落此节点，用户后续手动拖到分类节点。
+        """
+        if not self.is_available():
+            return ""
+        parent = self.wiki_parent_node
+        space = self.wiki_space
+        cache_key = f"{space}|{parent}|待归类"
+        if cache_key in FeishuOutput._inbox_node_cache:
+            return FeishuOutput._inbox_node_cache[cache_key]
+        # 1) 查已有子节点
+        try:
+            listing = self._run_cli_command([
+                "wiki", "+node-list",
+                "--parent-node-token", parent,
+                "--space-id", space,
+                "--as", "user", "--json", "--page-all"
+            ])
+            if listing and listing.get("ok"):
+                for item in listing.get("data", {}).get("nodes", []):
+                    if item.get("title") == "待归类":
+                        tok = item.get("node_token", "")
+                        FeishuOutput._inbox_node_cache[cache_key] = tok
+                        return tok
+        except Exception:
+            pass
+        # 2) 不存在则创建（docx 节点作容器，与系列课容器一致）
+        try:
+            result = self._run_cli_command([
+                "wiki", "+node-create",
+                "--title", "待归类",
+                "--node-type", "origin",
+                "--obj-type", "docx",
+                "--parent-node-token", parent,
+                "--space-id", space,
+                "--as", "user", "--json"
+            ])
+            if result and result.get("ok"):
+                node = result.get("data", {})
+                tok = node.get("node_token") or (node.get("node", {}) or {}).get("node_token")
+                if tok:
+                    print(f"   📥 已建飞书收件箱节点「待归类」：{tok}")
+                    FeishuOutput._inbox_node_cache[cache_key] = tok
+                    return tok
+        except Exception as e:
+            print(f"   ⚠️ 建飞书收件箱节点异常：{e}")
+        return ""
+
     def ensure_series_node(self, series_title: str) -> str:
         """确保「系列名」容器节点存在于父节点下，返回其 node_token（已存在则复用）。
 
@@ -163,6 +215,10 @@ class FeishuOutput(BaseOutput):
         if not self.is_available():
             return False
 
+        # 单篇总结默认进「待归类」收件箱（用户手动归类）；系列课走 save_series 显式传 parent_token
+        if not parent_token:
+            parent_token = self.ensure_inbox_node()
+
         print("正在上传到飞书知识库...")
 
         title = os.path.splitext(filename)[0]
@@ -202,6 +258,10 @@ class FeishuOutput(BaseOutput):
     async def save_async(self, content: str, filename: str, parent_token: str = None) -> bool:
         if not self.is_available():
             return False
+
+        # 单篇总结默认进「待归类」收件箱；系列课走 save_series 显式传 parent_token
+        if not parent_token:
+            parent_token = self.ensure_inbox_node()
 
         print("正在上传到飞书知识库（异步）...")
 
