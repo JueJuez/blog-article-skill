@@ -544,8 +544,18 @@ UNIVERSAL_RULES = """# 通用强化规范（适用于一切笔记类型，最高
 - **深度自检**：脱离原文后读者能否看懂来龙去脉？每个结论是否都有支撑？有没有任何一句可以删掉而不损失信息？三者全过才合格。
 - **一本正经胡说禁止**：任何推断 / 补全必须标注「（笔记者推断）」或「【补充】」，未标注即视为把编造当事实，违规。"""
 
+# 思维模型自检（提质闭环·强制）：确保「按需深挖」真发生，不破去水分红线
+THINKING_SELFCHECK = """## 十、思维模型自检（提质闭环 · 强制）
+
+文末「延伸思考」必须显式回应本透镜清单，二选一，且必须写明：
+- **套用了**：至少对清单中 1 个适用模型产出了『不同的点』（不同角度的洞察），并标注用的是哪个模型；
+- **全不适用**：写明「思维模型自检：N 个模型逐条过，均不适用，原因：<一句话>」。
+
+禁止的情况：① 只字不提思维模型清单；② 为凑「套了」而生硬给每个模型各写一句废话（无真实洞察即按『不适用』处理）。
+此自检只用于确认「按需深挖」真发生——无洞察可挖的条就跳过，但『跳过』本身必须被说明，不得默认蒙混。"""
+
 # 第九节：思维模型透镜（有序 LIST · 按需触发）
-UNIVERSAL_RULES = UNIVERSAL_RULES + "\n\n## 九、思维模型透镜（有序 LIST · 按需触发）\n\n" + THINKING_LENS
+UNIVERSAL_RULES = UNIVERSAL_RULES + "\n\n## 九、思维模型透镜（有序 LIST · 按需触发）\n\n" + THINKING_LENS + "\n\n" + THINKING_SELFCHECK
 
 # 让要点提炼 / 案例拆解 / 观点卡 三个轻模板，补齐 structured 才有的通用规范
 KEY_POINTS_PROMPT = KEY_POINTS_PROMPT + "\n\n---\n\n" + UNIVERSAL_RULES
@@ -553,7 +563,7 @@ CASE_PROMPT = CASE_PROMPT + "\n\n---\n\n" + UNIVERSAL_RULES
 OPINION_PROMPT = OPINION_PROMPT + "\n\n---\n\n" + UNIVERSAL_RULES
 
 # structured 不走轻模板拼接路径，这里内联等价规则，保证 4 模板全覆盖思维模型透镜
-CONTENT_SUMMARY_PROMPT = CONTENT_SUMMARY_PROMPT + "\n\n# 十四、思维模型透镜（有序 LIST · 按需触发）\n\n" + THINKING_LENS
+CONTENT_SUMMARY_PROMPT = CONTENT_SUMMARY_PROMPT + "\n\n# 十四、思维模型透镜（有序 LIST · 按需触发）\n\n" + THINKING_LENS + "\n\n# 十五、思维模型自检（提质闭环 · 强制）\n\n" + THINKING_SELFCHECK
 
 # 访谈 / 盘点 / 读书 三个新模板：与 key_points/case/opinion 同路径，拼 UNIVERSAL_RULES（含第九节思维模型透镜）
 INTERVIEW_PROMPT = INTERVIEW_PROMPT + "\n\n---\n\n" + UNIVERSAL_RULES

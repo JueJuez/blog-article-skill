@@ -15,7 +15,6 @@
 
 import os
 import sys
-import types
 
 # 必须在导入业务模块前设定 Provider，使 MockProvider 可用
 os.environ["AI_PROVIDER"] = "mock"
@@ -255,22 +254,18 @@ def test_videos_p1_transcript(stub_output):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def fake_youtube(monkeypatch):
-    fake = types.ModuleType("youtube_transcript_api")
-
-    class YT:
-        @staticmethod
-        def get_transcript(vid, languages=None):
-            return [{"text": "第一段内容 关于AI", "start": 0.0, "duration": 3.0},
-                    {"text": "第二段内容 关于变现", "start": 3.0, "duration": 3.0}] * 15
-
-    fake.YouTubeTranscriptApi = YT
-    monkeypatch.setitem(sys.modules, "youtube_transcript_api", fake)
-    monkeypatch.setattr(vf, "_yt_title", lambda url: "YouTube测试标题")
+def fake_transcript(monkeypatch):
+    """在边界 fetch_transcript 上 mock 返回假字幕，彻底离线（不拉真 Chrome / 不碰网络）。"""
+    def _fake(url, lang="zh", page=None):
+        return ("YouTube测试标题", [
+            {"text": "第一段内容 关于AI", "start": 0.0, "duration": 3.0},
+            {"text": "第二段内容 关于变现", "start": 3.0, "duration": 3.0},
+        ] * 15, "")
+    monkeypatch.setattr(vf, "fetch_transcript", _fake)
     yield
 
 
-def test_videos_p21_youtube(fake_youtube, stub_output):
+def test_videos_p21_youtube(fake_transcript, stub_output):
     res = vm.summarize_video({
         "url": "https://www.youtube.com/watch?v=abcdEFGhijK",
         "note_type": "key_points",
@@ -293,6 +288,7 @@ def test_videos_p23_playlist(monkeypatch, stub_output):
         "测试标题",
         [{"text": "片段A " * 40, "start": 0.0, "duration": 60.0},
          {"text": "片段B " * 40, "start": 60.0, "duration": 60.0}],
+        "",
     ))
     res = vm.summarize_video({
         "url": "https://www.youtube.com/playlist?list=PLxyz",
@@ -327,7 +323,7 @@ def test_videos_p3_asr_no_whisper(monkeypatch):
 # 视频：P4 多模态（无 Gemini 优雅跳过；下载被 mock 为 None）
 # ---------------------------------------------------------------------------
 
-def test_videos_p4_multimodal_graceful(monkeypatch, fake_youtube, stub_output):
+def test_videos_p4_multimodal_graceful(monkeypatch, fake_transcript, stub_output):
     # 避免真实下载卡 60s
     monkeypatch.setattr(mm, "_download_for_multimodal", lambda url, timeout=60: None)
     res = vm.summarize_video({
