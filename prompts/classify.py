@@ -28,6 +28,10 @@ STRUCTURED_KEYWORDS = [
     "复盘", "拆解", "保姆", "手把手", "入门", "进阶",
 ]
 
+# 教学/教程类超信号：命中即判 structured，优先级高于 KEY_POINTS 的"视频"匹配。
+# 解决「教学视频」被误判为口播要点（key_points）的问题（见 DECISION-20260721-note-quality）。
+TUTORIAL_SUPER_SIGNALS = ["手把手", "保姆", "实操", "从零", "教程", "课程", "step by step"]
+
 
 def classify_note_type(title: str = "", content: str = "") -> str:
     """根据标题与正文开头，自动判定笔记类型。
@@ -40,6 +44,10 @@ def classify_note_type(title: str = "", content: str = "") -> str:
         "key_points" / "opinion" / "case" / "structured"
     """
     text = f"{title}\n{(content or '')[:800]}".lower()
+    # 教学超信号优先：教学/教程类视频（手把手/保姆/实操/从零/教程/课程）应走
+    # structured（方法论复盘），而非被 KEY_POINTS 的"视频"误判为口播要点。
+    if any(kw.lower() in text for kw in TUTORIAL_SUPER_SIGNALS):
+        return "structured"
     for kw in KEY_POINTS_KEYWORDS:
         if kw.lower() in text:
             return "key_points"

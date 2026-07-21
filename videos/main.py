@@ -260,6 +260,35 @@ def _read_series_from_feishu(series_title: str) -> list:
     return rows
 
 
+def _render_series_overview(series_title: str, url: str, rows: list, learning_path_md: str = "") -> str:
+    """纯渲染：把各集 rows + 学习路径段拼成总览 markdown（不读盘、不写盘）。
+
+    rows: [(page, title, one_liner, note_link), ...]
+    learning_path_md: AI 生成的「建议顺序 + 先修说明」段（空则省略该段）。
+    """
+    lines = [
+        f"# {series_title} · 系列总览",
+        "",
+        f"> 系列链接：{url}",
+        f"> 共 {len(rows)} 集（每集独立成篇，详见下方链接）",
+        "",
+        "## 各集导航",
+        "",
+        "| 集 | 标题 | 一句话核心结论 | 笔记 |",
+        "| --- | --- | --- | --- |",
+    ]
+    for page, title, one, note_link in rows:
+        lines.append(f"| 第{page:02d}集 | {title} | {one} | {note_link} |")
+    lines += ["", "---", ""]
+    if learning_path_md:
+        lines += ["## 学习路径", "", learning_path_md, "", "---", ""]
+    lines += [
+        "*本总览由 blog-article-skill 自动生成，系列课每集总结后更新。*",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def _generate_series_overview(series_title: str, series_dir: str, url: str) -> str:
     """系列课总览大纲：抽取各集 标题 + 一句话核心结论，生成 00_系列总览.md。
 
@@ -303,27 +332,21 @@ def _generate_series_overview(series_title: str, series_dir: str, url: str) -> s
             return None
     rows.sort(key=lambda r: r[0])
 
-    lines = [
-        f"# {series_title} · 系列总览",
-        "",
-        f"> 系列链接：{url}",
-        f"> 共 {len(rows)} 集（每集独立成篇，详见下方链接）",
-        "",
-        "## 各集导航",
-        "",
-        "| 集 | 标题 | 一句话核心结论 | 笔记 |",
-        "| --- | --- | --- | --- |",
-    ]
-    for page, title, one, note_link in rows:
-        lines.append(f"| 第{page:02d}集 | {title} | {one} | {note_link} |")
-    lines += [
-        "",
-        "---",
-        "",
-        "*本总览由 blog-article-skill 自动生成，系列课每集总结后更新。*",
-        "",
-    ]
-    content = "\n".join(lines)
+    # 生成「学习路径」段（建议顺序 + 先修说明），基于各集标题+一句话结论
+    learning_path_md = ""
+    if rows:
+        lp_prompt = (
+            "你正在为一套系列课/合集生成「学习路径」说明。"
+            "综合以下各集标题与一句话核心结论，输出一段中文 markdown（不要任何标题、不要代码块）："
+            "① 建议学习顺序（若与发布顺序不同请指出并说明理由）；"
+            "② 先修/依赖（哪些集是后续集的基础，必须前置）；"
+            "③ 一句话课程脉络（这条线到底在讲什么）。"
+            "保持精炼、可操作；不要复述各集结论。"
+        )
+        lp_input = "\n".join(f"第{r[0]:02d}集 {r[1]} —— {r[2]}" for r in rows)
+        learning_path_md = _ai_summarize(lp_prompt, lp_input) or ""
+
+    content = _render_series_overview(series_title, url, rows, learning_path_md=learning_path_md)
 
     overview_name = "00_系列总览.md"
     # 有云同步则不写本地 notes/（用户偏好）
@@ -492,8 +515,15 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
 def _handle_single_video(url: str, input_data: dict, suppress: bool = False):
     if not suppress:
         print(f"\n📺 获取视频字幕: {url}")
-    title, segments = fetch.fetch_transcript(url)
-    if segments is None:
+    result = fetch.fetch_transcript(url)
+    if result is None:
+        return {
+            "success": False,
+            "message": "该视频无可用字幕（已尝试原生 API 与 yt-dlp 兜底均失败，可能为限流或确实无字幕）。"
+                       "可稍后重试，或粘贴字幕文本 / 本地文件 → ASR 处理。",
+        }
+    title, segments = result
+    if not segments:
         return {
             "success": False,
             "message": "该视频无 CC 字幕。PRD 建议：本地文件 → ASR 兜底，或粘贴字幕文本。"

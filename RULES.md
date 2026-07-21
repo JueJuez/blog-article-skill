@@ -85,8 +85,8 @@
 - **输入优先级**：YouTube/Bilibili 单视频 → 自动抓 CC 字幕；playlist/合集/系列课 → 逐条总结 + **必生成系列总览大纲**；本地文件 → ASR；直接给字幕文本 → 直接总结。
 - **流程**：获取字幕 `videos.fetch.fetch_transcript`（**自动 API→CDP 回退**）→ 分块两段式 `videos.main` + `shared.chunking`（防超长爆上下文）→ AI 总结 → 复用 `articles` 保存。
 - **YouTube 在本机无出口时**：走 CDP 全自动（驱动带代理插件的 Chrome 副本）→ 详见 **`references/youtube-cdp-workflow.md`**（换会话照此执行，AI 只需跑 `videos/run.py --url <youtube>`）。
-- **公共机制**：笔记类型 `prompts/templates.py` 的 `NOTE_TEMPLATES`（structured / key_points / case / opinion）；新增类型只改这一处。AI 调用优先级：外部 Provider → WorkBuddy 内置 AI → 降级。
-- **系列课必生成总览大纲（规则，非开关）**：B站 `ugc_season` 系列课 / 多P 视频处理完成后，`videos.main._generate_series_overview` 自动扫描系列文件夹，抽取每集标题 + `一句话核心结论`，生成 `00_系列总览.md`（**Obsidian + 飞书 双写，本地仅兜底**，详见 §3.0 双写契约），含「各集导航」表（集号 / 标题 / 一句话核心结论 / 笔记相对链接）。无需 `--overview` 开关即生效；该总览在每集总结后刷新，待总结的 raw 集在表中标「（待总结）」。飞书下总览与各集都挂在「系列名」容器节点内，与 Obsidian 的 `系列名/` 文件夹一一对齐。
+- **公共机制**：笔记类型 `prompts/templates.py` 的 `NOTE_TEMPLATES`（structured / key_points / case / opinion）；新增类型只改这一处。分类详见 `prompts/classify.py`：教学/教程类视频（手把手/保姆/实操/从零/教程/课程）经「教学超信号」优先判 `structured`，避免被 `视频` 误判为口播要点（key_points）。**思维模型透镜（提质·按需）**：全部 4 模板共用 `UNIVERSAL_RULES` 第九节（structured 内联第十四节），6 模型按序 LIST（第一性原理→5-Why冰山→二阶思维→脉络还原→奥卡姆剃刀→类比迁移）逐条过、不适用跳过，直接服务「质量高、上下文清晰」且不破去水分红线。AI 调用优先级：外部 Provider → WorkBuddy 内置 AI → 降级。
+- **系列课必生成总览大纲（规则，非开关）**：B站 `ugc_season` 系列课 / 多P 视频处理完成后，`videos.main._generate_series_overview` 自动扫描系列文件夹，抽取每集标题 + `一句话核心结论`，并用 AI 生成「学习路径」段（建议顺序 + 先修说明），生成 `00_系列总览.md`（**Obsidian + 飞书 双写，本地仅兜底**，详见 §3.0 双写契约），含「各集导航」表（集号 / 标题 / 一句话核心结论 / 笔记相对链接）与「学习路径」段。无需 `--overview` 开关即生效；该总览在每集总结后刷新，待总结的 raw 集在表中标「（待总结）」。飞书下总览与各集都挂在「系列名」容器节点内，与 Obsidian 的 `系列名/` 文件夹一一对齐。
 
 ---
 
