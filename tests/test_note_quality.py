@@ -95,6 +95,39 @@ def test_reading_routes_to_reading():
     assert classify_note_type("拆书稿：这本书讲透了复利") == "reading"
 
 
+def test_reading_book_title_heuristic():
+    """书名号《》强信号 → reading（标题无「读书/书评」词也能识别，如《当下的力量》）。"""
+    assert classify_note_type("《当下的力量》——你是来享受生命的，而不是来演绎完美的。") == "reading"
+
+
+def test_roundup_bang_keyword():
+    """「榜/榜单/红黑榜」等横评信号 → roundup（标题无「测评」也能识别，如「零食夯榜」）。"""
+    assert classify_note_type("无广！砸2800元试遍全网零食，半年筛出的高吃商零食夯榜！") == "roundup"
+    assert classify_note_type("2024 年度效率工具红黑榜") == "roundup"
+
+
+def test_interview_content_level_without_title_cue():
+    """内容级访谈识别：标题无「访谈/对话」词，但正文是主持人向特定嘉宾的人生探针 → interview。
+    回归 2026-07-21 实战：真实链接「95后女老板Judy」标题无 cue，靠内容级命中。"""
+    title = "95后女老板Judy的创业故事"
+    content = (
+        "你好像都是很知道自己想要什么\n"
+        "你当时是怎么决定休学创业的\n"
+        "你后来卖掉公司的时候\n"
+        "你选择创业这条路我觉得很酷"
+    )
+    assert classify_note_type(title, content) == "interview"
+
+
+def test_video_keyword_no_longer_forces_key_points():
+    """回归：「视频」已从 KEY_POINTS 移除（URL 本身即载体，不该当类型信号）。
+    仅含「视频」而无其他 cue 的，不再被抢成 key_points。"""
+    # 教学类视频 → structured（教学超信号拦截，而非被「视频」抢成口播）
+    assert classify_note_type("从零搭建个人笔记系统 视频") == "structured"
+    # 纯「视频」无其它 cue → 落入默认兜底 structured（不再误归 key_points）
+    assert classify_note_type("某产品发布视频", "") == "structured"
+
+
 # --------------------------------------------------------------------------
 # 系列课地图：学习路径段
 # --------------------------------------------------------------------------

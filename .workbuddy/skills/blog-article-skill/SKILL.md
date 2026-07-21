@@ -207,7 +207,7 @@ if result.get('need_continue_summary'):
 | `case` | 案例拆解笔记 | 案例/复盘/产品拆解/实战记录 | 背景→决策→结果→可复用经验 |
 | `opinion` | 观点卡 | 评论/随笔/立场文/辩论/行业观点 | 核心立场+论据+正反双方+我的立场 |
 
-- **自动分类**：调用时不传 `note_type`，技能按 `prompts/classify_note_type(title, content)` 自动判定。优先级：教学超信号(structured) > 访谈(interview) > 要点(key_points) > 盘点(roundup) > 读书(reading) > 观点(opinion) > 案例(case) > structured 兜底。其中教学/教程类视频（手把手/保姆/实操/从零/教程/课程）经「教学超信号」优先判 `structured`，不再被 `视频` 误判为口播要点；访谈（访谈/对谈/专访/Q&A）已独立成 `interview` 类（不再误判为口播要点）。
+- **自动分类**：调用时不传 `note_type`，技能按 `prompts/classify_note_type(title, content)` 自动判定。优先级：教学超信号(structured) > 访谈(interview) > 要点(key_points) > 盘点(roundup) > 读书(reading) > 观点(opinion) > 案例(case) > structured 兜底。关键规则：① 教学/教程类视频（手把手/保姆/实操/从零/教程/课程）经「教学超信号」优先判 `structured`；② 访谈（访谈/对谈/专访/Q&A）已独立成 `interview` 类；③ **内容级访谈兜底**：标题无 cue 时（如「95后女老板Judy」式创业对谈）用正文前 2500 字做「主持人向特定嘉宾的人生/状态探针（你当时/你后来/你是怎么/你创业…）且观众独白口吻不占主导」判别；④ **读书** 额外认《》书名号、**盘点** 额外认「榜/榜单/红黑榜/种草/闭眼入/抄作业/排行」；⑤ **`视频` 已从要点词移除**——URL 即载体，不当类型信号（否则字幕里「这个视频」会把盘点/访谈抢成口播要点）。
 - **思维模型透镜（提质·按需）**：全部 7 模板共用 `UNIVERSAL_RULES` 第九节（structured 内联第十四节），6 模型按序 LIST（第一性原理→5-Why冰山→二阶思维→脉络还原→奥卡姆剃刀→类比迁移）逐条过、不适用跳过，直接服务「质量高、上下文清晰」且不破去水分红线。
 - **手动指定**：传 `note_type` 覆盖自动判定。
 - **扩展**：新增笔记类型只需在 `prompts/templates.py` 的 `NOTE_TEMPLATES` 里加一项，无需改其他代码。
