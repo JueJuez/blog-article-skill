@@ -235,10 +235,27 @@ def test_parse_quality_gate_fallback_regex():
 
 
 def test_should_gate_retry_logic():
-    """should_gate_retry：未达标（score<阈值）才 True；达标/无闸门数据则 False。"""
-    assert should_gate_retry({"score": 70, "passed": False, "issues": ["x"]}) is True
-    assert should_gate_retry({"score": 92, "passed": True, "issues": []}) is False
-    assert should_gate_retry(None) is False
+    """should_gate_retry：闸门开启时，未达标（score<阈值）才 True；达标/无闸门数据则 False。"""
+    import prompts.templates as _t
+    orig = _t.QUALITY_GATE_ENABLED
+    try:
+        _t.QUALITY_GATE_ENABLED = True  # 逻辑测试与默认开关解耦
+        assert _t.should_gate_retry({"score": 70, "passed": False, "issues": ["x"]}) is True
+        assert _t.should_gate_retry({"score": 92, "passed": True, "issues": []}) is False
+        assert _t.should_gate_retry(None) is False
+    finally:
+        _t.QUALITY_GATE_ENABLED = orig
+
+
+def test_quality_gate_default_off():
+    """决策(2026-07-21)：质量闸门默认关闭（NOTE_QUALITY_GATE=1 才开），闸门关时不触发重试。"""
+    import prompts.templates as _t
+    orig = _t.QUALITY_GATE_ENABLED
+    try:
+        _t.QUALITY_GATE_ENABLED = False
+        assert _t.should_gate_retry({"score": 10, "passed": False, "issues": ["x"]}) is False
+    finally:
+        _t.QUALITY_GATE_ENABLED = orig
 
 
 def test_build_gate_critique():

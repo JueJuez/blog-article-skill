@@ -15,6 +15,7 @@
 import os
 import re
 import json
+from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # 结构化复盘笔记（学习 / 课程 / 教程 / 方法论）
@@ -643,7 +644,7 @@ def list_note_types():
     ]
 
 
-def format_note_with_prompt(content: str, author: str = "", url: str = "", tags: list = None, add_metadata: bool = True) -> str:
+def format_note_with_prompt(content: str, author: str = "", url: str = "", tags: list = None, add_metadata: bool = True, publish_time: int = 0) -> str:
     """格式化笔记内容
 
     Args:
@@ -652,6 +653,7 @@ def format_note_with_prompt(content: str, author: str = "", url: str = "", tags:
         url: 原文链接
         tags: 标签列表
         add_metadata: 是否添加元数据（标签、作者、链接）
+        publish_time: 内容原始发布时间（epoch 秒）；>0 时在元信息追加「发布时间」
 
     Returns:
         格式化后的笔记内容
@@ -678,6 +680,11 @@ def format_note_with_prompt(content: str, author: str = "", url: str = "", tags:
             formatted += f"**作者**：{author_display} | **来源链接**：[原文链接]({url})\n\n"
         else:
             formatted += f"**作者**：{author_display} | **来源链接**：【无来源链接】\n\n"
+
+        # 内容原始发布时间（若提供）：让笔记记录「内容何时发的」，而非仅记录我们处理时间
+        if publish_time and publish_time > 0:
+            pub_date = datetime.fromtimestamp(publish_time).strftime("%Y-%m-%d %H:%M")
+            formatted += f"**发布时间**：{pub_date}\n\n"
 
         formatted += content
     else:
@@ -725,8 +732,8 @@ def normalize_note_metadata(md: str) -> str:
 # ---------------------------------------------------------------------------
 # A：质量闸门（second-pass verifier · 最大提质杠杆）
 # ---------------------------------------------------------------------------
-# 开关：置 NOTE_QUALITY_GATE=0 关闭（省一轮 AI 调用）；默认开启。
-QUALITY_GATE_ENABLED = os.environ.get("NOTE_QUALITY_GATE", "1") != "0"
+# 开关：默认关闭（省一轮 AI 调用）；置 NOTE_QUALITY_GATE=1 可随时开启。
+QUALITY_GATE_ENABLED = os.environ.get("NOTE_QUALITY_GATE", "0") == "1"
 # 评分阈值：低于此分视为不达标，触发带反馈重试一次。
 GATE_THRESHOLD = int(os.environ.get("NOTE_GATE_THRESHOLD", "85"))
 

@@ -5,6 +5,16 @@ venv/
 .trae/
 .env
 notes/
+monitors/state.json
+monitors/.wechat_auth.json
+monitors/.login_qr.png
+monitors/.login_uuid.json
+monitors/subscriptions.json
+monitors/login_qr*.svg
+monitors/login_qr*.png
+monitors/_test_state.json
+stderr.log
+stdout.log
 .cache/
 .pytest_cache/
 .workbuddy/

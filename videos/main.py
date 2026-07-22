@@ -110,7 +110,8 @@ def _summarize_segments(segments, note_type: str, title: str = "", visual_contex
 
 
 def _summarize_and_save(segments, source_url: str, title: str, author: str,
-                        tags: list, note_type: str, force: bool, visual_context: str = ""):
+                        tags: list, note_type: str, force: bool, visual_context: str = "",
+                        publish_time: int = 0):
     """总结并保存；返回 (filename, final_text, degraded, article_content, note_type)。"""
     if not note_type:
         sample = (segments_to_text(segments)
@@ -129,7 +130,8 @@ def _summarize_and_save(segments, source_url: str, title: str, author: str,
     save_tags = list(tags) if tags else [label]
     formatted, filename = save_summarized_article(
         final, original_url=source_url, author=author,
-        tags=save_tags, original_title=title or "视频总结", note_type=note_type
+        tags=save_tags, original_title=title or "视频总结", note_type=note_type,
+        publish_time=publish_time
     )
     return (filename, final, False, None, note_type)
 
@@ -591,9 +593,11 @@ def _finalize_single(title, segments, url, input_data, visual_context: str = "")
     tags = input_data.get("tags", []) or []
     note_type = input_data.get("note_type", "")
     force = input_data.get("force", False)
+    publish_time = input_data.get("publish_time", 0)
 
     filename, final_text, degraded, article_content, note_type = _summarize_and_save(
-        segments, url, title, author, tags, note_type, force, visual_context=visual_context
+        segments, url, title, author, tags, note_type, force,
+        visual_context=visual_context, publish_time=publish_time
     )
 
     if degraded:

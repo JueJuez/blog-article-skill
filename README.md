@@ -74,6 +74,10 @@ OPENAI_API_KEY=sk-xxxx
 
 # 视频字幕抓取代理（可选）：仅本机裸跑且需代理时设置，脚本自动映射到 HTTP(S)_PROXY
 # YT_PROXY=http://127.0.0.1:7890
+
+# 质量闸门（可选 · 默认关闭）：总结后由 AI 二次把关，低于阈值重试一次；省一轮调用故默认关
+# NOTE_QUALITY_GATE=1
+# NOTE_GATE_THRESHOLD=85
 ```
 
 ### 使用示例

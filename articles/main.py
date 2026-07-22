@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import asyncio
 from datetime import datetime
 from .fetch import fetch_web_content  # A1: 增强抓取层
@@ -113,12 +114,16 @@ def extract_article_title(content: str) -> str:
     return "文章总结"
 
 
-def generate_filename(title: str, url: str = "", category: str = "") -> str:
+def generate_filename(title: str, url: str = "", category: str = "", publish_time: int = 0) -> str:
     safe_title = re.sub(r'[\\/:*?"<>|\n\r]', '_', title).strip()
     if not safe_title or len(safe_title) < 2:
         timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
         return f"未命名笔记-{timestamp}.md"
-    date_str = datetime.now().strftime('%Y%m%d')
+    # 文件名日期：优先内容原始发布时间，否则处理时间
+    if publish_time and publish_time > 0:
+        date_str = datetime.fromtimestamp(publish_time).strftime('%Y%m%d')
+    else:
+        date_str = datetime.now().strftime('%Y%m%d')
     if category:
         safe_category = re.sub(r'[\\/:*?"<>|\n\r]', '_', category).strip()
         filename = f"【{safe_category}】{safe_title[:50]}-{date_str}.md"
@@ -182,26 +187,50 @@ def _yaml_frontmatter(meta: dict) -> str:
     return "---\n" + "\n".join(lines) + "\n---\n\n"
 
 
-def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = ""):
+def _freshness_label(publish_time: int) -> str:
+    """按内容原始发布时间距今天数返回新鲜度标签（时效感知）。
+
+    当日(<1天)=🔥当日 / 一周内=本周 / 更早=更早。无发布时间则返回空串。
+    """
+    if not publish_time or publish_time <= 0:
+        return ""
+    age_days = (time.time() - publish_time) / 86400.0
+    if age_days < 1:
+        return "🔥当日"
+    if age_days < 7:
+        return "本周"
+    return "更早"
+
+
+def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0):
     """保存已总结的文章内容到所有可用目标。
 
     Args:
         meta: A4 增强，含 {'usage': {...}, 'model': str}；存在时写入笔记 frontmatter
         note_type: 笔记类型，写入 frontmatter 便于检索
+        publish_time: 内容原始发布时间（epoch 秒）；>0 时文件名日期与 frontmatter 用发布时间，
+                      而非处理时间——投资类内容时效性强，记录「内容何时发的」才有意义。
     """
     tags = list(tags or ["文章总结"])
     if original_url and "转载" not in tags:
         tags.append("转载")
+    # 新鲜度标签（时效感知）：追加到末尾，避免它抢走「分类」（文件名用首个非跳过 tag 作分类）
+    fresh = _freshness_label(publish_time)
+    if fresh:
+        tags.append(fresh)
 
     title = original_title or _extract_title_from_summary(summarized_content) or ""
     category = ""
-    skip_categories = {"文章总结", "转载", "总结", "笔记"}
+    # 跳过「纯元信息/系统标签」——这些只作笔记内 #标签，不抢「分类」（分类决定落盘文件夹）。
+    # 含：默认标签、转载标记、短动态类、新鲜度标签（🔥当日/本周/更早），保证监控产出统一落「待归类」。
+    skip_categories = {"文章总结", "转载", "总结", "笔记",
+                       "动态速览", "短动态", "🔥当日", "本周", "更早"}
     for tag in tags:
         if tag not in skip_categories:
             category = tag
             break
 
-    filename = generate_filename(title, original_url, category)
+    filename = generate_filename(title, original_url, category, publish_time=publish_time)
 
     # 文件名冲突处理（禁止覆盖）
     manager = OutputManager()
@@ -222,18 +251,25 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
 
     formatted_note = format_note_with_prompt(
         content=summarized_content, author=author, url=original_url,
-        tags=tags, add_metadata=False
+        tags=tags, add_metadata=False, publish_time=publish_time
     )
 
-    # A4：token 用量写入 frontmatter
+    # A4：frontmatter（常驻）。新鲜度 + 发布时间用于时效感知；token 用量在走 AI 时补。
+    fm = {}
+    if original_url:
+        fm["source_url"] = original_url
+    if note_type:
+        fm["note_type"] = note_type
+    fresh = _freshness_label(publish_time)
+    if fresh:
+        fm["freshness"] = fresh
+    if publish_time and publish_time > 0:
+        fm["published_at"] = datetime.fromtimestamp(publish_time).isoformat(timespec="seconds")
     if meta and meta.get("usage"):
-        fm = {
-            "source_url": original_url or None,
-            "note_type": note_type or None,
-            "model": meta.get("model"),
-            "tokens": meta.get("usage"),
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-        }
+        fm["model"] = meta.get("model")
+        fm["tokens"] = meta.get("usage")
+        fm["generated_at"] = datetime.now().isoformat(timespec="seconds")
+    if fm:
         formatted_note = _yaml_frontmatter(fm) + formatted_note
 
     manager.save_all(formatted_note, filename)
@@ -300,8 +336,11 @@ def summarize_content(content: str, author: str = "", url: str = "", tags: list 
     }
 
 
-def summarize_and_save(url_or_content: str, author: str = "", tags: list = None, note_type: str = "", force: bool = False):
+def summarize_and_save(url_or_content: str, author: str = "", tags: list = None, note_type: str = "", force: bool = False, publish_time: int = 0):
     """完整的文章总结与自动保存流程（含 A2 去重 / A5 标签 / A4 计量）。
+
+    Args:
+        publish_time: 内容原始发布时间（epoch 秒），透传给笔记落地（记录「内容何时发的」）。
 
     Returns:
         (summarized_content, formatted_note/full_content, filename/url, title, error_msg)
@@ -385,7 +424,8 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None,
     try:
         formatted_note, filename = save_summarized_article(
             summarized_content, original_url, author, tags, original_title,
-            meta={"usage": usage, "model": model}, note_type=note_type
+            meta={"usage": usage, "model": model}, note_type=note_type,
+            publish_time=publish_time
         )
         # A2：记录去重
         dedup.mark_summarized(url=original_url, content=article_content, title=original_title, filename=filename)
@@ -404,12 +444,13 @@ def save_summary_only(input_data: dict) -> dict:
     author = input_data.get('author', '')
     tags = input_data.get('tags', [])
     original_title = input_data.get('original_title', '')
+    publish_time = input_data.get('publish_time', 0)
     if not summarized_content:
         return {'success': False, 'message': '请提供总结好的内容'}
     try:
         formatted_note, filename = save_summarized_article(
             summarized_content, original_url=original_url, author=author,
-            tags=tags, original_title=original_title
+            tags=tags, original_title=original_title, publish_time=publish_time
         )
         return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note}
     except Exception as e:
@@ -427,6 +468,7 @@ def skill_main(input_data: dict) -> dict:
     tags = input_data.get('tags', [])
     note_type = input_data.get('note_type', '')
     force = input_data.get('force', False)
+    publish_time = input_data.get('publish_time', 0)
 
     if url and not content:
         content = url
@@ -434,7 +476,7 @@ def skill_main(input_data: dict) -> dict:
         return {'success': False, 'message': '请提供文章内容或博客链接'}
 
     try:
-        result = summarize_and_save(content, author, tags, note_type=note_type, force=force)
+        result = summarize_and_save(content, author, tags, note_type=note_type, force=force, publish_time=publish_time)
         summarized, second, third, original_title, error_msg = result
 
         if error_msg:

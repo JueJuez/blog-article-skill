@@ -140,6 +140,43 @@
 - **文章链路**：`articles` 抓取/总结时同理取作者字段，调用方无需手传。
 - **唯一例外**：源元数据确实为空（真无作者信息）时，才允许标【作者未知】。
 
+### 4.6 质量保障三件套（提质 · 默认行为说明）
+
+> 目标：让笔记「质量高、上下文清晰、不破去水分红线」。三件套均在 `prompts/templates.py` 落地，由入口函数自动套用，**AI 无需手动触发**。
+
+- **A. 质量闸门（second-pass verifier）**：总结后再调一次 AI 按 6 红线打 0–100 分，低于阈值带反馈重试一次。**默认关闭**（省一轮 AI 调用）；开关见下方「去哪里开关」。无外部 AI 的降级路径走 `QUALITY_GATE_SELFCHECK` 自检段（模板 prompt 内嵌 6 红线，外层模型自核对）。
+- **B. 字幕清洗层**：`shared/subtitle_clean.py` 纯函数（`preprocess_segments`/`preprocess_text`），已在 `videos/fetch.py` 三路径（B站原生 / YouTube API+CDP / yt-dlp 兜底）自动接入；只清洗口误填充词（删独立语气词 嗯/啊/呃）、合并相邻近重、≥8 字长句去重——**不激进折叠**（保留"然后/那个"等自然语流）。
+- **C. 强制证据红线（思维模型透镜）**：全部 7 模板共用 `UNIVERSAL_RULES` 第九节（structured 内联第十四节），6 模型按序 LIST（第一性原理→5-Why冰山→二阶思维→脉络还原→奥卡姆剃刀→类比迁移）逐条过、不适用跳过；**每条适用模型须给「洞察（不同视角）+ 原文证据句（「」括起原话，禁改写）」**，禁只写"用了X 模型"；全不适用须逐条列 6 模型理由。与去水分红线兼容，不硬凑固定章节。
+- **D. 元数据归一**：`UNIVERSAL_RULES` 强制 `#标签1 #标签2` 井号格式；`normalize_note_metadata()` 把 `**标签**：xxx` 转井号，`format_note_with_prompt` 自动应用。
+- **E. 读书争议维度**：`reading` 模板含「争议与不同声音」段（作者回避点 / 学界不同声音 / 与已知冲突，标笔记者补充存疑）——**推荐、非强制**，非争议类书评不硬凑。
+
+**去哪里开关（质量闸门 A）**：
+
+在技能根目录 `.env` 设置环境变量（与 `AI_PROVIDER` 等同文件）：
+
+```env
+NOTE_QUALITY_GATE=1        # 默认 0（关）；置 1 开启第二遍 AI 把关
+NOTE_GATE_THRESHOLD=85     # 评分阈值，默认 85；低于此分触发重试
+```
+
+详见 `references/config.md` §九 与 `.env.example`。
+
+---
+
+### 4.7 运维关键坑（必记，否则重踩）
+
+> 以下是从实战踩坑提炼的「反直觉」点，文档其它处不展开，集中放这里。**新会话 / 新前端模型只要读项目，必须过这一节**，否则会在飞书 CLI 与系列课重生成上重踩。完整命令见 `references/feishu-cli.md`。
+
+- **飞书 wiki CLI 4 坑**（详见 `references/feishu-cli.md`）：
+  1. `wiki +node-list` 返回结构是 `data.nodes`（**不是** `data.items`）——遍历用 `.get("data",{}).get("nodes",[])`。
+  2. **删节点用 `--obj-type wiki`**（不是 `docx`）——`wiki +node-delete --obj-type wiki --node-token <tok>`。
+  3. **容器节点用 `--obj-type docx` 充当**（飞书 wiki 无独立 folder 类型）——建系列 / 收件箱容器时传 `--obj-type docx`、`--node-type origin`。
+  4. **测完务必清理测试节点**：`wiki +node-delete --obj-type wiki --yes`（带 `--yes` 免确认），别留垃圾节点。
+- **系列课并发 / 重生成 3 坑**：
+  1. **集级无查重 → 并发写同集会建重复节点**：多子 Agent 同时 `save_series` 写飞书会因集级没查重建重复节点；安全模式＝子 Agent 只返文本＋元数据，编排方**串行**调保存入口落盘（详见 §4.1）。
+  2. **重生成总览先删旧节点**：飞书 `save_series` 是「新建」非「更新」，若不先删旧 `00_系列总览` 节点，重生成会再建第 2 个总览。
+  3. **全集写完后务必调一次 `_generate_series_overview` 刷新**：否则总览停留旧状态、各集「（待总结）」标记过期。
+
 ---
 
 ## 5. AI 执行约定（防遗忘清单）
@@ -152,6 +189,7 @@
 - [ ] 遇到网络/代理问题 → 先查 `references/youtube-cdp-workflow.md`，不要绕去挖代理配置。
 - [ ] YouTube 字幕抓取返回 None 且页面已加载、`captionTracks` 为空 → **原样回「【此视频暂无 CC 字幕，无法为你抓取字幕总结内容。】」并停止**，不补 ASR、不改动代码（§4.4）。
 - [ ] 笔记作者栏**必须显示真实作者/UP主**；视频链路 `series.get("author","") or input_data.get("author","")` 已兜底，调用方无需手传，禁止无端输出【作者未知】（§4.5）。
+- [ ] **质量闸门（可选 · 默认关）**：要更严质检时在 `.env` 设 `NOTE_QUALITY_GATE=1`（阈值 `NOTE_GATE_THRESHOLD` 默认 85）；降级无外部 AI 时闸门自动转自检段，按 6 红线自核对，无需手动开。详见 `references/config.md` §九 与 §4.6。
 - [ ] **涉及架构级改动 / 新功能链路 / 跨多模块改动** → 先按 §6 grill_rules 拷问拉齐认知，再动手。
 
 ---

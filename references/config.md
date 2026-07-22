@@ -192,3 +192,66 @@ lark-cli auth login --status
 AI_PROVIDER=openai
 OPENAI_API_KEY=sk-xxxx
 ```
+
+## 九、质量闸门（可选开关）
+
+质量闸门是「总结后的第二遍 AI 把关」：笔记生成后，再调一次 AI 按 6 条红线（忠于原意 / 不敷衍 / 上下文清晰 / 思维模型落地 / 结构合规 / 可信度标注）打 0–100 分，低于阈值则把问题清单反馈给总结模型**重试一次**。
+
+> **默认关闭**。原因：开启会多消耗一轮 AI 调用。需要更严格质检时随时开启。
+
+### 去哪里开关
+
+在技能根目录的 **`.env`** 文件里设置环境变量（与 `AI_PROVIDER`、`OBSIDIAN_VAULT_PATH` 等同文件；模板见 `.env.example`）：
+
+| 变量 | 默认值 | 作用 |
+|------|--------|------|
+| `NOTE_QUALITY_GATE` | `0`（关） | 置 `1` 即开启质量闸门；置 `0` 或不写即关闭 |
+| `NOTE_GATE_THRESHOLD` | `85` | 评分阈值；仅开启闸门后生效，低于此分触发重试 |
+
+```env
+# 开启质量闸门
+NOTE_QUALITY_GATE=1
+# 可选：调高/调低门槛（默认 85）
+NOTE_GATE_THRESHOLD=85
+```
+
+### 行为说明
+
+- **开启（`NOTE_QUALITY_GATE=1`）**：`verify_note()` 调外部 AI Provider 审核 → 返回 `{score, passed, issues}`；`should_gate_retry()` 在 `score < NOTE_GATE_THRESHOLD` 时返回 `True`，由调用方把问题清单追加进 prompt **重试一次**。
+- **关闭（默认）**：`verify_note()` 直接返回 `None`，跳过整轮审核，不重试、不额外耗 token。
+- **降级路径（无外部 AI Provider）**：闸门无法调 AI，此时走「自检闸门」——`QUALITY_GATE_SELFCHECK` 文本会被追加进模板 prompt，由外层对话模型按 6 红线自行核对（无循环依赖、不阻塞）。
+- **阈值与重试用环境变量即可调节**，无需改代码。代码层见 `prompts/templates.py` 的 `QUALITY_GATE_ENABLED` / `GATE_THRESHOLD`。
+
+## 十、订阅监控（B站 / 公众号）配置
+
+监控模块见 `monitors/`，运营细节与已知坑见 `monitors/README.md`。订阅源本身写在 `monitors/subscriptions.json`（非 `.env`），结构参考 `monitors/subscriptions.example.json`：
+
+```json
+{
+  "wechat":   [{"mp_id": "MP_XXX", "name": "公众号名（可选）"}],
+  "bilibili": [{"uid": "22675713"}]
+}
+```
+
+### B站监控相关 `.env` 变量
+
+| 变量 | 默认值 | 作用 |
+|------|--------|------|
+| `BILI_COOKIE` | 空 | B站登录态 Cookie（**动态接口硬性要求**；缺失降级游客态并告警）。浏览器 F12→Application→Cookie 复制整段 |
+| `BILI_GAP` | 30 | 跨源退避秒数（`run.py` 额外加 ±5s 随机抖动，避免被识别成脚本） |
+| `BILI_INTRA_GAP` | 2 | 同源「视频→动态」之间退避秒数 |
+| `BILI_BACKOFF` | 5 | 重试退避基数（动态接口偶发 `-352`/`4101129` 列入退避重试） |
+| `BILI_FIRST_WINDOW_DAYS` | 7 | 首跑时间窗口（天）：只处理 N 天内发布的视频/动态 |
+| `BILI_DAILY_WINDOW_DAYS` | 1 | 每日增量时间窗口（天） |
+| `BILI_PAGE_SIZE` | 50 | 单页拉取条数（覆盖整个时间窗口） |
+| `BILI_SHORT_DYNAMIC_MAX` | 80 | 短动态轻量化阈值（字）：净化后正文 ≤ 此值走「速览」，不走重总结模板 |
+| `FIRST_RUN_LIMIT` | 50 | 首跑每类型安全上限（实际受 `BILI_SAFETY_CAP`=50 夹取，防极端 UP 刷爆） |
+| `STATE_KEEP` | 1000 | 每源 `seen` 保留的最大 ID 数（`mark_seen` 按源裁剪，防 `state.json` 膨胀） |
+
+### 公众号认证（非 `.env`）
+
+公众号经 `weread.111965.xyz` 转发发现新文，认证 token 落在 `monitors/.wechat_auth.json`（已 gitignore），是转发服务器自签 JWT，**数小时即失效**。`run.py` 会自动检测失效并弹码续期（半自动）；本次运行跳过微信源保 B站照跑。无「稳 + 免费 + 免维护」方案，详见 `monitors/README.md` 注意事项。
+
+### 调度
+
+由 WorkBuddy automation 驱动，每日 **10:00 与 17:00** 各跑一次（命令等同 `python monitors/run.py --mode auto --apply`）。
