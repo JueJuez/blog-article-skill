@@ -16,6 +16,8 @@ class LocalOutput(BaseOutput):
         try:
             os.makedirs(self.base_path, exist_ok=True)
             file_path = os.path.join(self.base_path, filename)
+            # filename 可含子目录（如「投资交易/舟亦横/xxx.md」），先建目录
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)

@@ -8,7 +8,7 @@
 | 文件 | 职责 |
 |------|------|
 | `state.py` | 每源去重状态（`state.json`），per-source 裁剪防膨胀 |
-| `wechat.py` | 公众号源（经 `weread.111965.xyz` 转发发现新文）+ token 自愈 |
+| `wechat.py` | 公众号源（经 `weread.111965.xyz` 转发发现新文）；token 数小时失效，交互式弹码续期、headless 跳过 |
 | `bilibili.py` | B站UP主源（官方 API + WBI 签名，带登录 Cookie） |
 | `ad_filter.py` | 广告过滤：整篇纯广告 skip / 干货夹广告净化保留 |
 | `run.py` | CLI + 调度入口（`--apply` 直接调总结管线） |
@@ -32,7 +32,7 @@
 - 同源视频→动态之间退避 `BILI_INTRA_GAP`=**2s**。
 - 重试退避 `BILI_BACKOFF`=**5s**（动态接口偶发 `-352`/`4101129`/`4101133` 列入退避重试）。
 - **抓取条数多少不影响风控，频率（请求次数）才影响**——已放慢到 30±5s/UP，风控无忧。
-- 调度：每日 **10:00 与 17:00** 各跑一次（automation `FREQ=DAILY;BYHOUR=10,17;BYMINUTE=0`）。
+- **触发方式（2026-07-24 更新 · 已移除自动调度）**：不再挂每日 10:00/17:00 自动化。改为**用户主动触发**——用户说「开启定时任务」等关键词即运行 `python monitors/run.py --mode auto --apply`（抓公众号 + B站UP 并总结双写）。
 
 ## 配置（`.env`）
 
@@ -54,7 +54,7 @@
 ## 注意事项 / 已知坑
 
 1. **断跑丢内容**：每日窗口 = 1 天，若定时任务偶发断跑数日，中间那几天的内容会被窗口滤掉丢失（首跑 7 天不受影响）。如需余量，调大 `BILI_DAILY_WINDOW_DAYS`（如 3 或 7）。
-2. **公众号 token 不稳定**：`weread.111965.xyz` 转发服务器共享 IP 被微信读书风控，JWT 数小时即失效，**无「稳 + 免费 + 免维护」方案**。`run.py` 已做失效自动检测 + 弹码续期（半自动）。
+2. **公众号 token 不稳定**：`weread.111965.xyz` 转发服务器共享 IP 被微信读书风控，JWT 数小时即失效，**无「稳 + 免费 + 免维护」方案**。检测到失效时 `run.py` **本次跳过公众号源、保 B站照跑**；交互式（Windows 本机）会话会弹二维码（`RELOGIN_QR:` 路径 + `_notify_user` 弹图片查看器+提示框），用户扫码后续期，**下次运行**恢复公众号抓取；headless/自动化下无人看码，等价于跳过公众号。
    - **续期流程**：`run.py` 检测到 token 失效 → `trigger_relogin()` 生成二维码（`login_qr.png`）+ 启动后台轮询 daemon（`python _auth.py poll`）；用微信扫该码即自动把 JWT 落盘 `.wechat_auth.json`，**下次运行自动恢复**公众号抓取。
    - **可观测性**：轮询 daemon 输出写入 `monitors/.poll_daemon.log`（含 `[poll-start]` / `[polling] status=...` / `[poll-error#n]` / `[poll-success]`）；巡检该日志可确认扫码是否被捕获、API 是否在超时。
    - **防重复弹窗**：`trigger_relogin()` 带跨进程互斥锁（Windows `msvcrt.locking`）+ 5 分钟幂等 TTL，多进程同时触发（如手动 + 定时重复跑）也只弹一个码、只起一个轮询 daemon（PID 锁定于 `.poll_daemon.pid`）。
@@ -64,6 +64,23 @@
 4. **B站 `-352` 真因**：缺 `dm_img_*` WebGL 指纹 + 无登录态 + `web_location` 写错；已带 `BILI_COOKIE` + 指纹修复。付费 / 粉丝可见内容 `code=-404/-403` 直接跳过不重试。
 5. **`state.json` 膨胀**：`mark_seen` 按源裁剪到 `STATE_KEEP`（默认 1000，首跑单源约 100 ID，留 10× 余量）。上限取决于"窗口内 ID 数"，与"运行次数"无关——每日跑两遍不会撑爆。
 6. **健康度可观测**：`run.py --apply` 末尾打印统计行（视频/动态/速览/广告跳过/错误），监控异常一眼可见。
+
+## 降级闭环与子 Agent 委派
+
+无 `AI_PROVIDER` 时，`skill_main` 进入降级：把原文 + 模板 `prompt` + `raw_file` + `folder` 写入 **`pending_summaries.json`**（按 `url` 去重），`run.py` 末尾打印 `NEED_CONTINUE_SUMMARY` 提示。该队列**不会自动消化**，由外层模型接单：
+
+- **派子 Agent 执行（强制，保持主会话干净）**：每文件夹起一个子 Agent（如 `副业增长/生财有术` 一个、`投资交易/中金点睛` 一个），串行处理避免飞书并发建节点重复；子 Agent 读 `raw_file` → 按 `note_type` 模板总结 → 调 `scripts/persist_summary.py` 落盘（双写 Obsidian + 飞书，保存成功后**自动从队列移除该条**，中途停止可安全重跑）。
+- 严禁在主会话里直接总结——会污染上下文、降低总结质量。
+
+**双队列模型（务必分清）**：
+
+| 队列 | 含义 | 重试入口 |
+|------|------|------|
+| `pending_refetch.json` | **抓取失败**：正文被限流成空 / fetch 报错 | `python monitors/run.py --refetch-only` |
+| `pending_summaries.json` | **有正文但无 AI**：等待外层派子 Agent 总结 | 外层派子 Agent 读 raw → `persist_summary.py` |
+
+- 不变量：`pending_summaries` 里的条目**必须携带真实正文**；若某条 raw 缺失 / 过短（限流空壳），`--refetch-only` 会自动把它**提升回 `pending_refetch`** 重抓。故 `--refetch-only` 是唯一抓取重试入口，`scripts/refetch_recover.py` 已删除（其职责被该提升逻辑吸收）。
+- 频率保护：`--refetch-only` 逐篇 `WECHAT_GAP=6s` + 抖动，避免再被限流。
 
 ## 用法
 

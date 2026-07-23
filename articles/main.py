@@ -132,6 +132,10 @@ def generate_filename(title: str, url: str = "", category: str = "", publish_tim
     return filename
 
 
+# 最近一次降级暂存的 raw 文件路径（供 skill_main 降级返回时携带给外层/监控）
+_LAST_RAW_FILEPATH = ""
+
+
 def save_raw_content_to_file(content: str, title: str = "", prefix: str = "_raw_") -> str:
     notes_dir = _ensure_notes_dir()
     timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
@@ -202,7 +206,17 @@ def _freshness_label(publish_time: int) -> str:
     return "更早"
 
 
-def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0):
+def _sanitize_folder(folder: str) -> str:
+    """净化子目录路径：按 / 分段、每段去非法字符，如「投资交易/舟亦横」。"""
+    if not folder:
+        return ""
+    parts = [re.sub(r'[\\:*?"<>|\n\r]', '_', p).strip()
+             for p in folder.replace("\\", "/").split("/")]
+    parts = [p for p in parts if p and p not in (".", "..")]
+    return "/".join(parts)
+
+
+def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = ""):
     """保存已总结的文章内容到所有可用目标。
 
     Args:
@@ -210,6 +224,9 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
         note_type: 笔记类型，写入 frontmatter 便于检索
         publish_time: 内容原始发布时间（epoch 秒）；>0 时文件名日期与 frontmatter 用发布时间，
                       而非处理时间——投资类内容时效性强，记录「内容何时发的」才有意义。
+        folder: 归档子目录（如「投资交易/舟亦横」）。非空时笔记落
+                Obsidian `<vault>/<folder>/` 与飞书对应层级容器节点下（不进「待归类」）；
+                监控订阅产出用它按「分类/账号名」归档，内容与源头对得上。
     """
     tags = list(tags or ["文章总结"])
     if original_url and "转载" not in tags:
@@ -231,6 +248,9 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
             break
 
     filename = generate_filename(title, original_url, category, publish_time=publish_time)
+    folder = _sanitize_folder(folder)
+    if folder:
+        filename = f"{folder}/{filename}"
 
     # 文件名冲突处理（禁止覆盖）
     manager = OutputManager()
@@ -336,7 +356,7 @@ def summarize_content(content: str, author: str = "", url: str = "", tags: list 
     }
 
 
-def summarize_and_save(url_or_content: str, author: str = "", tags: list = None, note_type: str = "", force: bool = False, publish_time: int = 0):
+def summarize_and_save(url_or_content: str, author: str = "", tags: list = None, note_type: str = "", force: bool = False, publish_time: int = 0, folder: str = ""):
     """完整的文章总结与自动保存流程（含 A2 去重 / A5 标签 / A4 计量）。
 
     Args:
@@ -410,6 +430,8 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None,
     if ai_result.get("summary") is None:
         print("\n⚠️ AI总结暂不可用，已成功抓取文章内容")
         raw_filepath = save_raw_content_to_file(article_content, title=original_title)
+        global _LAST_RAW_FILEPATH
+        _LAST_RAW_FILEPATH = raw_filepath
         print(f"   📄 原始内容已暂存至: {raw_filepath}")
         print("   💡 外层对话可直接 Read 该文件获取完整原文，避免终端截断")
         return None, article_content, original_url, original_title, None
@@ -425,7 +447,7 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None,
         formatted_note, filename = save_summarized_article(
             summarized_content, original_url, author, tags, original_title,
             meta={"usage": usage, "model": model}, note_type=note_type,
-            publish_time=publish_time
+            publish_time=publish_time, folder=folder
         )
         # A2：记录去重
         dedup.mark_summarized(url=original_url, content=article_content, title=original_title, filename=filename)
@@ -445,12 +467,14 @@ def save_summary_only(input_data: dict) -> dict:
     tags = input_data.get('tags', [])
     original_title = input_data.get('original_title', '')
     publish_time = input_data.get('publish_time', 0)
+    folder = input_data.get('folder', '')
     if not summarized_content:
         return {'success': False, 'message': '请提供总结好的内容'}
     try:
         formatted_note, filename = save_summarized_article(
             summarized_content, original_url=original_url, author=author,
-            tags=tags, original_title=original_title, publish_time=publish_time
+            tags=tags, original_title=original_title, publish_time=publish_time,
+            folder=folder
         )
         return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note}
     except Exception as e:
@@ -469,6 +493,7 @@ def skill_main(input_data: dict) -> dict:
     note_type = input_data.get('note_type', '')
     force = input_data.get('force', False)
     publish_time = input_data.get('publish_time', 0)
+    folder = input_data.get('folder', '')
 
     if url and not content:
         content = url
@@ -476,7 +501,7 @@ def skill_main(input_data: dict) -> dict:
         return {'success': False, 'message': '请提供文章内容或博客链接'}
 
     try:
-        result = summarize_and_save(content, author, tags, note_type=note_type, force=force, publish_time=publish_time)
+        result = summarize_and_save(content, author, tags, note_type=note_type, force=force, publish_time=publish_time, folder=folder)
         summarized, second, third, original_title, error_msg = result
 
         if error_msg:
@@ -503,6 +528,7 @@ def skill_main(input_data: dict) -> dict:
                 'article_content': article_content, 'note_type': note_type,
                 'prompt': get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK, 'original_url': original_url,
                 'original_title': original_title, 'author': author, 'tags': tags,
+                'raw_file': _LAST_RAW_FILEPATH, 'folder': folder,
             }
         else:
             return {'success': False, 'message': '内容获取失败'}

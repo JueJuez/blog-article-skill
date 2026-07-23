@@ -65,21 +65,21 @@
   - 任一云端缺失 → 检查该输出 `is_available()`（路径/授权），缺失是配置问题不是代码问题，补配置后重跑 `save_*` 即可；**不要手动写 `notes/`、也不要改总结内容**。
 - **单端失败不影响其他端**：每个输出写入都是独立 try（非致命），某端暂时不可用（如飞书 CLI 掉线）只告警、不中断其他端；恢复后重跑保存即可补齐。
 
-### 3.1 待归类收件箱约定（强制 · 新笔记落点）
+### 3.1 【00_待归类】收件箱约定（强制 · 新笔记落点）
 
-> **用户偏好**：新总结先统一进「待归类」，用户后续手动拖到分类，避免长列表一眼看不到、难管理。Obsidian 与飞书两侧结构对称。
+> **用户偏好**：新总结先统一进「【00_待归类】」，用户后续手动拖到分类，避免长列表一眼看不到、难管理。Obsidian 与飞书两侧结构对称。
 
-- **单篇新笔记（文件名不含 `/`）默认落「待归类」**：
-  - **Obsidian**：`articles/obsidian.py` 把无子目录的 filename 落 `<vault>/待归类/<filename>`（`OBSIDIAN_INBOX = "待归类"`），`get_output_path` 同步（去重检测不错位）。
-  - **飞书**：`articles/feishu.py` 的 `ensure_inbox_node()` 在父节点下确保存在「待归类」容器节点；单篇 `save` / `save_async` 无显式 `parent_token` 时默认落此节点。
-  - **系列课例外**：自带 `系列名/` 子目录（Obsidian）或走 `save_series` 显式传父节点（飞书），**不进待归类**，保持系列容器结构。
-- **Obsidian 分类文件夹 ↔ 飞书分类节点一一对应**（用户在「AI 总结笔记」下手动维护）：`待归类` + `01_独立开发` / `02_流量变现` / `03_AI提效` / `04_流量获取` / `05_投资交易` / `06_认知成长` / `07_内容创作`，外加 `千刀千法` 系列容器。
-- **历史补平（保持双端对称）**：当 Obsidian 有而飞书缺的笔记，按其在 Obsidian 所属分类**直接补到飞书对应分类节点（不是待归类，因为已分类）**；补前先查重避免重复节点，**串行**保存避免飞书并发重复。
+- **单篇新笔记（文件名不含 `/`）默认落「【00_待归类】」**：
+  - **Obsidian**：`articles/obsidian.py` 把无子目录的 filename 落 `<vault>/【00_待归类】/<filename>`（`OBSIDIAN_INBOX = "【00_待归类】"`），`get_output_path` 同步（去重检测不错位）。
+  - **飞书**：`articles/feishu.py` 的 `ensure_inbox_node()` 在父节点下确保存在「【00_待归类】」容器节点；单篇 `save` / `save_async` 无显式 `parent_token` 时默认落此节点。
+  - **系列课例外**：自带 `系列名/` 子目录（Obsidian）或走 `save_series` 显式传父节点（飞书），**不进【00_待归类】**，保持系列容器结构。
+- **Obsidian 分类文件夹 ↔ 飞书分类节点一一对应**（用户在「AI 总结笔记」下手动维护）：`【00_待归类】` + `01_独立开发` / `02_流量变现` / `03_AI提效` / `04_流量获取` / `05_投资交易` / `06_认知成长` / `07_内容创作`，外加 `千刀千法` 系列容器。
+- **历史补平（保持双端对称）**：当 Obsidian 有而飞书缺的笔记，按其在 Obsidian 所属分类**直接补到飞书对应分类节点（不是【00_待归类】，因为已分类）**；补前先查重避免重复节点，**串行**保存避免飞书并发重复。
 
 ### 路线 A：文章总结（`articles/`）
 - **入口**：`articles/run.py --url/--content/--batch`；或直接 `from articles import skill_main; skill_main({...})`。
 - **流程**：抓取 `articles.fetch.fetch_web_content` → 去重 `articles.dedup` → 自动分类 `prompts.classify.classify_note_type` → AI 总结 `articles.main.summarize_content` → 多端保存 `articles.manager.OutputManager.save_all`（**遍历所有可用输出（Obsidian + 飞书；本地 `notes/` 仅在两者都未配时兜底），详见 §3.0 双写契约**）。
-- **降级**：无外部 AI 时 `skill_main` 返回 `need_continue_summary` + `prompt` + 原文，交外层（WorkBuddy）总结后调 `skill_continue_summary` / `save_summary_only` 存档。
+- **降级**：无外部 AI 时 `skill_main` 返回 `need_continue_summary` + `prompt` + 原文 + `raw_file` + `folder`，写入 `pending_summaries.json` 队列，**交外层派子 Agent 执行**（勿在主会话总结，污染上下文、降质量）；子 Agent 读 raw → 按模板总结 → 调 `save_summary_only` 存档。详见 `monitors/README.md`「降级闭环与子 Agent 委派」。
 - **细节**：见 `SKILL.md`「执行流程」与 `README.md`。
 
 ### 路线 B：视频总结（`videos/`）
@@ -94,9 +94,11 @@
 > 关注 B站UP主 / 公众号，按时间窗口发现新内容 → AI 总结 → 双写（复用路线 A/B 的保存能力）。运营细节与已知坑见 **`monitors/README.md`**；跨平台入口见 **`AGENTS.md`「能力 2」**。
 
 - **入口**：`monitors/run.py --mode first|auto --apply`；订阅配置 `monitors/subscriptions.json`（参考 `monitors/subscriptions.example.json`）。
-- **B站**：`{"uid": "数字UP主ID"}`，需 `BILI_COOKIE`（动态接口硬性要求）；**公众号**：`{"mp_id": "..."}` 或 `{"share_url": "公众号分享链接"}`，weread token 自愈（失效自动弹码续期）。
+- **B站**：`{"uid": "数字UP主ID"}`，需 `BILI_COOKIE`（动态接口硬性要求）；**公众号**：`{"mp_id": "..."}` 或 `{"share_url": "公众号分享链接"}`。
+- **公众号 token 不稳定（无稳+免费+免维护方案）**：`weread.111965.xyz` 转发 JWT 数小时即失效。检测到失效时：**本次运行跳过公众号源、保 B站照跑**；交互式（Windows 本机）会话会弹二维码，用户扫码续期后**下次运行**恢复公众号抓取，headless/自动化下无人看码等价于跳过。详见 `monitors/README.md` 注意事项。
 - **用户口头「关注 XXX」时，模型应把对应条目写进 `subscriptions.json`**，不要手搓抓取代码。
 - **规则要点（暂定）**：首跑 7 天 / 每日 1 天时间窗口；无干货动态屏蔽；短动态轻量化；新鲜度标签；state 按源裁剪防膨胀。本文件不堆细节。
+- **触发方式（已移除自动调度 · 2026-07-24）**：不再挂每日 10:00/17:00 自动化。改为**用户主动触发**——用户说「开启定时任务 / 开启抓取 / 跑一下监控 / 抓公众号和B站UP」等关键词时，运行 `python monitors/run.py --mode auto --apply`（按 `subscriptions.json` 抓公众号 + B站UP 并总结双写）。公众号 token 失效时按上条跳过公众号、保 B站。
 - **禁止**：手写抓取脚本、手搓 B站 / 微信私有 API——一律走 `monitors/run.py` 入口。
 
 ---
@@ -194,7 +196,7 @@ NOTE_GATE_THRESHOLD=85     # 评分阈值，默认 85；低于此分触发重试
 
 - [ ] 会话开始：先读 **RULES.md（本文件）** + `SKILL.md`，确认两条路线入口与降级逻辑。
 - [ ] 收到「总结/整理」+ 素材 → 调 `skill_main` / `summarize_video`，**不要手写抓取或手写总结**。
-- [ ] 触发降级（`need_continue_summary`）→ 用返回的 `prompt` 做总结，再调 `skill_continue_summary` / `save_summary_only` 存档。
+- [ ] 触发降级（`need_continue_summary`）→ **派子 Agent** 用返回的 `prompt` + `raw_file` 做总结，再调 `save_summary_only` 存档（主会话只做编排，不直写总结，保上下文干净）。
 - [ ] **存档后自检双写（§3.0 红线）**：确认 **Obsidian + 飞书双端**都落盘；本地 `notes/` **预期为空**（Obsidian+飞书都可用时 `_local_write_enabled()` 返回 False 不落本地），**不要因本地为空而误判失败**；飞书 user 身份须 `lark-cli auth status` ready，否则只告警不落飞书。
 - [ ] 本文件（RULES.md）变更 → 同步进 `MEMORY.md`「规则摘要」并视作平台规则。
 - [ ] 遇到网络/代理问题 → 先查 `references/youtube-cdp-workflow.md`，不要绕去挖代理配置。

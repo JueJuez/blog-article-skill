@@ -27,7 +27,7 @@
   - 用户口头说「关注 / 订阅 / 监控 XXX」时，**模型应把对应条目写进这个 JSON**，不要手搓抓取代码。
 - **运行**
   - 首跑（回填最近 7 天）：`python monitors/run.py --mode first --apply`
-  - 每日增量：`python monitors/run.py --mode auto --apply`（或挂定时任务，每日 **10:00 & 17:00**）
+  - 每日增量：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「开启定时任务」等关键词即触发，详见 `RULES.md` §3C）
 - **抓取规则**：按时间窗口（首跑 7 天 / 每日 1 天）+ 无干货动态屏蔽 + 短动态轻量化 + 新鲜度标签。细节见 `monitors/README.md`。
 - B站需要登录态：`BILI_COOKIE` 环境变量（动态接口硬性要求）。
 

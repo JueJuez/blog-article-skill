@@ -111,7 +111,7 @@ def _summarize_segments(segments, note_type: str, title: str = "", visual_contex
 
 def _summarize_and_save(segments, source_url: str, title: str, author: str,
                         tags: list, note_type: str, force: bool, visual_context: str = "",
-                        publish_time: int = 0):
+                        publish_time: int = 0, folder: str = ""):
     """总结并保存；返回 (filename, final_text, degraded, article_content, note_type)。"""
     if not note_type:
         sample = (segments_to_text(segments)
@@ -131,7 +131,7 @@ def _summarize_and_save(segments, source_url: str, title: str, author: str,
     formatted, filename = save_summarized_article(
         final, original_url=source_url, author=author,
         tags=save_tags, original_title=title or "视频总结", note_type=note_type,
-        publish_time=publish_time
+        publish_time=publish_time, folder=folder
     )
     return (filename, final, False, None, note_type)
 
@@ -594,13 +594,16 @@ def _finalize_single(title, segments, url, input_data, visual_context: str = "")
     note_type = input_data.get("note_type", "")
     force = input_data.get("force", False)
     publish_time = input_data.get("publish_time", 0)
+    folder = input_data.get("folder", "")
 
     filename, final_text, degraded, article_content, note_type = _summarize_and_save(
         segments, url, title, author, tags, note_type, force,
-        visual_context=visual_context, publish_time=publish_time
+        visual_context=visual_context, publish_time=publish_time, folder=folder
     )
 
     if degraded:
+        # 与 articles 降级对齐：字幕原文落 raw 文件，外层/监控可 Read 后按模板总结
+        raw_file = articles_main.save_raw_content_to_file(article_content, title=title)
         return {
             "success": True,
             "need_continue_summary": True,
@@ -612,6 +615,8 @@ def _finalize_single(title, segments, url, input_data, visual_context: str = "")
             "original_title": title,
             "author": author,
             "tags": tags,
+            "raw_file": raw_file,
+            "folder": folder,
         }
 
     return {

@@ -100,7 +100,7 @@ class FeishuOutput(BaseOutput):
     _inbox_node_cache: dict = {}
 
     def ensure_inbox_node(self) -> str:
-        """确保「待归类」收件箱节点存在于父节点下，返回其 node_token（已存在则复用）。
+        """确保「【00_待归类】」收件箱节点存在于父节点下，返回其 node_token（已存在则复用）。
 
         与 ensure_series_node 同理：单篇总结默认落此节点，用户后续手动拖到分类节点。
         """
@@ -108,7 +108,7 @@ class FeishuOutput(BaseOutput):
             return ""
         parent = self.wiki_parent_node
         space = self.wiki_space
-        cache_key = f"{space}|{parent}|待归类"
+        cache_key = f"{space}|{parent}|【00_待归类】"
         if cache_key in FeishuOutput._inbox_node_cache:
             return FeishuOutput._inbox_node_cache[cache_key]
         # 1) 查已有子节点
@@ -121,7 +121,7 @@ class FeishuOutput(BaseOutput):
             ])
             if listing and listing.get("ok"):
                 for item in listing.get("data", {}).get("nodes", []):
-                    if item.get("title") == "待归类":
+                    if item.get("title") == "【00_待归类】":
                         tok = item.get("node_token", "")
                         FeishuOutput._inbox_node_cache[cache_key] = tok
                         return tok
@@ -131,7 +131,7 @@ class FeishuOutput(BaseOutput):
         try:
             result = self._run_cli_command([
                 "wiki", "+node-create",
-                "--title", "待归类",
+                "--title", "【00_待归类】",
                 "--node-type", "origin",
                 "--obj-type", "docx",
                 "--parent-node-token", parent,
@@ -142,12 +142,50 @@ class FeishuOutput(BaseOutput):
                 node = result.get("data", {})
                 tok = node.get("node_token") or (node.get("node", {}) or {}).get("node_token")
                 if tok:
-                    print(f"   📥 已建飞书收件箱节点「待归类」：{tok}")
+                    print(f"   📥 已建飞书收件箱节点「【00_待归类】」：{tok}")
                     FeishuOutput._inbox_node_cache[cache_key] = tok
                     return tok
         except Exception as e:
             print(f"   ⚠️ 建飞书收件箱节点异常：{e}")
         return ""
+
+    def list_children(self, parent_token: str) -> list:
+        """列出 parent_token 下的子节点（容器/文档），返回 data.nodes 列表。"""
+        if not parent_token or not self.is_available():
+            return []
+        try:
+            listing = self._run_cli_command([
+                "wiki", "+node-list",
+                "--parent-node-token", parent_token,
+                "--space-id", self.wiki_space,
+                "--as", "user", "--json", "--page-all"
+            ])
+            if listing and listing.get("ok"):
+                return listing.get("data", {}).get("nodes", [])
+        except Exception:
+            pass
+        return []
+
+    def delete_node(self, node_token: str, yes: bool = True, obj_type: str = "wiki") -> bool:
+        """删除飞书 wiki 节点（容器/文档）。node_token 唯一标识；--yes 跳过二次确认；obj_type 默认 wiki。"""
+        if not node_token or not self.is_available():
+            return False
+        try:
+            args = ["wiki", "+node-delete", "--node-token", node_token,
+                     "--obj-type", obj_type,
+                     "--space-id", self.wiki_space, "--as", "user", "--json"]
+            if yes:
+                args += ["--yes"]
+            result = self._run_cli_command(args)
+            if result and result.get("ok"):
+                print(f"   🗑️ 已删飞书节点：{node_token}")
+                return True
+            print(f"   ⚠️ 删节点返回非 ok：{result}")
+            return False
+        except Exception as e:
+            print(f"   ⚠️ 删节点异常：{e}")
+            return False
+
 
     def ensure_series_node(self, series_title: str) -> str:
         """确保「系列名」容器节点存在于父节点下，返回其 node_token（已存在则复用）。
@@ -211,11 +249,90 @@ class FeishuOutput(BaseOutput):
             return False
         return self.save(content, filename, parent_token=parent)
 
+    # 多级目录节点缓存：{space|parent|a/b/c: node_token}
+    _folder_path_cache: dict = {}
+
+    def _ensure_child_node(self, parent_token: str, title: str) -> str:
+        """确保 parent_token 下存在名为 title 的容器节点，返回其 node_token。"""
+        space = self.wiki_space
+        # 1) 查已有子节点
+        try:
+            listing = self._run_cli_command([
+                "wiki", "+node-list",
+                "--parent-node-token", parent_token,
+                "--space-id", space,
+                "--as", "user", "--json", "--page-all"
+            ])
+            if listing and listing.get("ok"):
+                for item in listing.get("data", {}).get("nodes", []):
+                    if item.get("title") == title:
+                        return item.get("node_token", "")
+        except Exception:
+            pass
+        # 2) 不存在则创建（docx 节点作容器）
+        try:
+            result = self._run_cli_command([
+                "wiki", "+node-create",
+                "--title", title,
+                "--node-type", "origin",
+                "--obj-type", "docx",
+                "--parent-node-token", parent_token,
+                "--space-id", space,
+                "--as", "user", "--json"
+            ])
+            if result and result.get("ok"):
+                node = result.get("data", {})
+                tok = node.get("node_token") or (node.get("node", {}) or {}).get("node_token")
+                if tok:
+                    print(f"   📁 已建飞书容器节点「{title}」：{tok}")
+                    return tok
+        except Exception as e:
+            print(f"   ⚠️ 建飞书容器节点「{title}」异常：{e}")
+        return ""
+
+    def ensure_folder_path(self, dirs: list) -> str:
+        """确保多级目录节点链存在（如 ['投资交易','舟亦横']），返回最深一级 node_token。
+
+        与 Obsidian 子目录对称：filename 含 "/" 时按路径逐级建 wiki 容器节点。
+        任一级失败返回 ""（调用方回落收件箱）。
+        """
+        if not self.is_available() or not dirs:
+            return ""
+        parent = self.wiki_parent_node
+        space = self.wiki_space
+        walked = []
+        for d in dirs:
+            walked.append(d)
+            cache_key = f"{space}|{self.wiki_parent_node}|{'/'.join(walked)}"
+            if cache_key in FeishuOutput._folder_path_cache:
+                parent = FeishuOutput._folder_path_cache[cache_key]
+                continue
+            tok = self._ensure_child_node(parent, d)
+            if not tok:
+                return ""
+            FeishuOutput._folder_path_cache[cache_key] = tok
+            parent = tok
+        return parent
+
+    def _split_subdir(self, filename: str):
+        """拆分 filename 的子目录与文件名：'a/b/x.md' -> (['a','b'], 'x.md')。"""
+        norm = filename.replace("\\", "/")
+        parts = [p for p in norm.split("/") if p.strip()]
+        if len(parts) <= 1:
+            return [], filename
+        return parts[:-1], parts[-1]
+
     def save(self, content: str, filename: str, parent_token: str = None) -> bool:
         if not self.is_available():
             return False
 
-        # 单篇总结默认进「待归类」收件箱（用户手动归类）；系列课走 save_series 显式传 parent_token
+        # filename 含子目录（如「投资交易/舟亦横/xxx.md」）→ 逐级建容器节点，与 Obsidian 对称
+        dirs, base_name = self._split_subdir(filename)
+        if dirs and not parent_token:
+            parent_token = self.ensure_folder_path(dirs)
+        filename = base_name
+
+        # 单篇总结默认进「【00_待归类】」收件箱（用户手动归类）；系列课走 save_series 显式传 parent_token
         if not parent_token:
             parent_token = self.ensure_inbox_node()
 
@@ -259,7 +376,13 @@ class FeishuOutput(BaseOutput):
         if not self.is_available():
             return False
 
-        # 单篇总结默认进「待归类」收件箱；系列课走 save_series 显式传 parent_token
+        # filename 含子目录 → 逐级建容器节点（同步 ensure，量小可接受）
+        dirs, base_name = self._split_subdir(filename)
+        if dirs and not parent_token:
+            parent_token = self.ensure_folder_path(dirs)
+        filename = base_name
+
+        # 单篇总结默认进「【00_待归类】」收件箱；系列课走 save_series 显式传 parent_token
         if not parent_token:
             parent_token = self.ensure_inbox_node()
 

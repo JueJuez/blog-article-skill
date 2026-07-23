@@ -386,7 +386,7 @@ blog-article-skill/
 │   └── classify.py           # 笔记类型分类
 ├── monitors/                 # 订阅监控（B站UP主 / 公众号）：发现新内容→AI总结→双写
 │   ├── bilibili.py           # B站源（官方 API + WBI 签名，带登录 Cookie）
-│   ├── wechat.py             # 公众号源（经 weread 代理发现新文）+ token 自愈
+│   ├── wechat.py             # 公众号源（经 weread 代理发现新文）；token 数小时失效，交互式弹码续期、headless 跳过
 │   ├── state.py              # 每源去重状态 + 防膨胀裁剪
 │   ├── ad_filter.py          # 广告过滤（整篇纯广告 skip / 干货夹广告净化）
 │   ├── run.py                # CLI + 调度入口（--apply 直接调总结管线）

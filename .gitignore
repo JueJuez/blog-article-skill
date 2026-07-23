@@ -15,6 +15,12 @@ monitors/login_qr*.svg
 monitors/login_qr*.png
 monitors/_test_state.json
 monitors/*.log
+monitors/.mp_cache.json
+monitors/.poll_daemon.pid
+monitors/.relogin.lock
+monitors/.relogin.mutex
+monitors/pending_refetch.json
+monitors/pending_summaries.json
 stderr.log
 stdout.log
 .cache/

@@ -250,10 +250,10 @@ NOTE_GATE_THRESHOLD=85
 
 ### 公众号认证（非 `.env`）
 
-公众号经 `weread.111965.xyz` 转发发现新文，认证 token 落在 `monitors/.wechat_auth.json`（已 gitignore），是转发服务器自签 JWT，**数小时即失效**。`run.py` 会自动检测失效并弹码续期（半自动）；本次运行跳过微信源保 B站照跑。无「稳 + 免费 + 免维护」方案，详见 `monitors/README.md` 注意事项。
+公众号经 `weread.111965.xyz` 转发发现新文，认证 token 落在 `monitors/.wechat_auth.json`（已 gitignore），是转发服务器自签 JWT，**数小时即失效**。`run.py` 检测到失效时**本次跳过公众号源、保 B站照跑**；交互式（Windows 本机）会话会弹二维码供用户扫码续期，**下次运行**恢复公众号抓取，headless/自动化下无人看码等价于跳过。无「稳 + 免费 + 免维护」方案，详见 `monitors/README.md` 注意事项。
 
 续期排查：扫码后仍未恢复公众号，先看 `monitors/.poll_daemon.log` 是否出现 `[poll-success]`（说明 daemon 抓到 token）；若只有 `[poll-error#n]` 或一直 `status=pending`，说明 weread proxy 当前不稳定（超时/5xx）或二维码 UUID 已过期（被微信扫码后服务端会很快销毁旧 UUID），重新触发一次 `run.py` 生成新二维码再扫即可。
 
 ### 调度
 
-由 WorkBuddy automation 驱动，每日 **10:00 与 17:00** 各跑一次（命令等同 `python monitors/run.py --mode auto --apply`）。
+**已移除自动调度（2026-07-24）**：不再由 WorkBuddy automation 每日 10:00/17:00 驱动。改为**用户主动触发**——用户说「开启定时任务」等关键词即运行 `python monitors/run.py --mode auto --apply`（详见 `RULES.md` §3C / `monitors/README.md`）。
