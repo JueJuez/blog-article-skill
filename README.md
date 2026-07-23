@@ -413,6 +413,7 @@ blog-article-skill/
 
 - **WorkBuddy**：激活 `blog-article-skill` skill；`SKILL.md` 为触发层
 - **Cursor**：`.cursorrules` 或 `.cursor/rules/*.mdc`
+- **Trae**：原生认 `AGENTS.md`（Settings → Import Settings 开「Include AGENTS.md in the context」）；也放 `.trae/rules/blog-article-skill.md`（`alwaysApply: true` 薄指针，确保必加载）
 - **Claude Code / Desktop**：`CLAUDE.md`（可 `cp AGENTS.md CLAUDE.md`）
 - **Codex / OpenAI**：`AGENTS.md`（本文件即）
 - **GitHub Copilot**：`.github/copilot-instructions.md`

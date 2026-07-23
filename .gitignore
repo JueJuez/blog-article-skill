@@ -2,7 +2,8 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-.trae/
+# Trae：技能镜像含 .env 密钥不提交；项目规则(.trae/rules)与配置(skill-config.json)需提交
+.trae/skills/
 .env
 notes/
 monitors/state.json
@@ -13,6 +14,7 @@ monitors/subscriptions.json
 monitors/login_qr*.svg
 monitors/login_qr*.png
 monitors/_test_state.json
+monitors/*.log
 stderr.log
 stdout.log
 .cache/

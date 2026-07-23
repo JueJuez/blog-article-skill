@@ -59,6 +59,7 @@
 ## 各平台如何加载本文件
 - **WorkBuddy**：激活 `blog-article-skill` skill（`SKILL.md` 触发）；也可作为项目级 rules 注入。
 - **Cursor**：`.cursorrules` 或 `.cursor/rules/*.mdc`；也认 `AGENTS.md`。
+- **Trae**：原生认 `AGENTS.md`（需在 Settings → Import Settings 开启「Include AGENTS.md in the context」）；也支持 `.trae/rules/*.md` 项目规则（放一份 `alwaysApply: true` 的薄指针到 `AGENTS.md`+`RULES.md`，确保即使没开开关也必加载）。
 - **Claude Code / Desktop**：`CLAUDE.md`（根目录；可 `cp AGENTS.md CLAUDE.md` 或软链）。
 - **Codex / OpenAI**：`AGENTS.md`（本文件即）。
 - **GitHub Copilot**：`.github/copilot-instructions.md`。

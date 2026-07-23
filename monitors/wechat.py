@@ -202,11 +202,13 @@ class WechatSource:
 # ---------------------------------------------------------------------------
 # 自动重新登录（token 自愈）：生成二维码 + 后台轮询续期 + 桌面通知
 # ---------------------------------------------------------------------------
-HERE = os.path.dirname(os.path.abspath(__file__))
-QR_PATH = os.path.join(HERE, "login_qr.png")          # 无 "." 前缀，便于预览
-_LOGIN_UUID_PATH = os.path.join(HERE, ".login_uuid.json")
-_RELOGIN_LOCK = os.path.join(HERE, ".relogin.lock")  # 幂等锁：5 分钟内复用同一二维码，不重复弹窗
+_HERE = os.path.dirname(os.path.abspath(__file__))
+QR_PATH = os.path.join(_HERE, "login_qr.png")          # 无 "." 前缀，便于预览
+_LOGIN_UUID_PATH = os.path.join(_HERE, ".login_uuid.json")
+_RELOGIN_LOCK = os.path.join(_HERE, ".relogin.lock")  # 幂等锁：5 分钟内复用同一二维码，不重复弹窗
 _RELOGIN_TTL = 300  # 秒
+_POLL_LOG = os.path.join(_HERE, ".poll_daemon.log")   # poll daemon 日志（不再 DEVNULL）
+_POLL_PID_FILE = os.path.join(_HERE, ".poll_daemon.pid")  # 防止重复启动 poll 进程
 
 
 def _save_login_uuid(uuid: str, scan_url: str) -> None:
@@ -228,13 +230,41 @@ def _gen_qr(scan_url: str) -> Optional[str]:
 
 
 def _start_poll_daemon() -> None:
-    """后台轮询扫码结果并写入 .wechat_auth.json（扫到即自动续期）。"""
+    """后台轮询扫码结果并写入 .wechat_auth.json（扫到即自动续期）。
+
+    改进：输出重定向到日志文件（不再 DEVNULL），便于诊断轮询失败；
+          通过 PID 文件防止重复启动多个 poll 进程。
+    """
+    # 检查是否已有 poll daemon 在跑
+    if os.path.exists(_POLL_PID_FILE):
+        try:
+            with open(_POLL_PID_FILE, "r") as f:
+                old_pid = int(f.read().strip())
+            # 检测进程是否还活着（跨平台）
+            os.kill(old_pid, 0)
+            print(f"[poll-daemon] 已有 poll 进程运行中 (PID={old_pid})，不重复启动", file=sys.stderr)
+            return
+        except (ValueError, OSError, ProcessLookupError):
+            # PID 文件存在但进程已死，清理后继续
+            try:
+                os.remove(_POLL_PID_FILE)
+            except Exception:
+                pass
+
     try:
-        auth_py = os.path.join(HERE, "_auth.py")
-        subprocess.Popen(
-            [sys.executable, auth_py, "poll"],
-            cwd=HERE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        auth_py = os.path.join(_HERE, "_auth.py")
+        log_fd = open(_POLL_LOG, "a", encoding="utf-8")
+        proc = subprocess.Popen(
+            [sys.executable, "-u", auth_py, "poll"],  # -u: unbuffered stdout/stderr
+            cwd=_HERE, stdout=log_fd, stderr=subprocess.STDOUT,
         )
+        # 写 PID 文件
+        try:
+            with open(_POLL_PID_FILE, "w") as f:
+                f.write(str(proc.pid))
+        except Exception:
+            pass
+        print(f"[poll-daemon] 已启动 poll 进程 (PID={proc.pid})，日志: {_POLL_LOG}", file=sys.stderr)
     except Exception as e:
         print(f"[poll-daemon-fail] {e}", file=sys.stderr)
 
@@ -273,15 +303,37 @@ def trigger_relogin() -> Optional[str]:
     下次运行即可恢复公众号抓取；本次运行仍会跳过微信源。
 
     幂等：5 分钟内有未过期二维码则复用，不重复生成+弹窗（避免重复运行/多源触发多次弹窗）。
+    互斥：跨进程文件锁，防止多进程同时触发导致重复弹窗。
     """
-    # 幂等保护：已有未过期二维码，直接复用并保活轮询，不重新生成
-    if os.path.exists(_RELOGIN_LOCK) and os.path.exists(QR_PATH):
-        age = time.time() - os.path.getmtime(_RELOGIN_LOCK)
-        if age < _RELOGIN_TTL:
-            print(f"[relogin] 已有未过期二维码（{int(age)}s 前），复用，不重复弹窗", file=sys.stderr)
-            _start_poll_daemon()  # 确保轮询在跑（本次进程可能非上次触发者）
-            return QR_PATH
+    # 跨进程互斥锁：同一时刻只允许一个进程执行 relogin 流程
+    _MUTEX_PATH = os.path.join(_HERE, ".relogin.mutex")
+    mutex_fd = None
     try:
+        import msvcrt
+        mutex_fd = open(_MUTEX_PATH, "w")
+        try:
+            msvcrt.locking(mutex_fd.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            # 另一个进程已持有锁，等 0.5s 再试一次
+            time.sleep(0.5)
+            try:
+                msvcrt.locking(mutex_fd.fileno(), msvcrt.LK_NBLCK, 1)
+            except Exception:
+                print("[relogin] 另一进程正在执行 relogin，本进程跳过", file=sys.stderr)
+                if os.path.exists(QR_PATH):
+                    return QR_PATH
+                return None
+    except ImportError:
+        pass  # 非 Windows，跳过互斥
+
+    try:
+        # 幂等保护：已有未过期二维码，直接复用并保活轮询，不重新生成
+        if os.path.exists(_RELOGIN_LOCK) and os.path.exists(QR_PATH):
+            age = time.time() - os.path.getmtime(_RELOGIN_LOCK)
+            if age < _RELOGIN_TTL:
+                print(f"[relogin] 已有未过期二维码（{int(age)}s 前），复用，不重复弹窗", file=sys.stderr)
+                _start_poll_daemon()  # 确保轮询在跑（本次进程可能非上次触发者）
+                return QR_PATH
         c = WereadClient()
         info = c.create_login()
         uuid = info.get("uuid") or info.get("id")
@@ -302,3 +354,13 @@ def trigger_relogin() -> Optional[str]:
     except Exception as e:
         print(f"[relogin-error] {e}", file=sys.stderr)
         return None
+    finally:
+        if mutex_fd is not None:
+            try:
+                mutex_fd.close()
+            except Exception:
+                pass
+            try:
+                os.remove(_MUTEX_PATH)
+            except Exception:
+                pass

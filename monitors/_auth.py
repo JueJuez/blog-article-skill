@@ -59,13 +59,27 @@ def cmd_poll(timeout: int = 300, interval: float = 3.0):
     c = WereadClient()
     deadline = time.time() + timeout
     last_keys = None
+    consecutive_errors = 0
+    max_consecutive_errors = 10
+
+    print(f"[poll-start] uuid={uuid} timeout={timeout}s interval={interval}s")
     while time.time() < deadline:
         try:
-            r = c.poll_login(uuid, timeout=int(interval) + 5)
+            r = c.poll_login(uuid, timeout=int(interval) + 15)  # 比 interval 多给 15s 网络超时
+            consecutive_errors = 0  # 成功请求，重置错误计数
         except Exception as e:
-            print(f"[poll-error] {e}", file=sys.stderr)
-            time.sleep(interval)
+            consecutive_errors += 1
+            err_type = type(e).__name__
+            print(f"[poll-error#{consecutive_errors}] {err_type}: {e}")
+            # 连续失败太多次，提前退出
+            if consecutive_errors >= max_consecutive_errors:
+                print(f"[poll-abort] 连续 {max_consecutive_errors} 次错误，放弃轮询")
+                return
+            # 指数退避：第 1 次 3s，第 2 次 6s，... 最大 30s
+            backoff = min(interval * (2 ** min(consecutive_errors - 1, 3)), 30)
+            time.sleep(backoff)
             continue
+
         last_keys = list(r.keys())
         token = r.get("token") or r.get("accessToken")
         vid = r.get("vid") or r.get("userId") or r.get("uid")
@@ -73,14 +87,15 @@ def cmd_poll(timeout: int = 300, interval: float = 3.0):
             auth = {"token": token, "vid": vid or ""}
             with open(AUTH_PATH, "w", encoding="utf-8") as f:
                 json.dump(auth, f, ensure_ascii=False, indent=2)
-            print("LOGIN_SUCCESS vid=%s" % (vid or "(空)"))
-            print("AUTH_SAVED:", AUTH_PATH)
+            print(f"[poll-success] vid={vid or '(空)'} token_len={len(token)}")
+            print(f"AUTH_SAVED: {AUTH_PATH}")
             return
         # 未扫码/未确认：打印状态（不打敏感字段）
         status = r.get("status") or r.get("code") or "pending"
-        print(f"[polling] status={status} keys={last_keys}", file=sys.stderr)
+        print(f"[polling] status={status} keys={last_keys} elapsed={int(deadline - time.time())}s_remaining")
         time.sleep(interval)
-    print("POLL_TIMEOUT last_keys=%s" % last_keys)
+
+    print(f"[poll-timeout] {int(timeout)}s 内未扫码。last_keys={last_keys}")
 
 
 if __name__ == "__main__":
