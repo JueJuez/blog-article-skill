@@ -384,6 +384,14 @@ blog-article-skill/
 │   ├── __init__.py
 │   ├── templates.py          # NOTE_TEMPLATES + classify_note_type
 │   └── classify.py           # 笔记类型分类
+├── monitors/                 # 订阅监控（B站UP主 / 公众号）：发现新内容→AI总结→双写
+│   ├── bilibili.py           # B站源（官方 API + WBI 签名，带登录 Cookie）
+│   ├── wechat.py             # 公众号源（经 weread 代理发现新文）+ token 自愈
+│   ├── state.py              # 每源去重状态 + 防膨胀裁剪
+│   ├── ad_filter.py          # 广告过滤（整篇纯广告 skip / 干货夹广告净化）
+│   ├── run.py                # CLI + 调度入口（--apply 直接调总结管线）
+│   ├── subscriptions.example.json  # 订阅配置模板
+│   └── README.md             # 监控运营文档 + 已知坑
 ├── tests/                    # PRD 验收测试（pytest）
 │   └── test_prd.py
 ├── notes/                    # 原始/中间笔记（被 gitignore）
@@ -397,6 +405,20 @@ blog-article-skill/
 ├── SKILL.md                  # AI 技能规则（供 AI 模型读取）
 └── README.md                 # 本文件
 ```
+
+## 跨平台加载（换会话 / 换 AI 平台也能用）
+
+本项目的流程、功能、配置集中在根目录 **`AGENTS.md`**（平台无关真源入口）。换用其他 AI 平台时，
+把 `AGENTS.md`（或 `RULES.md`）加载进模型上下文即可接上全部能力，无需 WorkBuddy 专属机制：
+
+- **WorkBuddy**：激活 `blog-article-skill` skill；`SKILL.md` 为触发层
+- **Cursor**：`.cursorrules` 或 `.cursor/rules/*.mdc`
+- **Claude Code / Desktop**：`CLAUDE.md`（可 `cp AGENTS.md CLAUDE.md`）
+- **Codex / OpenAI**：`AGENTS.md`（本文件即）
+- **GitHub Copilot**：`.github/copilot-instructions.md`
+- **裸 API / 其他**：把 `AGENTS.md` 全文作为 system prompt 前置
+
+> 真规则只维护一处（`AGENTS.md` + `RULES.md`），各平台入口文件引用或复制它，避免漂移。
 
 ## 许可证
 

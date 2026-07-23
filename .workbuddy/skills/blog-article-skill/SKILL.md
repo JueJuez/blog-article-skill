@@ -6,6 +6,7 @@ description: "文章/视频结构化总结与多渠道归档技能：抓取链�
 # blog-article-skill
 
 > 📌 **项目规则与地图索引见 [`RULES.md`](../../../RULES.md)**（执行前必读；规则以 RULES.md 为准，本文档不重复规则细节）。
+> 🌐 **跨平台真源入口见 [`AGENTS.md`](../../../AGENTS.md)**：换会话 / 换 AI 平台（Cursor / Claude / Codex / Copilot / 裸 API）时，把 AGENTS.md 加载进上下文即接上全部流程与配置；本文档仅作 WorkBuddy 触发层。
 
 ## 0. 最短路径：用户给 YouTube 链接时（新会话必须照此执行）
 
@@ -244,3 +245,25 @@ blog-article-skill/
 ```
 
 > **个人信息保护**：`.env`（含 Obsidian 路径、飞书空间 ID）与 `notes/` 均已被 `.gitignore` 忽略，不会提交到 github/gitee。切勿手动 `git add .env` 或 `notes/`。
+
+---
+
+## 8. 订阅监控（关注 B站UP主 / 公众号）
+
+> 详见 [`monitors/README.md`](../../../monitors/README.md) 与 [`AGENTS.md`](../../../AGENTS.md)「能力 2」。本段仅给触发与入口。
+
+**触发词**：关注 / 订阅 / 监控 / 帮我盯 / 有新内容提醒。
+**用户说「关注某 B站UP / 公众号」时，你要做**：
+1. 编辑 `monitors/subscriptions.json`（参考 `monitors/subscriptions.example.json`）：
+   - B站：`{"uid": "数字UP主ID"}`
+   - 公众号：`{"mp_id": "..."}` 或 `{"share_url": "公众号分享链接"}`
+2. 跑首跑回填：`python monitors/run.py --mode first --apply`
+3. 之后每日增量由定时任务跑（`--mode auto --apply`，每日 10:00 & 17:00）。
+
+**前置**：
+- B站需 `BILI_COOKIE`（动态接口硬性要求；缺失降级游客态并告警）。
+- 公众号需 weread token（失效时 `run.py` 自动检测并弹二维码续期，半自动）。
+
+**禁止**：手写抓取脚本、手搓 B站 / 微信 API——一律走 `monitors/run.py` 入口。
+
+**抓取规则（暂定 · 概要）**：首跑 7 天 / 每日 1 天时间窗口；无干货动态屏蔽；短动态轻量化（≤`BILI_SHORT_DYNAMIC_MAX` 字走速览）；新鲜度标签（#🔥当日 / #本周 / #更早）；state 按源裁剪防膨胀。

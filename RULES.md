@@ -25,6 +25,8 @@
 |------|------|-----------|
 | **RULES.md（本文件）** | 规则 + 地图索引（规则唯一来源） | ❌ 只放条目与指针 |
 | `SKILL.md` | 技能触发条件 + 调用入口 + 对话输出规范（面向「怎么用」） | 少量用法，规则指向 RULES.md |
+| `AGENTS.md` | **平台无关真源入口**（跨 WorkBuddy / Cursor / Claude / Codex / Copilot / 裸 API 通用） | 能力清单 + 接口速查 + 配置引导 + 各平台加载方式，指向本文件 |
+| `references/` | 专项详细文档（`config.md` 配置、`youtube-cdp-workflow.md` 抓取流程、`PRD.md` 需求、`testing_rules.md` TDD 流程） | ✅ 放深入细节 |
 | `references/` | 专项详细文档（`config.md` 配置、`youtube-cdp-workflow.md` 抓取流程、`PRD.md` 需求、`testing_rules.md` TDD 流程） | ✅ 放深入细节 |
 | `docs/decisions/` | grill_rules 的「产出 A：决策清单」存放地（`DECISION-YYYYMMDD-{slug}.md`，≤15 行） | ✅ 极轻量 |
 | `articles/` `videos/` `prompts/` `shared/` | 实现细节的唯一真相 | ✅ 代码即文档 |
@@ -87,6 +89,15 @@
 - **YouTube 在本机无出口时**：走 CDP 全自动（驱动带代理插件的 Chrome 副本）→ 详见 **`references/youtube-cdp-workflow.md`**（换会话照此执行，AI 只需跑 `videos/run.py --url <youtube>`）。
 - **公共机制**：笔记类型 `prompts/templates.py` 的 `NOTE_TEMPLATES`（7 种：structured 结构化复盘 / key_points 要点提炼 / case 案例拆解 / opinion 观点卡 / interview 访谈 / roundup 盘点横评 / reading 读书书摘）；新增类型只改这一处。分类详见 `prompts/classify.py`，优先级：教学超信号(structured) > 访谈(interview) > 要点(key_points) > 盘点(roundup) > 读书(reading) > 观点(opinion) > 案例(case) > structured 兜底。关键分类规则：① 教学/教程类视频（手把手/保姆/实操/从零/教程/课程）经「教学超信号」优先判 `structured`；② 访谈（访谈/对谈/专访/Q&A）已从要点词移出独立成类；③ **内容级访谈兜底**：标题无 cue 时（如「95后女老板Judy」式创业对谈），用正文前 2500 字做「主持人向特定嘉宾的人生/状态探针（你当时/你后来/你是怎么/你创业…）且观众独白口吻不占主导」判别，避免被误判为口播要点；④ **读书** 额外认书名号《》强信号、**盘点** 额外认「榜/榜单/红黑榜/种草/闭眼入/抄作业/排行」；⑤ **`视频` 已从要点词移除**——URL 本身即说明载体，不该当类型信号（否则字幕里一句「这个视频」就把盘点/访谈抢成口播要点）。**思维模型透镜（提质·按需）**：全部 7 模板共用 `UNIVERSAL_RULES` 第九节（structured 内联第十四节），6 模型按序 LIST（第一性原理→5-Why冰山→二阶思维→脉络还原→奥卡姆剃刀→类比迁移）逐条过、不适用跳过，直接服务「质量高、上下文清晰」且不破去水分红线。AI 调用优先级：外部 Provider → WorkBuddy 内置 AI → 降级。
 - **系列课必生成总览大纲（规则，非开关）**：B站 `ugc_season` 系列课 / 多P 视频处理完成后，`videos.main._generate_series_overview` 自动扫描系列文件夹，抽取每集标题 + `一句话核心结论`，并用 AI 生成「学习路径」段（建议顺序 + 先修说明），生成 `00_系列总览.md`（**Obsidian + 飞书 双写，本地仅兜底**，详见 §3.0 双写契约），含「各集导航」表（集号 / 标题 / 一句话核心结论 / 笔记相对链接）与「学习路径」段。无需 `--overview` 开关即生效；该总览在每集总结后刷新，待总结的 raw 集在表中标「（待总结）」。飞书下总览与各集都挂在「系列名」容器节点内，与 Obsidian 的 `系列名/` 文件夹一一对齐。
+
+### 路线 C：订阅监控（`monitors/`）
+> 关注 B站UP主 / 公众号，按时间窗口发现新内容 → AI 总结 → 双写（复用路线 A/B 的保存能力）。运营细节与已知坑见 **`monitors/README.md`**；跨平台入口见 **`AGENTS.md`「能力 2」**。
+
+- **入口**：`monitors/run.py --mode first|auto --apply`；订阅配置 `monitors/subscriptions.json`（参考 `monitors/subscriptions.example.json`）。
+- **B站**：`{"uid": "数字UP主ID"}`，需 `BILI_COOKIE`（动态接口硬性要求）；**公众号**：`{"mp_id": "..."}` 或 `{"share_url": "公众号分享链接"}`，weread token 自愈（失效自动弹码续期）。
+- **用户口头「关注 XXX」时，模型应把对应条目写进 `subscriptions.json`**，不要手搓抓取代码。
+- **规则要点（暂定）**：首跑 7 天 / 每日 1 天时间窗口；无干货动态屏蔽；短动态轻量化；新鲜度标签；state 按源裁剪防膨胀。本文件不堆细节。
+- **禁止**：手写抓取脚本、手搓 B站 / 微信私有 API——一律走 `monitors/run.py` 入口。
 
 ---
 
