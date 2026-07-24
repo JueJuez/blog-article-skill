@@ -14,7 +14,8 @@
 
 认证：B站用根目录 .env 的 BILI_COOKIE（登录态 Cookie，动态接口硬性要求，缺失则降级游客态并告警）；
       公众号用 monitors/.wechat_auth.json 里的 JWT（weread.111965.xyz 转发服务器签发，数小时失效，
-      run.py 检测到失效则本次跳过公众号源、保 B站照跑；交互式会话弹码续期、下次运行恢复）。
+      run.py 检测到失效会自动弹码并阻塞等待扫码续期，扫到即自动继续抓取公众号源、无需手动重跑；
+      超时或 WECHAT_RELOGIN_WAIT=0 才退回「本次跳过、下次恢复」；B站照常不受影响）。
 """
 import sys
 import os
@@ -51,7 +52,7 @@ _load_env()
 
 from monitors.state import load_state, save_state  # noqa: E402
 from monitors.wechat import (  # noqa: E402
-    WereadClient, WechatSource, trigger_relogin, _notify_user,
+    WereadClient, WechatSource, trigger_relogin,
 )
 from monitors.bilibili import BilibiliSource, _SOURCE_GAP  # noqa: E402
 from monitors.ad_filter import is_fully_ad, purify_content  # noqa: E402
@@ -71,6 +72,10 @@ SHORT_DYNAMIC_MAX = int(os.environ.get("BILI_SHORT_DYNAMIC_MAX", "80"))
 # 公众号逐篇抓正文的间隔秒数（+0~3s 抖动）。2026-07-23 实测：无间隔连抓 25 篇，
 # 第 5 篇起被微信限流返回空正文页——这个间隔是硬保护，不要调 0。
 WECHAT_GAP = float(os.environ.get("WECHAT_GAP", "6"))
+# 公众号 token 失效触发重新登录后，主进程阻塞等待用户扫码续期的时长（秒）。
+# 扫到即自动继续抓取公众号（无需手动重跑）；超时则本次跳过、下次恢复。
+# 设为 0 可恢复「本次跳过、下次恢复」旧行为（适合无人值守定时任务）。
+WECHAT_RELOGIN_WAIT = int(os.environ.get("WECHAT_RELOGIN_WAIT", "180"))
 # 正文短于此值视为「限流空页/无正文」，不落 raw、进重试队列（下次运行优先重抓）
 MIN_CONTENT_LEN = int(os.environ.get("WECHAT_MIN_CONTENT_LEN", "100"))
 # 监控产出默认归档分类（Obsidian/飞书目录第一级）；订阅条目可用 "category" 字段覆盖
@@ -178,57 +183,99 @@ def load_weread_auth() -> tuple:
     return token, vid
 
 
+def _wait_for_token_refresh(old_token: str, timeout: int, interval: float = 3.0) -> tuple:
+    """token 失效触发重新登录后，阻塞等待用户扫码续期。
+
+    轮询 monitors/.wechat_auth.json + is_token_valid 探针，直到拿到与旧 token 不同的
+    有效 token（用户扫完即返回）；超时返回 ("", "")。配合 trigger_relogin() 启动的
+    后台 poll daemon 使用：daemon 扫到码写入文件，本函数检测到即让主流程继续抓取。
+
+    timeout <= 0 时立即返回空（恢复「本次跳过」旧行为）。
+    """
+    if timeout <= 0:
+        return "", ""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(interval)
+        tok, vid = load_weread_auth()
+        if tok and tok != old_token:
+            try:
+                if WereadClient(token=tok, vid=vid).is_token_valid():
+                    return tok, vid
+            except Exception:
+                pass  # 代理可能刚写入尚未就绪，继续等
+    return "", ""
+
+
+def _discover_wechat_retry(src, state, mode, name, retries: int = 3) -> list:
+    """带重试的公众号发现：瞬错（网络/401）重试，避免误触发整轮重登等待。
+
+    weread 代理极不稳定，单次 discover 偶发 401/空——这些大多是瞬时抖动，
+    重试即可恢复；只有「token 确实失效」才应在 discover_all 入口（已重试确认的
+    is_token_valid=False）走阻塞扫码流程。此处永不阻塞。
+    """
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            return src.discover(state, first_run_limit=FIRST_RUN_LIMIT, mode=mode)
+        except Exception as e:
+            last_err = e
+            if "401" in str(e) and attempt < retries:
+                print(f"[retry] wechat {name} 第{attempt}次 discover 遇 401，"
+                      f"{attempt}s 后重试({attempt}/{retries})...", file=sys.stderr)
+                time.sleep(attempt)  # 轻量退避
+                continue
+            break
+    print(f"[warn] wechat {name} discover 失败（已重试{retries}次）: {last_err}",
+          file=sys.stderr)
+    return []
+
+
 def discover_all(subs: dict, state: dict, mode: str = "auto") -> list:
     all_new: list = []
     token, vid = load_weread_auth()
 
-    # ---------- 微信源（token 自愈） ----------
+    # ---------- 微信源（token 自愈 + 扫码后自动续抓） ----------
+    # 设计要点（首跑踩坑后固化）：
+    #   1) 仅在「token 缺失 / 经重试确认的 is_token_valid=False」时才阻塞等扫码
+    #      （用户期望的「扫完自动续抓」）；token 有效时的 401 一律当瞬错重试，
+    #      绝不误触发 180s 重登等待（否则代理抖动会卡死整轮并弹多余二维码）。
+    #   2) 单号 discover 自带重试（_discover_wechat_retry，默认 3 次），
+    #      规避 weread 代理偶发空/401 导致的静默丢号。
+    #   3) 发现阶段不落盘 state（见 main 的 --apply 守卫），预览不会「吃掉」待抓条目。
     wechat_subs = subs.get("wechat", [])
-    need_qr = False
-    qr_path = None
     if wechat_subs:
-        first_share = wechat_subs[0].get("share_url", "")
-        valid = bool(token)
-        if valid:
-            try:
-                valid = WereadClient(token=token, vid=vid).is_token_valid(
-                    probe_share_url=first_share)
-            except Exception:
-                valid = False
-        if not valid:
-            print("⚠️ [微信读书] token 失效或缺失，自动触发重新登录...", file=sys.stderr)
+        token_valid = bool(token) and WereadClient(token=token, vid=vid).is_token_valid()
+        if not token_valid:
+            print("⚠️ [微信读书] 未检测到有效 token，自动触发重新登录并等待扫码...",
+                  file=sys.stderr)
             qr_path = trigger_relogin()
-            need_qr = bool(qr_path)
-            if need_qr:
-                print(f"RELOGIN_QR:{qr_path}", file=sys.stderr)
-                print(f"⚠️ 请用微信「扫一扫」扫描二维码重新登录：{qr_path}", file=sys.stderr)
-                print("⚠️ 本次运行跳过公众号源（B站照常）；扫码后 token 自动落盘，下次运行恢复。",
-                      file=sys.stderr)
-                _notify_user(qr_path)  # 弹图片查看器 + 提示框
+            if not qr_path:
+                print("⚠️ 重新登录触发失败，本次跳过公众号源（B站照常）。", file=sys.stderr)
+                wechat_subs = []
             else:
-                print("⚠️ 重新登录触发失败，请手动运行 `python monitors/_auth.py qr`", file=sys.stderr)
-        else:
-            for w in wechat_subs:
-                client = WereadClient(token=token, vid=vid)
-                src = WechatSource(client, mp_id=w.get("mp_id", ""),
-                                   share_url=w.get("share_url", ""), name=w.get("name", ""))
-                try:
-                    found = src.discover(state, first_run_limit=FIRST_RUN_LIMIT, mode=mode)
-                    for it in found:
-                        it["category"] = w.get("category", "")
-                        it["sub_name"] = w.get("name", "")
-                    all_new.extend(found)
-                except Exception as e:
-                    if "401" in str(e) and not need_qr:
-                        qr_path = trigger_relogin()
-                        need_qr = bool(qr_path)
-                        if qr_path:
-                            print(f"RELOGIN_QR:{qr_path}", file=sys.stderr)
-                            print(f"⚠️ 抓取时 token 失效，请扫码：{qr_path}", file=sys.stderr)
-                            _notify_user(qr_path)  # 弹图片查看器 + 提示框
-                        continue
-                    print(f"[warn] wechat {w} 失败: {e}", file=sys.stderr)
-                time.sleep(2)  # weread 代理频率退避，避免单号日内超次
+                print(f"RELOGIN_QR:{qr_path}", file=sys.stderr)
+                print(f"⏳ 已生成二维码，正在等待扫码（最长 {WECHAT_RELOGIN_WAIT}s）；"
+                      f"扫到即自动继续抓取公众号，无需手动重跑。", file=sys.stderr)
+                new_tok, new_vid = _wait_for_token_refresh(token, WECHAT_RELOGIN_WAIT)
+                if new_tok:
+                    print("✅ 扫码成功，token 已刷新，继续抓取公众号源。", file=sys.stderr)
+                    token, vid = new_tok, new_vid
+                else:
+                    print(f"⏰ 等待扫码超时（{WECHAT_RELOGIN_WAIT}s），本次跳过公众号源"
+                          f"（B站照常）；下次运行自动恢复。", file=sys.stderr)
+                    wechat_subs = []
+
+        for w in wechat_subs:
+            client = WereadClient(token=token, vid=vid)
+            src = WechatSource(client, mp_id=w.get("mp_id", ""),
+                               share_url=w.get("share_url", ""), name=w.get("name", ""))
+            found = _discover_wechat_retry(src, state, mode, w.get("name", ""))
+            for it in found:
+                it["category"] = w.get("category", "")
+                it["sub_name"] = w.get("name", "")
+            all_new.extend(found)
+            time.sleep(2)  # weread 代理频率退避，避免单号日内超次
 
     for b in subs.get("bilibili", []):
         src = BilibiliSource(b["uid"], types=b.get("types"))
@@ -384,13 +431,13 @@ def apply_summaries(items: list) -> None:
         f" · 限流待重试 {stats['empty_retry']} · 错误 {stats['error']}"
     )
 
-    # 降级待总结队列提示：外层执行模型据此接单（Read raw → 按模板总结 → save_summary_only）
+    # Agent 待总结队列提示：由 WorkBuddy 执行模型（主 Agent / 子 Agent）接单处理
     pending = _load_json(PENDING_SUMMARY_PATH, [])
     if pending:
         print(
-            f"\n🤖 NEED_CONTINUE_SUMMARY: {len(pending)} 条内容已抓取但无外部 AI 总结，"
+            f"\n🤖 NEED_AGENT_SUMMARY: {len(pending)} 条内容已抓取，等待执行模型（Agent）总结。"
             f"清单见 {PENDING_SUMMARY_PATH}\n"
-            f"   外层模型请逐条处理：Read 条目 raw_file → 按 note_type 模板"
+            f"   处理路径：Read 条目 raw_file → 按 note_type 模板"
             f"（prompts.templates.get_note_prompt）总结 → 调 articles.main.save_summary_only("
             f"{{summarized_content, original_url, author, tags, original_title, publish_time, folder}}) "
             f"落盘 → 从队列移除该条。"
@@ -418,9 +465,19 @@ def main():
     subs = load_subscriptions()
     state = load_state()
     all_new = discover_all(subs, state, mode=mode)
-    save_state(state)
+
+    if not all_new:
+        # 首跑踩坑：discover_all 返回 0 时容易被误认成「成功无新内容」，这里显式提示，
+        # 便于第一时间发现「代理冷启动 / 限流 / 窗口内无更新 / 订阅源异常」。
+        print("ℹ️ 本轮 discover_all 返回 0 条新内容（窗口内无更新 / 代理暂时无响应 / "
+              "或订阅源异常）。若为异常，请稍后重试；未抓取时不落盘 state。",
+              file=sys.stderr)
 
     if args.apply:
+        # 仅在实际抓取时落盘 state（标记已发现条目），避免「仅预览」就把待抓条目标记为
+        # 已处理，导致后续 --apply 永远抓不到它们（首跑已踩此坑：发现模式把中金点睛 3 篇
+        # 标记为 seen，后续 --apply 直接去重成 0）。
+        save_state(state)
         apply_summaries(all_new)
     else:
         print(json.dumps(all_new, ensure_ascii=False, indent=2))

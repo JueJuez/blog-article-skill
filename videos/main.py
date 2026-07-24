@@ -12,7 +12,7 @@
   3. file 为本地视频/音频 → ASR 转写（P3）
   4. transcript/content 为字幕文本 → 直接总结（P1）
 
-降级：无可用 AI 时返回 need_continue_summary + prompt + 字幕文本，交外层对话。
+降级：FORCE_AGENT_MODE=1 时返回 need_continue_summary + prompt + 字幕文本，交执行模型（Agent）总结。
 """
 
 import os
@@ -607,7 +607,7 @@ def _finalize_single(title, segments, url, input_data, visual_context: str = "")
         return {
             "success": True,
             "need_continue_summary": True,
-            "message": "⚠️ AI Provider 暂不可用，已准备好字幕内容，请外层总结",
+            "message": "✅ 已准备好字幕内容，等待执行模型（Agent）按笔记模板总结",
             "article_content": article_content,
             "note_type": note_type,
             "prompt": get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK,

@@ -26,20 +26,21 @@ def _ensure_notes_dir() -> str:
 def call_ai_summary_with_meta(prompt: str, content: str, **kwargs) -> dict:
     """统一 AI 总结入口，返回带 usage 的 meta dict 或 None（触发降级）。
 
-    优先级（A6 设计：WB 内置 AI 仅替换「降级」路径，绝不绕过已配置的外 Provider）：
-      1. 外部 Provider（openai/anthropic/google/local，自动检测，带 A4 重试+token 计量）
-      2. WorkBuddy 内置 AI（best-effort，经 shared.wb_ai 回调；无则跳过）
-      3. None → 上层走降级（返回 prompt+正文交外层对话）
+    优先级：
+      1. FORCE_AGENT_MODE=1（默认）时直接返回 None，由 WorkBuddy 执行模型总结，
+         不再调用任何外部 Provider。
+      2. FORCE_AGENT_MODE=0 时尝试外部 Provider（openai/anthropic/google/local）。
+      3. 外部 AI 不可用 / 未配置时返回 None，走降级路径。
     """
+    if os.environ.get("FORCE_AGENT_MODE", "1") == "1":
+        print("   🤖 FORCE_AGENT_MODE=1，跳过外部 AI，交由执行模型总结")
+        return None
+
     from .ai_provider import call_external_ai_summarize_meta
     meta = call_external_ai_summarize_meta(prompt, content, **kwargs)
     if meta:
         meta["source"] = "external"
         return meta
-    # WB 内置 AI（可选增强，绝不阻断）
-    wb = call_wb_ai(prompt, content, **kwargs)
-    if wb:
-        return {"content": wb, "usage": None, "model": "workbuddy-builtin", "source": "wb"}
     return None
 
 
@@ -524,7 +525,7 @@ def skill_main(input_data: dict) -> dict:
             note_type = note_type or classify_note_type(original_title, article_content)
             return {
                 'success': True, 'need_continue_summary': True,
-                'message': '⚠️ AI Provider 暂不可用，已成功抓取文章内容，请使用对应笔记模板进行总结',
+                'message': '✅ 已抓取文章内容，等待执行模型（Agent）按笔记模板总结',
                 'article_content': article_content, 'note_type': note_type,
                 'prompt': get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK, 'original_url': original_url,
                 'original_title': original_title, 'author': author, 'tags': tags,

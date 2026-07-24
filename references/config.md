@@ -256,4 +256,4 @@ NOTE_GATE_THRESHOLD=85
 
 ### 调度
 
-**已移除自动调度（2026-07-24）**：不再由 WorkBuddy automation 每日 10:00/17:00 驱动。改为**用户主动触发**——用户说「开启定时任务」等关键词即运行 `python monitors/run.py --mode auto --apply`（详见 `RULES.md` §3C / `monitors/README.md`）。
+**已移除自动调度（2026-07-24）**：不再由 WorkBuddy automation 每日 10:00/17:00 驱动。改为**用户主动触发**——用户说「跑一次 / 跑一下」等关键词即运行 `python monitors/run.py --mode auto --apply`（详见 `RULES.md` §3C / `monitors/README.md`）。

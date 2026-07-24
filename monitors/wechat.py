@@ -25,6 +25,10 @@ PLATFORM_URL = os.environ.get("WEREAD_PLATFORM_URL", "https://weread.111965.xyz"
 TIMEOUT = 15
 DEFAULT_COUNT = 20  # wewe-rss 的 defaultCount
 
+# 公众号 discover 空轮重试：token 有效但代理返空列表（冷启动/懒加载未预热）
+# 时的自愈次数。仅「原始列表为空」才重试；列表非空但全被 seen 过滤属正常，不重试。
+WECHAT_EMPTY_RETRIES = int(os.environ.get("WECHAT_EMPTY_RETRIES", "3"))
+
 # 解析缓存：share_url -> {id,name,...}，避免每次运行都打 wxs2mp（省 token、抗偶发 401）
 _MP_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".mp_cache.json")
 
@@ -76,9 +80,9 @@ class WereadClient:
         return r.json()
 
     # ---- 解析公众号 ----
-    def resolve_mp(self, share_url: str) -> Dict:
+    def resolve_mp(self, share_url: str, force: bool = False) -> Dict:
         cache = _load_mp_cache()
-        if share_url in cache:
+        if not force and share_url in cache:
             return cache[share_url]
         r = self.session.post(
             f"{self.base}/api/v2/platform/wxs2mp",
@@ -110,27 +114,35 @@ class WereadClient:
             if len(items) < DEFAULT_COUNT:
                 break
 
-    def is_token_valid(self, probe_share_url: str = "") -> bool:
-        """探针：用缓存的 mp_id 或给定 share_url 打一个需鉴权的请求，401 即失效。
+    def is_token_valid(self, probe_share_url: str = "", retries: int = 3) -> bool:
+        """探针：用缓存的 mp_id 或给定 share_url 打一个需鉴权的请求。
 
-        其他异常（网络抖动等）保守返回 True，交由 discover 自行处理。
+        仅当「重试后仍是 401」才判失效；代理冷启动/网络抖动的瞬时 401 会被重试覆盖，
+        避免误判 token 失效、导致整轮跳过公众号源（首跑已踩此坑）。
+        其他异常保守返回 True（放行，交由 discover 自行处理）。
         """
         cache = _load_mp_cache()
         probe_mp = next((v.get("id") for v in cache.values() if v.get("id")), "")
-        try:
-            if probe_mp:
-                self.list_articles(probe_mp, 1)
-            elif probe_share_url:
-                self.resolve_mp(probe_share_url)  # 需 token，401 即失效
-            else:
-                return True  # 无探针可用，保守放行
-            return True
-        except requests.HTTPError as e:
-            if e.response is not None and e.response.status_code == 401:
-                return False
-            return True
-        except Exception:
-            return True
+        last_status = None
+        for attempt in range(retries):
+            try:
+                if probe_mp:
+                    self.list_articles(probe_mp, 1)
+                elif probe_share_url:
+                    self.resolve_mp(probe_share_url)  # 需 token，401 即失效
+                else:
+                    return True  # 无探针可用，保守放行
+                return True
+            except requests.HTTPError as e:
+                if e.response is not None and e.response.status_code == 401:
+                    last_status = 401
+                    time.sleep(2 * (attempt + 1))  # 退避后重试，绕过冷启动
+                    continue
+                return True
+            except Exception:
+                return True
+        # 重试耗尽且最后一次确为 401 → 才认定失效
+        return last_status == 401
 
 
 class WechatSource:
@@ -154,6 +166,36 @@ class WechatSource:
         self._resolve()
         return f"wechat:{self.mp_id}"
 
+    def _list_with_retry(self, mp_id: str) -> List[Dict]:
+        """拉最新一页文章列表；遇「空轮」（代理冷启动/懒加载未预热）退避重试。
+
+        仅当「原始列表为空」才重试——列表非空但内容全被 seen 过滤（无新文）属正常，
+        绝不重试；401/网络异常交给外层 _discover_wechat_retry 处理。
+        配了 share_url 时，空轮先 force 重解（wxs2mp 绕过缓存）预热账号再试。
+        返回列表（重试耗尽仍空则返回 []，由 caller 决定如何处置）。
+        """
+        for attempt in range(WECHAT_EMPTY_RETRIES + 1):
+            items = self.client.list_articles(mp_id, 1)
+            if items:
+                return items
+            # 空轮：配了 share_url 则 force 重解预热账号再试一次（账户级自愈）
+            if self.share_url:
+                try:
+                    info = self.client.resolve_mp(self.share_url, force=True)
+                    self.mp_id = (info.get("id") or self.mp_id) or self.mp_id
+                    items = self.client.list_articles(self.mp_id, 1)
+                    if items:
+                        return items
+                except Exception:
+                    pass
+            if attempt < WECHAT_EMPTY_RETRIES:
+                backoff = 2 * (attempt + 1)
+                print(f"[retry-empty] wechat {self.name} 第{attempt + 1}次列表空，"
+                      f"{backoff}s 后退避重试({attempt + 1}/{WECHAT_EMPTY_RETRIES})...",
+                      file=sys.stderr)
+                time.sleep(backoff)
+        return []
+
     def discover(self, state: Dict, first_run_limit: int = 5, mode: str = "auto") -> List[Dict]:
         """返回新文章条目；同时把本次抓到的候选 id 全部写入 seen（增量去重）。
 
@@ -167,19 +209,24 @@ class WechatSource:
             raise ValueError("无法解析公众号 id（需提供 mp_id 或 share_url）")
 
         seen = get_seen(state, self.source_key())
-        items = self.client.list_articles(mp_id, 1)  # 最新一页（最多 20 条）
+        # 列表拉取自带空轮重试（_list_with_retry）：token 有效时代理返空多为
+        # 冷启动/懒加载抖动，重试通常能拿到；不会因空轮静默丢号。
+        items = self._list_with_retry(mp_id)
+        if not isinstance(items, list):
+            items = []
         # 标题级广告过滤（无干货内容直接剔除，过滤后不补）
         items = [it for it in items if not is_ad_by_title(it.get("title", ""))]
+        # 时间窗口（每日监控语义）：只保留最近 WECHAT_WINDOW_DAYS 天发布的，
+        # 不深挖历史；设为 0 则关闭窗口、抓全部最新 N 篇。
+        window = int(os.environ.get("WECHAT_WINDOW_DAYS", "2"))
+        if window > 0:
+            cutoff = int(time.time()) - window * 86400
+            items = [it for it in items if it.get("publishTime", 0) >= cutoff]
         fetched_ids = [it["id"] for it in items]
 
         is_first = (mode == "first") or (mode == "auto" and not seen)
-        if is_first:
-            # 首次：最近 N 篇，过滤广告后不补
-            new = [it for it in items if it["id"] not in seen][:first_run_limit]
-        else:
-            # 增量：抓最近 N 篇，去重后只处理新文。
-            # 不限制「当天」——state 去重已保证不重复，且避免跨天边界文章永久遗漏。
-            new = [it for it in items if it["id"] not in seen][:first_run_limit]
+        # 首次/增量统一：去重后取最近 N 篇（已先经时间窗口裁剪，不会深挖历史）
+        new = [it for it in items if it["id"] not in seen][:first_run_limit]
 
         mark_seen(state, self.source_key(), fetched_ids,
                   last_check=int(time.time()))
@@ -270,28 +317,15 @@ def _start_poll_daemon() -> None:
 
 
 def _notify_user(qr_path: str) -> None:
-    """best-effort 桌面通知（Windows 本机有效）：自动用图片查看器打开二维码 + 弹窗说明。
+    """best-effort 桌面通知（Windows 本机有效）：自动用图片查看器打开二维码。
 
-    定时任务无人值守场景下，用户需要「被动被提醒 + 直接看到码」。本函数：
-      1) 用系统默认程序打开二维码图片（Windows 图片查看器 / 浏览器）——用户直接看到码；
-      2) 弹一个置顶 MessageBox 说明「token 已失效，请扫码，扫完自动恢复」。
+    只打开二维码图片本身——用户看到码即知道 token 过期需扫码，无需额外文字弹窗。
     非 Windows 环境静默失败，不影响流水线。
     """
     try:
         if sys.platform.startswith("win"):
-            # 1) 先打开二维码图片（非阻塞，图片查看器在后台弹出）
             if qr_path and os.path.exists(qr_path):
                 os.startfile(qr_path)  # type: ignore[attr-defined]
-            # 2) 再弹说明框（置顶，确保用户注意到）
-            # 注意：PowerShell 单引号字符串不支持裸换行，故用空格分隔，避免引号未闭合报错
-            msg = ("微信读书 token 已失效，公众号监控本次已跳过。 "
-                   "请用微信「扫一扫」扫描刚才自动打开的二维码完成登录， "
-                   "扫码成功后 token 自动续期，下次运行自动恢复公众号抓取。")
-            safe = msg.replace("'", "''")
-            ps = ("powershell -NoProfile -Command "
-                  "Add-Type -AssemblyName System.Windows.Forms; "
-                  "[System.Windows.Forms.MessageBox]::Show('" + safe + "')")
-            subprocess.Popen(ps, shell=True)
     except Exception:
         pass
 

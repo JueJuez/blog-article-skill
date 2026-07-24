@@ -27,7 +27,14 @@
   - 用户口头说「关注 / 订阅 / 监控 XXX」时，**模型应把对应条目写进这个 JSON**，不要手搓抓取代码。
 - **运行**
   - 首跑（回填最近 7 天）：`python monitors/run.py --mode first --apply`
-  - 每日增量：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「开启定时任务」等关键词即触发，详见 `RULES.md` §3C）
+  - 每日增量：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「跑一次 / 跑一下」等关键词即触发，详见 `RULES.md` §3C）
+  - **新会话执行步骤（照做即一帆风顺）**：
+    1. 直接运行 `python monitors/run.py --mode auto --apply`。
+    2. 公众号 token 失效 → 自动弹二维码（`RELOGIN_QR:` 路径），**本机会话扫码后续期，下次运行恢复**；本次跳过公众号、B站照跑，不影响。
+    3. 发现 → 抓正文 → 进 `pending_summaries.json` 队列（FORCE_AGENT_MODE 下不自动总结）。
+    4. 运行结束后，本会话（执行模型）读队列、派**子 Agent** 按模板总结并 `save_summary_only` 落盘（Obsidian + 飞书双写）。
+    5. 末尾看健康度行（视频/动态/文章/跳过/限流待重试/错误）确认是否异常。
+    - 内置重试（无需手动）：token 失效弹码等扫码(≤180s) / 401 瞬错 ×3 / 代理空轮退避重试 / 正文限流进 `pending_refetch` 下次重抓。
 - **抓取规则**：按时间窗口（首跑 7 天 / 每日 1 天）+ 无干货动态屏蔽 + 短动态轻量化 + 新鲜度标签。细节见 `monitors/README.md`。
 - B站需要登录态：`BILI_COOKIE` 环境变量（动态接口硬性要求）。
 
@@ -40,7 +47,7 @@
 
 ## 配置（`.env`）
 复制 `.env.example` → `.env`，至少关注：
-- `AI_PROVIDER` + 对应 key（openai / anthropic / google / local）—— 不配也能降级由对话模型总结
+- `FORCE_AGENT_MODE=1`（默认）：不调用外部 AI，总结一律由执行模型（主/子 Agent）完成；旧 `AI_PROVIDER` 配置已废弃。
 - `OBSIDIAN_VAULT_PATH` —— Obsidian 库路径（双写一端）
 - `FEISHU_WIKI_SPACE` + `FEISHU_WIKI_PARENT_NODE` —— 飞书知识库（双写另一端）
 - `BILI_COOKIE` —— B站登录态 Cookie（订阅监控动态接口必需）

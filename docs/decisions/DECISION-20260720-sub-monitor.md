@@ -7,7 +7,7 @@
 - AI 引擎：用 WorkBuddy 内置 AI，由 automation 定时驱动；run.py 降级时顶层 AI 兜底总结。
 - 输出：Obsidian（OBSIDIAN_VAULT_PATH 已配）+ 飞书（FEISHU_WIKI_* 已配），双写。
 - 抓取策略：**按内容发布时间做「时间窗口」过滤**（首跑 `BILI_FIRST_WINDOW_DAYS`=7 天 / 每日 `BILI_DAILY_WINDOW_DAYS`=1 天），单页拉满 `BILI_PAGE_SIZE`=50；不在首跑硬取"最近 N 条"。详见 `monitors/README.md`。
-- 调度：**已移除自动调度（2026-07-24）**，改为用户主动触发（说「开启定时任务」等关键词即跑 `--mode auto`）。原「每日 10:00/17:00 自动化」方案已废弃，见 `RULES.md` §3C。
+- 调度：**已移除自动调度（2026-07-24）**，改为用户主动触发（说「跑一次 / 跑一下」等关键词即跑 `--mode auto`）。原「每日 10:00/17:00 自动化」方案已废弃，见 `RULES.md` §3C。
 - 去重：本地 `monitors/state.json` 记录已处理 文章id / BV / 专栏 id / dyn:id，per-source 裁剪（`STATE_KEEP` 默认 1000）防膨胀。
 - 路由：公众号文章→`articles.skill_main`；B站视频→`videos.summarize_video`；B站专栏(cv)→`articles.skill_main`；B站动态→`articles.skill_main`（短动态走轻量「速览」）。
 

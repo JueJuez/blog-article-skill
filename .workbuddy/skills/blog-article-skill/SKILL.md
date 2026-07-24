@@ -252,13 +252,14 @@ blog-article-skill/
 
 > 详见 [`monitors/README.md`](../../../monitors/README.md) 与 [`AGENTS.md`](../../../AGENTS.md)「能力 2」。本段仅给触发与入口。
 
-**触发词**：关注 / 订阅 / 监控 / 帮我盯 / 有新内容提醒。
+**触发词（关注/订阅）**：关注 / 订阅 / 监控 / 帮我盯 / 有新内容提醒。
+**每日监控触发词**：跑一次 / 跑一下（即运行 `python monitors/run.py --mode auto --apply`，详见 AGENTS.md 能力 2 / RULES.md §3C）。
 **用户说「关注某 B站UP / 公众号」时，你要做**：
 1. 编辑 `monitors/subscriptions.json`（参考 `monitors/subscriptions.example.json`）：
    - B站：`{"uid": "数字UP主ID"}`
    - 公众号：`{"mp_id": "..."}` 或 `{"share_url": "公众号分享链接"}`
 2. 跑首跑回填：`python monitors/run.py --mode first --apply`
-3. 之后每日增量由定时任务跑（`--mode auto --apply`，每日 10:00 & 17:00）。
+3. 之后每日增量由用户主动触发：`python monitors/run.py --mode auto --apply`（用户说「跑一次 / 跑一下」即跑，不再挂自动调度）。
 
 **前置**：
 - B站需 `BILI_COOKIE`（动态接口硬性要求；缺失降级游客态并告警）。

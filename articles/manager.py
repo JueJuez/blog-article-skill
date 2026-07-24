@@ -35,9 +35,13 @@ class OutputManager:
         feishu_output = FeishuOutput()
         obsidian_output = ObsidianOutput()
 
+        # 测试/优化期开关：DISABLE_FEISHU_SYNC=1 时仅跳过飞书写入（飞书代码保留，不删），
+        # 待链路稳定后再从 .env 移除该变量即可恢复双写。
+        disable_feishu = os.getenv("DISABLE_FEISHU_SYNC", "").lower() in ("1", "true", "yes", "on")
+
         has_external_config = False
 
-        if feishu_output.is_available():
+        if feishu_output.is_available() and not disable_feishu:
             self.outputs.append(feishu_output)
             has_external_config = True
 
