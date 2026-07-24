@@ -21,6 +21,7 @@ monitors/.relogin.lock
 monitors/.relogin.mutex
 monitors/pending_refetch.json
 monitors/pending_summaries.json
+*.bak
 stderr.log
 stdout.log
 .cache/
