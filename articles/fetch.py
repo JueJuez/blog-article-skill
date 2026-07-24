@@ -13,6 +13,28 @@ import requests
 from bs4 import BeautifulSoup
 
 
+# 微信扫码墙 / 反爬页的 UI 特征文本。这些只出现在未登录态的墙页，绝不会出现在真实正文里。
+# trafilatura 等抽取器可能把墙页的 UI 壳文本（如「微信扫一扫可打开此内容」）当成正文抽出，
+# 其长度常 > 100 字阈值，从而骗过长度闸门。命中任一标记即判为「无真实正文」。
+_WALL_MARKERS = (
+    "微信扫一扫可打开此内容",   # 典型扫码墙提示
+    "使用完整服务",             # 扫码墙副提示
+    "该内容已被发布者删除",
+    "访问过于频繁",
+    "请输入验证码",
+    "环境异常，请稍后",
+    "此内容因违规无法查看",
+)
+
+
+def _looks_like_wall(content: str) -> bool:
+    """抽取到的文本若只是微信墙/反爬页的 UI 文本（无真实正文），返回 True。"""
+    if not content:
+        return False
+    return any(m in content for m in _WALL_MARKERS)
+
+
+
 # ---------------------------------------------------------------------------
 # 下载
 # ---------------------------------------------------------------------------
@@ -181,6 +203,13 @@ def fetch_web_content(url: str):
         or _extract_readability(html)
         or _extract_bs4_content(soup)
     )
+
+    # 墙文/反爬页：trafilatura 等可能抽到扫码墙 UI 壳文本（如「微信扫一扫可打开此内容」），
+    # 其长度常 > 100 阈值，但毫无正文价值。命中墙标记即判抓取失败，交给上层重试/移除逻辑。
+    if content and _looks_like_wall(content):
+        print("❌ 抓取疑似微信扫码墙/反爬页（无真实正文），视为抓取失败")
+        print("💡 请手动复制全文原文发送，我将继续整理总结")
+        return None
 
     if not content or len(content.strip()) < 100:
         print("❌ 抓取的正文过短（少于100字），视为抓取失败")

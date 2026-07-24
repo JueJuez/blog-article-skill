@@ -80,6 +80,25 @@ WECHAT_RELOGIN_WAIT = int(os.environ.get("WECHAT_RELOGIN_WAIT", "180"))
 MIN_CONTENT_LEN = int(os.environ.get("WECHAT_MIN_CONTENT_LEN", "100"))
 # 监控产出默认归档分类（Obsidian/飞书目录第一级）；订阅条目可用 "category" 字段覆盖
 DEFAULT_CATEGORY = os.environ.get("MONITOR_DEFAULT_CATEGORY", "投资交易")
+# 公众号文章连续抓取正文为空（限流空页 / 微信扫码墙 / 文章已删除）达到此次数，
+# 判定为「不可抓取」，移出重试队列并明确上报（不再无限重试刷虚假告警）。可调。
+WECHAT_MAX_REFETCH = int(os.environ.get("WECHAT_MAX_REFETCH", "3"))
+
+
+def _decide_retry_or_drop(it: dict, max_retry: int):
+    """抓取正文失败后的处置决策。返回 ("retry", item_with_count) 或 ("drop", reason)。
+
+    - 累计失败次数 < max_retry：继续重试（写入 refetch_next，下次优先重抓）
+    - 累计失败次数 >= max_retry：判定不可抓取，移出队列并给出原因（由调用方上报用户）
+    """
+    cnt = int(it.get("refetch_count", 0)) + 1
+    if cnt >= max_retry:
+        reason = (f"连续 {cnt} 次抓取正文为空（疑似微信扫码墙 / 限流 / 文章已删除），"
+                  f"已停止自动重试")
+        return ("drop", reason)
+    new_it = {k: it[k] for k in it if k != "content"}
+    new_it["refetch_count"] = cnt
+    return ("retry", new_it)
 
 
 def _load_json(path: str, default):
@@ -308,6 +327,7 @@ def apply_summaries(items: list) -> None:
         print(f"[refetch] 恢复上次限流未抓到正文的 {len(refetch_prev)} 篇，优先重抓")
         items = refetch_prev + items
     refetch_next = []  # 本轮仍抓空的，写回队列下次再试
+    dropped = []  # 连续多次抓不到（墙文/已删除/持续限流），移出队列待上报
     _first_article = True
     for it in items:
         if it["route"] in ("article", "cv"):
@@ -325,12 +345,23 @@ def apply_summaries(items: list) -> None:
                 stats["error"] += 1
                 refetch_next.append({k: it[k] for k in it if k != "content"})
                 continue
-            # 正文过短 = 限流空页/无正文：不落 raw、不喂总结，进重试队列
+            # 正文过短 = 限流空页/无正文（含微信扫码墙）。累计失败达阈值则判定不可抓取、
+            # 移出队列并上报；否则进重试队列下次优先重抓。不强行总结。
             if len((content or "").strip()) < MIN_CONTENT_LEN:
-                print(f"[empty-retry] {it['title']}（正文 {len((content or '').strip())} 字，"
-                      f"疑似限流/无正文，已入重试队列）")
+                decision, payload = _decide_retry_or_drop(it, WECHAT_MAX_REFETCH)
                 stats["empty_retry"] += 1
-                refetch_next.append({k: it[k] for k in it if k != "content"})
+                if decision == "drop":
+                    dropped.append({
+                        "title": it.get("title", ""),
+                        "mp_name": it.get("mp_name", "") or it.get("sub_name", ""),
+                        "url": it.get("url", ""),
+                        "reason": payload,
+                    })
+                    print(f"[drop-gate] {it['title']}（{payload}）")
+                else:
+                    refetch_next.append(payload)
+                    print(f"[empty-retry] {it['title']}（正文 {len((content or '').strip())} 字，"
+                          f"疑似限流/无正文，已入重试队列 {payload.get('refetch_count')}/{WECHAT_MAX_REFETCH}）")
                 continue
             real_title = title or it.get("title", "")
             if is_fully_ad(real_title, content or ""):
@@ -421,6 +452,14 @@ def apply_summaries(items: list) -> None:
     if refetch_next:
         print(f"\n⏳ {len(refetch_next)} 篇正文未抓到（限流/失败），已存重试队列，下次运行自动重抓")
 
+    # 不可抓取（墙文/已删除/持续限流）明确上报，避免静默丢失用户订阅内容
+    if dropped:
+        print(f"\n⚠️ 以下 {len(dropped)} 篇连续 {WECHAT_MAX_REFETCH} 次抓不到正文，已移出重试队列"
+              f"（不再自动重试；如需总结请手动粘贴原文）：")
+        for d in dropped:
+            print(f"   - 《{d['title']}》｜{d['mp_name']}｜{d['url']}")
+            print(f"     └ 原因：{d['reason']}")
+
     # 📊 健康度一行：视频 / 动态（速览·完整）/ 文章 / 跳过项，异常时一眼可见
     print(
         f"\n📊 本轮健康度：视频 {stats['video']}（充电跳过 {stats['video_charging_skip']}）"
@@ -428,7 +467,7 @@ def apply_summaries(items: list) -> None:
         f"（速览 {stats['dynamic_light']} · 完整 {stats['dynamic_full']}）"
         f" / 文章 {stats['article']}"
         f" | 广告跳过 {stats['ad_skip']} · 过短跳过 {stats['short_skip']}"
-        f" · 限流待重试 {stats['empty_retry']} · 错误 {stats['error']}"
+        f" · 限流待重试 {len(refetch_next)} · 墙文移除 {len(dropped)} · 错误 {stats['error']}"
     )
 
     # Agent 待总结队列提示：由 WorkBuddy 执行模型（主 Agent / 子 Agent）接单处理
