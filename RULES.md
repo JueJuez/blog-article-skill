@@ -95,7 +95,8 @@
 
 - **入口**：`monitors/run.py --mode first|auto --apply`；订阅配置 `monitors/subscriptions.json`（参考 `monitors/subscriptions.example.json`）。
 - **B站**：`{"uid": "数字UP主ID"}`，需 `BILI_COOKIE`（动态接口硬性要求）；**公众号**：`{"mp_id": "..."}` 或 `{"share_url": "公众号分享链接"}`。
-- **公众号 token 不稳定（无稳+免费+免维护方案）**：`weread.111965.xyz` 转发 JWT 数小时即失效。检测到失效时：**本次运行跳过公众号源、保 B站照跑**；交互式（Windows 本机）会话会弹二维码，用户扫码续期后**下次运行**恢复公众号抓取，headless/自动化下无人看码等价于跳过。详见 `monitors/README.md` 注意事项。
+- **公众号 token 不稳定（无稳+免费+免维护方案）**：`weread.111965.xyz` 转发 JWT 数小时即失效。检测到失效时 `run.py` **自动弹二维码**（`RELOGIN_QR:` 路径），交互式（Windows 本机）会话用户扫码续期后**本次运行即继续抓取**公众号（刷新 token 后重试整轮）；headless/自动化下无人看码等价于本次跳过公众号、保 B站照跑。详见 `monitors/README.md` 注意事项。
+  - **2026-07-28 修复（过期不再静默丢源）**：`is_token_valid` 探针由 `list_articles`（过期返回 200 空、失明）改为 `resolve_mp(force=True)`（过期稳定 401），过期 token 不再被误判有效而静默跳过；`discover_all` 新增「全源零结果 + 持续 401」兜底自动重登。回归测试 `tests/test_wechat_relogin_fallback.py`。
 - **用户口头「关注 XXX」时，模型应把对应条目写进 `subscriptions.json`**，不要手搓抓取代码。
 - **规则要点（暂定）**：首跑 7 天 / 每日 1 天时间窗口；无干货动态屏蔽；短动态轻量化；新鲜度标签；state 按源裁剪防膨胀。本文件不堆细节。
 - **触发方式（已移除自动调度 · 2026-07-24）**：不再挂每日 10:00/17:00 自动化。改为**用户主动触发**——用户说「跑一次 / 跑一下」等关键词时，运行 `python monitors/run.py --mode auto --apply`（按 `subscriptions.json` 抓公众号 + B站UP，正文入队后由执行模型/子 Agent 总结，双写 Obsidian + 飞书）。公众号 token 失效时按上条跳过公众号、保 B站。

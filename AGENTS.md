@@ -30,7 +30,7 @@
   - 每日增量：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「跑一次 / 跑一下」等关键词即触发，详见 `RULES.md` §3C）
   - **新会话执行步骤（照做即一帆风顺）**：
     1. 直接运行 `python monitors/run.py --mode auto --apply`。
-    2. 公众号 token 失效 → 自动弹二维码（`RELOGIN_QR:` 路径），**本机会话扫码后续期，下次运行恢复**；本次跳过公众号、B站照跑，不影响。
+    2. 公众号 token 失效 → 自动弹二维码（`RELOGIN_QR:` 路径），**本机会话扫码后续期，本次运行即继续抓取公众号**（刷新 token 后重试整轮）；headless/无人看码则本次跳过公众号、B站照跑不受影响。
     3. 发现 → 抓正文 → 进 `pending_summaries.json` 队列（FORCE_AGENT_MODE 下不自动总结）。
     4. 运行结束后，本会话（执行模型）读队列、派**子 Agent** 按模板总结并 `save_summary_only` 落盘（Obsidian + 飞书双写）。
     5. 末尾看健康度行（视频/动态/文章/跳过/限流待重试/错误）确认是否异常。

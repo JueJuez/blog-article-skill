@@ -242,7 +242,10 @@ NOTE_GATE_THRESHOLD=85
 | `BILI_INTRA_GAP` | 2 | 同源「视频→动态」之间退避秒数 |
 | `BILI_BACKOFF` | 5 | 重试退避基数（动态接口偶发 `-352`/`4101129` 列入退避重试） |
 | `BILI_FIRST_WINDOW_DAYS` | 7 | 首跑时间窗口（天）：只处理 N 天内发布的视频/动态 |
-| `BILI_DAILY_WINDOW_DAYS` | 1 | 每日增量时间窗口（天） |
+| `BILI_DAILY_WINDOW_DAYS` | 1 | 每日增量**基础**时间窗口（天）；`auto` 非首次运行时按「距上次成功运行天数 + 1」自动拉长补齐 |
+| `BILI_MAX_WINDOW_DAYS` | 30 | 每日增量窗口**封顶**（天）；断跑超过此天数只补到此处（更长历史用 `--mode first`） |
+| `WECHAT_WINDOW_DAYS` | 2 | 公众号每日增量基础窗口（天）；同样支持自动补齐，封顶 `WECHAT_MAX_WINDOW_DAYS` |
+| `WECHAT_MAX_WINDOW_DAYS` | 30 | 公众号每日增量窗口封顶（天） |
 | `BILI_PAGE_SIZE` | 50 | 单页拉取条数（覆盖整个时间窗口） |
 | `BILI_SHORT_DYNAMIC_MAX` | 80 | 短动态轻量化阈值（字）：净化后正文 ≤ 此值走「速览」，不走重总结模板 |
 | `FIRST_RUN_LIMIT` | 50 | 首跑每类型安全上限（实际受 `BILI_SAFETY_CAP`=50 夹取，防极端 UP 刷爆） |

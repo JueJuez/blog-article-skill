@@ -11,6 +11,7 @@ state.json 结构：
 import json
 import os
 import sys
+import time
 from typing import Dict, Any, List, Set
 
 DEFAULT_STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
@@ -19,6 +20,21 @@ DEFAULT_STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "s
 # 保留「最新」(列表末尾)。默认 1000：首跑单源约 100 ID（视频+动态各~50），
 # 留 10× 余量；即使每日跑两遍，窗口内(≤7天) ID 远小于 1000，不会被误删。
 DEFAULT_STATE_KEEP = int(os.environ.get("STATE_KEEP", "1000"))
+
+
+def effective_window_days(daily_default: float, last_check: int,
+                         max_days: float, buffer: float = 1.0) -> float:
+    """每日增量窗口「自动补齐」：漏跑时按「距上次成功运行的天数 + 缓冲」拉长窗口，抓回中间漏掉的内容。
+
+    - 每日按时跑：gap≈daily_default → 返回 daily_default（与旧固定窗口行为一致）
+    - 漏跑 N 天：返回 max(daily_default, N + buffer)，自动补齐这 N 天
+    - 封顶 max_days：防极长断跑时窗口爆炸；超过封顶的部分靠 seen 去重不会重复处理
+    - 无 last_check（首次 / 无记录）：返回 daily_default，由 caller 决定是否走首跑大窗口
+    """
+    if not last_check:
+        return float(daily_default)
+    gap = (time.time() - last_check) / 86400.0
+    return min(max(float(daily_default), gap + buffer), float(max_days))
 
 
 def load_state(path: str = DEFAULT_STATE_PATH) -> Dict[str, Any]:

@@ -14,8 +14,10 @@
 - 抓取策略：按内容发布时间做「时间窗口」过滤（首跑 BILI_FIRST_WINDOW_DAYS=7 天 / 每日
   BILI_DAILY_WINDOW_DAYS=1 天），单页拉满 BILI_PAGE_SIZE=50；无正文/无干货的动态（系统通知、
   充电问答回复等）直接屏蔽；每条内容带原始发布时间(publish_time)落盘，笔记自动标新鲜度标签。
-- 注意：每日窗口=1 天，若定时任务偶发断跑数日，中间那几天的内容会被窗口滤掉丢失（首跑 7 天不受影响）；
-  如需余量可调大 BILI_DAILY_WINDOW_DAYS。
+- 自动补齐（2026-07-28 新增）：每日窗口不再是死值——`auto` 非首次运行时按「距上次成功运行的天数
+  + 缓冲」动态拉长窗口（封顶 BILI_MAX_WINDOW_DAYS=30），断跑数日再跑也能抓回中间漏掉的内容；
+  平时每日按时跑 gap≈1 天，窗口依旧 1 天，行为不变。由 state.json 的 per-source last_check 驱动，
+  seen 去重保证多跑/漏跑都不会重复总结。
 
 动态去重说明：DYNAMIC_TYPE_AV（视频转发）/ DYNAMIC_TYPE_ARTICLE（专栏转发）
 已在 video/cv 路由覆盖，动态抓取默认跳过这两类，避免重复处理。
@@ -30,7 +32,7 @@ from typing import Dict, List, Optional
 
 import requests
 
-from .state import get_seen, mark_seen
+from .state import get_seen, mark_seen, effective_window_days
 
 _BILI = "https://api.bilibili.com"
 
@@ -374,7 +376,14 @@ class BilibiliSource:
         # 时间窗口（替代纯 count cap）：首跑回填窗口大（默认 7 天），每日增量窗口小（默认 1 天）。
         # 只处理窗口内发布的 content，不论条数——抓取条数多少不影响风控，频率（请求次数）才影响。
         is_first = (mode == "first") or (mode == "auto" and not seen)
-        win_days = _BILI_FIRST_WINDOW_DAYS if is_first else _BILI_DAILY_WINDOW_DAYS
+        if is_first:
+            win_days = _BILI_FIRST_WINDOW_DAYS
+        else:
+            # 自动补齐：距上次成功运行超过每日窗口时，按 gap 拉长窗口，抓回中间漏掉的内容；
+            # 平时每日按时跑 gap≈1 天，win_days 依旧是 1 天，行为不变。封顶 BILI_MAX_WINDOW_DAYS 防极端。
+            last_check = state["sources"].get(self.source_key(), {}).get("last_check", 0)
+            max_win = float(os.environ.get("BILI_MAX_WINDOW_DAYS", "30"))
+            win_days = effective_window_days(_BILI_DAILY_WINDOW_DAYS, last_check, max_win)
         cutoff = int(time.time()) - int(win_days * 86400)
         # 每类型安全上限（防极端 UP 单窗口发几百条刷爆笔记）；正常情况下窗口+单页上限已约束。
         cap = min(int(first_run_limit), _BILI_SAFETY_CAP)

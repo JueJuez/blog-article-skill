@@ -18,7 +18,7 @@ from typing import Dict, List, Optional
 
 import requests
 
-from .state import get_seen, mark_seen
+from .state import get_seen, mark_seen, effective_window_days
 from .ad_filter import is_ad_by_title, today_start_ts
 
 PLATFORM_URL = os.environ.get("WEREAD_PLATFORM_URL", "https://weread.111965.xyz")
@@ -115,33 +115,55 @@ class WereadClient:
                 break
 
     def is_token_valid(self, probe_share_url: str = "", retries: int = 3) -> bool:
-        """探针：用缓存的 mp_id 或给定 share_url 打一个需鉴权的请求。
+        """探针：优先用 resolve_mp（wxs2mp）打一个需鉴权的请求。
+
+        ⚠️ 历史坑根因：旧实现探针打的是 list_articles，而 weread 代理对【过期 token】
+        在该接口返回 200 空列表（不返回 401），于是探针永远「健康」→ 不弹码 →
+        公众号静默全挂。resolve_mp 端点对过期 token 稳定返回 401，才是可靠探针。
 
         仅当「重试后仍是 401」才判失效；代理冷启动/网络抖动的瞬时 401 会被重试覆盖，
-        避免误判 token 失效、导致整轮跳过公众号源（首跑已踩此坑）。
-        其他异常保守返回 True（放行，交由 discover 自行处理）。
+        避免误判 token 失效、导致整轮跳过公众号源。其他异常保守返回 True（放行）。
         """
+        last_status = None
+        # 1) 优先用 share_url 探针（force=True 绕过缓存，强制打网络，过期即 401）
+        probe_share = probe_share_url
+        if not probe_share:
+            cache = _load_mp_cache()
+            probe_share = next(iter(cache.keys()), "")  # 缓存的 share_url 也可作探针
+        if probe_share:
+            for attempt in range(retries):
+                try:
+                    self.resolve_mp(probe_share, force=True)  # 需 token，401 即失效
+                    return True
+                except requests.HTTPError as e:
+                    if e.response is not None and e.response.status_code == 401:
+                        last_status = 401
+                        time.sleep(2 * (attempt + 1))  # 退避后重试，绕过冷启动
+                        continue
+                    return True
+                except Exception:
+                    return True
+            # 重试耗尽且最后一次确为 401 → 才认定失效
+            return last_status == 401
+        # 2) 无 share_url 探针（首跑且缓存为空）时，退化为 list_articles 探测；
+        #    注意：该端点对过期 token 可能返回 200 空，故仅作 best-effort，失效判定以
+        #    discover_all 的「全源零结果 + 持续 401」兜底逻辑为准。
         cache = _load_mp_cache()
         probe_mp = next((v.get("id") for v in cache.values() if v.get("id")), "")
-        last_status = None
+        if not probe_mp:
+            return True  # 无任何探针，保守放行（交由 discover 自行处理）
         for attempt in range(retries):
             try:
-                if probe_mp:
-                    self.list_articles(probe_mp, 1)
-                elif probe_share_url:
-                    self.resolve_mp(probe_share_url)  # 需 token，401 即失效
-                else:
-                    return True  # 无探针可用，保守放行
+                self.list_articles(probe_mp, 1)
                 return True
             except requests.HTTPError as e:
                 if e.response is not None and e.response.status_code == 401:
                     last_status = 401
-                    time.sleep(2 * (attempt + 1))  # 退避后重试，绕过冷启动
+                    time.sleep(2 * (attempt + 1))
                     continue
                 return True
             except Exception:
                 return True
-        # 重试耗尽且最后一次确为 401 → 才认定失效
         return last_status == 401
 
 
@@ -209,6 +231,7 @@ class WechatSource:
             raise ValueError("无法解析公众号 id（需提供 mp_id 或 share_url）")
 
         seen = get_seen(state, self.source_key())
+        is_first = (mode == "first") or (mode == "auto" and not seen)
         # 列表拉取自带空轮重试（_list_with_retry）：token 有效时代理返空多为
         # 冷启动/懒加载抖动，重试通常能拿到；不会因空轮静默丢号。
         items = self._list_with_retry(mp_id)
@@ -216,15 +239,21 @@ class WechatSource:
             items = []
         # 标题级广告过滤（无干货内容直接剔除，过滤后不补）
         items = [it for it in items if not is_ad_by_title(it.get("title", ""))]
-        # 时间窗口（每日监控语义）：只保留最近 WECHAT_WINDOW_DAYS 天发布的，
-        # 不深挖历史；设为 0 则关闭窗口、抓全部最新 N 篇。
+        # 时间窗口（每日监控语义）：只保留最近 N 天发布的，不深挖历史；设为 0 则关闭窗口、抓全部最新 N 篇。
         window = int(os.environ.get("WECHAT_WINDOW_DAYS", "2"))
         if window > 0:
-            cutoff = int(time.time()) - window * 86400
+            if is_first:
+                eff_window = window  # 首次/首跑：用固定窗口（配合 first_run_limit 抓最近 N 篇）
+            else:
+                # 自动补齐：漏跑时按「距上次成功运行天数 + 缓冲」拉长窗口，抓回中间漏掉的内容；
+                # 平时每日按时跑 gap≈window 天，eff_window 依旧是 window，行为不变。封顶 WECHAT_MAX_WINDOW_DAYS。
+                last_check = state["sources"].get(self.source_key(), {}).get("last_check", 0)
+                max_win = float(os.environ.get("WECHAT_MAX_WINDOW_DAYS", "30"))
+                eff_window = effective_window_days(window, last_check, max_win)
+            cutoff = int(time.time()) - int(eff_window * 86400)
             items = [it for it in items if it.get("publishTime", 0) >= cutoff]
         fetched_ids = [it["id"] for it in items]
 
-        is_first = (mode == "first") or (mode == "auto" and not seen)
         # 首次/增量统一：去重后取最近 N 篇（已先经时间窗口裁剪，不会深挖历史）
         new = [it for it in items if it["id"] not in seen][:first_run_limit]
 

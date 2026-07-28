@@ -226,28 +226,34 @@ def _wait_for_token_refresh(old_token: str, timeout: int, interval: float = 3.0)
     return "", ""
 
 
-def _discover_wechat_retry(src, state, mode, name, retries: int = 3) -> list:
+def _discover_wechat_retry(src, state, mode, name, retries: int = 3) -> tuple:
     """带重试的公众号发现：瞬错（网络/401）重试，避免误触发整轮重登等待。
 
     weread 代理极不稳定，单次 discover 偶发 401/空——这些大多是瞬时抖动，
     重试即可恢复；只有「token 确实失效」才应在 discover_all 入口（已重试确认的
-    is_token_valid=False）走阻塞扫码流程。此处永不阻塞。
+    is_token_valid=False，或全源零结果 + 持续 401）走阻塞扫码流程。此处永不阻塞。
+
+    返回 (items, auth_failed)：auth_failed 仅在「重试耗尽后最后一次仍为 401」时置 True，
+    用于 discover_all 区分「代理瞬错」与「token 真正过期」。
     """
     last_err = None
+    auth_failed = False
     for attempt in range(1, retries + 1):
         try:
-            return src.discover(state, first_run_limit=FIRST_RUN_LIMIT, mode=mode)
+            return src.discover(state, first_run_limit=FIRST_RUN_LIMIT, mode=mode), False
         except Exception as e:
             last_err = e
-            if "401" in str(e) and attempt < retries:
-                print(f"[retry] wechat {name} 第{attempt}次 discover 遇 401，"
-                      f"{attempt}s 后重试({attempt}/{retries})...", file=sys.stderr)
-                time.sleep(attempt)  # 轻量退避
-                continue
+            if "401" in str(e):
+                if attempt < retries:
+                    print(f"[retry] wechat {name} 第{attempt}次 discover 遇 401，"
+                          f"{attempt}s 后重试({attempt}/{retries})...", file=sys.stderr)
+                    time.sleep(attempt)  # 轻量退避
+                    continue
+                auth_failed = True  # 重试耗尽仍是 401 → 视为 token 过期
             break
     print(f"[warn] wechat {name} discover 失败（已重试{retries}次）: {last_err}",
           file=sys.stderr)
-    return []
+    return [], auth_failed
 
 
 def discover_all(subs: dict, state: dict, mode: str = "auto") -> list:
@@ -255,16 +261,23 @@ def discover_all(subs: dict, state: dict, mode: str = "auto") -> list:
     token, vid = load_weread_auth()
 
     # ---------- 微信源（token 自愈 + 扫码后自动续抓） ----------
-    # 设计要点（首跑踩坑后固化）：
+    # 设计要点（首跑踩坑后固化，2026-07-28 又加固一次）：
     #   1) 仅在「token 缺失 / 经重试确认的 is_token_valid=False」时才阻塞等扫码
     #      （用户期望的「扫完自动续抓」）；token 有效时的 401 一律当瞬错重试，
     #      绝不误触发 180s 重登等待（否则代理抖动会卡死整轮并弹多余二维码）。
     #   2) 单号 discover 自带重试（_discover_wechat_retry，默认 3 次），
-    #      规避 weread 代理偶发空/401 导致的静默丢号。
+    #      返回 auth_failed 标记「重试耗尽仍为 401」以区分代理瞬错 vs token 过期。
     #   3) 发现阶段不落盘 state（见 main 的 --apply 守卫），预览不会「吃掉」待抓条目。
+    #   4)【2026-07-28 加固】is_token_valid 探针改打 resolve_mp（过期 token 稳定 401），
+    #      不再打 list_articles（过期返回 200 空、失明）。并新增兜底：预检误判有效、
+    #      但全部源零结果且持续 401 时，仍触发重登并刷新后重试一轮——根治「过期却不弹码」。
     wechat_subs = subs.get("wechat", [])
     if wechat_subs:
-        token_valid = bool(token) and WereadClient(token=token, vid=vid).is_token_valid()
+        # 选一个真实 share_url 作为探针：resolve_mp(force=True) 对过期 token 稳定 401，
+        # 而 list_articles 对过期 token 返回 200 空，无法用于失效检测。
+        probe_share = next((w.get("share_url") for w in wechat_subs if w.get("share_url")), "")
+        token_valid = bool(token) and WereadClient(token=token, vid=vid).is_token_valid(probe_share_url=probe_share)
+        relogin_triggered = False
         if not token_valid:
             print("⚠️ [微信读书] 未检测到有效 token，自动触发重新登录并等待扫码...",
                   file=sys.stderr)
@@ -280,21 +293,56 @@ def discover_all(subs: dict, state: dict, mode: str = "auto") -> list:
                 if new_tok:
                     print("✅ 扫码成功，token 已刷新，继续抓取公众号源。", file=sys.stderr)
                     token, vid = new_tok, new_vid
+                    relogin_triggered = True
                 else:
                     print(f"⏰ 等待扫码超时（{WECHAT_RELOGIN_WAIT}s），本次跳过公众号源"
                           f"（B站照常）；下次运行自动恢复。", file=sys.stderr)
                     wechat_subs = []
 
+        # 第一轮 discovery（预检通过或重登成功后）
+        total_items = 0
+        any_auth_fail = False
         for w in wechat_subs:
             client = WereadClient(token=token, vid=vid)
             src = WechatSource(client, mp_id=w.get("mp_id", ""),
                                share_url=w.get("share_url", ""), name=w.get("name", ""))
-            found = _discover_wechat_retry(src, state, mode, w.get("name", ""))
+            found, auth = _discover_wechat_retry(src, state, mode, w.get("name", ""))
             for it in found:
                 it["category"] = w.get("category", "")
                 it["sub_name"] = w.get("name", "")
             all_new.extend(found)
+            total_items += len(found)
+            any_auth_fail |= auth
             time.sleep(2)  # weread 代理频率退避，避免单号日内超次
+
+        # 兜底：预检认为 token 有效，但全部源零结果且出现持续性 401 →
+        # 说明 is_token_valid 仍漏判（极少数情况下过期 token 在 resolve_mp 也返回非 401）。
+        # 此时真正触发重登，刷新后重试整轮，避免公众号静默全挂。
+        if (not relogin_triggered) and token_valid and total_items == 0 and any_auth_fail:
+            print("⚠️ [微信读书] 预检通过但全部源零结果且持续 401，判定 token 已过期，"
+                  "自动触发重新登录并等待扫码...", file=sys.stderr)
+            qr_path = trigger_relogin()
+            if qr_path:
+                print(f"RELOGIN_QR:{qr_path}", file=sys.stderr)
+                print(f"⏳ 已生成二维码，正在等待扫码（最长 {WECHAT_RELOGIN_WAIT}s）...",
+                      file=sys.stderr)
+                new_tok, new_vid = _wait_for_token_refresh(token, WECHAT_RELOGIN_WAIT)
+                if new_tok:
+                    print("✅ 扫码成功，token 已刷新，重试抓取公众号源。", file=sys.stderr)
+                    token, vid = new_tok, new_vid
+                    for w in wechat_subs:
+                        client = WereadClient(token=token, vid=vid)
+                        src = WechatSource(client, mp_id=w.get("mp_id", ""),
+                                           share_url=w.get("share_url", ""), name=w.get("name", ""))
+                        found, _ = _discover_wechat_retry(src, state, mode, w.get("name", ""))
+                        for it in found:
+                            it["category"] = w.get("category", "")
+                            it["sub_name"] = w.get("name", "")
+                        all_new.extend(found)
+                        time.sleep(2)
+                else:
+                    print(f"⏰ 等待扫码超时（{WECHAT_RELOGIN_WAIT}s），本次跳过公众号源"
+                          f"（B站照常）；下次运行自动恢复。", file=sys.stderr)
 
     for b in subs.get("bilibili", []):
         src = BilibiliSource(b["uid"], types=b.get("types"))

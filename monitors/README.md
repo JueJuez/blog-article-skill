@@ -18,8 +18,9 @@
 
 - **时间窗口替代纯数量**（关键改动）：
   - 首跑（`--mode first`）：最近 `BILI_FIRST_WINDOW_DAYS`=**7 天**
-  - 每日增量（`--mode auto`）：最近 `BILI_DAILY_WINDOW_DAYS`=**1 天**
+  - 每日增量（`--mode auto`）：基础窗口 `BILI_DAILY_WINDOW_DAYS`=**1 天**，**自动补齐**（见下）——断跑数日再跑会按 gap 拉长窗口抓回漏掉的内容，平时按时跑则维持 1 天不变
   - 单页拉满 `BILI_PAGE_SIZE`=**50** 覆盖整个窗口；每类型另有安全上限 `BILI_SAFETY_CAP`=**50**（防极端 UP 单窗口刷爆笔记）。正常情况下窗口 + 单页上限已约束条数。
+- **自动补齐窗口（2026-07-28 新增 · 解决断跑丢内容）**：`auto` 非首次运行时，窗口不再死用每日值，而是 `max(BILI_DAILY_WINDOW_DAYS, 距上次成功运行天数 + 1)`，封顶 `BILI_MAX_WINDOW_DAYS`=**30** / `WECHAT_MAX_WINDOW_DAYS`=**30**。由 `state.json` 的 per-source `last_check` 驱动，`seen` 去重保证多跑/漏跑都不会重复总结。即：**你多久没跑，它就自动补多久（封顶 30 天）**，无需改命令、无需手动 `--mode first`。
 - 视频与动态各自独立计入窗口、互不抢占；`DYNAMIC_TYPE_AV`（视频转发）在动态侧跳过，由视频路由覆盖，不会双写总结。
 - **无干货动态屏蔽**：去掉链接后正文 <15 字，或命中系统通知模板（充电专属问答 /「我回复了@」/「快来围观吧」/「为我充电」）→ 直接丢弃，不进总结管线（但仍记入 `seen`，避免下次重复拉取）。
 - **短动态轻量化**：动态正文净化后 ≤ `BILI_SHORT_DYNAMIC_MAX`=**80 字** → 存「短动态速览」（原文 + 元信息），不走重 LLM 总结模板，省 token、防短评灌水。
@@ -62,7 +63,8 @@
 | `BILI_INTRA_GAP` | 2 | 同源视频→动态退避秒数 |
 | `BILI_BACKOFF` | 5 | 重试退避基数 |
 | `BILI_FIRST_WINDOW_DAYS` | 7 | 首跑时间窗口（天） |
-| `BILI_DAILY_WINDOW_DAYS` | 1 | 每日增量时间窗口（天） |
+| `BILI_DAILY_WINDOW_DAYS` | 1 | 每日增量基础时间窗口（天）；断跑时自动拉长补齐 |
+| `BILI_MAX_WINDOW_DAYS` | 30 | 每日增量窗口封顶（天）；断跑超过此天数只补到此处（更长历史需手动 `--mode first`） |
 | `BILI_PAGE_SIZE` | 50 | 单页拉取条数 |
 | `BILI_SHORT_DYNAMIC_MAX` | 80 | 短动态轻量化阈值（字） |
 | `FIRST_RUN_LIMIT` | 50 | 首跑每类型安全上限（同时影响视频/动态，实际受 `BILI_SAFETY_CAP` 夹取） |
@@ -70,9 +72,10 @@
 
 ## 注意事项 / 已知坑
 
-1. **断跑丢内容**：每日窗口 = 1 天，若定时任务偶发断跑数日，中间那几天的内容会被窗口滤掉丢失（首跑 7 天不受影响）。如需余量，调大 `BILI_DAILY_WINDOW_DAYS`（如 3 或 7）。
-2. **公众号 token 不稳定**：`weread.111965.xyz` 转发服务器共享 IP 被微信读书风控，JWT 数小时即失效，**无「稳 + 免费 + 免维护」方案**。检测到失效时 `run.py` **本次跳过公众号源、保 B站照跑**；交互式（Windows 本机）会话会弹二维码（`RELOGIN_QR:` 路径 + `_notify_user` 弹图片查看器+提示框），用户扫码后续期，**下次运行**恢复公众号抓取；headless/自动化下无人看码，等价于跳过公众号。
-   - **续期流程**：`run.py` 检测到 token 失效 → `trigger_relogin()` 生成二维码（`login_qr.png`）+ 启动后台轮询 daemon（`python _auth.py poll`）；用微信扫该码即自动把 JWT 落盘 `.wechat_auth.json`，**下次运行自动恢复**公众号抓取。
+1. **断跑丢内容（已修复，2026-07-28）**：原每日窗口 = 1 天，断跑数日会丢中间内容。现改为**自动补齐窗口**——`auto` 模式按 `state.json` 的 per-source `last_check` 动态拉长窗口（`max(BILI_DAILY_WINDOW_DAYS, 距上次运行天数 + 1)`，封顶 `BILI_MAX_WINDOW_DAYS`=30 / `WECHAT_MAX_WINDOW_DAYS`=30），断跑多久自动补多久，`seen` 去重保证不重复总结。正常每日跑行为不变。想一次补回超过 30 天的极老内容，仍可手动 `python monitors/run.py --mode first --apply`。
+2. **公众号 token 不稳定**：`weread.111965.xyz` 转发服务器共享 IP 被微信读书风控，JWT 数小时即失效，**无「稳 + 免费 + 免维护」方案**。`run.py` 检测到失效 → 自动弹二维码（`RELOGIN_QR:` 路径 + `_notify_user` 弹图片查看器+提示框），交互式（Windows 本机）会话用户扫码后续期，**本次运行即继续抓取**公众号（刷新 token 后重试整轮）；headless/自动化下无人看码，等价于本次跳过公众号、保 B站照跑。
+   - **续期流程**：`run.py` 检测到 token 失效（或全源 discover 持续 401 兜底）→ `trigger_relogin()` 生成二维码（`login_qr.png`）+ 启动后台轮询 daemon（`python _auth.py poll`）；用微信扫该码即自动把 JWT 落盘 `.wechat_auth.json`，**本次运行立即续抓**（无需下次重跑）。
+   - **2026-07-28 修复（过期不再静默丢源）**：`is_token_valid` 探针原打 `list_articles`（过期返回 200 空、失明）→ 过期 token 被误判有效、不弹码、公众号静默全挂。改用 `resolve_mp(force=True)`（过期稳定 401）；并新增「全源零结果 + 持续 401」兜底自动重登。回归测试 `tests/test_wechat_relogin_fallback.py`。
    - **可观测性**：轮询 daemon 输出写入 `monitors/.poll_daemon.log`（含 `[poll-start]` / `[polling] status=...` / `[poll-error#n]` / `[poll-success]`）；巡检该日志可确认扫码是否被捕获、API 是否在超时。
    - **防重复弹窗**：`trigger_relogin()` 带跨进程互斥锁（Windows `msvcrt.locking`）+ 5 分钟幂等 TTL，多进程同时触发（如手动 + 定时重复跑）也只弹一个码、只起一个轮询 daemon（PID 锁定于 `.poll_daemon.pid`）。
    - **失败容忍**：`poll_login` API 偶发超时/5xx 时，`_auth.py` 指数退避重试（3s→6s→…→30s，连续 10 次失败退出），不会因一次抖动就放弃。
