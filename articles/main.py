@@ -248,8 +248,13 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
             category = tag
             break
 
-    filename = generate_filename(title, original_url, category, publish_time=publish_time)
     folder = _sanitize_folder(folder)
+    # folder 已提供分类归档路径时，文件名不再加【分类】前缀，避免子目录下重复冗余
+    filename = generate_filename(
+        title, original_url,
+        category=category if not folder else "",
+        publish_time=publish_time
+    )
     if folder:
         filename = f"{folder}/{filename}"
 
