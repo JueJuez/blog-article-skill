@@ -52,7 +52,9 @@ def _apply_env_defaults():
     if not os.environ.get("HF_HUB_ENABLE_HF_TRANSFER"):
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
     if not os.environ.get("HF_HOME"):
-        os.environ["HF_HOME"] = os.path.join(tempfile.gettempdir(), "hf_cache")
+        # 固定用户缓存目录（~/.cache/asr_whisper），不放系统 Temp ——
+        # 避免 Temp 被磁盘清理误删导致 1.5GB 模型丢失重下。
+        os.environ["HF_HOME"] = os.path.expanduser("~/.cache/asr_whisper")
     if not os.environ.get("HF_ENDPOINT"):
         import urllib.request as _u
         try:
@@ -131,7 +133,7 @@ def _resolve_local_model_dir(model_size: str) -> str:
     _apply_env_defaults()
     repo_id = _resolve_repo_id(model_size)
     safe = repo_id.replace("/", "--")
-    base = os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface")
+    base = os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/asr_whisper")
     local_dir = os.path.join(base, "asr_models", safe)
     model_bin = os.path.join(local_dir, "model.bin")
     if os.path.exists(model_bin):

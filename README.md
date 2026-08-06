@@ -18,7 +18,7 @@
 - **字幕自动抓取（P2.1）**：YouTube（youtube-transcript-api v1.x 直连）/ Bilibili（原生 API + yt-dlp 兜底）自动获取字幕，无需手动下载
 - **分块两段式总结（P2.2）**：超长 transcript 按章节/时间窗切分 → 逐块小结 → 二次合并，绝不爆上下文
 - **分集 / playlist 迭代（P2.3）**：自动解析 playlist 逐条总结，并可生成「系列总览」
-- **本地/任意视频 ASR（P3）**：**无字幕时自动兜底**——`fetch_transcript` 返回 None 即自动经 yt-dlp 抽音频 + faster-whisper 本地免费转写；环境坑（HF 镜像 / xet / CUDA dll / 沙箱）由 `asr.py` 自动处理，无需手敲 export。转写结果缓存在 `transcripts/`（断点续跑，避免重复下载+GPU 转写）
+- **本地/任意视频 ASR（P3）**：**无字幕时自动兜底**——`fetch_transcript` 返回 None 即自动经 yt-dlp 抽音频 + faster-whisper 本地免费转写；环境坑（HF 镜像 / xet / CUDA dll / 沙箱）由 `asr.py` 自动处理，无需手敲 export。Whisper 模型（默认 `medium` ~1.5GB）缓存在 `~/.cache/asr_whisper/asr_models/`（固定用户目录，不在系统 Temp，避免被清理误删）；转写结果缓存在 `transcripts/`（断点续跑，避免重复下载+GPU 转写）
 - **多模态理解（P4，可选）**：采样帧 + Gemini 视频理解（best-effort，无 Gemini 时优雅跳过）
 
 ### 共享模块（shared）

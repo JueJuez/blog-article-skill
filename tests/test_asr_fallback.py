@@ -39,7 +39,7 @@ def test_env_defaults_fill_missing():
         asr._apply_env_defaults()
         assert os.environ["HF_HUB_DISABLE_XET"] == "1", "应关闭 xet"
         assert os.environ["HF_HUB_ENABLE_HF_TRANSFER"] == "0", "应关闭 hf_transfer"
-        assert os.environ["HF_HOME"], "应设 HF_HOME（指向系统临时目录）"
+        assert os.environ["HF_HOME"], "应设 HF_HOME（指向固定用户缓存目录 ~/.cache/asr_whisper）"
         assert os.path.isabs(os.environ["HF_HOME"])
     finally:
         for k, v in saved.items():
