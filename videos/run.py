@@ -2,7 +2,7 @@
 videos/run.py — 视频总结命令行入口
 
 用法：
-  # YouTube / Bilibili 单视频（自动抓 CC 字幕 → 总结）
+  # YouTube / Bilibili 单视频（自动抓 CC 字幕 → 总结；无字幕则自动下载音频用本地 Whisper 转写）
   python videos/run.py --url "https://www.youtube.com/watch?v=xxxx"
 
   # playlist / 合集（逐条总结 + 系列总览）
@@ -71,9 +71,19 @@ def main():
         return 1
 
     if result.get('need_continue_summary'):
-        print("\n⚠️ 未配置外部 AI Provider，已准备好字幕内容，等待外层对话总结。")
+        print("\n⚠️ 未配置外部 AI Provider，已准备好字幕内容，等待外层对话（Agent）按笔记模板总结。")
         print(f"   视频标题: {result.get('original_title', '未知')}")
         print(f"   链接: {result.get('original_url', '未知')}")
+        if result.get('raw_file'):
+            print(f"   📄 原始字幕文件: {result['raw_file']}（可直接 Read 读取）")
+        # 关键：把字幕正文也吐到 stdout，确保经 Bash 执行的执行模型能直接拿到上下文，
+        # 不用再去反查/反读文件（曾因 Bash 子进程未回传字幕而丢上下文）。
+        content = result.get('article_content') or ''
+        if content:
+            print("\n" + "=" * 60)
+            print("【原始字幕内容 BEGIN】（供外层模型总结，无需再读文件）")
+            print(content)
+            print("【原始字幕内容 END】" + "=" * 38)
         return 0
 
     if result.get('results') is not None:

@@ -277,7 +277,7 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
 
     formatted_note = format_note_with_prompt(
         content=summarized_content, author=author, url=original_url,
-        tags=tags, add_metadata=False, publish_time=publish_time
+        tags=tags, add_metadata=True, publish_time=publish_time
     )
 
     # A4：frontmatter（常驻）。新鲜度 + 发布时间用于时效感知；token 用量在走 AI 时补。

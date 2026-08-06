@@ -18,7 +18,7 @@
 - **字幕自动抓取（P2.1）**：YouTube（youtube-transcript-api v1.x 直连）/ Bilibili（原生 API + yt-dlp 兜底）自动获取字幕，无需手动下载
 - **分块两段式总结（P2.2）**：超长 transcript 按章节/时间窗切分 → 逐块小结 → 二次合并，绝不爆上下文
 - **分集 / playlist 迭代（P2.3）**：自动解析 playlist 逐条总结，并可生成「系列总览」
-- **本地/任意视频 ASR（P3）**：无字幕时经 yt-dlp 抽音频 + faster-whisper 本地免费转写
+- **本地/任意视频 ASR（P3）**：**无字幕时自动兜底**——`fetch_transcript` 返回 None 即自动经 yt-dlp 抽音频 + faster-whisper 本地免费转写；环境坑（HF 镜像 / xet / CUDA dll / 沙箱）由 `asr.py` 自动处理，无需手敲 export。转写结果缓存在 `transcripts/`（断点续跑，避免重复下载+GPU 转写）
 - **多模态理解（P4，可选）**：采样帧 + Gemini 视频理解（best-effort，无 Gemini 时优雅跳过）
 
 ### 共享模块（shared）
@@ -136,6 +136,9 @@ summarize_video({"url": "https://www.youtube.com/playlist?list=PLxxx", "playlist
 
 # P3：本地视频/音频（无字幕 → ASR 转写，需 yt-dlp + ffmpeg + faster-whisper）
 summarize_video({"file": "/path/to/video.mp4", "note_type": "key_points"})
+#
+# 单视频无 CC 字幕时，videos/main 会自动走 ASR 兜底（下载音频 + 本地 Whisper 转写），
+# 无需手动传 file。环境依赖（HF 镜像 / ffmpeg / CUDA 运行库）由 asr.py 在运行时自动就绪。
 
 # P4：多模态画面理解（可选，需已配置的 Google Gemini Provider）
 summarize_video({"url": "https://www.youtube.com/watch?v=xxxx", "multimodal": True})
@@ -372,9 +375,9 @@ blog-article-skill/
 │   ├── fetch.py              # 字幕抓取（P2.1：YouTube/Bilibili）
 │   ├── cdp_launch.py         # 确保本机带代理插件的 Chrome(CDP 副本) 调试端口就绪（强制同步配置 + 启动）
 │   ├── cdp_capture.py        # 经 CDP 拦截 YouTube 字幕响应体（本机无 YouTube 出口时的终极解法）
-│   ├── asr.py                # 本地语音识别（P3：faster-whisper）
+│   ├── asr.py                # 本地语音识别（P3：faster-whisper，无字幕自动兜底 + 环境自动处理 + 转写缓存）
 │   ├── multimodal.py         # 多模态理解（P4：Gemini）
-│   ├── main.py               # 视频总结主流程（分块两段式 P2.2/P2.3）
+│   ├── main.py               # 视频总结主流程（分块两段式 P2.2/P3 兜底/P2.3）
 │   └── run.py                # 命令行入口
 ├── shared/                   # 跨模块共享（C1/C2）
 │   ├── __init__.py
@@ -391,9 +394,18 @@ blog-article-skill/
 │   ├── ad_filter.py          # 广告过滤（整篇纯广告 skip / 干货夹广告净化）
 │   ├── run.py                # CLI + 调度入口（--apply 直接调总结管线）
 │   ├── subscriptions.example.json  # 订阅配置模板
+│   ├── save_series_batch.py  # 系列课批量双写编排（写后自动跑 audit_sync）
+│   ├── apply_pending.py      # 把子 Agent 产出的 _summary_*.md 双写落盘
 │   └── README.md             # 监控运营文档 + 已知坑
-├── tests/                    # PRD 验收测试（pytest）
-│   └── test_prd.py
+├── audit_sync.py             # Obsidian ↔ 飞书 双写一致性审计 + 幂等补传闸门
+├── tests/                    # 回归测试（可直接 `python tests/test_xxx.py` 跑，无需 pytest）
+│   ├── test_prd.py
+│   ├── test_templates.py
+│   ├── test_sub_monitor.py
+│   ├── test_note_quality.py
+│   ├── test_wechat_relogin_fallback.py
+│   └── test_asr_fallback.py  # ASR 兜底：环境自动处理 / 转写缓存 / 防御性删除（无需联网/模型）
+├── transcripts/             # ASR 转写缓存（<id>.md，可重生成，被 gitignore）
 ├── notes/                    # 原始/中间笔记（被 gitignore）
 ├── references/
 │   ├── config.md             # 配置详细说明

@@ -131,9 +131,11 @@
 > 这条约定是**终端行为**，不是可选项：视频在 YouTube 上没字幕时，AI 必须**原样回下面这句话并停止**，不得补救、不得开发。
 
 - **统一入口（勿另写脚本）**：YouTube/Bilibili 字幕只用 `videos.fetch.fetch_transcript(url)`（或 `videos/run.py --url`）。它已内置 API→CDP 全自动回退，**禁止**为「只收集字幕」自写自定义抓取脚本。
-- **「无 CC 字幕」= 终态，不是失败**：当 `fetch_transcript` 返回 `None`，且 CDP 已成功打开页面（能拿到标题、`ytInitialPlayerResponse.captions` 为空 / 播放器 `movie_player` 字幕 tracklist 为空），即判定为**视频本身在 YouTube 上没有任何 CC / 自动字幕轨道**。此时 AI **必须直接回这句话并停止**：
-  > **【此视频暂无 CC 字幕，无法为你抓取字幕总结内容。】**
-  - **禁止**自作主张走 ASR 语音转写、或改动代码「优化/开发」去兜底——除非用户**明确**要求开发。本环境 ASR 也不可行（无 ffmpeg / faster-whisper / yt-dlp，HuggingFace 不可达，且 Python 无 YouTube 出口下不了音频）。
+- **「无 CC 字幕」→ 自动走 ASR 兜底，失败才终态**（用户规则 2026-08-06 授权）：当 `fetch_transcript` 返回 `None`（视频本身无 CC / 自动字幕轨道），**不再直接停**，而是由 `videos.main._handle_single_video` 自动调用 `videos.asr.transcribe_video`（下载音频 + 本地 faster-whisper 转写）。
+  - ASR 成功 → 继续正常总结 + 双写。
+  - ASR 也失败（音频下载或本地转写未成功，可能需 B站登录态 / 网络受限 / YouTube 无出口）→ 才回下面这句并停止：
+  > **【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】**
+  - **不要**在 `videos/asr.py` 已提供的兜底之外「自作主张开发新兜底」。环境坑（HF 镜像 / xet / CUDA dll / 沙箱安全删除）已由 `asr.py` 的 `_apply_env_defaults()` 自动处理，**无需手敲 export、不要 diagnose**。
 - **区分「真无字幕」vs「抓取机制故障」（避免误判导致乱调试）**：
   - 真无字幕：`capture_transcript` 已连上 9222、页面正常加载（能拿到标题）、但 `captionTracks` 为空 → **直接回上面那句话**，不要调试。
   - 抓取机制故障：9222 连不上 / 页面空白 / 代理失效（YouTube 打不开）→ 这是**基础设施问题**，不是视频没字幕；按 `references/youtube-cdp-workflow.md` §6 排查（重跑 `python videos/cdp_launch.py` 自修复），**不要**把它当成「无字幕」回给用户。

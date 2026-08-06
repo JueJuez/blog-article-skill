@@ -32,3 +32,5 @@ _test_artifacts/
 nul
 dist/
 build/
+# ASR 转写缓存（transcripts/<id>.md）：可经 videos/asr 自动重生成，不提交
+transcripts/

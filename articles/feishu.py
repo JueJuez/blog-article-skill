@@ -1,8 +1,39 @@
 import os
+import shutil
 import subprocess
 import json
+import time
 import asyncio
 from .base import BaseOutput
+
+# lark-cli 在 Windows 上是 .CMD 包装；用 shell=False + 解析出的完整路径调用，
+# 可彻底避免 Windows cmd 把标题里的 & | < > 等当成元字符（曾导致含 & 的标题推送崩溃）。
+_LARK_CLI_CACHE = None
+
+
+def _lark_cli():
+    global _LARK_CLI_CACHE
+    if _LARK_CLI_CACHE is None:
+        _LARK_CLI_CACHE = shutil.which("lark-cli") or "lark-cli"
+    return _LARK_CLI_CACHE
+
+
+# 飞书标题来自文件名，可能含 Windows cmd 元字符。lark-cli 是 .CMD 包装，内部 %* 会把
+# & | < > ^ ( ) % 当成命令分隔符导致推送崩溃，且引号无法干净传递（要么被剥掉拆命令，
+# 要么被原样存进标题）。统一把 ASCII 元字符映射为全角/安全字（仅作用于标题，正文走
+# stdin 不受影响；Obsidian 侧文件名保留原字符，仅飞书展示标题做此归一）。
+_SPECIAL_MAP = {
+    '&': '和', '|': '｜', '<': '〈', '>': '〉',
+    '^': '＾', '(': '（', ')': '）', '%': '％',
+}
+
+
+def _sanitize_title(t: str) -> str:
+    if not isinstance(t, str):
+        return t
+    for k, v in _SPECIAL_MAP.items():
+        t = t.replace(k, v)
+    return t
 
 
 class FeishuOutput(BaseOutput):
@@ -15,20 +46,39 @@ class FeishuOutput(BaseOutput):
         self.wiki_parent_node = os.getenv("FEISHU_WIKI_PARENT_NODE", "")
         self._cli_available = None
 
-    def _run_cli_command(self, args: list, timeout: int = 90, input_text: str = None) -> dict:
+    @staticmethod
+    def _rate_limit_text(text: str) -> bool:
+        """检测飞书频限特征（CLI 可能以非 0 退出并打印错误，也可能返回 code 99991400）。"""
+        t = (text or "").lower()
+        return ("frequency limit" in t) or ("request trigger frequency" in t) or ("99991400" in t)
+
+    def _is_rate_limit(self, result) -> bool:
+        if not result:
+            return False
+        if result.get("code") == 99991400:
+            return True
+        err = result.get("error") or {}
+        msg = (err.get("message") or "") if isinstance(err, dict) else str(err)
+        return self._rate_limit_text(msg)
+
+    def _cli_exec(self, args: list, timeout: int, input_text: str = None) -> dict:
+        """单次执行 lark-cli；命中频限且 CLI 以非 0 退出时，包装成带 code 的 dict 以便外层重试。"""
         try:
             result = subprocess.run(
-                ["lark-cli"] + args,
+                [_lark_cli()] + args,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
-                shell=True,
+                errors="replace",
+                shell=False,
                 timeout=timeout,
                 input=input_text,
             )
-
+            out = f"{result.stderr}\n{result.stdout}"
+            if result.returncode != 0 and self._rate_limit_text(out):
+                return {"code": 99991400, "ok": False, "error": {"message": out.strip()[:300]}}
             if result.returncode != 0:
-                error_msg = result.stderr.strip() or result.stdout.strip()
+                error_msg = (result.stderr or "").strip() or (result.stdout or "").strip()
                 print(f"✗ CLI命令执行失败: {error_msg}")
                 return None
 
@@ -47,14 +97,31 @@ class FeishuOutput(BaseOutput):
             print(f"✗ CLI命令执行异常: {str(e)}")
             return None
 
-    async def _run_cli_command_async(self, args: list, timeout: int = 90, input_text: str = None) -> dict:
+    def _run_cli_command(self, args: list, timeout: int = 90, input_text: str = None,
+                         max_retries: int = 4, retry_base: float = 3.0) -> dict:
+        """执行 lark-cli，并对飞书频限（99991400 / frequency limit）做指数退避重试。
+
+        频限是瞬时错误，重试即可恢复；其他错误不重试、原样返回。
+        """
+        last = None
+        for attempt in range(max_retries + 1):
+            last = self._cli_exec(args, timeout, input_text)
+            if self._is_rate_limit(last) and attempt < max_retries:
+                wait = retry_base * (2 ** attempt)
+                print(f"   ⏳ 触发飞书频限，{wait:.0f}s 后重试 ({attempt + 1}/{max_retries})")
+                time.sleep(wait)
+                continue
+            return last
+        return last
+
+    async def _cli_exec_async(self, args, timeout, input_text=None):
         try:
             process = await asyncio.create_subprocess_exec(
-                "lark-cli", *args,
+                _lark_cli(), *args,
                 stdin=asyncio.subprocess.PIPE if input_text is not None else None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                shell=True
+                shell=False
             )
             try:
                 stdout, stderr = await asyncio.wait_for(
@@ -69,9 +136,11 @@ class FeishuOutput(BaseOutput):
                 print("✗ CLI命令执行超时")
                 return None
 
-            stdout_str = stdout.decode('utf-8') if stdout else ""
-            stderr_str = stderr.decode('utf-8') if stderr else ""
-
+            stdout_str = stdout.decode('utf-8', errors='replace') if stdout else ""
+            stderr_str = stderr.decode('utf-8', errors='replace') if stderr else ""
+            out = f"{stderr_str}\n{stdout_str}"
+            if process.returncode != 0 and self._rate_limit_text(out):
+                return {"code": 99991400, "ok": False, "error": {"message": out.strip()[:300]}}
             if process.returncode != 0:
                 error_msg = stderr_str.strip() or stdout_str.strip()
                 print(f"✗ CLI命令执行失败: {error_msg}")
@@ -88,6 +157,20 @@ class FeishuOutput(BaseOutput):
         except Exception as e:
             print(f"✗ CLI命令执行异常: {str(e)}")
             return None
+
+    async def _run_cli_command_async(self, args: list, timeout: int = 90, input_text: str = None,
+                                     max_retries: int = 4, retry_base: float = 3.0) -> dict:
+        """异步版本：同样对飞书频限做指数退避重试。"""
+        last = None
+        for attempt in range(max_retries + 1):
+            last = await self._cli_exec_async(args, timeout, input_text)
+            if self._is_rate_limit(last) and attempt < max_retries:
+                wait = retry_base * (2 ** attempt)
+                print(f"   ⏳ 触发飞书频限，{wait:.0f}s 后重试 ({attempt + 1}/{max_retries})")
+                await asyncio.sleep(wait)
+                continue
+            return last
+        return last
 
     def _resolve_parent(self, parent_token: str = None) -> list:
         """返回 --parent-token / --wiki-space 参数列表（优先级：显式 parent_token > 配置父节点 > 空间）。"""
@@ -186,6 +269,29 @@ class FeishuOutput(BaseOutput):
             print(f"   ⚠️ 删节点异常：{e}")
             return False
 
+
+    def _verify_node_present(self, parent_token: str, title: str) -> bool:
+        """保存后最佳努力校验：在 parent 下查找刚写入的 title 节点。
+
+        目的：把「双写失败被静默吞掉」变成「显式告警」。本会话曾因标题含 & 触发
+        Windows cmd 元字符 bug，save 返回 False 但编排层没校验返回值，导致漏节点
+        靠人工清点才发现。自此每篇 save 成功后都核对一次。
+
+        非阻塞：飞书有最终一致性，查不到也可能是时序延迟，故只告警、不让 save 失败
+        （避免监控层据此无限重试/造成重复节点）。真正兜底由 audit_sync.py 结构性 diff 负责。
+        """
+        if not parent_token:
+            return True
+        try:
+            children = self.list_children(parent_token)
+            for node in children:
+                if node.get("title") == title:
+                    return True
+            print(f"   ⚠️ 校验告警：父节点下未找到刚写入的「{title}」"
+                  f"（可能最终一致延迟，或推送实际未生效，请运行 audit_sync.py 复核）")
+            return False
+        except Exception:
+            return True
 
     def ensure_series_node(self, series_title: str) -> str:
         """确保「系列名」容器节点存在于父节点下，返回其 node_token（已存在则复用）。
@@ -338,7 +444,7 @@ class FeishuOutput(BaseOutput):
 
         print("正在上传到飞书知识库...")
 
-        title = os.path.splitext(filename)[0]
+        title = _sanitize_title(os.path.splitext(filename)[0])
 
         try:
             args = [
@@ -363,6 +469,7 @@ class FeishuOutput(BaseOutput):
                     print(f"✓ 文档链接: {doc_url}")
                 elif node_token:
                     print(f"✓ 节点Token: {node_token}")
+                self._verify_node_present(parent_token, title)  # 双写自检（非阻塞）
                 return True
             else:
                 error_msg = result.get("error", {}).get("message", "未知错误") if result else "命令执行失败"
@@ -388,7 +495,7 @@ class FeishuOutput(BaseOutput):
 
         print("正在上传到飞书知识库（异步）...")
 
-        title = os.path.splitext(filename)[0]
+        title = _sanitize_title(os.path.splitext(filename)[0])
 
         try:
             args = [
@@ -412,6 +519,7 @@ class FeishuOutput(BaseOutput):
                     print(f"✓ 文档链接: {doc_url}")
                 elif node_token:
                     print(f"✓ 节点Token: {node_token}")
+                self._verify_node_present(parent_token, title)  # 双写自检（非阻塞）
                 return True
             else:
                 error_msg = result.get("error", {}).get("message", "未知错误") if result else "命令执行失败"

@@ -59,7 +59,7 @@
   禁止 AI 手动写 `notes/`、禁止只存本地漏飞书。
 - **复用入口，不手写抓取 / 总结**：一律走 `skill_main` / `summarize_video` / `fetch_transcript` / `monitors/run.py`，
   不要临时写 `_xxx.py` 脚本、不要手搓 URL、不要 diagnose 平台私有接口。
-- **YouTube 无 CC 字幕**：直接回固定文案「【此视频暂无 CC 字幕，无法为你抓取字幕总结内容。】」，不诊断、不走 ASR、不开发兜底。
+- **无字幕自动走 ASR 兜底（2026-08-06 授权）**：`fetch_transcript` 返回 None（真无 CC 字幕）时，`videos.main` 自动调 `videos.asr` 下载音频 + 本地 Whisper 转写；成功则继续总结+双写，仅 ASR 也失败才回「无可用字幕」文案并停止。环境坑由 `asr.py` 自动处理，勿手敲 export / 勿额外开发兜底。
 
 ---
 

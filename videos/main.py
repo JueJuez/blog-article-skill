@@ -547,11 +547,20 @@ def _handle_single_video(url: str, input_data: dict, suppress: bool = False):
         print(f"\n📺 获取视频字幕: {url}")
     result = fetch.fetch_transcript(url)
     if result is None:
-        return {
-            "success": False,
-            "message": "该视频无可用字幕（已尝试原生 API 与 yt-dlp 兜底均失败，可能为限流或确实无字幕）。"
-                       "可稍后重试，或粘贴字幕文本 / 本地文件 → ASR 处理。",
-        }
+        # 自动 ASR 兜底（用户规则 2026-08-06：抓不到字幕即自动走 ASR）
+        # 下载音频 → 本地 faster-whisper 转写，成功则继续总结+双写。
+        print("   ⚠️ 无可用字幕，自动走 ASR 兜底（下载音频 → 本地 Whisper 转写）...")
+        asr_res = asr.transcribe_video(url, lang=input_data.get("lang", "zh"))
+        if asr_res is None:
+            return {
+                "success": False,
+                "message": "该视频无可用字幕，且 ASR 兜底也失败（音频下载或本地转写未成功，"
+                           "可能需 B站登录态 / 网络受限）。可稍后重试，或粘贴字幕文本 / 本地文件处理。",
+            }
+        title, segments, asr_author = asr_res
+        author = asr_author or input_data.get("author", "")
+        input_data = {**input_data, "author": author}
+        return _finalize_single(title, segments, url, input_data)
     title, segments, fetched_author = result
     if not segments:
         return {
