@@ -169,9 +169,9 @@ python videos/run.py --file "/path/to/video.mp4"
 | 函数 | 说明 |
 |------|------|
 | `fetch_web_content(url)` | 抓取网页，返回 `(title, content)` 或 `None` |
-| `summarize_and_save(url, author, tags)` | 全自动：抓取→总结→保存到所有目标 |
-| `skill_main(params_dict)` | 技能系统统一入口，处理链接/原文/降级逻辑 |
-| `save_summarized_article(content, url, author, tags)` | 保存已总结好的内容到所有目标 |
+| `summarize_and_save(url, author, tags, obsidian=False)` | 全自动：抓取→总结→保存（默认飞书，obsidian=True 追加 Obsidian） |
+| `skill_main(params_dict)` | 技能系统统一入口，处理链接/原文/降级逻辑（`params_dict` 可带 `obsidian`） |
+| `save_summarized_article(content, url, author, tags, obsidian=False)` | 保存已总结好的内容（默认飞书，obsidian=True 追加 Obsidian） |
 | `save_summary_only(input_data)` | 降级模式下外层总结完后的保存入口 |
 | `summarize_content(content, author, url, tags, original_title)` | 调用 AI 对内容做结构化总结 |
 
@@ -218,14 +218,15 @@ save_summarized_article(
 ```python
 from articles.manager import OutputManager
 
-manager = OutputManager()
+manager = OutputManager()                  # 默认只写飞书
+# manager = OutputManager(obsidian=True)     # 追加 Obsidian（双写）
 
-# 保存到所有可用位置
+# 保存到已解析的目标（按上面的闸门：默认飞书，obsidian=True 时追加 Obsidian）
 manager.save_all(content, "文章标题.md")
 
-# 或指定目标
-manager.save_to(content, "文章标题.md", "local")    # 本地
-manager.save_to(content, "文章标题.md", "obsidian")  # Obsidian
+# 或显式指定单端目标
+manager.save_to(content, "文章标题.md", "local")    # 本地兜底
+manager.save_to(content, "文章标题.md", "obsidian")  # Obsidian（需该端可用）
 manager.save_to(content, "文章标题.md", "feishu")    # 飞书
 ```
 
@@ -387,17 +388,17 @@ blog-article-skill/
 │   ├── __init__.py
 │   ├── templates.py          # NOTE_TEMPLATES + classify_note_type
 │   └── classify.py           # 笔记类型分类
-├── monitors/                 # 订阅监控（B站UP主 / 公众号）：发现新内容→AI总结→双写
+├── monitors/                 # 订阅监控（B站UP主 / 公众号）：发现新内容→AI总结→默认写飞书（需 Obsidian 时双写）
 │   ├── bilibili.py           # B站源（官方 API + WBI 签名，带登录 Cookie）
 │   ├── wechat.py             # 公众号源（经 weread 代理发现新文）；token 数小时失效，交互式弹码续期、headless 跳过
 │   ├── state.py              # 每源去重状态 + 防膨胀裁剪
 │   ├── ad_filter.py          # 广告过滤（整篇纯广告 skip / 干货夹广告净化）
 │   ├── run.py                # CLI + 调度入口（--apply 直接调总结管线）
 │   ├── subscriptions.example.json  # 订阅配置模板
-│   ├── save_series_batch.py  # 系列课批量双写编排（写后自动跑 audit_sync）
-│   ├── apply_pending.py      # 把子 Agent 产出的 _summary_*.md 双写落盘
+│   ├── save_series_batch.py  # 系列课批量落盘编排（默认飞书，--obsidian 双写；写后自动跑 audit_sync）
+│   ├── apply_pending.py      # 把子 Agent 产出的 _summary_*.md 落盘（默认飞书，--obsidian 双写）
 │   └── README.md             # 监控运营文档 + 已知坑
-├── audit_sync.py             # Obsidian ↔ 飞书 双写一致性审计 + 幂等补传闸门
+├── audit_sync.py             # Obsidian ↔ 飞书 一致性审计 + 幂等补传（仅双写时启用，AUDIT_SYNC=0 可关）
 ├── tests/                    # 回归测试（可直接 `python tests/test_xxx.py` 跑，无需 pytest）
 │   ├── test_prd.py
 │   ├── test_templates.py

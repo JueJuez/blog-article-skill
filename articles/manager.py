@@ -22,45 +22,50 @@ def _ensure_env_loaded():
         _env_loaded = True
 
 
+def _obsidian_env_enabled() -> bool:
+    """持久开关：.env 设 OBSIDIAN_WRITE=1 时，默认也写 Obsidian（双写）。
+
+    默认不开启 —— 项目规则（2026-08-08）：默认只写飞书，Obsidian 按需开启，
+    避免重复落盘浪费。显式传 obsidian=True 总是优先于本开关。
+    """
+    return os.getenv("OBSIDIAN_WRITE", "").lower() in ("1", "true", "yes", "on")
+
+
 class OutputManager:
-    def __init__(self):
+    """落盘闸门。默认只写飞书；obsidian=True（或 OBSIDIAN_WRITE=1）时追加 Obsidian。
+
+    两者皆不可用时（飞书关/不可用 且未请求 Obsidian）回退本地 notes/，避免丢数据。
+    """
+
+    def __init__(self, obsidian: bool = False):
         _ensure_env_loaded()
-        self.outputs: List[BaseOutput] = []
-        self._outputs_initialized = False
+        # 显式 True 强制开启；否则看持久开关（默认关）
+        self.obsidian_requested = bool(obsidian) or _obsidian_env_enabled()
+        self._feishu = FeishuOutput()
+        self._obsidian = ObsidianOutput()
+        self._local = LocalOutput()
+        self._resolved: List[BaseOutput] = None
 
-    def _ensure_outputs(self):
-        if self._outputs_initialized:
-            return
-
-        feishu_output = FeishuOutput()
-        obsidian_output = ObsidianOutput()
-
-        # 测试/优化期开关：DISABLE_FEISHU_SYNC=1 时仅跳过飞书写入（飞书代码保留，不删），
-        # 待链路稳定后再从 .env 移除该变量即可恢复双写。
+    def _resolve(self) -> List[BaseOutput]:
+        # 测试/优化期开关：DISABLE_FEISHU_SYNC=1 时仅跳过飞书写入（飞书代码保留，不删）
         disable_feishu = os.getenv("DISABLE_FEISHU_SYNC", "").lower() in ("1", "true", "yes", "on")
-
-        has_external_config = False
-
-        if feishu_output.is_available() and not disable_feishu:
-            self.outputs.append(feishu_output)
-            has_external_config = True
-
-        if obsidian_output.is_available():
-            self.outputs.append(obsidian_output)
-            has_external_config = True
-
-        if not has_external_config:
-            local_output = LocalOutput()
-            self.outputs.append(local_output)
-
-        self._outputs_initialized = True
+        targets: List[BaseOutput] = []
+        if self._feishu.is_available() and not disable_feishu:
+            targets.append(self._feishu)
+        if self.obsidian_requested and self._obsidian.is_available():
+            targets.append(self._obsidian)
+        if not targets:
+            # 飞书不可用（或主动关闭且未请求 Obsidian）→ 本地兜底，避免丢数据
+            if self._local.is_available():
+                targets.append(self._local)
+        return targets
 
     def get_available_outputs(self) -> List[BaseOutput]:
-        self._ensure_outputs()
-        return [output for output in self.outputs if output.is_available()]
+        if self._resolved is None:
+            self._resolved = self._resolve()
+        return self._resolved
 
     def save_all(self, content: str, filename: str) -> None:
-        self._ensure_outputs()
         available_outputs = self.get_available_outputs()
 
         if not available_outputs:
@@ -84,14 +89,18 @@ class OutputManager:
                 failure_count += 1
 
         if failure_count > 0:
+            has_external = any(o.name != "local" for o in available_outputs)
             print(f"\n⚠️ 保存完成，{success_count} 个成功，{failure_count} 个失败")
-            print("✗ 已配置外部输出目标，不自动降级到本地")
+            if has_external:
+                print("✗ 已配置外部输出目标，不自动降级到本地")
 
     def save_to(self, content: str, filename: str, target: str) -> bool:
-        self._ensure_outputs()
-        for output in self.outputs:
-            if output.name.lower() == target.lower():
-                return output.save(content, filename)
-
-        print(f"✗ 未找到目标输出: {target}")
-        return False
+        mapping = {"feishu": self._feishu, "obsidian": self._obsidian, "local": self._local}
+        out = mapping.get(target.lower())
+        if out is None:
+            print(f"✗ 未找到目标输出: {target}")
+            return False
+        if not out.is_available():
+            print(f"✗ 目标输出 {target} 不可用")
+            return False
+        return out.save(content, filename)

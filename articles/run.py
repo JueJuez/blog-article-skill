@@ -71,6 +71,7 @@ def run_batch(args):
             'tags': tags,
             'note_type': args.note_type,
             'force': args.force,
+            'obsidian': args.obsidian,
         })
         if result.get('skipped'):
             print(f"   ⏭️ 已存在，跳过: {result.get('filename')}")
@@ -102,6 +103,7 @@ def main():
     parser.add_argument('--note-type', '-n', type=str, default='', help='笔记类型：structured / key_points（留空自动分类）')
     parser.add_argument('--batch', '-b', type=str, default='', help='批量目录模式：对该目录下所有 .md/.txt 原文逐篇总结')
     parser.add_argument('--force', action='store_true', help='A2 去重：强制重新总结已处理过的内容')
+    parser.add_argument('--obsidian', action='store_true', help='同时写入 Obsidian（默认只写飞书）')
 
     args = parser.parse_args()
 
@@ -137,6 +139,7 @@ def main():
             'tags': tags,
             'note_type': args.note_type,
             'force': args.force,
+            'obsidian': args.obsidian,
         }
         if args.url_arg or args.url:
             input_data['original_url'] = args.url_arg or args.url
@@ -173,6 +176,7 @@ def main():
         'tags': tags,
         'note_type': args.note_type,
         'force': args.force,
+        'obsidian': args.obsidian,
     }
 
     if content.startswith('http://') or content.startswith('https://'):

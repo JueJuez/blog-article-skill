@@ -423,7 +423,7 @@ def apply_summaries(items: list) -> None:
                 res = skill_main({"content": src_text, "author": it.get("mp_name", ""),
                                   "publish_time": it.get("publish_time", 0),
                                   "original_title": it.get("title", ""),
-                                  "folder": _item_folder(it)})
+                                  "folder": _item_folder(it), "obsidian": args.obsidian})
                 msg = res.get("message", "") if isinstance(res, dict) else str(res)
                 print(f"[{it['source']}] {it['title']}: {msg}")
                 _queue_pending_summary(it, res if isinstance(res, dict) else {})
@@ -440,7 +440,7 @@ def apply_summaries(items: list) -> None:
             try:
                 from videos import summarize_video
                 res = summarize_video({"url": it["url"], "publish_time": it.get("publish_time", 0),
-                                       "folder": _item_folder(it)})
+                                       "folder": _item_folder(it), "obsidian": args.obsidian})
                 msg = res.get("message", "") if isinstance(res, dict) else str(res)
                 print(f"[bilibili] {it['title']}: {msg}")
                 _queue_pending_summary(it, res if isinstance(res, dict) else {})
@@ -470,7 +470,7 @@ def apply_summaries(items: list) -> None:
                         original_url=it["url"], author=it.get("mp_name", ""),
                         tags=["动态速览", "短动态"], original_title=it.get("title", ""),
                         note_type="dynamic", publish_time=it.get("publish_time", 0),
-                        folder=_item_folder(it),
+                        folder=_item_folder(it), obsidian=args.obsidian,
                     )
                     print(f"[bilibili-动态-速览] {it['title']}: 已存短动态速览")
                     stats["dynamic_light"] += 1
@@ -484,7 +484,7 @@ def apply_summaries(items: list) -> None:
                 res = skill_main({"content": src_text, "author": it.get("mp_name", ""),
                                   "publish_time": it.get("publish_time", 0),
                                   "original_title": it.get("title", ""),
-                                  "folder": _item_folder(it)})
+                                  "folder": _item_folder(it), "obsidian": args.obsidian})
                 msg = res.get("message", "") if isinstance(res, dict) else str(res)
                 print(f"[bilibili-动态] {it['title']}: {msg}")
                 _queue_pending_summary(it, res if isinstance(res, dict) else {})
@@ -539,6 +539,8 @@ def main():
     parser.add_argument("--first-run", action="store_true", help="等价 --mode first")
     parser.add_argument("--refetch-only", action="store_true",
                         help="统一抓取重试入口：重抓 pending_refetch 中的限流文章，并把 pending_summaries 里 raw 为空的条目也提升回重试；重抓后自动重总结")
+    parser.add_argument("--obsidian", action="store_true",
+                        help="同时写入 Obsidian（默认只写飞书）")
     args = parser.parse_args()
     mode = "first" if args.first_run else args.mode
 

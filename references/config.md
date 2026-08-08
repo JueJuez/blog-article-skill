@@ -133,12 +133,14 @@ print("当前使用:", provider.name if provider else "无")
 
 ## 五、输出规则
 
-| 配置情况 | 输出目标 |
-|----------|----------|
-| 无任何配置 | 默认保存到 `notes/` 目录 |
-| 仅配置 Obsidian | 输出到 Obsidian 知识库 |
-| 仅配置飞书 | 输出到飞书知识库 |
-| 两者都配置 | 同时输出到 Obsidian + 飞书 |
+| 配置情况 | 默认输出（`obsidian=False`） | 追加 Obsidian（`obsidian=True` / `OBSIDIAN_WRITE=1`） |
+|----------|----------|----------|
+| 无任何配置 | 保存到 `notes/` 目录（本地兜底） | 同上（无 Obsidian 可写） |
+| 仅配置 Obsidian | 保存到 `notes/`（未请求 Obsidian，且无飞书） | 输出到 Obsidian 知识库 |
+| 仅配置飞书 | 输出到飞书知识库 | 同上（无 Obsidian 可写） |
+| 两者都配置 | 默认只输出**飞书**（2026-08-08 改为单写优先） | 同时输出到 Obsidian + 飞书 |
+
+> **默认只写飞书，Obsidian 按需（2026-08-08 用户规则）**：写两遍浪费。代码门禁 `OutputManager` 默认不含 Obsidian，必须显式开启（`obsidian=True` 或在入口传 `--obsidian` / `OBSIDIAN_WRITE=1`）才写。详见 `RULES.md` §3.0。
 
 ## 六、验证配置
 

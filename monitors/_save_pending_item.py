@@ -4,12 +4,13 @@
     python monitors/_save_pending_item.py <raw_file_path> <summary_md_path>
 
 - 按 raw_file 在 pending_summaries.json 中定位条目（不受索引漂移影响）
-- 调 articles.main.save_summary_only 双写（当前仅 Obsidian，飞书由 DISABLE_FEISHU_SYNC 跳过）
+- 调 articles.main.save_summary_only 落盘（默认飞书，--obsidian 时追加 Obsidian）
 - 成功则移除该条并回写队列；失败则保留条目并输出 FAIL 原因
 """
 import sys
 import os
 import json
+import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -19,12 +20,14 @@ PENDING = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_summ
 
 
 def main():
-    if len(sys.argv) < 3:
-        print("usage: _save_pending_item.py <raw_file_path> <summary_md_path>")
-        sys.exit(2)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("raw_file", help="原始字幕/内容文件路径")
+    ap.add_argument("summary_file", help="已总结好的 Markdown 文件路径")
+    ap.add_argument("--obsidian", action="store_true", help="同时写入 Obsidian（默认只写飞书）")
+    args = ap.parse_args()
 
-    raw_path = sys.argv[1]
-    summary_file = sys.argv[2]
+    raw_path = args.raw_file
+    summary_file = args.summary_file
 
     try:
         with open(summary_file, encoding="utf-8") as f:
@@ -57,6 +60,7 @@ def main():
         "original_title": item.get("title", ""),
         "publish_time": item.get("publish_time", 0),
         "folder": item.get("folder", ""),
+        "obsidian": args.obsidian,
     })
 
     if res.get("success"):

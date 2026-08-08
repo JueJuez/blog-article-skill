@@ -1,4 +1,4 @@
-"""编排：把 notes/哲学思辨，知行合一/_summary_*.md 双写到 Obsidian + 飞书系列容器。
+"""编排：把 notes/哲学思辨，知行合一/_summary_*.md 落盘到系列容器（默认飞书，--obsidian 时追加 Obsidian）。
 
 复用生产逻辑（videos/main.py 的 _save_series_note / _generate_series_overview 等价实现），
 不重新发明：format_note_with_prompt(add_metadata=False) 原样保留子 Agent 产出的 #标签/作者 行；
@@ -34,14 +34,14 @@ except Exception:
     pass
 
 
-def local_write_enabled() -> bool:
-    mgr = OutputManager()
+def local_write_enabled(obsidian: bool = False) -> bool:
+    mgr = OutputManager(obsidian=obsidian)
     names = {out.name for out in mgr.get_available_outputs()}
     return not (names & {"obsidian", "feishu"})
 
 
-def save_one(content: str, base_name: str, url: str):
-    """双写到所有可用输出端，返回「失败的输出名」列表（用于末尾汇总，绝不静默吞掉）。"""
+def save_one(content: str, base_name: str, url: str, obsidian: bool = False):
+    """写到所有可用输出端（默认仅飞书；带 obsidian 时追加 Obsidian），返回「失败的输出名」列表（用于末尾汇总，绝不静默吞掉）。"""
     formatted = format_note_with_prompt(
         content=content, author=AUTHOR, url=url,
         tags=["要点提炼", "转载"], add_metadata=False,
@@ -53,7 +53,7 @@ def save_one(content: str, base_name: str, url: str):
         path = os.path.join(SERIES_DIR, filename)
         with open(path, "w", encoding="utf-8") as f:
             f.write(formatted)
-    mgr = OutputManager()
+    mgr = OutputManager(obsidian=obsidian)
     series_folder = os.path.basename(SERIES_DIR)
     for out in mgr.get_available_outputs():
         try:
@@ -88,6 +88,12 @@ def extract_one_liner(md: str) -> str:
 
 
 def main() -> None:
+    import argparse
+    _ap = argparse.ArgumentParser()
+    _ap.add_argument("--obsidian", action="store_true", help="同时写入 Obsidian（默认只写飞书）")
+    _args = _ap.parse_args()
+    obsidian = _args.obsidian
+
     summary_files = sorted(
         f for f in os.listdir(SERIES_DIR)
         if f.startswith("_summary_") and f.endswith(".md")
@@ -170,11 +176,11 @@ def main() -> None:
             except Exception as e:
                 print(f"   ⚠️ 查旧总览失败（不影响继续）：{e}")
 
-    if local_write_enabled():
+    if local_write_enabled(obsidian):
         with open(os.path.join(SERIES_DIR, overview_name), "w", encoding="utf-8") as fh:
             fh.write(overview_content)
     series_folder = os.path.basename(SERIES_DIR)
-    mgr = OutputManager()
+    mgr = OutputManager(obsidian=obsidian)
     for out in mgr.get_available_outputs():
         try:
             ok = out.save_series(overview_content, overview_name, series_folder)
@@ -193,18 +199,19 @@ def main() -> None:
     else:
         print("\n✓ 全部输出端同步成功")
 
-    # ---- 双写一致性闸门（自动校验：Obsidian ↔ 飞书 整树 diff，不靠记忆力兜底）----
-    if os.getenv("AUDIT_SYNC", "1") != "0":
+    # ---- 一致性闸门（仅双写模式启用：Obsidian ↔ 飞书 整树 diff，不靠记忆力兜底）----
+    # 单写（默认只写飞书）模式下 Obsidian 为空，跑审计只会误报"缺飞书"，故仅在用户显式要 Obsidian 时校验。
+    if obsidian and os.getenv("AUDIT_SYNC", "1") != "0":
         try:
             from audit_sync import run_audit
-            print("\n=== 双写一致性闸门（audit_sync）===")
+            print("\n=== 一致性闸门（audit_sync：Obsidian ↔ 飞书）===")
             missing, orphan = run_audit(fix=False)
             if missing:
                 print(f"⚠️ 检测到 {len(missing)} 篇缺飞书，可运行：python audit_sync.py --fix 补传")
         except Exception as e:
             print(f"   ⚠️ 审计跳过（不影响已写入内容）：{e}")
 
-    print("\n=== 系列课双写完成 ===")
+    print("\n=== 系列课落盘完成 ===")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@
 > WorkBuddy 专属的 `SKILL.md` 只是「薄触发层」，所有真规则以本文件 + `RULES.md` 为准，避免平台切换时流程丢失。
 
 ## 一句话定位
-把「文章 / 视频链接、原文、字幕、订阅的 B站UP主 / 公众号」自动转成结构化笔记，归档到 **Obsidian + 飞书（双写）**。
+把「文章 / 视频链接、原文、字幕、订阅的 B站UP主 / 公众号」自动转成结构化笔记，归档到 **飞书（默认）；Obsidian 仅在明确要求时追加写入**。
 
 ---
 
@@ -16,7 +16,7 @@
 - **入口（任选）**
   - 文章：`python articles/run.py "https://..."` 或 `from articles import skill_main; skill_main({"content": url_or_text})`
   - 视频：`python videos/run.py --url "https://..."` 或 `from videos import summarize_video; summarize_video({"url": url})`
-- 自动按内容类型选模板（`structured` / `key_points` / `interview` / `roundup` / `reading` / `case` / `opinion`），自动双写 Obsidian + 飞书。
+- 自动按内容类型选模板（`structured` / `key_points` / `interview` / `roundup` / `reading` / `case` / `opinion`）；**默认写飞书**，用户说「写到 obsidian / 双写」时才追加 Obsidian（传 `obsidian=True` 或 `--obsidian`，详见 `RULES.md` §3.0）。
 - **降级**：无外部 AI 时 `skill_main` 返回 `need_continue_summary` + 原文 + 模板 prompt；外层模型总结后调 `save_summary_only` 存档。
 
 ### 能力 2 · 订阅监控（关注 B站UP主 / 公众号）
@@ -32,7 +32,7 @@
     1. 直接运行 `python monitors/run.py --mode auto --apply`。
     2. 公众号 token 失效 → 自动弹二维码（`RELOGIN_QR:` 路径），**本机会话扫码后续期，本次运行即继续抓取公众号**（刷新 token 后重试整轮）；headless/无人看码则本次跳过公众号、B站照跑不受影响。
     3. 发现 → 抓正文 → 进 `pending_summaries.json` 队列（FORCE_AGENT_MODE 下不自动总结）。
-    4. 运行结束后，本会话（执行模型）读队列、派**子 Agent** 按模板总结并 `save_summary_only` 落盘（Obsidian + 飞书双写）。
+    4. 运行结束后，本会话（执行模型）读队列、派**子 Agent** 按模板总结并 `save_summary_only` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，详见 `RULES.md` §3.0）。
     5. 末尾看健康度行（视频/动态/文章/跳过/限流待重试/错误）确认是否异常。
     - 内置重试（无需手动）：token 失效弹码等扫码(≤180s) / 401 瞬错 ×3 / 代理空轮退避重试 / 正文限流进 `pending_refetch` 下次重抓。
 - **抓取规则**：按时间窗口（首跑 7 天 / 每日 1 天）+ 无干货动态屏蔽 + 短动态轻量化 + 新鲜度标签。细节见 `monitors/README.md`。
@@ -48,18 +48,17 @@
 ## 配置（`.env`）
 复制 `.env.example` → `.env`，至少关注：
 - `FORCE_AGENT_MODE=1`（默认）：不调用外部 AI，总结一律由执行模型（主/子 Agent）完成；旧 `AI_PROVIDER` 配置已废弃。
-- `OBSIDIAN_VAULT_PATH` —— Obsidian 库路径（双写一端）
-- `FEISHU_WIKI_SPACE` + `FEISHU_WIKI_PARENT_NODE` —— 飞书知识库（双写另一端）
+- `OBSIDIAN_VAULT_PATH` —— Obsidian 库路径（按需端；仅 `obsidian=True`/`OBSIDIAN_WRITE=1` 时写入）
+- `FEISHU_WIKI_SPACE` + `FEISHU_WIKI_PARENT_NODE` —— 飞书知识库（默认落盘端）
 - `BILI_COOKIE` —— B站登录态 Cookie（订阅监控动态接口必需）
 - 监控可调参：`BILI_GAP`(30) / `BILI_FIRST_WINDOW_DAYS`(7) / `BILI_DAILY_WINDOW_DAYS`(1) / `BILI_PAGE_SIZE`(50) / `STATE_KEEP`(1000) / `BILI_SHORT_DYNAMIC_MAX`(80)
 - 完整变量见 `references/config.md`
 
 ## 红线（必须遵守）
-- **双写契约（强制）**：成品必须落 Obsidian + 飞书；本地 `notes/` 仅在两者都未配时兜底。
-  禁止 AI 手动写 `notes/`、禁止只存本地漏飞书。
+- **输出默认飞书、Obsidian 按需（强制 · 2026-08-08）**：写两遍浪费，**默认只落飞书**；Obsidian 仅在用户明确要求（提前说「写到 obsidian / 双写」）时才写。由 `OutputManager` 代码门禁保证（没显式开启就不写 Obsidian），不靠 AI 记性。`.env` 设 `OBSIDIAN_WRITE=1` 可一键回退双写。本地 `notes/` 仅在飞书不可用且未请求 Obsidian 时兜底。禁止 AI 手动写 `notes/`、禁止只存本地漏飞书。
 - **复用入口，不手写抓取 / 总结**：一律走 `skill_main` / `summarize_video` / `fetch_transcript` / `monitors/run.py`，
   不要临时写 `_xxx.py` 脚本、不要手搓 URL、不要 diagnose 平台私有接口。
-- **无字幕自动走 ASR 兜底（2026-08-06 授权）**：`fetch_transcript` 返回 None（真无 CC 字幕）时，`videos.main` 自动调 `videos.asr` 下载音频 + 本地 Whisper 转写；成功则继续总结+双写，仅 ASR 也失败才回「无可用字幕」文案并停止。环境坑由 `asr.py` 自动处理，勿手敲 export / 勿额外开发兜底。
+- **无字幕自动走 ASR 兜底（2026-08-06 授权）**：`fetch_transcript` 返回 None（真无 CC 字幕）时，`videos.main` 自动调 `videos.asr` 下载音频 + 本地 Whisper 转写；成功则继续总结并落盘（默认飞书，带 `obsidian` 时双写），仅 ASR 也失败才回「无可用字幕」文案并停止。环境坑由 `asr.py` 自动处理，勿手敲 export / 勿额外开发兜底。
 
 ---
 

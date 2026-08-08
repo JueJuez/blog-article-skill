@@ -1,6 +1,6 @@
 # 订阅监控（monitors/）
 
-持续订阅 **B站UP主** 与 **公众号**，发现新内容 → AI 总结 → 落 Obsidian + 飞书（双写）。
+持续订阅 **B站UP主** 与 **公众号**，发现新内容 → AI 总结 → 默认落飞书（需 Obsidian 时加 `--obsidian` 双写，见 `RULES.md` §3.0）。
 本文件是监控模块的操作文档 + 注意事项；决策背景见 `docs/decisions/DECISION-20260720-sub-monitor.md`。
 
 ## 架构
@@ -33,7 +33,7 @@
 - 同源视频→动态之间退避 `BILI_INTRA_GAP`=**2s**。
 - 重试退避 `BILI_BACKOFF`=**5s**（动态接口偶发 `-352`/`4101129`/`4101133` 列入退避重试）。
 - **抓取条数多少不影响风控，频率（请求次数）才影响**——已放慢到 30±5s/UP，风控无忧。
-- **触发方式（2026-07-24 更新 · 已移除自动调度）**：不再挂每日 10:00/17:00 自动化。改为**用户主动触发**——用户说「跑一次 / 跑一下」等关键词即运行 `python monitors/run.py --mode auto --apply`（抓公众号 + B站UP 并总结双写）。
+- **触发方式（2026-07-24 更新 · 已移除自动调度）**：不再挂每日 10:00/17:00 自动化。改为**用户主动触发**——用户说「跑一次 / 跑一下」等关键词即运行 `python monitors/run.py --mode auto --apply`（抓公众号 + B站UP 并总结：默认写飞书，需 Obsidian 时双写，见 `RULES.md` §3.0）。
 
 ## 新会话快速执行（跑一次 / 跑一下）
 
@@ -47,7 +47,7 @@
    - 公众号文章：`fetch_web_content` **直连微信**抽正文（`WECHAT_GAP=6s`+抖动防限流），异常/空页进 `pending_refetch` 下次重抓。
    - B站视频/动态：视频 `summarize_video`；动态 API 正文内联，短动态存「速览」、完整动态走重模板。
    - FORCE_AGENT_MODE=1：**不自动总结**，全部进 `pending_summaries.json` 队列。
-4. **Agent 总结闭环**：本会话（执行模型）读队列 → 派**子 Agent** 按 `note_type` 模板总结 → `save_summary_only` 落盘（Obsidian + 飞书双写）→ 出队。**原子化**：成功才出队，中断可安全重跑。
+4. **Agent 总结闭环**：本会话（执行模型）读队列 → 派**子 Agent** 按 `note_type` 模板总结 → `save_summary_only` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，见 `RULES.md` §3.0）→ 出队。**原子化**：成功才出队，中断可安全重跑。
 5. **看健康度行**：末尾 `📊 本轮健康度：...` 一行，异常（错误/限流待重试高）一眼可见。
 
 **重试矩阵（无需手动干预）**：token 失效→弹码等扫码 / 401 瞬错×3 / 代理空轮退避重试 / 正文限流→`pending_refetch`（`python run.py --refetch-only` 统一重抓）。
@@ -89,7 +89,7 @@
 
 无 `AI_PROVIDER` 时，`skill_main` 进入降级：把原文 + 模板 `prompt` + `raw_file` + `folder` 写入 **`pending_summaries.json`**（按 `url` 去重），`run.py` 末尾打印 `NEED_CONTINUE_SUMMARY` 提示。该队列**不会自动消化**，由外层模型接单：
 
-- **派子 Agent 执行（强制，保持主会话干净）**：每文件夹起一个子 Agent（如 `副业增长/生财有术` 一个、`投资交易/中金点睛` 一个），串行处理避免飞书并发建节点重复；子 Agent 读 `raw_file` → 按 `note_type` 模板总结 → 调 `scripts/persist_summary.py` 落盘（双写 Obsidian + 飞书，保存成功后**自动从队列移除该条**，中途停止可安全重跑）。
+- **派子 Agent 执行（强制，保持主会话干净）**：每文件夹起一个子 Agent（如 `副业增长/生财有术` 一个、`投资交易/中金点睛` 一个），串行处理避免飞书并发建节点重复；子 Agent 读 `raw_file` → 按 `note_type` 模板总结 → 调 `scripts/persist_summary.py` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，保存成功后**自动从队列移除该条**，中途停止可安全重跑）。
 - 严禁在主会话里直接总结——会污染上下文、降低总结质量。
 
 **双队列模型（务必分清）**：
@@ -109,7 +109,7 @@
 python monitors/run.py                 # 等价 --mode auto
 python monitors/run.py --mode first    # 首跑回填（7 天窗口）
 
-# 发现并直接调总结管线落盘（Obsidian + 飞书）
+# 发现并直接调总结管线落盘（默认飞书，需 Obsidian 时加 --obsidian）
 python monitors/run.py --apply
 python monitors/run.py --mode first --apply
 ```

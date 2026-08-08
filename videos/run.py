@@ -38,6 +38,7 @@ def main():
     parser.add_argument('--playlist', action='store_true', help='强制按 playlist 处理')
     parser.add_argument('--overview', action='store_true', help='playlist 模式：额外生成系列总览')
     parser.add_argument('--force', action='store_true', help='忽略去重强制重跑')
+    parser.add_argument('--obsidian', action='store_true', help='同时写入 Obsidian（默认只写飞书）')
     parser.add_argument('--lang', type=str, default='zh', help='B站字幕语言（默认 zh，可选 en 等）')
 
     args = parser.parse_args()
@@ -63,6 +64,7 @@ def main():
         'playlist': args.playlist,
         'overview': args.overview,
         'force': args.force,
+        'obsidian': args.obsidian,
         'lang': args.lang,
     })
 

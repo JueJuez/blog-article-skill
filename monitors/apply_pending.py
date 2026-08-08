@@ -1,4 +1,4 @@
-"""编排方落盘：把子 Agent 已产出的 _summary_*.md 通过 save_summary_only 双写 Obsidian + 飞书。
+"""编排方落盘：把子 Agent 已产出的 _summary_*.md 通过 save_summary_only 落盘（默认飞书，--obsidian 时追加 Obsidian）。
 
 用法：
     python monitors/apply_pending.py                  # 正常落盘（队列 drain）
@@ -11,7 +11,7 @@
 - 标题优先取总结正文首个 H1（子 Agent 选定的最佳标题；修正 "Abstract" 等退化标题），
   否则回退队列 title。
 - tags 由 note_type 映射（structured→结构化复盘 / key_points→要点提炼）。
-- 调 articles.main.save_summary_only 双写，并 dedup.mark_summarized。
+- 调 articles.main.save_summary_only 落盘（默认飞书，--obsidian 时追加 Obsidian），并 dedup.mark_summarized。
 - 无 _summary_ 的条目（抓空）写入 monitors/failed_summaries.json 单独留存，便于人工重抓。
 - 成功项全部落盘后，pending_summaries.json 置空（队列已 drain）。
 """
@@ -98,6 +98,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="只报告，不落盘也不写回")
     ap.add_argument("--regenerate", action="store_true", help="落盘前先删除已存在的笔记（修复代码后重生成）")
+    ap.add_argument("--obsidian", action="store_true", help="同时写入 Obsidian（默认只写飞书）")
     args = ap.parse_args()
 
     if not os.path.exists(PENDING):
@@ -158,6 +159,7 @@ def main():
             "original_title": original_title,
             "publish_time": publish_time,
             "folder": folder,
+            "obsidian": args.obsidian,
         })
         if res.get("success"):
             fn = res.get("filename", "")
@@ -190,7 +192,7 @@ def main():
                 print(f"   ⚠️ 删 failed_summaries.json 失败（不影响）：{e}")
 
     print(f"\n=== 落盘汇总 ===")
-    print(f"成功双写：{len(successes)} 条")
+    print(f"成功落盘：{len(successes)} 条")
     print(f"落盘失败：{len(failures)} 条")
     print(f"抓空跳过：{len(skipped_no_summary)} 条")
     print(f"队列已置空。")

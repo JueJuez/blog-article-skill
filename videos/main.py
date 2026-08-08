@@ -111,7 +111,7 @@ def _summarize_segments(segments, note_type: str, title: str = "", visual_contex
 
 def _summarize_and_save(segments, source_url: str, title: str, author: str,
                         tags: list, note_type: str, force: bool, visual_context: str = "",
-                        publish_time: int = 0, folder: str = ""):
+                        publish_time: int = 0, folder: str = "", obsidian: bool = False):
     """总结并保存；返回 (filename, final_text, degraded, article_content, note_type)。"""
     if not note_type:
         sample = (segments_to_text(segments)
@@ -131,7 +131,7 @@ def _summarize_and_save(segments, source_url: str, title: str, author: str,
     formatted, filename = save_summarized_article(
         final, original_url=source_url, author=author,
         tags=save_tags, original_title=title or "视频总结", note_type=note_type,
-        publish_time=publish_time, folder=folder
+        publish_time=publish_time, folder=folder, obsidian=obsidian
     )
     return (filename, final, False, None, note_type)
 
@@ -167,9 +167,9 @@ def _sanitize_filename(name: str) -> str:
 def _local_write_enabled() -> bool:
     """本地 notes/ 仅在没有配置 obsidian/feishu 时才落盘。
 
-    用户偏好（2026-07-21）：已有 Obsidian + 飞书双云同步，
-    本地 notes/ 不再作为交付目标写入（既不在 OutputManager 的
-    save_all 里、也不在系列课 _save_series_note / 总览里写本地文件）。
+    用户偏好（2026-07-21 起）：默认只写飞书（2026-08-08 改为单写优先），
+    Obsidian 仅在显式开启时追加（见 §3.0）；本地 notes/ 不再作为交付目标写入
+    （既不在 OutputManager 默认 save_all 里、也不在系列课里写本地文件，仅飞书不可用且未请求 Obsidian 时兜底）。
     """
     mgr = articles_main.OutputManager()
     names = {o.name.lower() for o in mgr.get_available_outputs()}
@@ -177,7 +177,8 @@ def _local_write_enabled() -> bool:
 
 
 def _save_series_note(content: str, series_dir: str, base_name: str,
-                      author: str, url: str, tags: list, note_type: str) -> str:
+                      author: str, url: str, tags: list, note_type: str,
+                      obsidian: bool = False) -> str:
     """把单集总结笔记同步到所有已配置输出（Obsidian / 飞书等）。
 
     满足用户需求：系列课先建一个「系列名」容器（Obsidian=同名子文件夹；
@@ -202,7 +203,7 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
     # 同步到所有已配置输出（Obsidian / 飞书等）：每个输出下先建「系列名」容器再放笔记
     try:
         series_folder = os.path.basename(series_dir)  # 如 "千刀千法"
-        mgr = articles_main.OutputManager()
+        mgr = articles_main.OutputManager(obsidian=obsidian)
         for out in mgr.get_available_outputs():
             try:
                 if out.save_series(formatted, filename, series_folder):
@@ -311,7 +312,8 @@ def _render_series_overview(series_title: str, url: str, rows: list, learning_pa
     return "\n".join(lines)
 
 
-def _generate_series_overview(series_title: str, series_dir: str, url: str) -> str:
+def _generate_series_overview(series_title: str, series_dir: str, url: str,
+                              obsidian: bool = False) -> str:
     """系列课总览大纲：抽取各集 标题 + 一句话核心结论，生成 00_系列总览.md。
 
     用户规则：系列课总结必生成总览。
@@ -388,7 +390,7 @@ def _generate_series_overview(series_title: str, series_dir: str, url: str) -> s
     # 同步到所有已配置输出（Obsidian / 飞书等，非致命）
     try:
         series_folder = os.path.basename(series_dir)
-        mgr = articles_main.OutputManager()
+        mgr = articles_main.OutputManager(obsidian=obsidian)
         for out in mgr.get_available_outputs():
             try:
                 if out.save_series(content, overview_name, series_folder):
@@ -475,6 +477,7 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
     base_tags = input_data.get("tags", []) or [series_title]
     note_type_arg = input_data.get("note_type", "")
     force = input_data.get("force", False)
+    obsidian = input_data.get("obsidian", False)
 
     print(f"\n📁 建立系列文件夹：notes/{_sanitize_filename(series_title)}/")
     series_dir = os.path.join(articles_main.NOTES_DIR, _sanitize_filename(series_title))
@@ -510,7 +513,7 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
             continue
 
         ep_tags = list(base_tags) + [_NOTE_TYPE_TAG.get(note_type, "视频笔记")]
-        path = _save_series_note(final, series_dir, base, author, url, ep_tags, note_type)
+        path = _save_series_note(final, series_dir, base, author, url, ep_tags, note_type, obsidian=obsidian)
         # 自愈：若此前降级留下 raw，成功总结后清除，避免半成品残留
         raw_path = os.path.join(series_dir, base + "_raw.md")
         if os.path.exists(raw_path):
@@ -522,7 +525,7 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
         print(f"   ✅ 已保存：{path}")
 
     # 系列总览大纲（用户规则：系列课总结必生成，含各集导航 + 一句话核心结论）
-    overview_path = _generate_series_overview(series_title, series_dir, url)
+    overview_path = _generate_series_overview(series_title, series_dir, url, obsidian=obsidian)
     print(f"   🧭 系列总览已生成：{overview_path}")
 
     return {
@@ -548,7 +551,7 @@ def _handle_single_video(url: str, input_data: dict, suppress: bool = False):
     result = fetch.fetch_transcript(url)
     if result is None:
         # 自动 ASR 兜底（用户规则 2026-08-06：抓不到字幕即自动走 ASR）
-        # 下载音频 → 本地 faster-whisper 转写，成功则继续总结+双写。
+        # 下载音频 → 本地 faster-whisper 转写，成功则继续总结并落盘（默认飞书，带 obsidian 时双写）。
         print("   ⚠️ 无可用字幕，自动走 ASR 兜底（下载音频 → 本地 Whisper 转写）...")
         asr_res = asr.transcribe_video(url, lang=input_data.get("lang", "zh"))
         if asr_res is None:
@@ -604,10 +607,12 @@ def _finalize_single(title, segments, url, input_data, visual_context: str = "")
     force = input_data.get("force", False)
     publish_time = input_data.get("publish_time", 0)
     folder = input_data.get("folder", "")
+    obsidian = input_data.get("obsidian", False)
 
     filename, final_text, degraded, article_content, note_type = _summarize_and_save(
         segments, url, title, author, tags, note_type, force,
-        visual_context=visual_context, publish_time=publish_time, folder=folder
+        visual_context=visual_context, publish_time=publish_time, folder=folder,
+        obsidian=obsidian
     )
 
     if degraded:
@@ -677,7 +682,8 @@ def _handle_playlist(url: str, input_data: dict):
             label = _NOTE_TYPE_TAG.get(input_data.get("note_type", "") or "structured", "结构化复盘")
             formatted, overview_file = save_summarized_article(
                 ov, original_url=url, author=input_data.get("author", ""),
-                tags=[label, "系列总览"], original_title="系列总览", note_type="structured"
+                tags=[label, "系列总览"], original_title="系列总览", note_type="structured",
+                obsidian=input_data.get("obsidian", False)
             )
 
     return {

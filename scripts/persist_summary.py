@@ -4,7 +4,7 @@
 1. 子 AGENT 读 raw 文件 → 按模板总结 → 把 {summarized_content, folder, ...} 写成一个 JSON 临时文件；
 2. 调本脚本 `python scripts/persist_summary.py <json_path>`，脚本加载 .env、调
    `articles.main.skill_main({'summarized_content': ...})` → `save_summary_only` →
-   双写 Obsidian + 飞书（与正常流程同一出口，契约一致）。
+   落盘到飞书（默认）；带 `--obsidian` 时追加 Obsidian（与正常流程同一出口、§3.0 同一闸门）。
 
 为何不直接在子 AGENT 里 import articles？因为 .env 必须在 import 前就位
 （feishu.py 在 __init__ 读环境变量），本脚本统一处理 .env 加载 + sys.path，
@@ -13,6 +13,7 @@
 import sys
 import os
 import json
+import argparse
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -32,13 +33,14 @@ def _load_env():
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(json.dumps({"success": False, "message": "用法: persisist_summary.py <json_path>"}))
-        return
+    ap = argparse.ArgumentParser()
+    ap.add_argument("json_path", help="子 Agent 写好的 {summarized_content, folder, ...} JSON 路径")
+    ap.add_argument("--obsidian", action="store_true", help="同时写入 Obsidian（默认只写飞书）")
+    args = ap.parse_args()
     _load_env()
     if BASE_DIR not in sys.path:
         sys.path.insert(0, BASE_DIR)
-    json_path = sys.argv[1]
+    json_path = args.json_path
     try:
         d = json.load(open(json_path, "r", encoding="utf-8"))
     except Exception as e:
@@ -53,6 +55,7 @@ def main():
         "tags": d.get("tags", []),
         "original_title": d.get("original_title", ""),
         "publish_time": d.get("publish_time", 0),
+        "obsidian": d.get("obsidian", False) or args.obsidian,
     })
     # 自清理：保存成功后从降级队列移除对应条目（按 original_url 匹配），
     # 这样即使中途停止子 AGENT，重跑也不会重复生成笔记。

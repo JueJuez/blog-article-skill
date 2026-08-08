@@ -273,7 +273,7 @@ class FeishuOutput(BaseOutput):
     def _verify_node_present(self, parent_token: str, title: str) -> bool:
         """保存后最佳努力校验：在 parent 下查找刚写入的 title 节点。
 
-        目的：把「双写失败被静默吞掉」变成「显式告警」。本会话曾因标题含 & 触发
+        目的：把「飞书落盘失败被静默吞掉」变成「显式告警」。本会话曾因标题含 & 触发
         Windows cmd 元字符 bug，save 返回 False 但编排层没校验返回值，导致漏节点
         靠人工清点才发现。自此每篇 save 成功后都核对一次。
 
@@ -469,7 +469,7 @@ class FeishuOutput(BaseOutput):
                     print(f"✓ 文档链接: {doc_url}")
                 elif node_token:
                     print(f"✓ 节点Token: {node_token}")
-                self._verify_node_present(parent_token, title)  # 双写自检（非阻塞）
+                self._verify_node_present(parent_token, title)  # 飞书落盘自检（非阻塞）
                 return True
             else:
                 error_msg = result.get("error", {}).get("message", "未知错误") if result else "命令执行失败"
@@ -519,7 +519,7 @@ class FeishuOutput(BaseOutput):
                     print(f"✓ 文档链接: {doc_url}")
                 elif node_token:
                     print(f"✓ 节点Token: {node_token}")
-                self._verify_node_present(parent_token, title)  # 双写自检（非阻塞）
+                self._verify_node_present(parent_token, title)  # 飞书落盘自检（非阻塞）
                 return True
             else:
                 error_msg = result.get("error", {}).get("message", "未知错误") if result else "命令执行失败"

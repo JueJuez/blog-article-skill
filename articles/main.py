@@ -149,14 +149,14 @@ def save_raw_content_to_file(content: str, title: str = "", prefix: str = "_raw_
     return os.path.abspath(filepath)
 
 
-def save_summarized_from_file(filepath: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = ""):
+def save_summarized_from_file(filepath: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", obsidian: bool = False):
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"总结内容文件不存在: {filepath}")
     with open(filepath, 'r', encoding='utf-8') as f:
         content = f.read()
     if not content.strip():
         raise ValueError(f"总结内容文件为空: {filepath}")
-    return save_summarized_article(content, original_url=original_url, author=author, tags=tags, original_title=original_title)
+    return save_summarized_article(content, original_url=original_url, author=author, tags=tags, original_title=original_title, obsidian=obsidian)
 
 
 def _extract_title_from_summary(summarized_content: str) -> str:
@@ -217,7 +217,7 @@ def _sanitize_folder(folder: str) -> str:
     return "/".join(parts)
 
 
-def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = ""):
+def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False):
     """保存已总结的文章内容到所有可用目标。
 
     Args:
@@ -259,7 +259,7 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
         filename = f"{folder}/{filename}"
 
     # 文件名冲突处理（禁止覆盖）
-    manager = OutputManager()
+    manager = OutputManager(obsidian=obsidian)
     available_outputs = manager.get_available_outputs()
     if len(available_outputs) > 0:
         should_rename = False
@@ -362,7 +362,7 @@ def summarize_content(content: str, author: str = "", url: str = "", tags: list 
     }
 
 
-def summarize_and_save(url_or_content: str, author: str = "", tags: list = None, note_type: str = "", force: bool = False, publish_time: int = 0, folder: str = ""):
+def summarize_and_save(url_or_content: str, author: str = "", tags: list = None, note_type: str = "", force: bool = False, publish_time: int = 0, folder: str = "", obsidian: bool = False):
     """完整的文章总结与自动保存流程（含 A2 去重 / A5 标签 / A4 计量）。
 
     Args:
@@ -453,7 +453,7 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None,
         formatted_note, filename = save_summarized_article(
             summarized_content, original_url, author, tags, original_title,
             meta={"usage": usage, "model": model}, note_type=note_type,
-            publish_time=publish_time, folder=folder
+            publish_time=publish_time, folder=folder, obsidian=obsidian
         )
         # A2：记录去重
         dedup.mark_summarized(url=original_url, content=article_content, title=original_title, filename=filename)
@@ -474,13 +474,14 @@ def save_summary_only(input_data: dict) -> dict:
     original_title = input_data.get('original_title', '')
     publish_time = input_data.get('publish_time', 0)
     folder = input_data.get('folder', '')
+    obsidian = input_data.get('obsidian', False)
     if not summarized_content:
         return {'success': False, 'message': '请提供总结好的内容'}
     try:
         formatted_note, filename = save_summarized_article(
             summarized_content, original_url=original_url, author=author,
             tags=tags, original_title=original_title, publish_time=publish_time,
-            folder=folder
+            folder=folder, obsidian=obsidian
         )
         return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note}
     except Exception as e:
@@ -500,6 +501,7 @@ def skill_main(input_data: dict) -> dict:
     force = input_data.get('force', False)
     publish_time = input_data.get('publish_time', 0)
     folder = input_data.get('folder', '')
+    obsidian = input_data.get('obsidian', False)
 
     if url and not content:
         content = url
@@ -507,7 +509,7 @@ def skill_main(input_data: dict) -> dict:
         return {'success': False, 'message': '请提供文章内容或博客链接'}
 
     try:
-        result = summarize_and_save(content, author, tags, note_type=note_type, force=force, publish_time=publish_time, folder=folder)
+        result = summarize_and_save(content, author, tags, note_type=note_type, force=force, publish_time=publish_time, folder=folder, obsidian=obsidian)
         summarized, second, third, original_title, error_msg = result
 
         if error_msg:
@@ -534,7 +536,7 @@ def skill_main(input_data: dict) -> dict:
                 'article_content': article_content, 'note_type': note_type,
                 'prompt': get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK, 'original_url': original_url,
                 'original_title': original_title, 'author': author, 'tags': tags,
-                'raw_file': _LAST_RAW_FILEPATH, 'folder': folder,
+                'raw_file': _LAST_RAW_FILEPATH, 'folder': folder, 'obsidian': obsidian,
             }
         else:
             return {'success': False, 'message': '内容获取失败'}
@@ -542,13 +544,13 @@ def skill_main(input_data: dict) -> dict:
         return {'success': False, 'message': f'执行失败: {str(e)}'}
 
 
-def skill_continue_summary(article_content: str, summary_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = ""):
+def skill_continue_summary(article_content: str, summary_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", obsidian: bool = False):
     if not summary_content or not summary_content.strip():
         return {'success': False, 'message': '总结内容为空，请提供有效的总结内容'}
     try:
         formatted_note, filename = save_summarized_article(
             summarized_content=summary_content, original_url=original_url, author=author,
-            tags=tags or [], original_title=original_title
+            tags=tags or [], original_title=original_title, obsidian=obsidian
         )
         return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note}
     except Exception as e:
@@ -560,7 +562,7 @@ async def async_fetch_web_content(url: str):
     return await asyncio.to_thread(fetch_web_content, url)
 
 
-async def async_save_summarized_from_file(filepath: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = ""):
+async def async_save_summarized_from_file(filepath: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", obsidian: bool = False):
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"总结内容文件不存在: {filepath}")
     with open(filepath, 'r', encoding='utf-8') as f:
@@ -568,7 +570,13 @@ async def async_save_summarized_from_file(filepath: str, original_url: str = "",
     if not content.strip():
         raise ValueError(f"总结内容文件为空: {filepath}")
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, save_summarized_article, content, original_url, author, tags, original_title)
+    return await loop.run_in_executor(
+        None,
+        lambda: save_summarized_article(
+            content, original_url=original_url, author=author, tags=tags,
+            original_title=original_title, obsidian=obsidian
+        )
+    )
 
 
 if __name__ == "__main__":
