@@ -30,6 +30,7 @@ from prompts.templates import (
 )
 from prompts.classify import classify_note_type
 from shared.chunking import chunk_segments, chunk_text, two_stage_summarize, segments_to_text
+from shared import series_state
 
 from . import fetch, asr, multimodal
 
@@ -191,7 +192,7 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
     """
     formatted = format_note_with_prompt(
         content=content, author=author, url=url,
-        tags=tags, add_metadata=False
+        tags=tags, add_metadata=True
     )
     filename = f"{base_name}.md"
     path = os.path.join(series_dir, filename)
@@ -225,13 +226,26 @@ def _extract_h1(md: str) -> str:
 
 
 def _extract_one_liner(md: str) -> str:
-    for line in md.splitlines():
-        # 兼容「> **30秒速览**：…」引用块前缀，与新模板对齐
+    """从单集正文抽取「一句话核心结论」用于系列总览表。
+
+    兼容两种写法（子 Agent 实际产出不统一）：
+      1) 行内 bold：`**一句话核心结论**：xxx` / `**30秒速览**：xxx`（可能带 `>` 引用前缀）
+      2) 二级/三级标题：`## 一句话核心结论` / `## 30秒速览` → 取其下首行非空正文
+    """
+    lines = md.splitlines()
+    for i, line in enumerate(lines):
         s = line.strip().lstrip('>').strip()
+        # 形式 1：行内 bold
         if s.startswith('**一句话核心结论') or s.startswith('**30秒速览'):
             for sep in ('：', ':'):
                 if sep in s:
                     return s.split(sep, 1)[1].strip().strip('*').strip()
+        # 形式 2：标题 + 下行正文
+        if re.match(r'^#{2,3}\s*(一句话核心结论|30秒速览)', s):
+            for nxt in lines[i + 1:]:
+                t = nxt.strip().lstrip('>').strip()
+                if t and not t.startswith('#') and not t.startswith('>'):
+                    return t.strip('*').strip()
     return ""
 
 
@@ -479,11 +493,29 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
     force = input_data.get("force", False)
     obsidian = input_data.get("obsidian", False)
 
+    # 增量去重：只把「尚未总结的集」列为 pending，避免每日重跑全量重总结。
+    # 首跑 done 为空 → 全系列待总结；UP 更新后 done 含旧集 → 只列新增集。
+    all_bases = [f"第{e['page']:02d}集_{_sanitize_filename(e['part'] or '未命名')}" for e in entries]
+    pending_bases = set(series_state.get_pending(series_title, all_bases))
+    if not pending_bases:
+        print(f"\n✅ 系列「{series_title}」已是最新，无新集待总结"
+              f"（{len(all_bases)} 集均在已总结记录中），仅重生成总览。")
+        series_dir = os.path.join(articles_main.NOTES_DIR, _sanitize_filename(series_title))
+        overview_path = _generate_series_overview(series_title, series_dir, url, obsidian=obsidian)
+        return {
+            "success": True,
+            "need_continue_summary": False,
+            "message": f"系列课「{series_title}」无更新，跳过（{len(all_bases)} 集已总结）。",
+            "series_title": series_title, "series_dir": series_dir, "url": url,
+            "author": author, "degraded_raws": [], "results": [],
+            "overview": overview_path, "degraded_any": False,
+        }
+
     print(f"\n📁 建立系列文件夹：notes/{_sanitize_filename(series_title)}/")
     series_dir = os.path.join(articles_main.NOTES_DIR, _sanitize_filename(series_title))
     os.makedirs(series_dir, exist_ok=True)
 
-    print(f"🧠 Phase 2：逐集总结（共 {len(entries)} 集）...")
+    print(f"🧠 Phase 2：逐集总结（共 {len(entries)} 集，其中 {len(pending_bases)} 集待总结）...")
     results: List[Dict] = []
     degraded_any = False
     for idx, entry in enumerate(entries, 1):
@@ -491,11 +523,17 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
         part = entry["part"]
         segs = entry["segments"]
         ep_title = entry["title"]
+        base = f"第{page:02d}集_{_sanitize_filename(part or '未命名')}"
+
+        # 增量去重：已总结过的集直接跳过，不重写 raw、不排队
+        if base not in pending_bases:
+            results.append({"page": page, "part": part, "done": True})
+            continue
+
         print(f"\n[{idx}/{len(entries)}] 第{page}集：{part or '(无标题)'}")
 
         note_type = note_type_arg or classify_note_type(ep_title, segments_to_text(segs))
         final = _summarize_segments(segs, note_type, ep_title)
-        base = f"第{page:02d}集_{_sanitize_filename(part or '未命名')}"
 
         if final is None:
             # AI 不可用：暂存原始字幕，交外层总结（不中断其他集）
@@ -505,7 +543,8 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
             with open(raw_path, "w", encoding="utf-8") as f:
                 f.write(
                     f"> 原始字幕（AI 不可用，待外层总结）\n"
-                    f"> 系列：{series_title}\n> 分P：第{page}集 {part}\n> 链接：{url}\n\n---\n\n"
+                    f"> 系列：{series_title}\n> 分P：第{page}集 {part}\n"
+                    f"> 作者：{author}\n> 链接：{url}\n\n---\n\n"
                     + raw_text
                 )
             results.append({"page": page, "part": part, "raw": os.path.relpath(raw_path, articles_main.NOTES_DIR), "degraded": True})
@@ -528,13 +567,21 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
     overview_path = _generate_series_overview(series_title, series_dir, url, obsidian=obsidian)
     print(f"   🧭 系列总览已生成：{overview_path}")
 
+    # 降级时显式告知外层「有待总结的集」，否则监控落盘闭环（只认 need_continue_summary）
+    # 会静默丢弃系列 raw，导致像「中国好公司」75 集那样无人接管的事故。
+    degraded_raws = [r["raw"] for r in results if r.get("degraded")]
+
     return {
         "success": True,
+        "need_continue_summary": degraded_any,  # 关键：让 monitors/run.py 感知系列降级待总结
         "message": (f"系列课「{series_title}」处理完成：{len(entries)} 集"
                     f"（{len([r for r in results if 'filename' in r])} 篇笔记"
-                    f"{'，'+str(len([r for r in results if r.get('degraded')]))+' 集待外层总结' if degraded_any else ''}）"),
-        "series_dir": series_dir,
+                    f"{'，'+str(len(degraded_raws))+' 集待外层总结' if degraded_any else ''}）"),
         "series_title": series_title,
+        "series_dir": series_dir,
+        "url": url,
+        "author": author,
+        "degraded_raws": degraded_raws,
         "results": results,
         "overview": overview_path,
         "degraded_any": degraded_any,

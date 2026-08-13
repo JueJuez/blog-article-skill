@@ -64,6 +64,9 @@ PENDING_REFETCH_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 # 降级待总结队列：无外部 AI 时抓到的原文（raw 文件）在此排队，由外层执行模型总结后
 # 调 articles.save_summary_only 落盘（含 folder 归档），完成降级闭环
 PENDING_SUMMARY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_summaries.json")
+# 系列课降级待总结队列：monitors/run.py 在发现 B站系列且 AI 不可用时登记，
+# 由执行模型（Agent）串行落盘（避免并发重复节点）。对应 drainer: apply_pending_series.py
+PENDING_SERIES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_series.json")
 # 每类型「安全上限」（防极端 UP 单窗口发几百条刷爆笔记）；真正的内容量由
 # 时间窗口（BILI_FIRST_WINDOW_DAYS / BILI_DAILY_WINDOW_DAYS）约束，不是这个 count。
 FIRST_RUN_LIMIT = int(os.environ.get("FIRST_RUN_LIMIT", "50"))
@@ -143,6 +146,38 @@ def _queue_pending_summary(it: dict, res: dict) -> None:
     pending.append(entry)
     _save_json(PENDING_SUMMARY_PATH, pending)
     print(f"[need-summary] 已入降级队列: {entry['title']} -> {entry['raw_file']}")
+
+
+def _queue_pending_series(it: dict, res: dict) -> None:
+    """系列课降级时把待总结集登记到 pending_series.json，供执行模型（Agent）串行落盘。
+
+    背景：_handle_bilibili_series 在 AI 不可用（FORCE_AGENT_MODE）时把每集字幕降级成
+    notes/<系列名>/*_raw.md，但原本的返回值没有 need_continue_summary，导致监控落盘闭环
+    （只认 pending_summaries 里的顶级 _raw_*.md）静默丢弃系列 raw，系列课从不被自动总结。
+    此处把系列信息（series_title/series_dir/url/author/各集 raw 路径）登记到专门队列，
+    并让 apply_pending_series.py 接管落盘，形成完整闭环。
+    """
+    data = _load_json(PENDING_SERIES_PATH, [])
+    entry = {
+        "series_title": res.get("series_title", ""),
+        "series_dir": res.get("series_dir", ""),
+        "url": res.get("url", it.get("url", "")),
+        "author": res.get("author", it.get("sub_name", "")),
+        "degraded_raws": res.get("degraded_raws", []),
+        "queued_at": int(time.time()),
+    }
+    # 同系列不重复登记：已存在则合并 raw 列表（按相对路径去重）
+    for d in data:
+        if d.get("series_title") == entry["series_title"]:
+            merged = set(d.get("degraded_raws", [])) | set(entry["degraded_raws"])
+            d["degraded_raws"] = sorted(merged)
+            break
+    else:
+        data.append(entry)
+    _save_json(PENDING_SERIES_PATH, data)
+    n = len(entry["degraded_raws"])
+    print(f"   🤖 NEED_AGENT_SERIES_SUMMARY: 系列「{entry['series_title']}」{n} 集待总结，"
+          f"详见 {os.path.basename(PENDING_SERIES_PATH)}")
 
 
 def _promote_empty_summaries() -> int:
@@ -360,7 +395,7 @@ def discover_all(subs: dict, state: dict, mode: str = "auto") -> list:
     return all_new
 
 
-def apply_summaries(items: list) -> None:
+def apply_summaries(items: list, obsidian: bool = False) -> None:
     from articles.fetch import fetch_web_content
     # 健康度统计：每轮运行结束打印一行，便于一眼看出监控是否健康
     stats = {
@@ -423,7 +458,7 @@ def apply_summaries(items: list) -> None:
                 res = skill_main({"content": src_text, "author": it.get("mp_name", ""),
                                   "publish_time": it.get("publish_time", 0),
                                   "original_title": it.get("title", ""),
-                                  "folder": _item_folder(it), "obsidian": args.obsidian})
+                                  "folder": _item_folder(it), "obsidian": obsidian})
                 msg = res.get("message", "") if isinstance(res, dict) else str(res)
                 print(f"[{it['source']}] {it['title']}: {msg}")
                 _queue_pending_summary(it, res if isinstance(res, dict) else {})
@@ -440,9 +475,14 @@ def apply_summaries(items: list) -> None:
             try:
                 from videos import summarize_video
                 res = summarize_video({"url": it["url"], "publish_time": it.get("publish_time", 0),
-                                       "folder": _item_folder(it), "obsidian": args.obsidian})
+                                       "folder": _item_folder(it), "obsidian": obsidian})
                 msg = res.get("message", "") if isinstance(res, dict) else str(res)
                 print(f"[bilibili] {it['title']}: {msg}")
+                # 系列课降级：把待总结的集字幕登记到系列待总结队列，由 Agent 串行落盘（避免漏接）
+                if isinstance(res, dict) and res.get("degraded_any") and res.get("degraded_raws"):
+                    _queue_pending_series(it, res)
+                    stats["video"] += 1
+                    continue
                 _queue_pending_summary(it, res if isinstance(res, dict) else {})
                 stats["video"] += 1
             except Exception as e:
@@ -470,7 +510,7 @@ def apply_summaries(items: list) -> None:
                         original_url=it["url"], author=it.get("mp_name", ""),
                         tags=["动态速览", "短动态"], original_title=it.get("title", ""),
                         note_type="dynamic", publish_time=it.get("publish_time", 0),
-                        folder=_item_folder(it), obsidian=args.obsidian,
+                        folder=_item_folder(it), obsidian=obsidian,
                     )
                     print(f"[bilibili-动态-速览] {it['title']}: 已存短动态速览")
                     stats["dynamic_light"] += 1
@@ -484,7 +524,7 @@ def apply_summaries(items: list) -> None:
                 res = skill_main({"content": src_text, "author": it.get("mp_name", ""),
                                   "publish_time": it.get("publish_time", 0),
                                   "original_title": it.get("title", ""),
-                                  "folder": _item_folder(it), "obsidian": args.obsidian})
+                                  "folder": _item_folder(it), "obsidian": obsidian})
                 msg = res.get("message", "") if isinstance(res, dict) else str(res)
                 print(f"[bilibili-动态] {it['title']}: {msg}")
                 _queue_pending_summary(it, res if isinstance(res, dict) else {})
@@ -530,6 +570,26 @@ def apply_summaries(items: list) -> None:
             f"落盘 → 从队列移除该条。"
         )
 
+    # 系列课降级待总结队列提示（与单篇队列对称）
+    series_pending = _load_json(PENDING_SERIES_PATH, [])
+    if series_pending:
+        total_ep = sum(len(s.get("degraded_raws", [])) for s in series_pending)
+        print(
+            f"\n🤖 NEED_AGENT_SERIES_SUMMARY: {len(series_pending)} 个系列课、共 {total_ep} 集待总结。"
+            f"清单见 {PENDING_SERIES_PATH}\n"
+            f"   处理路径：执行模型按 notes/<系列名>/*_raw.md 分片总结成 body → 串行调"
+            f" videos.main._save_series_note 落飞书（避免并发重复节点）→ 跑 apply_pending_series.py 收尾。"
+        )
+
+    # 自动落地：若已有 .body.md（Agent 此前已总结 / 本次会话稍后总结），直接落飞书。
+    # 系列课的「总结」由执行模型在收尾例程里完成（与单篇对称），本调用负责「落地」闭环，
+    # 使系列课与单篇一样全自动：检测 →（Agent 总结 raws→bodies）→ 落地，无需手动命令。
+    try:
+        from apply_pending_series import drain_series_pending
+        drain_series_pending(obsidian=obsidian)
+    except Exception as e:
+        print(f"  ⚠️ 系列课自动落地异常（非致命）：{e}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="订阅监控")
@@ -548,7 +608,7 @@ def main():
         n = _promote_empty_summaries()
         if n:
             print(f"[refetch] 将 {n} 条 raw 为空的总结队列条目提升回正文重试队列")
-        apply_summaries([])  # apply 内部自动合并 pending_refetch 队列并重抓+重总结
+        apply_summaries([], args.obsidian)  # apply 内部自动合并 pending_refetch 队列并重抓+重总结
         return
 
     subs = load_subscriptions()
@@ -567,7 +627,7 @@ def main():
         # 已处理，导致后续 --apply 永远抓不到它们（首跑已踩此坑：发现模式把中金点睛 3 篇
         # 标记为 seen，后续 --apply 直接去重成 0）。
         save_state(state)
-        apply_summaries(all_new)
+        apply_summaries(all_new, args.obsidian)
     else:
         print(json.dumps(all_new, ensure_ascii=False, indent=2))
 

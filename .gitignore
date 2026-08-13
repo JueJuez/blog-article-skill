@@ -21,6 +21,8 @@ monitors/.relogin.lock
 monitors/.relogin.mutex
 monitors/pending_refetch.json
 monitors/pending_summaries.json
+monitors/pending_series.json
+monitors/series_state.json
 *.bak
 stderr.log
 stdout.log

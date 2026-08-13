@@ -48,17 +48,25 @@ class FeishuOutput(BaseOutput):
 
     @staticmethod
     def _rate_limit_text(text: str) -> bool:
-        """检测飞书频限特征（CLI 可能以非 0 退出并打印错误，也可能返回 code 99991400）。"""
+        """检测飞书频限/瞬时不可用特征（CLI 可能以非 0 退出并打印错误，也可能返回 code）。"""
         t = (text or "").lower()
-        return ("frequency limit" in t) or ("request trigger frequency" in t) or ("99991400" in t)
+        return ("frequency limit" in t) or ("request trigger frequency" in t) \
+            or ("99991400" in t) or ("131001" in t) \
+            or ("service temporarily unavailable" in t)
 
     def _is_rate_limit(self, result) -> bool:
         if not result:
             return False
-        if result.get("code") == 99991400:
+        code = result.get("code")
+        # 131001 = "service temporarily unavailable, please retry"：飞书瞬时不可用，
+        # 属可重试瞬错（批量建/删节点时常见），必须纳入重试，否则批量操作会半途而废。
+        if code in (99991400, 131001):
             return True
+        msg = ""
         err = result.get("error") or {}
-        msg = (err.get("message") or "") if isinstance(err, dict) else str(err)
+        if isinstance(err, dict):
+            msg += (err.get("message") or "")
+        msg += " " + (result.get("message") or "")
         return self._rate_limit_text(msg)
 
     def _cli_exec(self, args: list, timeout: int, input_text: str = None) -> dict:
@@ -428,6 +436,19 @@ class FeishuOutput(BaseOutput):
             return [], filename
         return parts[:-1], parts[-1]
 
+    def _find_child_node(self, parent_token: str, title: str):
+        """在 parent_token 下查找与 title 同名的子节点，返回节点 dict（含 node_token/obj_token）。
+
+        用于 save() 的 upsert：系列总览固定标题重生成、单篇重跑等场景下，
+        同名节点已存在时改为「删旧 + 新建」（见 save 内 upsert 分支）。
+        """
+        if not parent_token or not self.is_available():
+            return None
+        for node in self.list_children(parent_token):
+            if node.get("title") == title:
+                return node
+        return None
+
     def save(self, content: str, filename: str, parent_token: str = None) -> bool:
         if not self.is_available():
             return False
@@ -445,6 +466,19 @@ class FeishuOutput(BaseOutput):
         print("正在上传到飞书知识库...")
 
         title = _sanitize_title(os.path.splitext(filename)[0])
+
+        # upsert：父节点下已存在同名子文档则「删旧 + 新建」，避免重复节点。
+        # 注意：feishu 的 docs +update --command overwrite 会把文档标题也改写成正文首行，
+        # 既破坏可读性又会让下次按标题去重失效（进而产生重复节点），故不用 overwrite，
+        # 改用「先删旧节点、再走下方新建」——无论集节点（唯一标题）还是系列总览
+        # （固定标题重生成）都幂等，永不产生重复节点。
+        existing = self._find_child_node(parent_token, title)
+        if existing:
+            try:
+                self.delete_node(existing.get("node_token"))
+                time.sleep(0.5)  # 给飞书一点最终一致时间，降低紧跟其后的新建竞态
+            except Exception as e:
+                print(f"  ⚠️ 删旧节点失败（非致命，继续新建）：{e}")
 
         try:
             args = [
@@ -496,6 +530,16 @@ class FeishuOutput(BaseOutput):
         print("正在上传到飞书知识库（异步）...")
 
         title = _sanitize_title(os.path.splitext(filename)[0])
+
+        # upsert（与同步 save 一致）：同名已存在则「删旧 + 新建」，避免重复节点
+        # （不用 docs +update overwrite：它会把标题改写成正文首行，破坏去重）
+        existing = self._find_child_node(parent_token, title)
+        if existing:
+            try:
+                self.delete_node(existing.get("node_token"))
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"  ⚠️ 删旧节点失败（非致命，继续新建）：{e}")
 
         try:
             args = [
