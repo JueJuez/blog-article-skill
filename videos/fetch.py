@@ -476,12 +476,12 @@ def _bili_auto_extract_cookies() -> Optional[str]:
 
 def _bili_build_cookies_from_env() -> Optional[str]:
     """返回 B 站 cookie 头字符串，按优先级：
-    1. 环境变量 BILIBILI_COOKIES（完整 cookie 串）
+    1. 环境变量 BILIBILI_COOKIES / BILI_COOKIE（完整 cookie 串，后者为本项目 .env 实际变量名）
     2. 环境变量 SESSDATA / BILIBILI_SESSDATA
     3. 本地缓存（.cache/bilibili_cookies.txt）
     4. 自动从本机 Chrome 提取（Playwright，仅首次，会缓存）
     """
-    full = os.environ.get("BILIBILI_COOKIES", "")
+    full = os.environ.get("BILIBILI_COOKIES") or os.environ.get("BILI_COOKIE", "")
     if full:
         return full
     sess = os.environ.get("SESSDATA", "") or os.environ.get("BILIBILI_SESSDATA", "")
@@ -601,60 +601,87 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
     else:
         print("   WARN 该分P无 AI 字幕，尝试 yt-dlp 兜底")
 
-    # fallback: yt-dlp（多P场景不细分，仅作最后兜底）
+    # fallback 1: yt-dlp（抓 B站自动字幕，多P场景不细分）
     try:
         import yt_dlp
     except ImportError:
-        print("   FAIL 未安装 yt-dlp 且原生 API 也未成功")
-        return None
+        print("   FAIL 未安装 yt-dlp，原生 API 也未成功")
+        yt_dlp = None
 
-    page_url = f"{url.split('?')[0]}?p={page}" if page else url
-    tmpdir = tempfile.mkdtemp(prefix="bili_sub_")
-    outtmpl = os.path.join(tmpdir, "%(id)s")
-    ydl_opts = {
-        "skip_download": True,
-        "writesubtitles": True,
-        "writeautomaticsub": True,
-        "subtitleslangs": [lang],
-        "outtmpl": outtmpl,
-        "quiet": True,
-        "no_warnings": True,
-        "noprogress": True,
-        "socket_timeout": 15,
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            vinfo = ydl.extract_info(page_url, download=False)
-            title2 = vinfo.get("title", "") or title or ""
-            subs_found = []
-            for f in os.listdir(tmpdir):
-                if f.endswith((".vtt", ".srv3", ".json3")):
-                    subs_found.append(os.path.join(tmpdir, f))
-            if not subs_found:
-                print("   FAIL Bilibili 字幕获取失败（所有方式均未拿到字幕）")
-                return None
-            segs2: List[Dict] = []
-            for sub in subs_found:
-                with open(sub, "r", encoding="utf-8", errors="ignore") as fh:
-                    segs2.extend(parse_vtt(fh.read()))
-            for f in os.listdir(tmpdir):
+    if yt_dlp is not None:
+        # 仅当视频确实多P（pages>1）且 page 落在有效区间内才拼 ?p=N；
+        # ugc_season 每集是独立单P BV，page 只是系列集号元数据，拼 ?p=N 会指向
+        # 不存在的分P → yt-dlp 报 "No video formats found"。单P 视频直接用基础 URL。
+        multi_page = len(pages) > 1
+        page_within = page and (1 <= page <= len(pages))
+        if page and multi_page and page_within:
+            page_url = f"{url.split('?')[0]}?p={page}"
+        else:
+            page_url = url.split('?')[0]
+        tmpdir = tempfile.mkdtemp(prefix="bili_sub_")
+        ydl_opts = {
+            "skip_download": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": [lang],
+            "outtmpl": os.path.join(tmpdir, "%(id)s"),
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,
+            "socket_timeout": 15,
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                vinfo = ydl.extract_info(page_url, download=False)
+                title2 = vinfo.get("title", "") or title or ""
+                subs_found = [os.path.join(tmpdir, f) for f in os.listdir(tmpdir)
+                              if f.endswith((".vtt", ".srv3", ".json3"))]
+                segs2: List[Dict] = []
+                for sub in subs_found:
+                    with open(sub, "r", encoding="utf-8", errors="ignore") as fh:
+                        segs2.extend(parse_vtt(fh.read()))
+                for f in os.listdir(tmpdir):
+                    try:
+                        os.remove(os.path.join(tmpdir, f))
+                    except Exception:
+                        pass
                 try:
-                    os.remove(os.path.join(tmpdir, f))
+                    os.rmdir(tmpdir)
                 except Exception:
                     pass
-            try:
-                os.rmdir(tmpdir)
-            except Exception:
-                pass
-            if not segs2:
-                print("   FAIL Bilibili 字幕解析后为空")
-                return None
-            segs2 = preprocess_segments(segs2)  # B：字幕轻量清洗
-            print(f"   OK Bilibili 字幕获取成功（清洗后 {len(segs2)} 条，yt-dlp 兜底）")
-            return (title2, segs2, info.get("author", ""))
+                if segs2:
+                    segs2 = preprocess_segments(segs2)  # B：字幕轻量清洗
+                    print(f"   OK Bilibili 字幕获取成功（清洗后 {len(segs2)} 条，yt-dlp 兜底）")
+                    return (title2, segs2, info.get("author", ""))
+                print("   ℹ️ yt-dlp 也未拿到字幕，继续 ASR 兜底")
+        except Exception as e:
+            print(f"   WARN Bilibili yt-dlp 兜底失败（{e}），继续 ASR 兜底")
+    else:
+        print("   ℹ️ yt-dlp 未安装，直接尝试 ASR 兜底")
+
+    # fallback 2: ASR 音频转写（字幕完全缺失时的最后兜底；依赖 videos/asr）
+    try:
+        from videos.asr import transcribe_video, check_asr_deps
+        # 优化 F：依赖预检——缺依赖打印一行安装命令，别让 ASR 静默崩
+        ok, missing = check_asr_deps()
+        if not ok:
+            print(f"   FAIL ASR 依赖缺失（{', '.join(missing)}），跳过 ASR 兜底。"
+                  f"安装：pip install {' '.join(missing)}")
+            return None
+        print("   WARN 该分P无字幕，尝试 ASR 音频转写兜底")
+        r = transcribe_video(url, lang=lang)
+        if r:
+            title3, payload, author3 = r
+            text3 = payload if isinstance(payload, str) else "\n".join(
+                s.get("text", "") for s in payload)
+            if text3 and text3.strip():
+                segs3 = [{"start": 0.0, "duration": 0.0, "text": text3}]
+                print(f"   OK Bilibili ASR 转写成功（{len(text3)} 字）")
+                return (title3 or title, segs3, author3 or info.get("author", ""))
+            print("   ℹ️ ASR 返回空文本，放弃")
     except Exception as e:
-        print(f"   FAIL Bilibili yt-dlp 兜底也失败: {e}")
-        return None
+        print(f"   FAIL Bilibili ASR 兜底也失败: {e}")
+    return None
 
 
 def _fetch_series_entries(meta_list: List[Dict], lang: str) -> List[Dict]:

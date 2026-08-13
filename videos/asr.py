@@ -21,8 +21,10 @@
 
 import os
 import re
+import sys
 import tempfile
 import hashlib
+import threading
 from typing import Optional, Tuple, List, Dict
 
 try:
@@ -162,6 +164,17 @@ def _ffmpeg_exe() -> Optional[str]:
     return shutil.which("ffmpeg")
 
 
+# 关键：在「任何 ctranslate2 / faster_whisper import 之前」就把 CUDA 运行库目录加进
+# 进程 DLL 搜索路径。Windows 上 ctranslate2 的依赖（cublas64_12.dll）在扩展模块
+# 首次导入时就绑定，若彼时路径未就绪，cublas 会被标记为「未找到」且之后不再重试，
+# 导致模型加载报 "Library cublas64_12.dll is not found or cannot be loaded"。
+# 因此在 asr 模块被导入的那一刻就执行一次路径注册（幂等，仅一次）。
+try:
+    _ensure_cuda_dlls()
+except Exception:
+    pass
+
+
 def _resolve_device(device: str = "auto") -> Tuple[str, str]:
     """返回 (device, compute_type)。auto 时优先 CUDA/float16，否则 CPU/int8。"""
     if device == "cpu":
@@ -178,6 +191,45 @@ def _resolve_device(device: str = "auto") -> Tuple[str, str]:
     return "cpu", "int8"
 
 
+# ---------------------------------------------------------------------------
+# 硬超时看门狗（优化 D）：防止 ASR 在 CPU 回退 / 模型下载卡死时无限挂起
+# （本次曾因 shell `timeout` 在本沙箱不生效 + 进程掉到 CPU，单集卡 1h5m）。
+# 用守护线程在超时后置位 Event，转写生成器每出一段检查一次即抛 TimeoutError。
+# ---------------------------------------------------------------------------
+
+_ASR_ABORT = threading.Event()
+
+
+def _start_watchdog(timeout: Optional[float]):
+    """启动硬超时看门狗；返回 cancel() 取消函数。timeout<=0 或不设则不生效。"""
+    _ASR_ABORT.clear()
+    if not timeout or timeout <= 0:
+        return lambda: None
+    def _fire():
+        _ASR_ABORT.set()
+        print(f"   ⏰ ASR 硬超时（{int(timeout)}s）触发，正在中止转写…")
+    t = threading.Timer(float(timeout), _fire)
+    t.daemon = True
+    t.start()
+    return lambda: t.cancel()
+
+
+def check_asr_deps() -> Tuple[bool, List[str]]:
+    """（优化 F）检查 ASR 链路所有依赖是否可导入。
+
+    Returns: (ok, missing_module_list)。缺依赖时调用方应打印一行安装命令，
+    而非静默失败（此前缺依赖时 ASR 兜底直接抛异常，信息不友好）。
+    """
+    need = ["yt_dlp", "faster_whisper", "ctranslate2", "imageio_ffmpeg", "huggingface_hub"]
+    missing = []
+    for mod in need:
+        try:
+            __import__(mod)
+        except Exception:
+            missing.append(mod)
+    return (len(missing) == 0, missing)
+
+
 _MODEL_CACHE: Dict[Tuple[str, str, str], object] = {}
 
 
@@ -186,6 +238,9 @@ _MODEL_CACHE: Dict[Tuple[str, str, str], object] = {}
 # ---------------------------------------------------------------------------
 
 _CUDA_DLL_SEARCHED = False
+# 必须持有 os.add_dll_directory 返回的句柄，否则被 GC 后目录会从搜索路径移除
+# （Python 3.8+：add_dll_directory 的返回值需保持存活，路径才持续生效）。
+_CUDA_DLL_HANDLES: list = []
 
 
 def _ensure_cuda_dlls():
@@ -193,29 +248,71 @@ def _ensure_cuda_dlls():
 
     这样即使用户没手动配 PATH，只要本机有 CUDA 运行库（如 Lenovo/预装 NVIDIA 驱动
     附带的），GPU 转写就能直接生效；找不到则靠 transcribe 的 CPU 回退兜底。
+
+    幂等但「非一次性失效」：仅当本次/此前已成功加入 cublas 目录才跳过；若某次扫描被
+    沙箱/时序拦截导致一个都没加成功，下次调用（如 transcribe_video 内的显式调用）会
+    重扫并补加，避免模块导入期的过早失败令整进程的 GPU 路径永久失效。
     """
     global _CUDA_DLL_SEARCHED
-    if _CUDA_DLL_SEARCHED:
+    if _CUDA_DLL_SEARCHED and _CUDA_DLL_HANDLES:
         return
     _CUDA_DLL_SEARCHED = True
     import glob
     checked = set()
-    # 已知位置（本机实测可用）
-    known = [
-        r"C:\Program Files\Lenovo\Lenovo.PFMService\app\modelService",
-    ]
+    # 注意：不再硬编码本机 Lenovo 旧 cublas 路径——该目录的 cublas 版本与
+    # ctranslate2 4.8.1（CUDA 12.4 构建）可能不一致，混用会触发模型加载段错误。
+    # 唯一可信来源是 venv 内通过 pip 安装的 nvidia-cublas-cu12（==12.4.x）运行库。
+    known = []
     # 浅层扫描 Program Files 下两级的 cublas64_12.dll（避免全盘递归过慢）
     known += glob.glob(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v*\bin")
     known += glob.glob(r"C:\Program Files\*\cublas64_12.dll")
     known += glob.glob(r"C:\Program Files\*\\*\cublas64_12.dll")
+    # venv 内通过 pip 安装的 nvidia CUDA 运行库（nvidia-cublas-cu12 等 wheel）：
+    # 这些 wheel 把 cublas/cudart/cudnn/cufft 的 dll 放在 site-packages/nvidia/<pkg>/bin/，
+    # 本机没有系统级 CUDA Toolkit 时，只能从这里拿到运行库。
+    try:
+        import site
+        for sp in site.getsitepackages() + [os.path.dirname(os.__file__)]:
+            nvidia_root = os.path.join(sp, "nvidia")
+            if os.path.isdir(nvidia_root):
+                known += glob.glob(os.path.join(nvidia_root, "*", "bin"))
+    except Exception:
+        pass
+    # 当前解释器所在 venv 的 nvidia 目录（兜底）
+    interp_dir = os.path.dirname(os.path.abspath(sys.executable))
+    for cand in [interp_dir, os.path.dirname(interp_dir)]:
+        nr = os.path.join(cand, "Lib", "site-packages", "nvidia")
+        if os.path.isdir(nr):
+            known += glob.glob(os.path.join(nr, "*", "bin"))
     for pather in known:
         d = pather if os.path.isdir(pather) else os.path.dirname(pather)
         if not d or d in checked:
             continue
         checked.add(d)
-        if os.path.exists(os.path.join(d, "cublas64_12.dll")):
+        # 关键：加入所有含 CUDA 运行库 dll 的 bin 目录，而非仅含 cublas64_12.dll 的那一个。
+        # cublas64_12.dll 自身依赖 cudart64_12.dll（在 cuda_runtime/bin）、cublasLt64_12.dll
+        # 等；若只把 cublas/bin 加入搜索路径，cublas 加载其依赖时会报
+        # "Library cublas64_12.dll is not found or cannot be loaded"（实际是缺依赖），模型加载失败。
+        # 因此凡 nvidia/*/bin（cublas / cuda_runtime / cudnn / cufft / nvrtc / nvjitlink）及
+        # 系统 CUDA Toolkit bin 一律加入，确保传递依赖全在路径上。
+        try:
+            has_cuda_dll = any(fn.lower().endswith(".dll") for fn in os.listdir(d))
+        except Exception:
+            has_cuda_dll = False
+        if has_cuda_dll:
             try:
-                os.add_dll_directory(d)
+                h = os.add_dll_directory(d)
+                # 持有句柄，防止被 GC 后目录从搜索路径移除
+                if h is not None:
+                    _CUDA_DLL_HANDLES.append(h)
+                # Windows 上 ctranslate2 的 C 扩展用原生 LoadLibrary 解析 cublas，
+                # 仅 os.add_dll_directory 在某些情况下仍不够（取决于其加载标志）；
+                # 把 CUDA bin 目录同时前置到 PATH，可让所有加载器（含 ctypes/原生）
+                # 一致解析 cublas 及其整套依赖，是更稳的双保险。
+                cur_path = os.environ.get("PATH", "")
+                if d not in cur_path.split(os.pathsep):
+                    os.environ["PATH"] = d + os.pathsep + cur_path
+                print(f"   🔌 已把 CUDA 运行库目录加入 DLL 搜索路径 / PATH：{d}")
             except Exception:
                 pass
 
@@ -226,9 +323,9 @@ def _load_model(model_size: str, device: str = "auto"):
     模型先解析为真实本地目录（绕开 Windows 沙箱下 blobs+symlink 失败的坑），
     再传给 WhisperModel，避免 'Unable to open file model.bin'。
     """
-    import faster_whisper
     _apply_env_defaults()        # 设好 HF 镜像 / xet / HF_HOME 等环境坑
-    _ensure_cuda_dlls()          # 把 CUDA 运行库目录加进 DLL 搜索路径（若本机有）
+    _ensure_cuda_dlls()          # 必须在 import faster_whisper 之前：Windows 在
+    import faster_whisper        # ctranslate2 扩展导入时即绑定 cublas，晚于此则失效
     dev, ct = _resolve_device(device)
     try:
         model_path = _resolve_local_model_dir(model_size)
@@ -313,16 +410,22 @@ def extract_audio(source: str, out_wav: str,
 
 def transcribe_audio(wav: str, model_size: str = "medium",
                      language: Optional[str] = None,
-                     device: str = "auto") -> Optional[List[Dict]]:
+                     device: str = "auto",
+                     wall_timeout: Optional[float] = None) -> Optional[List[Dict]]:
     """对本地 wav 做 faster-whisper 转写 → segments。
 
     segments schema 对齐 fetch 层：[{"start","duration","text"}, ...]
     device=auto 时若 CUDA 运行库缺失（cublas/cudnn dll 找不到），自动回退 CPU 重试。
+    wall_timeout: 单集硬超时秒数（优化 D）；超时抛出 TimeoutError 由上层转成"跳过该集"。
     """
     model = _load_model(model_size, device)
+    cancel = _start_watchdog(wall_timeout)
     try:
         print(f"   🎙️ faster-whisper 转写中（model={model_size}, lang={language or 'auto'}）...")
         return _run_transcribe(model, wav, language)
+    except TimeoutError:
+        print("❌ ASR 因硬超时中止（本集跳过，不会无限卡死）")
+        return None
     except Exception as e:
         # CUDA 运行库缺失等 GPU 错误 → 回退 CPU 重试一次（仅当未显式锁定 cuda）
         err = str(e)
@@ -337,6 +440,8 @@ def transcribe_audio(wav: str, model_size: str = "medium",
                 return None
         print(f"❌ ASR 转写失败: {e}")
         return None
+    finally:
+        cancel()
 
 
 def _run_transcribe(model, wav: str, language: Optional[str]) -> Optional[List[Dict]]:
@@ -349,6 +454,8 @@ def _run_transcribe(model, wav: str, language: Optional[str]) -> Optional[List[D
     )
     segments: List[Dict] = []
     for s in segments_gen:
+        if _ASR_ABORT.is_set():         # 硬超时看门狗：超时立即中止
+            raise TimeoutError("ASR 超过硬超时上限，已中止")
         txt = (s.text or "").strip()
         if txt:
             segments.append({
@@ -390,7 +497,8 @@ def transcribe_file(path: str, model_size: str = "medium",
 def transcribe_video(url: str, lang: str = "zh",
                      model_size: str = "medium",
                      device: str = "auto",
-                     force: bool = False) -> Optional[Tuple[str, object, str]]:
+                     force: bool = False,
+                     wall_timeout: Optional[float] = None) -> Optional[Tuple[str, object, str]]:
     """对链接（Bilibili/YouTube 等 yt-dlp 支持的源）做 ASR 转写兜底。
 
     Returns: (title, segments_or_text, author)。
@@ -401,6 +509,17 @@ def transcribe_video(url: str, lang: str = "zh",
     _apply_env_defaults()
     model_size = os.environ.get("ASR_MODEL") or model_size
     ffmpeg_exe = _ffmpeg_exe()
+    _ensure_cuda_dlls()          # 必须在 import ctranslate2 之前（Windows 导入即绑定 cublas）
+
+    # 强制 CUDA（优化 D）：只要 ctranslate2 能看见 GPU 就锁 cuda/float16，
+    # 绝不在无提示下掉 CPU（本次曾因掉 CPU 单集卡 1h5m）。
+    try:
+        import ctranslate2 as _ct
+        if _ct.get_cuda_device_count() > 0:
+            device = "cuda"
+    except Exception:
+        pass
+    wall_timeout = wall_timeout or int(os.environ.get("ASR_WALL_TIMEOUT", "1800") or 0)
 
     # B站：注入登录态 cookie（部分视频匿名无法下载）；并取标题/UP主
     cookie_str = None
@@ -431,7 +550,7 @@ def transcribe_video(url: str, lang: str = "zh",
                 print("   ℹ️ B站音频下载失败：可能需要登录态。请在本机 Chrome 登录 B站并"
                       "完全退出 Chrome 后重试（让 Playwright 能提取 cookie）。")
             return None
-        segs = transcribe_audio(wav, model_size, lang, device)
+        segs = transcribe_audio(wav, model_size, lang, device, wall_timeout=wall_timeout)
         if not segs:
             return None
         text = "\n".join(s["text"] for s in segs)
