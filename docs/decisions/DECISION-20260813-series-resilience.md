@@ -31,3 +31,26 @@
 - manifest reconcile 正确识别：verified=25(已在飞书) / candidates=29–38(待落) / 5·15·18 不在 manifest(需救回)。
 - 29–38 经修复后 drain 落盘并 `verified`，飞书节点标题与 1–28 一致（无 `.body`）。
 - 5/15/18 走 `rescue_episode.py` → ASR(CUDA) → 总结 → drain 闭环（进行中）。
+
+---
+
+## 增补（2026-08-13 晚）：管理增强 + 二次实战教训
+
+### 用户诉求
+"每次你犯错都是不知道下一步该怎么做，或不知道模型位置" → 把**模型位置 / 下一步 / 已知坑**固化进文档+代码门禁，而非只存在会话记忆里。
+
+### 新增（commit `c08a5cc`，已双推 github+gitee）
+- **`docs/RUNBOOK-series-rescue.md`**（新建）：模型位置、正确后台启动方式、超时规则、完整流程、7 条已知坑、速查卡。
+- **`rescue_episode.py --check`**：一条命令自报模型路径/大小、CUDA 设备数、依赖、登录态、视频时长+推荐超时，并给出可复制的救回命令。
+- **`rescue_episode.py --status`**：打印 manifest 概览 + **缺口集号** + 逐集救回命令。任何"是不是做完了"先跑它。
+- **`series_manifest.py`**：新增 `expected_total` + `gap_pages()`——缺口显式化，杜绝"字典里没 key 就当完成"。
+
+### 二次实战暴露的两个根因（首轮 ep5/ep18 仍失败）
+1. **超长视频超时太短**：ep5=82min、ep18=73min，原 `ASR_WALL_TIMEOUT=3600`(1h) 不足以转写 → 被看门狗中止。修正：超时按**视频时长×3**（`--check` 自动给出推荐值；ep5=15389 / ep18=13740）。
+2. **后台总时长连坐**：一个 bash 脚本顺序跑 ep5(超时1h)+ep15+ep18，ep5 占满后整个脚本总时长超限，把还没开始的 ep18 一起杀掉。修正：**每集各自独立** `run_in_background` 任务。
+
+### 当前进度（截至本增补）
+- ep15：raw 救回(14423字) + 按 `KEY_POINTS_PROMPT` 写 body + manifest=summarized，待 drain。
+- ep5 / ep18：按正确超时各自后台重跑（任务 `bi5yLe` / `I312jt`），转写完（数小时）后再总结→drain 闭环全 38 集。
+- 运行前必跑 `rescue_episode.py --check` 确认模型真实路径（避免再扫错默认 `~/.cache/huggingface`）。
+
