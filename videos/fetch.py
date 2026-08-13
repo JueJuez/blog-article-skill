@@ -557,12 +557,11 @@ def _bili_part_redundant(main: str, part: str) -> bool:
     return False
 
 
-def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> Optional[Tuple[str, List[Dict], str]]:
-    """获取 Bilibili 单集（指定分P）字幕。
+def fetch_subtitle_only(url: str, lang: str = "zh", page: int = None) -> Optional[Tuple[str, List[Dict], str]]:
+    """【线性主干·步骤B：只抓字幕】原生 API 优先 → yt-dlp 自动字幕兜底，**不做 ASR**。
 
-    支持：
-    - 多P 视频：URL 带 ?p=N 或传 page=N 抓指定分P，否则默认首P
-    - 原生 API 链路优先，yt-dlp 兜底
+    这是 rescue_episode 单集救回流程里的「抓字幕」步骤。字幕完全缺失时返回 None，
+    交由上层 rescue 显式决定何时走 ASR 分支（而不是把 ASR 藏在本函数里让调用方看不见）。
 
     Returns: (title, segments, author) 或 None
     """
@@ -571,7 +570,6 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
         print("无法从 URL 提取 Bilibili BV 号")
         return None
 
-    # 从 URL 提取 ?p= 参数
     if page is None:
         m = re.search(r"[?&]p=(\d+)", url or "")
         if m:
@@ -584,7 +582,6 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
     title = info["title"]
     pages = info.get("pages") or []
 
-    # 选定目标分P
     target = None
     if page and pages:
         target = next((p for p in pages if p["page"] == page), None)
@@ -594,20 +591,18 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
     if target and target.get("part") and not _bili_part_redundant(title, target["part"]):
         title = f"{title} - {target['part']}"
 
+    # 链路1：原生 API 字幕
     segs = _bili_fetch_page_subtitle(aid, cid, lang)
     if segs:
         print(f"   OK Bilibili 字幕获取成功（{len(segs)} 条，API 原生链路）")
         return (title, segs, info.get("author", ""))
-    else:
-        print("   WARN 该分P无 AI 字幕，尝试 yt-dlp 兜底")
 
-    # fallback 1: yt-dlp（抓 B站自动字幕，多P场景不细分）
+    # 链路2：yt-dlp 自动字幕兜底（仍属「字幕」范畴，非 ASR）
+    print("   WARN 该分P无 AI 字幕，尝试 yt-dlp 兜底抓自动字幕")
     try:
         import yt_dlp
     except ImportError:
-        print("   FAIL 未安装 yt-dlp，原生 API 也未成功")
         yt_dlp = None
-
     if yt_dlp is not None:
         # 仅当视频确实多P（pages>1）且 page 落在有效区间内才拼 ?p=N；
         # ugc_season 每集是独立单P BV，page 只是系列集号元数据，拼 ?p=N 会指向
@@ -653,13 +648,25 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
                     segs2 = preprocess_segments(segs2)  # B：字幕轻量清洗
                     print(f"   OK Bilibili 字幕获取成功（清洗后 {len(segs2)} 条，yt-dlp 兜底）")
                     return (title2, segs2, info.get("author", ""))
-                print("   ℹ️ yt-dlp 也未拿到字幕，继续 ASR 兜底")
+                print("   ℹ️ yt-dlp 也未拿到字幕")
         except Exception as e:
-            print(f"   WARN Bilibili yt-dlp 兜底失败（{e}），继续 ASR 兜底")
+            print(f"   WARN yt-dlp 兜底失败（{e}）")
     else:
-        print("   ℹ️ yt-dlp 未安装，直接尝试 ASR 兜底")
+        print("   ℹ️ yt-dlp 未安装")
+    return None
 
-    # fallback 2: ASR 音频转写（字幕完全缺失时的最后兜底；依赖 videos/asr）
+
+def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> Optional[Tuple[str, List[Dict], str]]:
+    """获取 Bilibili 单集字幕（含 ASR 兜底的总入口，兼容旧调用方）。
+
+    线性流程：先 fetch_subtitle_only（原生API→yt-dlp 字幕）；字幕缺失再 ASR 音频转写兜底。
+    **rescue_episode 单集救回为显式拆分「字幕/ASR」两步，直接调 fetch_subtitle_only +
+    asr.transcribe_video，不走本函数**——避免 ASR 藏在内部分支里让调用方看不见流程。
+    """
+    sub = fetch_subtitle_only(url, lang=lang, page=page)
+    if sub:
+        return sub
+    # 字幕完全缺失 → ASR 兜底（保留旧行为，供非显式编排的调用方使用）
     try:
         from videos.asr import transcribe_video, check_asr_deps
         # 优化 F：依赖预检——缺依赖打印一行安装命令，别让 ASR 静默崩
@@ -677,7 +684,7 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
             if text3 and text3.strip():
                 segs3 = [{"start": 0.0, "duration": 0.0, "text": text3}]
                 print(f"   OK Bilibili ASR 转写成功（{len(text3)} 字）")
-                return (title3 or title, segs3, author3 or info.get("author", ""))
+                return (title3 or title, segs3, author3 or "")
             print("   ℹ️ ASR 返回空文本，放弃")
     except Exception as e:
         print(f"   FAIL Bilibili ASR 兜底也失败: {e}")

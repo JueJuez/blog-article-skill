@@ -1,10 +1,14 @@
 """videos/rescue_episode.py — 系列课「单集救回」单一入口（优化 C）。
 
-取代此前散落、易与真实 API 漂移的临时脚本（retry_missing.py 等）：
-给定一个系列 + 集号 + 该集链接/ BV 号，自动走完整字幕链路
-（原生 API → yt-dlp → ASR 兜底，fetch.fetch_bilibili_transcript 已实现），
-把转写稿写成与正常降级路径**完全一致格式**的 raw 文件（前 7 行 `>` 元数据 + `---` + 正文），
-并更新 manifest 状态 = raw_ready，供执行模型（Agent）按现有合约总结成 .body.md。
+线性主干写在代码里（rescue() 内 A→B→C→D→E 顺序调用，不是藏在某个函数内部）：
+  A. _probe_timeout       ：探测视频时长，前置算 ASR_WALL_TIMEOUT（时长×3+600），不等失败再补
+  B. _step_fetch_subtitle ：只抓字幕（fetch.fetch_subtitle_only，原生API→yt-dlp，不含 ASR）
+  C. _step_asr            ：B 缺失才走 → ASR 取音频转字幕（asr.transcribe_video，含看门狗）
+  D. 写 raw + manifest + pending_series.json（状态机 raw_ready）
+  E. _step_summarize      ：总结步骤（显式占位，输出确切下一步指令，不在此自动消耗 AI）
+
+给定一个系列 + 集号 + 该集链接/ BV 号，把转写稿写成与正常降级路径**完全一致格式**的 raw 文件
+（前 7 行 `>` 元数据 + `---` + 正文），更新 manifest 状态 = raw_ready，供执行模型按现有合约总结成 .body.md。
 
 用法：
   # ugc_season（每集独立 BV）：传 --bvid
@@ -103,9 +107,74 @@ def _sanitize(name: str) -> str:
     return s[:80] or "未命名"
 
 
+def _probe_timeout(url: str) -> int:
+    """【线性主干·步骤A（最前置）】探测视频时长，按 `时长×3+600s` 计算 ASR 看门狗超时。
+
+    用户要求：超时必须在抓取**之前**就算好，而不是等失败后再补。长视频（如 82min）
+    按此公式得到 ~15389s，避免转写到一半被默认 1800s 看门狗误杀。
+    优先级：环境变量 ASR_WALL_TIMEOUT（若显式设置>0，允许手动覆盖）→ 否则自动按时长算。
+    """
+    env_to = int(os.environ.get("ASR_WALL_TIMEOUT", "0") or 0)
+    if env_to > 0:
+        print(f"   ⏱️ 用环境变量 ASR_WALL_TIMEOUT={env_to}s（跳过自动探测）")
+        return env_to
+    dur = _video_duration(url)
+    if dur and dur > 0:
+        to = int(dur * 3 + 600)
+        print(f"   ⏱️ 视频时长 {dur/60:.1f}min → ASR_WALL_TIMEOUT 前置自动算 {to}s（时长×3+600）")
+        return to
+    print("   ⏱️ 视频时长未知 → ASR_WALL_TIMEOUT 用保守默认 10800s（长视频请手动设 ASR_WALL_TIMEOUT）")
+    return 10800
+
+
+def _step_fetch_subtitle(url: str, lang: str, page: int):
+    """【线性主干·步骤B】只抓字幕（调用 fetch.fetch_subtitle_only，不含 ASR）。
+
+    Returns: (title, text, author, source)；字幕缺失时 (None, None, None, "missing")。
+    """
+    res = fetch.fetch_subtitle_only(url, lang=lang, page=page)
+    if not res:
+        return None, None, None, "missing"
+    title, segs, author = res
+    return title, _segments_to_text(segs), author, "subtitle"
+
+
+def _step_asr(url: str, lang: str, wall_timeout: int):
+    """【线性主干·步骤C】无字幕 → ASR 取音频转字幕（调用 asr.transcribe_video）。
+
+    仅当步骤B 返回字幕缺失时才走这里。wall_timeout 由步骤A 前置算好。
+    Returns: (title, text, author)；失败 (None, None, None)。
+    """
+    r = asr.transcribe_video(url, lang=lang, wall_timeout=wall_timeout)
+    if not r:
+        return None, None, None
+    title, payload, author = r
+    text = payload if isinstance(payload, str) else "\n".join(
+        s.get("text", "") for s in payload)
+    return title, text, author
+
+
+def _step_summarize(page, part, series_title, rel, rel_body) -> str:
+    """【线性主干·步骤E】总结（显式步骤，把「下一步」写成确切指令，让执行模型不必猜）。
+
+    本步骤不在此自动消耗 AI（series body 命名特殊、且 FORCE_AGENT_MODE 下 AI 不可用）；
+    而是输出调用哪个模块哪个方法、写到哪个路径，后续模型照做即可。
+    """
+    return (
+        f"步骤E 总结：① 读 {rel} → ② 调 articles.summarize_content(text, note_type='key_points') "
+        f"或按 prompts/templates.py:KEY_POINTS_PROMPT 由前端模型总结 → "
+        f"③ 写入 {rel_body}（标题格式：# 第{page}集 {part}【{series_title}（{page}）】）→ "
+        f"④ 跑 monitors/apply_pending_series.py --batch 5 落飞书"
+    )
+
+
 def rescue(series_title: str, page: int, bvid: str = "", series_url: str = "",
            lang: str = "zh", author: str = "", expected_total: int = 0) -> dict:
-    # 1) 拼该集专属链接
+    """单集救回线性主干：A 探测时长算超时 → B 抓字幕 → C(无字幕)ASR → D 写raw+manifest → E 总结。
+
+    这条主干写在代码里（见下方 step 调用），执行模型/后续维护者一眼可见流程，不必猜分支。
+    """
+    # 拼该集专属链接
     if bvid:
         ep_url = f"https://www.bilibili.com/video/{bvid}"
     elif series_url:
@@ -115,33 +184,33 @@ def rescue(series_title: str, page: int, bvid: str = "", series_url: str = "",
 
     print(f"🔧 救回 第{page}集（{series_title}）\n   URL: {ep_url}")
 
-    # 2) ASR 依赖预检（优化 F）：缺依赖打印一行安装命令，不静默崩
-    ok, missing = asr.check_asr_deps()
-    if not ok:
-        print("   ⚠️ ASR 依赖缺失：" + ", ".join(missing))
-        print("   → 安装：pip install " + " ".join(missing))
-        print("   （原生 API / yt-dlp 仍会尝试；仅当全失败才需要 ASR）")
+    # —— 线性主干 A → B → C → D → E ——
+    # 步骤A（最前置）：探测时长，算 ASR 超时
+    wall_timeout = _probe_timeout(ep_url)
 
-    # 3) 抓字幕（含 3 层兜底，ASR 已强制 CUDA）
-    res = fetch.fetch_bilibili_transcript(ep_url, lang=lang, page=page)
-    if not res:
-        return {"ok": False, "reason": "字幕与 ASR 均失败（检查 B站登录态 / 网络）"}
+    # 步骤B：抓字幕
+    title, text, fetched_author, src = _step_fetch_subtitle(ep_url, lang, page)
+    if text is not None:
+        print(f"   ✅ 步骤B 命中字幕（{src}），跳过 ASR")
+    else:
+        # 步骤C：无字幕 → ASR
+        print("   🎙️ 步骤B 字幕缺失 → 步骤C 走 ASR 音频转写")
+        title, text, fetched_author = _step_asr(ep_url, lang, wall_timeout)
+        if not text:
+            return {"ok": False, "reason": "字幕与 ASR 均失败（检查 B站登录态 / 网络 / 模型）"}
 
-    title, segs, fetched_author = res
     author = author or fetched_author
-    text = _segments_to_text(segs)
-    if not text.strip():
+    if not text or not text.strip():
         return {"ok": False, "reason": "转写结果为空"}
 
     # part 取标题（ugc_season 的 title 即分P标题；多P 则带主标题，需裁）
     part = title
-    # 多P 标题形如「主标题 - 分P」，仅取分P 段
     if " - " in part:
         cand = part.split(" - ", 1)[1].strip()
         if cand:
             part = cand
 
-    # 4) 写 raw（与 degraded 路径同格式：元数据头 + --- + 正文）
+    # 步骤D：写 raw（与 degraded 路径同格式：元数据头 + --- + 正文）
     safe_part = _sanitize(part)
     base = sn.normalized_base(page, safe_part)
     series_dir = os.path.join(articles_main.NOTES_DIR, _sanitize(series_title))
@@ -159,26 +228,28 @@ def rescue(series_title: str, page: int, bvid: str = "", series_url: str = "",
         f.write(header + text)
     print(f"   ✅ 已写 raw（{len(text)} 字）：{rel}")
 
-    # 5) 更新 manifest（状态机续跑信号）
+    # 更新 manifest（状态机续跑信号）
     m = sm.load_or_init(series_title, url=series_url or ep_url, author=author,
                         notes_dir=articles_main.NOTES_DIR, expected_total=expected_total)
     m.upsert(page, part=part, bvid=bvid, url=ep_url, raw=rel, state=sm.RAW_READY)
     m.save()
 
-    # 5.5) 登记到系列待落盘队列（闭环补全：否则 apply_pending_series.py 找不到本系列）
-    series_dir = os.path.join(articles_main.NOTES_DIR, _sanitize(series_title))
+    # 登记到系列待落盘队列（闭环补全：否则 apply_pending_series.py 找不到本系列）
     _register_pending_series(series_title, series_dir, series_url or ep_url, author, rel)
 
+    # 步骤E：总结（显式步骤，输出确切下一步指令）
     body_abs = sn.body_path(raw_abs)
+    rel_body = os.path.relpath(body_abs, articles_main.NOTES_DIR)
+    next_step = _step_summarize(page, part, series_title, rel, rel_body)
+
     return {
         "ok": True,
         "page": page,
         "part": part,
         "raw": rel,
-        "body": os.path.relpath(body_abs, articles_main.NOTES_DIR),
+        "body": rel_body,
         "manifest_state": m.state(page),
-        "next": f"派子 Agent 读 {rel} 总结成 {os.path.relpath(body_abs, articles_main.NOTES_DIR)}，"
-                f"再跑 monitors/apply_pending_series.py 落盘",
+        "next": next_step,
     }
 
 
@@ -234,9 +305,10 @@ def _check(series_title: str, page: int, bvid: str, series_url: str, lang: str) 
         print(f"   ℹ️ 视频时长：未知（手动设 ASR_WALL_TIMEOUT，长视频按 时长×3 估；本命令默认 {rec}）")
     ready = os.path.exists(binp) and ok
     print(f"\n   {'✅ 环境就绪，可直接救回' if ready else '⚠️ 需先处理上方告警'} → 救回命令：")
-    print(f"   ASR_WALL_TIMEOUT={rec} {sys.executable} -u videos/rescue_episode.py "
+    print(f"   {sys.executable} -u videos/rescue_episode.py "
           f"--series \"{series_title}\" --page {page} "
-          f"{('--bvid ' + bvid) if bvid else ('--url ' + series_url)} --lang {lang}")
+          f"{('--bvid ' + bvid) if bvid else ('--url ' + series_url)} --lang {lang}"
+          f"   # 超时由 rescue 自动按 时长×3 算，这里不必手动设")
 
 
 def _status(series_title: str) -> None:
@@ -253,8 +325,9 @@ def _status(series_title: str) -> None:
     print(f"\n⚠️ 缺口（共 {len(gaps)} 集）：{gaps}")
     print("逐集救回命令（把 <该集BV> 换成真实 BV 号）：")
     for p in gaps:
-        print(f"  ASR_WALL_TIMEOUT=10800 {sys.executable} -u videos/rescue_episode.py "
-              f"--series \"{series_title}\" --page {p} --bvid <该集BV> --lang zh")
+        print(f"  {sys.executable} -u videos/rescue_episode.py "
+              f"--series \"{series_title}\" --page {p} --bvid <该集BV> --lang zh"
+              f"   # 超时由 rescue 自动按 时长×3 算；长视频如需覆盖加 ASR_WALL_TIMEOUT=<秒>")
 
 
 def main():
