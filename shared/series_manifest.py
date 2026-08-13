@@ -4,6 +4,10 @@
 会话中断/任务被杀后只能手动对账飞书 vs 磁盘（本次 5/15/18 与 29-38 漏跑即此坑）。
 本模块用显式状态机取代「文件存在即续跑信号」，让 drain 在任意中断点都能无歧义续跑。
 
+**缺口可见化（防"误报完成"）**：manifest 记录 `expected_total`（系列总集数，由发现/救回时填入）。
+`gap_pages()` 返回「期望集数内、尚未 raw_ready+」的缺口（缺失或仍 pending），让"漏了哪几集"
+一眼可见，绝不会因"字典里没有 key"就静默当成"都做完了"。详见 docs/RUNBOOK-series-rescue.md。
+
 状态流转（强制单向，不允许倒退到更早态）：
   pending → raw_ready → summarized → landed → verified
     - raw_ready  : 字幕/ASR 稿已落盘（raw 在）
@@ -46,6 +50,7 @@ class SeriesManifest:
         self.url = url
         self.author = author
         self.episodes = {}  # page(str) -> dict
+        self.expected_total = 0  # 系列总集数（发现/救回时填入）；0 表示未知→不做缺口检测
         self.path = _manifest_path(series_title, self.notes_dir)
         self.series_dir = os.path.join(self.notes_dir,
                                        re.sub(r'[\\/:*?"<>|\n\r\t]', '_', series_title).strip()[:80])
@@ -57,6 +62,7 @@ class SeriesManifest:
                 d = json.load(open(self.path, encoding="utf-8"))
                 self.url = d.get("url", self.url)
                 self.author = d.get("author", self.author)
+                self.expected_total = d.get("expected_total", 0) or 0
                 self.episodes = d.get("episodes", {}) or {}
             except Exception:
                 pass
@@ -68,6 +74,7 @@ class SeriesManifest:
             "series_title": self.series_title,
             "url": self.url,
             "author": self.author,
+            "expected_total": self.expected_total,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "episodes": self.episodes,
         }
@@ -104,6 +111,27 @@ class SeriesManifest:
 
     def state(self, page: int) -> str:
         return self.get(page).get("state", PENDING)
+
+    # ---- 期望集数 / 缺口（防"误报完成"）----
+    def set_expected_total(self, n: int) -> None:
+        """记录系列总集数（发现/救回时填入）。仅当更大时更新，避免被小值覆盖。"""
+        if isinstance(n, int) and n > self.expected_total:
+            self.expected_total = n
+
+    def gap_pages(self) -> list:
+        """期望集数内、尚未进入 raw_ready+ 的缺口（缺失或仍 pending）。
+
+        返回 page(int) 列表。expected_total=0（未知）时返回空（不做缺口检测）。
+        这是"漏了哪几集"的权威来源——任何续跑/汇报前先查它，杜绝静默误报完成。
+        """
+        if not self.expected_total:
+            return []
+        gaps = []
+        for p in range(1, self.expected_total + 1):
+            ep = self.episodes.get(f"{p:02d}")
+            if not ep or ep.get("state", PENDING) in (PENDING,):
+                gaps.append(p)
+        return gaps
 
     # ---- 查询 ----
     def pages_in(self, *states) -> list:
@@ -166,16 +194,29 @@ class SeriesManifest:
 
     def summary_line(self) -> str:
         counts = {s: len(self.pages_in(s)) for s in _STATE_ORDER}
-        return (f"manifest[{self.series_title}] "
+        line = (f"manifest[{self.series_title}] "
                 f"raw_ready={counts[RAW_READY]} summarized={counts[SUMMARIZED]} "
                 f"landed={counts[LANDED]} verified={counts[VERIFIED]} "
-                f"(共 {len(self.episodes)} 集)")
+                f"(共 {len(self.episodes)} 集")
+        if self.expected_total:
+            line += f" / 期望 {self.expected_total}"
+        line += ")"
+        gaps = self.gap_pages()
+        if gaps:
+            line += f"  ⚠️ 缺口(待救回)={gaps}"
+        return line
 
 
 def load_or_init(series_title: str, url: str = "", author: str = "",
-                 notes_dir: str = "", reconcile: bool = True) -> SeriesManifest:
-    """加载已有 manifest；若不存在则新建。reconcile=True 时做磁盘+飞书对账自愈。"""
+                 notes_dir: str = "", reconcile: bool = True,
+                 expected_total: int = 0) -> SeriesManifest:
+    """加载已有 manifest；若不存在则新建。reconcile=True 时做磁盘+飞书对账自愈。
+
+    expected_total>0 时同步记录系列总集数（用于缺口检测，防误报完成）。
+    """
     m = SeriesManifest(series_title, url=url, author=author, notes_dir=notes_dir).load()
+    if expected_total:
+        m.set_expected_total(expected_total)
     if reconcile:
         m.reconcile_disk()
         m.reconcile_feishu()
