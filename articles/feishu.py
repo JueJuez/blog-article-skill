@@ -1,3 +1,18 @@
+"""飞书写入机制（确定性事实 · 前端模型必读，勿凭面板猜测）
+
+本模块飞书落盘**底层是 lark-cli（subprocess 调用，shell=False）**，
+**与 WorkBuddy 面板里的 feishu 连接器（connector-status 的 disconnected/connected）完全无关**。
+面板连接器状态不影响本项目落盘 —— 这是 2026-08-14 踩坑后固化的结论。
+
+- 链路：写入方 -> articles.feishu.FeishuOutput -> lark-cli(subprocess)。
+    系列课批量入口：monitors/apply_pending_series.py
+    单篇入口：OutputManager.save_all / skill_main / videos/run.py
+- lark-cli 路径：shutil.which("lark-cli")（WorkBuddy cli-connector 包内），由 WorkBuddy 安装并托管认证。
+- 可用性判据（is_available）：① .env 配了 FEISHU_WIKI_SPACE；② lark-cli --version 能执行（CLI 已装且认证有效）。
+    注意：判据不看面板连接器状态。
+- 教训(2026-08-14)：绝不可因面板 feishu: disconnected 就断定「飞书不可用 / 无法落盘」。
+    35+ 集已 verified 即证明 lark-cli 通道一直正常。判据只看上面两条，不看面板。
+"""
 import os
 import shutil
 import subprocess
@@ -576,7 +591,23 @@ class FeishuOutput(BaseOutput):
     def get_output_path(self, filename: str) -> str:
         return "飞书知识库"
 
+    def explain_mechanism(self) -> str:
+        """飞书机制确定性自报（供 --check / 文档复用；前端模型据此判断可用性，勿猜面板）。"""
+        cli = _lark_cli()
+        space = os.getenv("FEISHU_WIKI_SPACE", "")
+        return (
+            "飞书写入机制(确定性事实):\n"
+            "  后端        : lark-cli (subprocess, shell=False)\n"
+            f"  CLI 路径    : {cli}\n"
+            f"  wiki_space  : {'已配置(' + space + ')' if space else '未配置 FEISHU_WIKI_SPACE'}\n"
+            "  与面板关系  : 与 WorkBuddy 面板 feishu 连接器(disconnected/connected)无关\n"
+            "  可用性判据  : FEISHU_WIKI_SPACE 已配 + lark-cli --version 可执行\n"
+            "  ⚠️ 面板 feishu:disconnected 不代表不能落盘，勿据此误判"
+        )
+
     def is_available(self) -> bool:
+        # 判据：① FEISHU_WIKI_SPACE 已配 ② lark-cli --version 可执行。
+        # 与 WorkBuddy 面板 feishu 连接器状态无关（面板 disconnected 不影响落盘）。
         if not self.wiki_space:
             return False
         if self._cli_available is None:

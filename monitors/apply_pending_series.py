@@ -261,7 +261,15 @@ def main():
     ap.add_argument("--obsidian", action="store_true", help="同时写入 Obsidian（默认只写飞书）")
     ap.add_argument("--batch", type=int, default=5, help="每批落盘集数（默认 5，优化 G）")
     ap.add_argument("--cleanup", action="store_true", help="落盘后清理已 verified 的本地源（优化 B）")
+    ap.add_argument("--check", action="store_true", help="自报飞书写入机制与可用性（不落盘）")
     args = ap.parse_args()
+    if args.check:
+        from articles.feishu import FeishuOutput
+        fo = FeishuOutput()
+        print(fo.explain_mechanism())
+        print(f"  is_available : {fo.is_available()}")
+        print("  （--check 仅自报，未落盘；要落盘去掉 --check 即可）")
+        return
     drain_series_pending(obsidian=args.obsidian, regenerate=args.regenerate,
                          batch=args.batch, cleanup=args.cleanup)
 
