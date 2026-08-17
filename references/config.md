@@ -259,6 +259,21 @@ NOTE_GATE_THRESHOLD=85
 
 续期排查：扫码后仍未恢复公众号，先看 `monitors/.poll_daemon.log` 是否出现 `[poll-success]`（说明 daemon 抓到 token）；若只有 `[poll-error#n]` 或一直 `status=pending`，说明 weread proxy 当前不稳定（超时/5xx）或二维码 UUID 已过期（被微信扫码后服务端会很快销毁旧 UUID），重新触发一次 `run.py` 生成新二维码再扫即可。
 
+### 公众号历史回溯（backfill）`.env` 变量
+
+把某公众号 N 年内历史文章分批抓全并总结，复用 `monitors/run.py --backfill` 子命令（详见 `monitors/README.md`「公众号历史回溯（续批）」）。以下为底层 env（通常由 `--backfill` 自动设置，一般无需手填）：
+
+| 变量 | 默认值 | 作用 |
+|------|--------|------|
+| `WECHAT_BACKFILL` | 0 | 置 `1` 启用回溯模式：翻全历史页 + 范围限定到 `WECHAT_BACKFILL_NAMES` + 自动完成判定 |
+| `WECHAT_BACKFILL_NAMES` | 空 | 回溯目标公众号名（逗号分隔，须存在于 `subscriptions.json`），**必填**；缺则 `discover` 直接 `raise` 拒绝，防污染其他源 `seen` |
+| `WECHAT_BACKFILL_SINCE` | 0 | 回溯起点（Unix 时间戳，由 `--since` 自动换算）；代理最老可达日期 `<` 此值才判 `reached_since`，否则记 `proxy_depth:<最老ts>`（暴露代理历史深度上限，非代码问题） |
+| `WECHAT_BACKFILL_PAGES` | 200 | 回溯最多翻页数（防御代理返回超深历史导致请求风暴） |
+| `WECHAT_RELOGIN_WAIT` | 180 | 微信 token 失效时等待扫码秒数；设 `0` 则无人值守直接跳过（自动化续批用此值防阻塞） |
+| `FIRST_RUN_LIMIT` | 50 | 回溯每批上限（= `--batch`）；抓全历史页后只 `mark` 本批 `new` 为 seen，保留跨运行续批能力 |
+
+> ⚠️ 代理按「条数」而非「时间」截断历史：发文稀疏的号（如哥飞）同样约 100 条上限即可铺到 2025 年中；发文极密的号（如生财有术）同样上限只够到 2026-06，更早文章在代理侧不可达，代码无解。
+
 ### 调度
 
 **已移除自动调度（2026-07-24）**：不再由 WorkBuddy automation 每日 10:00/17:00 驱动。改为**用户主动触发**——用户说「跑一次 / 跑一下」等关键词即运行 `python monitors/run.py --mode auto --apply`（详见 `RULES.md` §3C / `monitors/README.md`）。

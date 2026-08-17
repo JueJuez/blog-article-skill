@@ -106,10 +106,26 @@ class WereadClient:
         return r.json()
 
     def iter_articles(self, mp_id: str, max_pages: int = 50):
+        """翻页拉历史文章。新到老自然排序。
+
+        ⚠️ 空页重试（2026-08-17 加）：weread 代理冷启动/抖动会偶发返回空页，
+        若直接 break 会提前截断历史（误判「代理深度有限」）。改为连续 2 页空才停，
+        绕过瞬时空页。真正触底（代理确实无更老数据）仍会停。
+        """
+        empty_streak = 0
         for page in range(1, max_pages + 1):
-            items = self.list_articles(mp_id, page)
+            try:
+                items = self.list_articles(mp_id, page)
+            except Exception as e:
+                items = []
+                print(f"  [warn] iter_articles page {page} 异常: {type(e).__name__} {str(e)[:120]}", file=sys.stderr)
             if not items:
-                break
+                empty_streak += 1
+                if empty_streak >= 2:
+                    break
+                time.sleep(3)
+                continue
+            empty_streak = 0
             yield from items
             if len(items) < DEFAULT_COUNT:
                 break
@@ -226,22 +242,50 @@ class WechatSource:
           "daily" -> 强制增量逻辑：仅取当天发布、最多 5 篇，过滤广告后不补
           "auto"  -> 该源无 seen 记录则按首次，否则按增量
         """
+        # backfill 范围过滤：仅处理指定公众号，避免波及其他订阅源的历史回溯
+        backfill_names = os.environ.get("WECHAT_BACKFILL_NAMES")
+        if backfill_names and os.environ.get("WECHAT_BACKFILL") == "1":
+            names = {n.strip() for n in backfill_names.split(",") if n.strip()}
+            if self.name not in names:
+                return []
+        # 范围保护（2026-08-17 加）：WECHAT_BACKFILL=1 必须同时指定 WECHAT_BACKFILL_NAMES，
+        # 否则会翻全部微信订阅源并把它们的全历史 mark_seen，污染其他源（早期试跑踩过此坑）。
+        if os.environ.get("WECHAT_BACKFILL") == "1" and not backfill_names:
+            raise RuntimeError(
+                "WECHAT_BACKFILL=1 必须同时指定 WECHAT_BACKFILL_NAMES（逗号分隔的公众号名），"
+                "否则会污染所有微信订阅源的 seen。已拒绝执行。")
         mp_id = self._resolve()
         if not mp_id:
             raise ValueError("无法解析公众号 id（需提供 mp_id 或 share_url）")
 
         seen = get_seen(state, self.source_key())
+        # backfill 续批：已完成（触底/到 since）的号直接跳过，避免重复拉取浪费代理配额
+        if os.environ.get("WECHAT_BACKFILL") == "1":
+            if state.get("backfill", {}).get(self.name, {}).get("backfill_done"):
+                return []
         is_first = (mode == "first") or (mode == "auto" and not seen)
-        # 列表拉取自带空轮重试（_list_with_retry）：token 有效时代理返空多为
-        # 冷启动/懒加载抖动，重试通常能拿到；不会因空轮静默丢号。
-        items = self._list_with_retry(mp_id)
+        # 列表拉取：默认只拉第 1 页（每日监控语义）；WECHAT_BACKFILL=1 时翻全历史页
+        # （iter_articles 自然从新到老，配合 seen 去重 + first_run_limit 实现分批回溯）
+        if os.environ.get("WECHAT_BACKFILL") == "1":
+            backfill_pages = int(os.environ.get("WECHAT_BACKFILL_PAGES", "200"))
+            items = list(self.client.iter_articles(mp_id, max_pages=backfill_pages))
+        else:
+            items = self._list_with_retry(mp_id)
         if not isinstance(items, list):
             items = []
         # 标题级广告过滤（无干货内容直接剔除，过滤后不补）
         items = [it for it in items if not is_ad_by_title(it.get("title", ""))]
+        # backfill 完成判定需要的「代理最老可达日期」：在 since 过滤前取全量最小值，
+        # 用于区分「已越过 since 边界(reached_since)」vs「代理深度上限未到 since(proxy_depth)」。
+        oldest_raw = min((it.get("publishTime", 0) for it in items), default=0) if items else 0
         # 时间窗口（每日监控语义）：只保留最近 N 天发布的，不深挖历史；设为 0 则关闭窗口、抓全部最新 N 篇。
         window = int(os.environ.get("WECHAT_WINDOW_DAYS", "2"))
-        if window > 0:
+        if os.environ.get("WECHAT_BACKFILL") == "1":
+            # 历史回溯：按 since 过滤（默认 2025-12-20，覆盖 2026 全年），不做 N 天滑动窗口
+            since_env = os.environ.get("WECHAT_BACKFILL_SINCE")
+            since = int(since_env) if since_env else 1766601600  # 2025-12-20 近似时间戳
+            items = [it for it in items if it.get("publishTime", 0) >= since]
+        elif window > 0:
             if is_first:
                 eff_window = window  # 首次/首跑：用固定窗口（配合 first_run_limit 抓最近 N 篇）
             else:
@@ -257,7 +301,30 @@ class WechatSource:
         # 首次/增量统一：去重后取最近 N 篇（已先经时间窗口裁剪，不会深挖历史）
         new = [it for it in items if it["id"] not in seen][:first_run_limit]
 
-        mark_seen(state, self.source_key(), fetched_ids,
+        # backfill 完成判定（2026-08-17 续批功能）：本批 0 新 或 剩余未抓已全部落在本次
+        # batch 内 → 触底（代理深度上限）或已越过 since 边界，标记完成免后续重复拉取。
+        # 按账号名 key 存 state["backfill"][name]，便于进度报告与重置，无需 mp_id 反解。
+        if os.environ.get("WECHAT_BACKFILL") == "1":
+            unseen_total = sum(1 for it in items if it["id"] not in seen)
+            if len(new) == 0 or unseen_total <= first_run_limit:
+                # oldest_raw 是代理全量最老日期（since 过滤前）：< since 说明已越过边界，
+                # 否则说明代理深度上限本身就没到 since（更早文章代理侧不可达）。
+                reached = oldest_raw < since
+                reason = "reached_since" if reached else f"proxy_depth:{oldest_raw}"
+                sd = state.setdefault("backfill", {}).setdefault(self.name, {})
+                sd["backfill_done"] = True
+                sd["backfill_done_reason"] = reason
+                sd["backfill_oldest_ts"] = oldest_raw
+                sd["backfill_done_at"] = int(time.time())
+
+        # seen 标记范围：
+        # - 非 backfill（每日监控）：标记全部 fetched，避免次日重复拉取已见候选
+        # - backfill（历史回溯）：只标记本批已选中的 new，保留后续批次继续往老翻
+        if os.environ.get("WECHAT_BACKFILL") == "1":
+            mark_ids = [it["id"] for it in new]
+        else:
+            mark_ids = fetched_ids
+        mark_seen(state, self.source_key(), mark_ids,
                   last_check=int(time.time()))
 
         results = []

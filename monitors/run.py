@@ -124,6 +124,68 @@ def _item_folder(it: dict) -> str:
     return f"{category}/{name}" if name else category
 
 
+# 泛化/问候型列表标题：这些标题在多个不同推文里重复使用，列表不可区分，
+# 必须改从正文首句提炼真标题（如「大家好，我是哥飞。」是哥飞真实推文标题，
+# 但每篇都叫这名；中金也常把不同文章都叫「中金研究」）。
+_GENERIC_RE = re.compile(
+    r'^(大家好[，, ]*我是|各位[好呀]?|哈喽|嗨[，, ]|hi[\s,，]|hello[\s,，]|'
+    r'亲爱的(朋友|读者)|朋友[们]?：)',
+    re.IGNORECASE,
+)
+
+
+def _is_generic_title(title: str) -> bool:
+    t = (title or "").strip()
+    if not t:
+        return True
+    if _GENERIC_RE.match(t):
+        return True
+    # 自报式标题「大家好，我是XXX」整体作为标题
+    if re.match(r'^大家好，我是', t):
+        return True
+    # 过短且无实质中文（如纯账号名/符号）
+    if len(t) <= 6 and not re.search(r'[\u4e00-\u9fff]{4,}', t):
+        return True
+    return False
+
+
+def derive_title_from_body(raw_file: str, list_title: str, max_len: int = 36) -> str:
+    """列表标题是泛化/问候型时，从正文首句提炼更有信息量的标题。
+
+    规则（确定性，无外部 AI）：
+      - 列表标题不泛化 → 原样返回（保留高质量标题，如「7月19日哥飞的朋友们…」）。
+      - 泛化 → 读 raw 正文，跳过与列表标题相同的问候首行、引用块、分隔线，
+        取首个实质段落的首句（到句末标点）作为标题，过长则截断加省略号。
+      - 任何异常或提炼失败 → 退回列表标题，绝不静默丢标题。
+    """
+    if not _is_generic_title(list_title):
+        return list_title.strip()
+    if not raw_file or not os.path.exists(raw_file):
+        return list_title.strip()
+    try:
+        text = open(raw_file, encoding="utf-8").read()
+    except Exception:
+        return list_title.strip()
+    in_body = False
+    for ln in text.splitlines():
+        if ln.strip() == "---":
+            in_body = True
+            continue
+        if not in_body:
+            continue
+        s = ln.strip()
+        if not s or s.startswith(">") or s == list_title.strip():
+            continue
+        m = re.search(r'[。！？!?]', s)
+        cand = s[: m.end()] if m else s
+        cand = cand.strip()
+        if len(cand) > max_len:
+            cand = cand[:max_len].rstrip("，,、；;") + "…"
+        if cand and cand != list_title.strip():
+            return cand
+    return list_title.strip()
+
+
 def _queue_pending_summary(it: dict, res: dict) -> None:
     """AI 降级时把待总结条目入队（按 url 去重），供外层执行模型接单。"""
     if not isinstance(res, dict) or not res.get("need_continue_summary"):
@@ -132,9 +194,12 @@ def _queue_pending_summary(it: dict, res: dict) -> None:
     url = it.get("url", "")
     if url and any(p.get("url") == url for p in pending):
         return
+    # 标题从正文提炼：列表标题若泛化（如「大家好，我是哥飞。」），改从 body 首句命名
+    list_title = res.get("original_title") or it.get("title", "")
+    entry_title = derive_title_from_body(res.get("raw_file", ""), list_title)
     entry = {
         "url": url,
-        "title": res.get("original_title") or it.get("title", ""),
+        "title": entry_title,
         "author": res.get("author") or it.get("mp_name", ""),
         "note_type": res.get("note_type", ""),
         "tags": res.get("tags") or [],
@@ -145,7 +210,7 @@ def _queue_pending_summary(it: dict, res: dict) -> None:
     }
     pending.append(entry)
     _save_json(PENDING_SUMMARY_PATH, pending)
-    print(f"[need-summary] 已入降级队列: {entry['title']} -> {entry['raw_file']}")
+    print(f"[need-summary] 已入降级队列: {entry_title} -> {entry['raw_file']}")
 
 
 def _queue_pending_series(it: dict, res: dict) -> None:
@@ -338,17 +403,25 @@ def discover_all(subs: dict, state: dict, mode: str = "auto") -> list:
         total_items = 0
         any_auth_fail = False
         for w in wechat_subs:
-            client = WereadClient(token=token, vid=vid)
-            src = WechatSource(client, mp_id=w.get("mp_id", ""),
-                               share_url=w.get("share_url", ""), name=w.get("name", ""))
-            found, auth = _discover_wechat_retry(src, state, mode, w.get("name", ""))
-            for it in found:
-                it["category"] = w.get("category", "")
-                it["sub_name"] = w.get("name", "")
-            all_new.extend(found)
-            total_items += len(found)
-            any_auth_fail |= auth
-            time.sleep(2)  # weread 代理频率退避，避免单号日内超次
+            try:
+                client = WereadClient(token=token, vid=vid)
+                src = WechatSource(client, mp_id=w.get("mp_id", ""),
+                                   share_url=w.get("share_url", ""), name=w.get("name", ""))
+                found, auth = _discover_wechat_retry(src, state, mode, w.get("name", ""))
+                for it in found:
+                    it["category"] = w.get("category", "")
+                    it["sub_name"] = w.get("name", "")
+                all_new.extend(found)
+                total_items += len(found)
+                any_auth_fail |= auth
+                time.sleep(2)  # weread 代理频率退避，避免单号日内超次
+            except Exception as e:
+                # 兜底（2026-08-17 加）：单源 discover 异常（代理 401 未完全兜住等）
+                # 不再让整轮 run.py 崩溃退出（旧 Exit 1 根因），跳过该源、记错误、继续其他源。
+                print(f"[warn] wechat {w.get('name','?')} discover 失败，跳过该源: "
+                      f"{type(e).__name__} {str(e)[:160]}", file=sys.stderr)
+                any_auth_fail = True
+                continue
 
         # 兜底：预检认为 token 有效，但全部源零结果且出现持续性 401 →
         # 说明 is_token_valid 仍漏判（极少数情况下过期 token 在 resolve_mp 也返回非 401）。
@@ -418,19 +491,37 @@ def apply_summaries(items: list, obsidian: bool = False) -> None:
             if not _first_article:
                 time.sleep(WECHAT_GAP + random.uniform(0, 3))
             _first_article = False
-            # 自抓正文一次：整篇纯广告则 skip；否则净化夹带广告后喂总结
-            try:
-                fetched = fetch_web_content(it["url"])
-                title = fetched[0] if isinstance(fetched, tuple) else it.get("title", "")
-                content = fetched[1] if isinstance(fetched, tuple) else ""
-            except Exception as e:
-                print(f"[fetch-err] {it['title']}: {e}", file=sys.stderr)
-                stats["error"] += 1
-                refetch_next.append({k: it[k] for k in it if k != "content"})
-                continue
-            # 正文过短 = 限流空页/无正文（含微信扫码墙）。累计失败达阈值则判定不可抓取、
-            # 移出队列并上报；否则进重试队列下次优先重抓。不强行总结。
-            if len((content or "").strip()) < MIN_CONTENT_LEN:
+            # 自抓正文（一手自动补抓，2026-08-17 升级）：
+            # 微信对直连 mp.weixin.qq.com 有频控，单次抓取常返回空页/墙页（生财外链帖尤甚，
+            # 表现为正文只有「原文链接：https://...」壳）。此处同一次运行内退避重试
+            # WECHAT_MAX_REFETCH 次，命中即继续总结；重试耗尽仍空才降级到跨轮 refetch 队列/丢弃。
+            fetched = None
+            last_err = None
+            title = it.get("title", "")
+            content = ""
+            for _att in range(WECHAT_MAX_REFETCH + 1):
+                try:
+                    fetched = fetch_web_content(it["url"])
+                except Exception as e:
+                    fetched = None
+                    last_err = e
+                if isinstance(fetched, tuple):
+                    title = fetched[0] or title
+                    content = fetched[1] or ""
+                else:
+                    content = ""
+                if len((content or "").strip()) >= MIN_CONTENT_LEN:
+                    break  # 拿到正文，立即跳出重试
+                # 壳/限流空页：退避后重试（一手补抓）
+                if _att < WECHAT_MAX_REFETCH:
+                    time.sleep(6 * (_att + 1) + random.uniform(0, 3))
+            # 重试耗尽仍空：走原有跨轮重试/丢弃逻辑（fetch 异常 or 正文过短）
+            if fetched is None or len((content or "").strip()) < MIN_CONTENT_LEN:
+                if fetched is None:
+                    print(f"[fetch-err] {it['title']}: {last_err}", file=sys.stderr)
+                    stats["error"] += 1
+                    refetch_next.append({k: it[k] for k in it if k != "content"})
+                    continue
                 decision, payload = _decide_retry_or_drop(it, WECHAT_MAX_REFETCH)
                 stats["empty_retry"] += 1
                 if decision == "drop":
@@ -601,8 +692,24 @@ def main():
                         help="统一抓取重试入口：重抓 pending_refetch 中的限流文章，并把 pending_summaries 里 raw 为空的条目也提升回重试；重抓后自动重总结")
     parser.add_argument("--obsidian", action="store_true",
                         help="同时写入 Obsidian（默认只写飞书）")
+    # ---- 公众号历史回溯（续批）功能 ----
+    parser.add_argument("--backfill", action="store_true",
+                        help="公众号历史回溯（续批）模式：配合 --names/--since 入队，或 --drain 取队列 job")
+    parser.add_argument("--names", type=str, default="",
+                        help="回溯目标公众号名（逗号分隔，须存在于 subscriptions.json 的 wechat 列表）")
+    parser.add_argument("--since", type=str, default="",
+                        help="回溯起点：YYYY-MM-DD 或时间戳；早于该日期的文章不抓")
+    parser.add_argument("--batch", type=int, default=0,
+                        help="每批最大入队篇数（默认 15），控制单次运行规模、便于自动续批")
+    parser.add_argument("--drain", action="store_true",
+                        help="从 backfill_targets.json 队列取第一个未完成 job 续批（自动化用）")
+    parser.add_argument("--reset-backfill", type=str, default="",
+                        help="重置指定公众号的回溯完成状态（逗号分隔名），便于重新往前翻")
     args = parser.parse_args()
     mode = "first" if args.first_run else args.mode
+
+    subs = load_subscriptions()
+    state = load_state()
 
     if args.refetch_only:
         n = _promote_empty_summaries()
@@ -611,8 +718,10 @@ def main():
         apply_summaries([], args.obsidian)  # apply 内部自动合并 pending_refetch 队列并重抓+重总结
         return
 
-    subs = load_subscriptions()
-    state = load_state()
+    if args.backfill:
+        cmd_backfill(args, subs, state)
+        return
+
     all_new = discover_all(subs, state, mode=mode)
 
     if not all_new:
@@ -630,6 +739,68 @@ def main():
         apply_summaries(all_new, args.obsidian)
     else:
         print(json.dumps(all_new, ensure_ascii=False, indent=2))
+
+
+def cmd_backfill(args, subs: dict, state: dict) -> None:
+    """公众号历史回溯（续批）子命令。
+
+    复用 discover_all 的全链路（token 预检/扫码续期/抓历史/seen 去重/apply 落盘闭环），
+    仅通过 env 把范围限定到目标号、把窗口改成 since、把每批上限改成 batch；
+    回溯游标（seen + state["backfill"][name]）必须落盘，否则无法跨运行续批。
+    """
+    from monitors import backfill as bf
+
+    # 重置：清掉指定号的回溯完成标记，便于重新往前翻
+    if args.reset_backfill:
+        names = [n.strip() for n in args.reset_backfill.split(",") if n.strip()]
+        bf.reset_backfill(state, names)
+        save_state(state)
+        print(f"♻️ 已重置回溯完成状态：{', '.join(names)}（下次 backfill 会重新往前翻）")
+        return
+
+    # 解析目标：--drain 从队列取第一个未完成 job；否则用 --names + --since
+    if args.drain and not args.names:
+        job = bf.first_pending_job()
+        if not job:
+            print("ℹ️ 回溯队列 backfill_targets.json 无未完成 job。")
+            return
+        names = job["names"]
+        since = job["since"]
+        batch = int(job.get("batch", bf.DEFAULT_BATCH))
+        print(f"📥 队列 job：{', '.join(names)} | since {since} | batch {batch}")
+    elif args.names:
+        names = [n.strip() for n in args.names.split(",") if n.strip()]
+        if not args.since:
+            print("❌ --backfill 需 --since（YYYY-MM-DD 或时间戳）", file=sys.stderr)
+            return
+        batch = args.batch or bf.DEFAULT_BATCH
+        bf.add_job(names, args.since, batch)
+        since = args.since
+        print(f"📥 回溯：{', '.join(names)} | since {since} | batch {batch}")
+    else:
+        print("❌ --backfill 需 --names <逗号名> 或 --drain", file=sys.stderr)
+        return
+
+    # 设 env，复用 discover_all：只跑微信（bilibili=[] 避免混入日常动态/视频），
+    # 范围限定到 names，窗口改 since，每批上限 = batch。
+    os.environ["WECHAT_BACKFILL"] = "1"
+    os.environ["WECHAT_BACKFILL_NAMES"] = ",".join(names)
+    os.environ["WECHAT_BACKFILL_SINCE"] = str(bf._parse_since(since))
+    os.environ["FIRST_RUN_LIMIT"] = str(batch)
+    wechat_only = {"wechat": subs.get("wechat", []), "bilibili": []}
+
+    all_new = discover_all(wechat_only, state, mode="auto")
+
+    # 游标（seen / backfill_done）只在真正入队（--apply）时落盘 —— 与日常监控一致：
+    # 仅预览不落盘，避免把文章标记 seen 却未总结，导致后续漏抓。
+    if args.apply:
+        save_state(state)
+        apply_summaries(all_new, args.obsidian)
+        if args.drain and not args.names:
+            bf.mark_job_done_if(state, names)
+    else:
+        print(json.dumps(all_new, ensure_ascii=False, indent=2))
+    bf.report_progress(state, names, bf._parse_since(since))
 
 
 if __name__ == "__main__":

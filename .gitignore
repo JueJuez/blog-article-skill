@@ -7,6 +7,7 @@ venv/
 .env
 notes/
 monitors/state.json
+monitors/backfill_targets.json
 monitors/.wechat_auth.json
 monitors/.login_qr.png
 monitors/.login_uuid.json

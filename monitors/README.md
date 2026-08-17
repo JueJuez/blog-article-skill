@@ -147,3 +147,37 @@ python monitors/run.py --mode first --apply
 ```
 
 订阅配置：`monitors/subscriptions.json`（参考 `subscriptions.example.json`）。
+
+## 公众号历史回溯（续批）
+
+把某公众号 N 年内历史文章分批抓全并总结。**可复用**：今天哥飞+生财，明天别的号，只需往队列加 job，无需改代码/命令。
+
+核心机制
+- 游标 = `state.json` 的 `seen`（与日常监控同一套去重）；每账号回溯进度存 `state["backfill"][name]`（`done`/`reason`/`oldest_ts`）。不重置即可续批。
+- 分批：每批约 15 篇，多跑几次自然往前翻；`discover` 的 backfill 分支**只 mark 本批 `new` 为 seen**，保留续批能力（日常监控才 mark 全部 fetched）。
+- 完成判定（自动，免无限重复拉取）：本批 0 新 或 剩余未抓已全部落在 batch 内 →
+  - 代理最老可达日期 `< since` → `reached_since`（已越过起点）
+  - 否则 → `proxy_depth:<最老ts>`（代理历史深度上限，更早文章代理侧不可达，**非代码问题**）
+- 范围保护：只处理目标号，绝不波及其他订阅源（`WECHAT_BACKFILL_NAMES` 门禁）。
+
+用法
+```bash
+# 1) 入队一个回溯 job（名字须存在于 subscriptions.json 的 wechat 列表）
+python monitors/run.py --backfill --names 哥飞,生财有术 --since 2026-01-01 --batch 15
+
+# 2) 立即跑本批次并入队待总结（落盘游标 + 抓正文入 pending_summaries，由执行模型 drain 落飞书）
+python monitors/run.py --backfill --names 哥飞,生财有术 --since 2026-01-01 --apply
+
+# 3) 自动化续批：从 backfill_targets.json 取第一个未完成 job 跑一批（recurring 自动化即用此）
+python monitors/run.py --backfill --drain --apply
+
+# 4) 重置某号回溯完成状态（想重新往前翻时）
+python monitors/run.py --backfill --reset-backfill 哥飞,生财有术
+```
+
+队列文件 `monitors/backfill_targets.json`（已 gitignore）：
+```json
+[{"names":["哥飞","生财有术"], "since":"2026-01-01", "batch":15, "done":false}]
+```
+「今天哥飞明天别的号」= 往队列加 job；一条 recurring 自动化 `--drain` 即可逐 job 续批。
+注意：微信 token 数小时失效；自动化设 `WECHAT_RELOGIN_WAIT=0` 防无人值守阻塞，失效时跳过、token 有效时自动续。
