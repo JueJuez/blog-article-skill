@@ -11,6 +11,9 @@ import os
 import sys
 import time
 
+import requests
+from requests.exceptions import HTTPError
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
@@ -36,6 +39,34 @@ class FakeClient(WereadClient):
 
     def iter_articles(self, mp_id, max_pages=50):
         return list(self._items)
+
+    def resolve_mp(self, *a, **k):
+        return {"id": "MP_TEST", "name": "TEST"}
+
+
+class FakeEmptyClient(WereadClient):
+    """模拟代理瞬断 / token 失效返回 200 空：iter_articles 一路空页 → 0 条。"""
+
+    def __init__(self):
+        self.session = None
+
+    def iter_articles(self, mp_id, max_pages=50):
+        return []  # 空结果，绝不抛异常
+
+    def resolve_mp(self, *a, **k):
+        return {"id": "MP_TEST", "name": "TEST"}
+
+
+class Fake401Client(WereadClient):
+    """模拟过期 token：list_articles 抛 401（真实 weread 代理对过期 token 的行为）。"""
+
+    def __init__(self):
+        self.session = None  # 跳过大父类网络初始化
+
+    def list_articles(self, mp_id, page=1):
+        resp = requests.Response()
+        resp.status_code = 401
+        raise requests.HTTPError("401 Client Error", response=resp)
 
     def resolve_mp(self, *a, **k):
         return {"id": "MP_TEST", "name": "TEST"}
@@ -118,10 +149,56 @@ def main():
     assert src_c.discover(state_c, first_run_limit=5, mode="auto") == [], "C: 非目标号应跳过"
     print("[C scope] 非 WECHAT_BACKFILL_NAMES 的号 discover 返回 [] ✅")
 
+    # ---- 场景 G：401 鉴权失效必须上抛（旧 backfill 静默空转根因回归测试） ----
+    test_iter_articles_reraises_401()
+    test_backfill_401_surfaces_auth_fail()
+    test_backfill_empty_no_false_done()
+
     # 清理测试 state
     if os.path.exists(STATE_PATH):
         os.remove(STATE_PATH)
     print("\n✅ 全部回溯逻辑单测通过")
+
+
+def test_iter_articles_reraises_401():
+    """iter_articles 遇 401 必须上抛，绝不能当空页吞掉（否则 discover_all 兜底重登永远不触发）。"""
+    client = Fake401Client()
+    try:
+        list(client.iter_articles("MP_TEST", max_pages=3))
+        raise AssertionError("iter_articles 应上抛 401，但被吞掉了")
+    except requests.HTTPError as e:
+        assert e.response.status_code == 401, f"上抛的应是非 401：{e}"
+    print("[G1 iter_articles 401] 401 正确上抛 ✅")
+
+
+def test_backfill_401_surfaces_auth_fail():
+    """回溯场景下 token 过期：discover 经 iter_articles 上抛 401 →
+    _discover_wechat_retry 重试耗尽置 auth_failed=True（discover_all 据此弹二维码兜底重登）。"""
+    from monitors.run import _discover_wechat_retry
+    since = int(time.mktime(time.strptime("2026-01-01", "%Y-%m-%d")))
+    setup_env(["哥飞"], since)
+    src = WechatSource(Fake401Client(), mp_id="MP_TEST", name="哥飞")
+    src._resolve = lambda: "MP_TEST"
+    state = fresh_state()
+    items, auth_failed = _discover_wechat_retry(src, state, "auto", "哥飞", retries=2)
+    assert items == [], f"401 时 items 应空，实际 {items}"
+    assert auth_failed is True, "401 重试耗尽应置 auth_failed=True（触发二维码兜底重登）"
+    print("[G2 discover 401] auth_failed=True ✅（discover_all 会触发二维码重登）")
+
+
+def test_backfill_empty_no_false_done():
+    """代理瞬断 / token 失效返回 200 空（iter_articles 0 条）：discover 绝不可标记
+    backfill_done（否则 backfill_done 跳过守卫会让该号永久不再重试，即假完成）。"""
+    since = int(time.mktime(time.strptime("2026-01-01", "%Y-%m-%d")))
+    setup_env(["哥飞"], since)
+    src = WechatSource(FakeEmptyClient(), mp_id="MP_TEST", name="哥飞")
+    src._resolve = lambda: "MP_TEST"
+    state = fresh_state()
+    res = src.discover(state, first_run_limit=300, mode="auto")
+    assert res == [], f"空结果应返回 []，实际 {res}"
+    bf = state.get("backfill", {}).get("哥飞", {})
+    assert not bf.get("backfill_done"), f"空结果不应标记 backfill_done，实际 {bf}"
+    print("[G3 empty→no-done] 0 条结果未标记完成 ✅（留待续批重试，杜绝假完成）")
 
 
 if __name__ == "__main__":

@@ -116,6 +116,14 @@ class WereadClient:
         for page in range(1, max_pages + 1):
             try:
                 items = self.list_articles(mp_id, page)
+            except requests.HTTPError as e:
+                # 401 鉴权失效必须上抛：否则会被下方空页逻辑吞掉，导致 discover_all 的
+                # 「全源零结果 + 401 兜底重登」永远不触发（旧 backfill 静默空转、二维码不弹的根因）。
+                # 与每日监控路径（_list_with_retry 上抛 401）保持对称。
+                if e.response is not None and e.response.status_code == 401:
+                    raise
+                items = []
+                print(f"  [warn] iter_articles page {page} HTTP 异常: {str(e)[:120]}", file=sys.stderr)
             except Exception as e:
                 items = []
                 print(f"  [warn] iter_articles page {page} 异常: {type(e).__name__} {str(e)[:120]}", file=sys.stderr)
@@ -305,17 +313,24 @@ class WechatSource:
         # batch 内 → 触底（代理深度上限）或已越过 since 边界，标记完成免后续重复拉取。
         # 按账号名 key 存 state["backfill"][name]，便于进度报告与重置，无需 mp_id 反解。
         if os.environ.get("WECHAT_BACKFILL") == "1":
-            unseen_total = sum(1 for it in items if it["id"] not in seen)
-            if len(new) == 0 or unseen_total <= first_run_limit:
-                # oldest_raw 是代理全量最老日期（since 过滤前）：< since 说明已越过边界，
-                # 否则说明代理深度上限本身就没到 since（更早文章代理侧不可达）。
-                reached = oldest_raw < since
-                reason = "reached_since" if reached else f"proxy_depth:{oldest_raw}"
-                sd = state.setdefault("backfill", {}).setdefault(self.name, {})
-                sd["backfill_done"] = True
-                sd["backfill_done_reason"] = reason
-                sd["backfill_oldest_ts"] = oldest_raw
-                sd["backfill_done_at"] = int(time.time())
+            # ⚠️ 防误判（2026-08-17 修复）：items 为空（代理瞬断 / token 失效返回 200 空 / 401 被吞）
+            # 绝不代表「已抓到底」，反而可能是鉴权失败。此时不标记 done，留待续批重试，
+            # 否则 backfill_done 跳过守卫会让该号永久不再重试（假完成）。
+            if not items:
+                print(f"[backfill-warn] {self.name} 本批 0 条（代理空/鉴权失败？），不标记完成，留待续批重试",
+                      file=sys.stderr)
+            else:
+                unseen_total = sum(1 for it in items if it["id"] not in seen)
+                if len(new) == 0 or unseen_total <= first_run_limit:
+                    # oldest_raw 是代理全量最老日期（since 过滤前）：< since 说明已越过边界，
+                    # 否则说明代理深度上限本身就没到 since（更早文章代理侧不可达）。
+                    reached = oldest_raw < since
+                    reason = "reached_since" if reached else f"proxy_depth:{oldest_raw}"
+                    sd = state.setdefault("backfill", {}).setdefault(self.name, {})
+                    sd["backfill_done"] = True
+                    sd["backfill_done_reason"] = reason
+                    sd["backfill_oldest_ts"] = oldest_raw
+                    sd["backfill_done_at"] = int(time.time())
 
         # seen 标记范围：
         # - 非 backfill（每日监控）：标记全部 fetched，避免次日重复拉取已见候选
