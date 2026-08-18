@@ -108,10 +108,11 @@ class WereadClient:
     def iter_articles(self, mp_id: str, max_pages: int = 50):
         """翻页拉历史文章。新到老自然排序。
 
-        ⚠️ 空页容忍（2026-08-18 修正）：weread 免费转发是**多后端乱序**代理，会偶发整页空
-        （实测 page1 空、page2/3 却有更早数据），并非「代理深度有限」。故：(1) 开头即便
-        连续空页也继续翻（直到 max_pages），绕过冷启动/乱序空窗；(2) 仅「已拿到过数据」后
-        连续 6 页空才判定到底，避免误截断历史。真正触底（代理确实无更老数据）仍会停。
+        ⚠️ 空页容忍（2026-08-19 修正）：weread 免费转发是**多后端乱序**代理，会偶发整页空
+        （实测 page1 空、page2/3 却有更早数据），并非「代理深度有限」。(1) 开头允许连续空页
+        但设上限 10 页——超过即判定代理「空窗」快速退出（交由外层退避重试等比恢复），避免
+        翻满 max_pages(50) 导致单次 retry 耗时过久；(2)「已拿到过数据」后连续 6 页空才判定
+        到底，避免误截断历史。真正触底（代理确实无更老数据）仍会停。
         """
         empty_streak = 0
         got_any = False
@@ -131,10 +132,14 @@ class WereadClient:
                 print(f"  [warn] iter_articles page {page} 异常: {type(e).__name__} {str(e)[:120]}", file=sys.stderr)
             if not items:
                 empty_streak += 1
-                # 乱序代理（weread 免费转发）会偶发整页空（实测 page1 空、page2/3 却有更早数据），
-                # 故「已拿到过数据」后才允许因连续空页而停止，且阈值提到 6，避免误判到底；
-                # 在此之前即使开头几页空也继续翻，绕过冷启动/乱序空窗。
                 if got_any and empty_streak >= 6:
+                    # 已拿到过数据后连续 6 页空 → 真实触底（代理无更老数据），停止。
+                    break
+                if not got_any and empty_streak >= 10:
+                    # 开头即连续 10 页空 → 判定代理当前处于「空窗」（多后端乱序代理
+                    # 偶发整体返回空），而非历史到底。快速退出，交由外层 backfill
+                    # 退避重试等比代理恢复的那一刻；否则会翻满 max_pages(50) 页空，
+                    # 单次 retry 耗时过长（实测盲等近半小时）。
                     break
                 time.sleep(3)
                 continue
