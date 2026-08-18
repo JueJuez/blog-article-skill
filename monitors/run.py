@@ -789,7 +789,25 @@ def cmd_backfill(args, subs: dict, state: dict) -> None:
     os.environ["FIRST_RUN_LIMIT"] = str(batch)
     wechat_only = {"wechat": subs.get("wechat", []), "bilibili": []}
 
-    all_new = discover_all(wechat_only, state, mode="auto")
+    # weread 代理极不稳定：同一账号 list_articles 在「返回 ~50 篇」与「返回 0 篇」之间
+    # 高频抖动（实测 8s 内 0→50→0）。单次 discover 若正巧撞上代理空窗即返回 0 条，
+    # 会被误判为「抓完了」。故在 backfill 入口加重试：连续遇 0 条（非 401 鉴权失效）时
+    # 退避重试，抓住代理恢复的那一刻。token 有效时不会触发重登（is_token_valid 预检通过，
+    # 且代理空窗是 200 空而非 401，any_auth_fail=False，不会误弹二维码）。
+    all_new = []
+    max_attempts = 6
+    for attempt in range(1, max_attempts + 1):
+        all_new = discover_all(wechat_only, state, mode="auto")
+        if all_new:
+            break
+        if attempt < max_attempts:
+            backoff = 8 * attempt
+            print(f"[backfill-retry] 第{attempt}次代理返回空（抖动），{backoff}s 后重试"
+                  f"（最多 {max_attempts} 次）...", file=sys.stderr)
+            time.sleep(backoff)
+    if not all_new:
+        print("⚠️ 回溯重试耗尽仍 0 条（代理持续空窗），本次跳过；下次运行自动续批。",
+              file=sys.stderr)
 
     # 游标（seen / backfill_done）只在真正入队（--apply）时落盘 —— 与日常监控一致：
     # 仅预览不落盘，避免把文章标记 seen 却未总结，导致后续漏抓。
