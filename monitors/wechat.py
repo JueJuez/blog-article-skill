@@ -108,11 +108,13 @@ class WereadClient:
     def iter_articles(self, mp_id: str, max_pages: int = 50):
         """翻页拉历史文章。新到老自然排序。
 
-        ⚠️ 空页重试（2026-08-17 加）：weread 代理冷启动/抖动会偶发返回空页，
-        若直接 break 会提前截断历史（误判「代理深度有限」）。改为连续 2 页空才停，
-        绕过瞬时空页。真正触底（代理确实无更老数据）仍会停。
+        ⚠️ 空页容忍（2026-08-18 修正）：weread 免费转发是**多后端乱序**代理，会偶发整页空
+        （实测 page1 空、page2/3 却有更早数据），并非「代理深度有限」。故：(1) 开头即便
+        连续空页也继续翻（直到 max_pages），绕过冷启动/乱序空窗；(2) 仅「已拿到过数据」后
+        连续 6 页空才判定到底，避免误截断历史。真正触底（代理确实无更老数据）仍会停。
         """
         empty_streak = 0
+        got_any = False
         for page in range(1, max_pages + 1):
             try:
                 items = self.list_articles(mp_id, page)
@@ -129,14 +131,18 @@ class WereadClient:
                 print(f"  [warn] iter_articles page {page} 异常: {type(e).__name__} {str(e)[:120]}", file=sys.stderr)
             if not items:
                 empty_streak += 1
-                if empty_streak >= 2:
+                # 乱序代理（weread 免费转发）会偶发整页空（实测 page1 空、page2/3 却有更早数据），
+                # 故「已拿到过数据」后才允许因连续空页而停止，且阈值提到 6，避免误判到底；
+                # 在此之前即使开头几页空也继续翻，绕过冷启动/乱序空窗。
+                if got_any and empty_streak >= 6:
                     break
                 time.sleep(3)
                 continue
             empty_streak = 0
+            got_any = True
             yield from items
-            if len(items) < DEFAULT_COUNT:
-                break
+            # 本页不足一页（<默认条数）通常代表到底，但乱序代理会偶发短页，故不在此立即
+            # break，交给上方「连续空页」守卫与 max_pages 上限兜底，避免提前截断历史。
 
     def is_token_valid(self, probe_share_url: str = "", retries: int = 3) -> bool:
         """探针：优先用 resolve_mp（wxs2mp）打一个需鉴权的请求。
