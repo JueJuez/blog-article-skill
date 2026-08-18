@@ -167,14 +167,23 @@ class WereadClient:
                     return True
                 except requests.HTTPError as e:
                     if e.response is not None and e.response.status_code == 401:
-                        last_status = 401
-                        time.sleep(2 * (attempt + 1))  # 退避后重试，绕过冷启动
-                        continue
-                    return True
+                        # 401 是「确定过期」的权威信号，立即判失效，绝不被重试掩盖
+                        # （旧逻辑在此退避重试，再叠加代理 500 时会被下方 except 误判为有效）。
+                        return False
+                    # 其他 HTTP 错误（如代理 500）：无法确认 token 有效。静默放行曾导致
+                    # 「过期+代理500」时不弹码、backfill 静默失败（比误弹码更糟），故记 unknown。
+                    last_status = e.response.status_code if e.response is not None else None
+                    time.sleep(2 * (attempt + 1))
+                    continue
                 except Exception:
-                    return True
-            # 重试耗尽且最后一次确为 401 → 才认定失效
-            return last_status == 401
+                    # 网络/代理异常：无法确认 token 有效。偏「失效」触发重登（可恢复），
+                    # 代价仅是代理纯抖动时多弹一次码，远好于静默永久卡死。
+                    last_status = None
+                    time.sleep(2 * (attempt + 1))
+                    continue
+            # 重试耗尽仍拿不到干净 200：要么确为过期、要么代理持续异常——统一判「失效」触发重登，
+            # 杜绝「过期+代理500」场景的静默失败。
+            return False
         # 2) 无 share_url 探针（首跑且缓存为空）时，退化为 list_articles 探测；
         #    注意：该端点对过期 token 可能返回 200 空，故仅作 best-effort，失效判定以
         #    discover_all 的「全源零结果 + 持续 401」兜底逻辑为准。

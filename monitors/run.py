@@ -795,13 +795,33 @@ def cmd_backfill(args, subs: dict, state: dict) -> None:
     # 退避重试，抓住代理恢复的那一刻。token 有效时不会触发重登（is_token_valid 预检通过，
     # 且代理空窗是 200 空而非 401，any_auth_fail=False，不会误弹二维码）。
     all_new = []
-    max_attempts = 6
+    max_attempts = 20  # weread 免费代理极不稳定，单次跑常撞空窗；调高上限以扛抖动、累积进度
+    probe_share = next((w.get("share_url") for w in subs.get("wechat", []) if w.get("share_url")), "")
     for attempt in range(1, max_attempts + 1):
+        # 中途 token 过期（weread token 寿命 ~2h）则弹码续上，不白白消耗重试次数、
+        # 也不在失效态下盲抓代理。扫到即继续，无需手动重跑。
+        tok, vid = load_weread_auth()
+        if not (tok and WereadClient(token=tok, vid=vid).is_token_valid(probe_share_url=probe_share)):
+            print("⚠️ [回溯] 检测到 token 失效，自动触发重新登录并等待扫码...", file=sys.stderr)
+            qr = trigger_relogin()
+            if qr:
+                print(f"RELOGIN_QR:{qr}", file=sys.stderr)
+                print(f"⏳ 已生成二维码，等待扫码（最长 {WECHAT_RELOGIN_WAIT}s）后继续回溯...",
+                      file=sys.stderr)
+                nt, nv = _wait_for_token_refresh(tok, WECHAT_RELOGIN_WAIT)
+                if nt:
+                    print("✅ 扫码成功，token 已刷新，继续回溯。", file=sys.stderr)
+                    continue  # 拿新 token 重新进入循环抓取，不计入失败尝试
+                print(f"⏰ 等待扫码超时（{WECHAT_RELOGIN_WAIT}s），本次跳过公众号回溯。",
+                      file=sys.stderr)
+                break
+            print("⚠️ 重新登录触发失败，本次跳过公众号回溯。", file=sys.stderr)
+            break
         all_new = discover_all(wechat_only, state, mode="auto")
         if all_new:
             break
         if attempt < max_attempts:
-            backoff = 8 * attempt
+            backoff = min(8 * attempt, 60)
             print(f"[backfill-retry] 第{attempt}次代理返回空（抖动），{backoff}s 后重试"
                   f"（最多 {max_attempts} 次）...", file=sys.stderr)
             time.sleep(backoff)
