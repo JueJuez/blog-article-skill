@@ -333,22 +333,27 @@ class WechatSource:
         # batch 内 → 触底（代理深度上限）或已越过 since 边界，标记完成免后续重复拉取。
         # 按账号名 key 存 state["backfill"][name]，便于进度报告与重置，无需 mp_id 反解。
         if os.environ.get("WECHAT_BACKFILL") == "1":
-            # ⚠️ 防误判（2026-08-17 修复）：items 为空（代理瞬断 / token 失效返回 200 空 / 401 被吞）
-            # 绝不代表「已抓到底」，反而可能是鉴权失败。此时不标记 done，留待续批重试，
-            # 否则 backfill_done 跳过守卫会让该号永久不再重试（假完成）。
+            # ⚠️ 乱序代理根因修复（2026-08-19）：weread 免费代理是**乱序分片**——
+            # 单次 discover 只返回**一个随机分片**，并非从新到老的连续历史。
+            # 旧逻辑在「本批 0 新 / 未见数≤batch」时就标记 backfill_done，导致只抓到
+            # 一个分片（通常是近期、已被每日监控 seen 标记过的）就**假完成**，
+            # 深层历史（哥飞→2025-04、生财→2024-12，探针已实证可达）永远落不了盘。
+            #
+            # 修复：完成判定**仅保留 reached_since**——只有当代理确实返回了早于 since
+            # 的文章（证明已越过目标边界）才落 done。其余两种「假完成」信号一律不在此标记：
+            #   - len(new)==0            → 只是撞上「已抓过的分片」或空窗，非历史抓完
+            #   - unseen_total<=batch    → 只是「当前分片较小」，乱序下还有别的碎片未覆盖
+            # 真正的「穷尽」改由外层驱动（monitors/backfill_deep.py）用「连续多轮 0 新」
+            # 确认后再写 done(exhausted_consecutive_empty)，跨轮去重 + 可随时中断续跑。
             if not items:
                 print(f"[backfill-warn] {self.name} 本批 0 条（代理空/鉴权失败？），不标记完成，留待续批重试",
                       file=sys.stderr)
             else:
-                unseen_total = sum(1 for it in items if it["id"] not in seen)
-                if len(new) == 0 or unseen_total <= first_run_limit:
-                    # oldest_raw 是代理全量最老日期（since 过滤前）：< since 说明已越过边界，
-                    # 否则说明代理深度上限本身就没到 since（更早文章代理侧不可达）。
-                    reached = oldest_raw < since
-                    reason = "reached_since" if reached else f"proxy_depth:{oldest_raw}"
+                reached = oldest_raw < since
+                if reached:
                     sd = state.setdefault("backfill", {}).setdefault(self.name, {})
                     sd["backfill_done"] = True
-                    sd["backfill_done_reason"] = reason
+                    sd["backfill_done_reason"] = "reached_since"
                     sd["backfill_oldest_ts"] = oldest_raw
                     sd["backfill_done_at"] = int(time.time())
 
