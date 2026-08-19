@@ -1,20 +1,19 @@
-"""monitors/backfill.py — 公众号历史回溯（续批）功能模块。
+"""monitors/backfill.py — 公众号历史回溯（补最近稳定窗口）功能模块。
 
-把「抓某公众号 N 年内历史」从一次性 env-var 拼凑，升级为参数化、可复用、可自动续批的功能。
+把「补某公众号最近 N 天漏抓文章」做成可复用的一键入口。超过稳定窗口的历史
+（目前 weread 免费代理约 30~35 天）不补，避免在深历史抖动上浪费 token/时间。
 
 核心机制
 --------
-- 游标 = state.json 的 seen（与日常监控同一套去重）。不重置即可续批；每账号回溯进度
-  存于 state["backfill"][name] = {done, reason, oldest_ts, done_at}，避免无限重复拉取。
-- 分批：每次调用只入队 batch 篇（默认 15），多跑几次自然往前翻（discover 的 backfill 分支
-  只 mark 本批 new 为 seen，保留续批能力）。
-- 完成判定（在 wechat.WechatSource.discover 内执行，本模块负责读取报告）：
-    - 本批 0 新 且 已越过 since 边界        -> done(reached_since)
-    - 本批 0 新 但 代理最老只到 oldest_ts    -> done(proxy_depth:<最老ts>)  ← 直接暴露代理深度上限
-    - 否则未完成，下次续批。
-- 队列文件 backfill_targets.json：一列 job {names, since, batch, done, note}。
-  「今天哥飞+生财，明天别的号」= 往队列加 job；一条 recurring 自动化 --drain 即可逐 job 续批，
-  无需改代码、无需改命令。
+- 边界：默认 since = 今天往前 35 天（WECHAT_BACKFILL_DAYS 可调）。这是根据磁盘证据
+  定下的稳定边界——哥飞 23 篇 raw 全落在 2026-07-24~08-19（27 天内），更老的历史
+  代理返回乱序/伪造时间戳，极不可靠。超过边界的文章视为「代理侧不可稳定提供」，
+  不再追。
+- 游标 = state.json 的 seen（与日常监控同一套去重），只补窗口内尚未 seen 的文章。
+- 分批：每次调用只处理 batch 篇（默认 15），遇到代理空窗会短退避重试，但只停在
+  稳定窗口内，不翻深历史。
+- 队列文件 backfill_targets.json：一列一次性 job {names, since, batch, done, note}。
+  稳定窗口内的补抓跑完一次即标记 done，不追求「 exhaustive 抓全所有历史」。
 
 不变量
 ------
@@ -30,6 +29,13 @@ from typing import Dict, Any, List, Optional
 HERE = os.path.dirname(os.path.abspath(__file__))
 QUEUE_PATH = os.path.join(HERE, "backfill_targets.json")
 DEFAULT_BATCH = 15
+DEFAULT_BACKFILL_DAYS = int(os.environ.get("WECHAT_BACKFILL_DAYS", "35"))
+
+
+def default_since(days: Optional[int] = None) -> int:
+    """返回默认回溯起点时间戳：现在往前 N 天（默认 WECHAT_BACKFILL_DAYS）。"""
+    d = days if days is not None else DEFAULT_BACKFILL_DAYS
+    return int(time.time()) - d * 86400
 
 
 def _parse_since(since: str) -> int:
@@ -102,22 +108,26 @@ def reset_backfill(state: dict, names: List[str]) -> None:
         bf.pop(n, None)
 
 
-def mark_job_done_if(state: dict, names: List[str]) -> bool:
-    """若 names 中全部账号都已 backfill_done，则把队列首个未完成 job 标为 done。
+def mark_job_done(state: dict, names: List[str], note: str = "") -> bool:
+    """把队列中首个匹配 names 的未完成 job 标为 done。
+
+    稳定窗口补抓是「跑一次算一次」：不追求 exhaustive 抓全所有历史，只把代理
+    在边界内能稳定返回的文章补回来。因此成功跑一次（无论抓到 0 条还是 N 条）
+    即可标记 job 完成，避免队列无限 pending。
 
     返回是否标记了 job 完成。
     """
-    bf = state.get("backfill", {})
-    if not all(bf.get(n, {}).get("backfill_done") for n in names):
-        return False
     q = load_queue()
-    job = next((j for j in q if not j.get("done")), None)
+    names_set = set(names)
+    job = next((
+        j for j in q
+        if not j.get("done") and set(j.get("names", [])) == names_set
+    ), None)
     if not job:
         return False
     job["done"] = True
-    job["result"] = "; ".join(
-        f"{n}:{bf.get(n, {}).get('backfill_done_reason', '')}" for n in names
-    )
+    job["result"] = note or "shallow_backfill_completed"
+    job["done_at"] = int(time.time())
     save_queue(q)
     print(f"🏁 队列 job 完成：{', '.join(names)}")
     return True
@@ -127,23 +137,12 @@ def mark_job_done_if(state: dict, names: List[str]) -> bool:
 # 进度报告
 # --------------------------------------------------------------------------
 def report_progress(state: dict, names: List[str], since_ts: int) -> None:
-    """打印每账号回溯进度（完成状态 + 代理最老可达日期），直接呼应 Q1 的代理深度差异。"""
-    bf = state.get("backfill", {})
+    """打印每账号回溯进度（稳定窗口内补抓结果）。"""
     since_s = time.strftime("%Y-%m-%d", time.localtime(since_ts)) if since_ts else "?"
-    print(f"\n📋 回溯进度（since {since_s}）：")
+    q = load_queue()
+    print(f"\n📋 回溯进度（稳定窗口 since {since_s}）：")
     for n in names:
-        d = bf.get(n, {})
-        done = d.get("backfill_done")
-        oldest = d.get("backfill_oldest_ts", 0)
-        reason = d.get("backfill_done_reason", "")
-        ots = time.strftime("%Y-%m-%d", time.localtime(oldest)) if oldest else "?"
-        if done:
-            if reason == "reached_since":
-                tag = "✅ 完成（已回溯越过 since 边界）"
-            elif reason.startswith("proxy_depth:"):
-                tag = f"✅ 完成（代理历史深度上限：最老仅到 {ots}，更早文章代理侧不可达）"
-            else:
-                tag = f"✅ 完成（{reason}）"
-        else:
-            tag = "⏳ 未完成（仍有历史未抓，下次续批）"
+        job = next((j for j in q if n in j.get("names", [])), None)
+        done = job.get("done") if job else False
+        tag = "✅ 已完成" if done else "⏳ 队列中待跑"
         print(f"   - {n}: {tag}")

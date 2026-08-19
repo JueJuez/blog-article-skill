@@ -767,39 +767,49 @@ def cmd_backfill(args, subs: dict, state: dict) -> None:
         names = job["names"]
         since = job["since"]
         batch = int(job.get("batch", bf.DEFAULT_BATCH))
+        # 旧 job 若 since 深于稳定边界，直接夹到边界（避免队列里残留深历史 job 无限重试）
+        job_ts = bf._parse_since(since)
+        boundary_ts = bf.default_since()
+        if job_ts < boundary_ts:
+            since = time.strftime("%Y-%m-%d", time.localtime(boundary_ts))
+            print(f"⚠️ job 的 since 深于稳定边界，已夹取到 {since}")
         print(f"📥 队列 job：{', '.join(names)} | since {since} | batch {batch}")
     elif args.names:
         names = [n.strip() for n in args.names.split(",") if n.strip()]
-        if not args.since:
-            print("❌ --backfill 需 --since（YYYY-MM-DD 或时间戳）", file=sys.stderr)
-            return
+        # since 默认 = 稳定边界（最近 35 天），超过此边界不补；仍可显式指定 --since 临时覆盖。
+        if args.since:
+            since = args.since
+            since_ts = bf._parse_since(since)
+            boundary_ts = bf.default_since()
+            if since_ts < boundary_ts:
+                print(f"⚠️ 指定 since 深于稳定边界 {bf.DEFAULT_BACKFILL_DAYS} 天，"
+                      "深历史代理不可靠，仍按你指定执行但请预期漏段。", file=sys.stderr)
+        else:
+            since = time.strftime("%Y-%m-%d", time.localtime(bf.default_since()))
+            print(f"ℹ️ --since 未指定，使用默认稳定边界：{since}（最近 {bf.DEFAULT_BACKFILL_DAYS} 天）")
         batch = args.batch or bf.DEFAULT_BATCH
-        bf.add_job(names, args.since, batch)
-        since = args.since
+        bf.add_job(names, since, batch)
         print(f"📥 回溯：{', '.join(names)} | since {since} | batch {batch}")
     else:
         print("❌ --backfill 需 --names <逗号名> 或 --drain", file=sys.stderr)
         return
 
+    since_ts = bf._parse_since(since)
     # 设 env，复用 discover_all：只跑微信（bilibili=[] 避免混入日常动态/视频），
     # 范围限定到 names，窗口改 since，每批上限 = batch。
     os.environ["WECHAT_BACKFILL"] = "1"
     os.environ["WECHAT_BACKFILL_NAMES"] = ",".join(names)
-    os.environ["WECHAT_BACKFILL_SINCE"] = str(bf._parse_since(since))
+    os.environ["WECHAT_BACKFILL_SINCE"] = str(since_ts)
     os.environ["FIRST_RUN_LIMIT"] = str(batch)
     wechat_only = {"wechat": subs.get("wechat", []), "bilibili": []}
 
-    # weread 代理极不稳定：同一账号 list_articles 在「返回 ~50 篇」与「返回 0 篇」之间
-    # 高频抖动（实测 8s 内 0→50→0）。单次 discover 若正巧撞上代理空窗即返回 0 条，
-    # 会被误判为「抓完了」。故在 backfill 入口加重试：连续遇 0 条（非 401 鉴权失效）时
-    # 退避重试，抓住代理恢复的那一刻。token 有效时不会触发重登（is_token_valid 预检通过，
-    # 且代理空窗是 200 空而非 401，any_auth_fail=False，不会误弹二维码）。
+    # 稳定窗口内短退避重试：代理偶发空窗，重试几次即可；深历史已不再追求，
+    # 不需要 20 次×60s 的长重试。
     all_new = []
-    max_attempts = 20  # weread 免费代理极不稳定，单次跑常撞空窗；调高上限以扛抖动、累积进度
+    max_attempts = int(os.environ.get("WECHAT_BACKFILL_ATTEMPTS", "5"))
     probe_share = next((w.get("share_url") for w in subs.get("wechat", []) if w.get("share_url")), "")
     for attempt in range(1, max_attempts + 1):
-        # 中途 token 过期（weread token 寿命 ~2h）则弹码续上，不白白消耗重试次数、
-        # 也不在失效态下盲抓代理。扫到即继续，无需手动重跑。
+        # 中途 token 过期（weread token 寿命 ~2h）则弹码续上。
         tok, vid = load_weread_auth()
         if not (tok and WereadClient(token=tok, vid=vid).is_token_valid(probe_share_url=probe_share)):
             print("⚠️ [回溯] 检测到 token 失效，自动触发重新登录并等待扫码...", file=sys.stderr)
@@ -811,7 +821,7 @@ def cmd_backfill(args, subs: dict, state: dict) -> None:
                 nt, nv = _wait_for_token_refresh(tok, WECHAT_RELOGIN_WAIT)
                 if nt:
                     print("✅ 扫码成功，token 已刷新，继续回溯。", file=sys.stderr)
-                    continue  # 拿新 token 重新进入循环抓取，不计入失败尝试
+                    continue
                 print(f"⏰ 等待扫码超时（{WECHAT_RELOGIN_WAIT}s），本次跳过公众号回溯。",
                       file=sys.stderr)
                 break
@@ -821,24 +831,24 @@ def cmd_backfill(args, subs: dict, state: dict) -> None:
         if all_new:
             break
         if attempt < max_attempts:
-            backoff = min(8 * attempt, 60)
+            backoff = min(8 * attempt, 30)
             print(f"[backfill-retry] 第{attempt}次代理返回空（抖动），{backoff}s 后重试"
                   f"（最多 {max_attempts} 次）...", file=sys.stderr)
             time.sleep(backoff)
     if not all_new:
-        print("⚠️ 回溯重试耗尽仍 0 条（代理持续空窗），本次跳过；下次运行自动续批。",
+        print("⚠️ 回溯重试耗尽仍 0 条（代理持续空窗），本次跳过。",
               file=sys.stderr)
 
-    # 游标（seen / backfill_done）只在真正入队（--apply）时落盘 —— 与日常监控一致：
+    # 游标（seen）只在真正入队（--apply）时落盘 —— 与日常监控一致：
     # 仅预览不落盘，避免把文章标记 seen 却未总结，导致后续漏抓。
     if args.apply:
         save_state(state)
         apply_summaries(all_new, args.obsidian)
         if args.drain and not args.names:
-            bf.mark_job_done_if(state, names)
+            bf.mark_job_done(state, names, note="shallow_backfill_run_completed")
     else:
         print(json.dumps(all_new, ensure_ascii=False, indent=2))
-    bf.report_progress(state, names, bf._parse_since(since))
+    bf.report_progress(state, names, since_ts)
 
 
 if __name__ == "__main__":

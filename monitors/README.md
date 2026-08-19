@@ -150,36 +150,33 @@ python monitors/run.py --mode first --apply
 
 ## 公众号历史回溯（续批）
 
-把某公众号历史文章分批抓全并总结。**可复用**：今天哥飞+生财，明天别的号，只需往队列加 job，无需改代码/命令。⚠️ **深历史不可靠**：weread 免费代理是**乱序分片**且 `publishTime` 元数据会伪造，深挖（如 2025 年文章）耗时巨大、命中率低、且易假完成——**近期(2026)抓取稳定，深历史性价比低、可主动放弃**（详见 `PROXY_NOTES.md`）。
+把某公众号**最近稳定窗口内**漏抓的文章补回来。weread 免费代理可稳定返回约 **最近 30~35 天**的文章（哥飞 23 篇 raw 全落在 2026-07-24~08-19，即 27 天内）；超过此边界代理乱序分片 + `publishTime` 伪造，极不可靠，**不再补**。如需深挖请显式 `--since`，但预期会漏段（详见 `PROXY_NOTES.md`）。
 
 核心机制
-- 游标 = `state.json` 的 `seen`（与日常监控同一套去重）；每账号回溯进度存 `state["backfill"][name]`（`done`/`reason`/`oldest_ts`）。不重置即可续批。
-- 分批：每批约 15~50 篇，多跑几次自然往前翻；`discover` 的 backfill 分支**只 mark 本批 `new` 为 seen**，保留续批能力（日常监控才 mark 全部 fetched）。
-- **完成判定（2026-08-19 修订·极重要）**：`discover` 内**不再写 `backfill_done`**。原因：weread 代理的 `publishTime` 元数据**不可信**（实测对 2026 账号返回伪造的 2024-08-16 时间戳），旧 `reached_since`/`proxy_depth` 完成判定会因此**假完成**（标记 done 却深层从未落盘）。唯一诚实的完成信号是外层驱动 `monitors/backfill_deep.py` 的**「连续 12 轮 0 落盘」(EMPTY_THRESHOLD)**——基于实际落盘数，不依赖任何代理元数据。**磁盘最老发布日期才是"抓到哪"的真相**，`state` 里的 `reason`/`seen` 计数都不可信。
-- **多轮回溯驱动（canonical）**：`monitors/backfill_deep.py` —— 每轮先 `reset_backfill` 清零 done（双保险），调 `run.py --backfill --apply` 抓单号当前分片落盘；解析健康度「文章 N」得实际落盘数；连续 12 轮 0 落盘才 `mark_done(exhausted_consecutive_empty)`；token 失效自动弹码续。seen 持久化、可随时中断续跑。
-- **代理抖动退避重试**：weread 代理常在「返回 ~50 篇」与「返回 0 篇」之间高频翻转（实测 8s 内 0→50→0）。回溯入口 `cmd_backfill` 对 `discover_all` 加最多 **20 次、8→60s** 递增退避——撞上代理空窗返回 0 条时重试，抓住恢复那一刻；仅代理持续空窗（非 401）才最终跳过本次、留待下次续批。
-- **`seen` 计数 ≠ 代理深度（重要）**：`seen` 是「累计见过且去重的文章 id 集合」（含日常监控抓的 + 壳/空页），按 `STATE_KEEP`=1000 裁剪，**不是**「代理单次可达深度」。判断代理真实历史深度，跑 `verify_proxy_depth.py` 探针实测，**不可从 seen 计数推断**。
+- **稳定边界**：默认 `since = 今天 - 35 天`（`WECHAT_BACKFILL_DAYS` 可调）。这是根据磁盘证据定下的稳定窗口——哥飞 23 篇 raw 全落在 2026-07-24~08-19（27 天内），更老历史代理不可靠。
+- 游标 = `state.json` 的 `seen`（与日常监控同一套去重）；`discover` 的 backfill 分支**只 mark 本批 `new` 为 seen**。
+- **不再写 `backfill_done`**：`wechat.py` 的 discover 内已彻底移除 `reached_since`/`proxy_depth` 完成判定，因为 `publishTime` 元数据伪造会导致假完成。队列 job 跑一次即标记 done（不追求 exhaustive 抓全）。
+- **短退避重试**：代理偶发空窗，回溯入口对 `discover_all` 加最多 **5 次、8→30s** 递增退避；空窗持续则跳过本次。
 - 范围保护：只处理目标号，绝不波及其他订阅源（`WECHAT_BACKFILL_NAMES` 门禁）。
 - ⚠️ **代理全部坑与认知详见 `monitors/PROXY_NOTES.md`**（乱序分片 / 空窗 / 401-500 翻转 / publishTime 伪造 / 假完成三次 / 操作铁律）——新会话先读它，别再把坑踩一遍。
 
 用法
 ```bash
-# 1) 入队一个回溯 job（名字须存在于 subscriptions.json 的 wechat 列表）
-python monitors/run.py --backfill --names 哥飞,生财有术 --since 2026-01-01 --batch 15
+# 1) 补最近稳定窗口（默认 35 天）——推荐日常用法，since 可省略
+python monitors/run.py --backfill --names 哥飞,生财有术 --apply
 
-# 2) 立即跑本批次并入队待总结（落盘游标 + 抓正文入 pending_summaries，由执行模型 drain 落飞书）
-python monitors/run.py --backfill --names 哥飞,生财有术 --since 2026-01-01 --apply
+# 2) 指定更窄窗口（例如只补最近 15 天）
+python monitors/run.py --backfill --names 哥飞 --since 2026-08-04 --apply
 
-# 3) 自动化续批：从 backfill_targets.json 取第一个未完成 job 跑一批（recurring 自动化即用此）
+# 3) 自动化续批：从 backfill_targets.json 取第一个未完成 job 跑一次
 python monitors/run.py --backfill --drain --apply
 
-# 4) 重置某号回溯完成状态（想重新往前翻时）
+# 4) 重置某号回溯状态（极少用；稳定窗口内跑一次即完成）
 python monitors/run.py --backfill --reset-backfill 哥飞,生财有术
 ```
 
 队列文件 `monitors/backfill_targets.json`（已 gitignore）：
 ```json
-[{"names":["哥飞","生财有术"], "since":"2026-01-01", "batch":15, "done":false}]
+[{"names":["哥飞","生财有术"], "since":"2026-07-15", "batch":15, "done":false}]
 ```
-「今天哥飞明天别的号」= 往队列加 job；一条 recurring 自动化 `--drain` 即可逐 job 续批。
-注意：微信 token 数小时(~2h)失效；自动化设 `WECHAT_RELOGIN_WAIT=0` 防无人值守阻塞，失效时跳过、token 有效时自动续。**recurring 自动化「公众号历史回溯续批」当前 PAUSED**：代理乱序 + `publishTime` 元数据伪造导致深历史回溯不可靠、投入过大，2026-08-19 决定收手（哥飞仅近期落盘、生财 0 篇）。如需恢复，先 `--reset-backfill <号>` 再评估。
+注意：微信 token 数小时(~2h)失效；自动化设 `WECHAT_RELOGIN_WAIT=0` 防无人值守阻塞，失效时跳过、token 有效时自动续。**recurring 自动化「公众号历史回溯续批」当前 PAUSED**：代理深历史回溯不可靠、投入过大，2026-08-19 决定收手（哥飞仅近期落盘、生财 0 篇）。

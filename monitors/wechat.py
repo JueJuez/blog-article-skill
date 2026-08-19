@@ -20,6 +20,7 @@ import requests
 
 from .state import get_seen, mark_seen, effective_window_days
 from .ad_filter import is_ad_by_title, today_start_ts
+from . import backfill as bf
 
 PLATFORM_URL = os.environ.get("WEREAD_PLATFORM_URL", "https://weread.111965.xyz")
 TIMEOUT = 15
@@ -105,14 +106,11 @@ class WereadClient:
         r.raise_for_status()
         return r.json()
 
-    def iter_articles(self, mp_id: str, max_pages: int = 50):
+    def iter_articles(self, mp_id: str, max_pages: int = 20):
         """翻页拉历史文章。新到老自然排序。
 
-        ⚠️ 空页容忍（2026-08-19 修正）：weread 免费转发是**多后端乱序**代理，会偶发整页空
-        （实测 page1 空、page2/3 却有更早数据），并非「代理深度有限」。(1) 开头允许连续空页
-        但设上限 10 页——超过即判定代理「空窗」快速退出（交由外层退避重试等比恢复），避免
-        翻满 max_pages(50) 导致单次 retry 耗时过久；(2)「已拿到过数据」后连续 6 页空才判定
-        到底，避免误截断历史。真正触底（代理确实无更老数据）仍会停。
+        稳定窗口（默认最近 35 天）内翻页：开头允许少量连续空页（多后端乱序代理偶发空窗），
+        拿到数据后再空 3 页即停。阈值比深历史回溯时小，因为只补近月，不需要翻很深。
         """
         empty_streak = 0
         got_any = False
@@ -132,22 +130,17 @@ class WereadClient:
                 print(f"  [warn] iter_articles page {page} 异常: {type(e).__name__} {str(e)[:120]}", file=sys.stderr)
             if not items:
                 empty_streak += 1
-                if got_any and empty_streak >= 6:
-                    # 已拿到过数据后连续 6 页空 → 真实触底（代理无更老数据），停止。
+                if got_any and empty_streak >= 3:
+                    # 已拿到过数据后连续 3 页空 → 稳定窗口内大概率到底，停止。
                     break
-                if not got_any and empty_streak >= 10:
-                    # 开头即连续 10 页空 → 判定代理当前处于「空窗」（多后端乱序代理
-                    # 偶发整体返回空），而非历史到底。快速退出，交由外层 backfill
-                    # 退避重试等比代理恢复的那一刻；否则会翻满 max_pages(50) 页空，
-                    # 单次 retry 耗时过长（实测盲等近半小时）。
+                if not got_any and empty_streak >= 5:
+                    # 开头连续 5 页空 → 代理当前空窗，快速退出，外层会短退避重试。
                     break
-                time.sleep(3)
+                time.sleep(2)
                 continue
             empty_streak = 0
             got_any = True
             yield from items
-            # 本页不足一页（<默认条数）通常代表到底，但乱序代理会偶发短页，故不在此立即
-            # break，交给上方「连续空页」守卫与 max_pages 上限兜底，避免提前截断历史。
 
     def is_token_valid(self, probe_share_url: str = "", retries: int = 3) -> bool:
         """探针：优先用 resolve_mp（wxs2mp）打一个需鉴权的请求。
@@ -295,7 +288,7 @@ class WechatSource:
         # 列表拉取：默认只拉第 1 页（每日监控语义）；WECHAT_BACKFILL=1 时翻全历史页
         # （iter_articles 自然从新到老，配合 seen 去重 + first_run_limit 实现分批回溯）
         if os.environ.get("WECHAT_BACKFILL") == "1":
-            backfill_pages = int(os.environ.get("WECHAT_BACKFILL_PAGES", "200"))
+            backfill_pages = int(os.environ.get("WECHAT_BACKFILL_PAGES", "20"))
             items = list(self.client.iter_articles(mp_id, max_pages=backfill_pages))
         else:
             items = self._list_with_retry(mp_id)
@@ -308,9 +301,10 @@ class WechatSource:
         # 时间窗口（每日监控语义）：只保留最近 N 天发布的，不深挖历史；设为 0 则关闭窗口、抓全部最新 N 篇。
         window = int(os.environ.get("WECHAT_WINDOW_DAYS", "2"))
         if os.environ.get("WECHAT_BACKFILL") == "1":
-            # 历史回溯：按 since 过滤（默认 2025-12-20，覆盖 2026 全年），不做 N 天滑动窗口
+            # 历史回溯：按 since 过滤，默认滚动最近 35 天（稳定窗口）。超过此边界代理
+            # 乱序/伪造时间戳严重，不再追；如需显式深挖可用 --since 指定更远日期。
             since_env = os.environ.get("WECHAT_BACKFILL_SINCE")
-            since = int(since_env) if since_env else 1766601600  # 2025-12-20 近似时间戳
+            since = int(since_env) if since_env else bf.default_since()
             items = [it for it in items if it.get("publishTime", 0) >= since]
         elif window > 0:
             if is_first:
@@ -328,25 +322,12 @@ class WechatSource:
         # 首次/增量统一：去重后取最近 N 篇（已先经时间窗口裁剪，不会深挖历史）
         new = [it for it in items if it["id"] not in seen][:first_run_limit]
 
-        # backfill 完成判定（2026-08-17 续批功能）：本批 0 新 或 剩余未抓已全部落在本次
-        # batch 内 → 触底（代理深度上限）或已越过 since 边界，标记完成免后续重复拉取。
-        # 按账号名 key 存 state["backfill"][name]，便于进度报告与重置，无需 mp_id 反解。
+        # backfill 分支：稳定窗口（默认最近 35 天）内补最近漏抓的文章。
+        # 超过此边界代理乱序/伪造时间戳严重，不再追；本模块不写 backfill_done（见 backfill.py
+        # 的队列 job 完成语义）。
         if os.environ.get("WECHAT_BACKFILL") == "1":
-            # ⚠️ 乱序代理根因修复（2026-08-19，二次）：weread 免费代理是**乱序分片**——
-            # 单次 discover 只返回**一个随机分片**，并非从新到老的连续历史。
-            # 旧逻辑在「本批 0 新 / 未见数≤batch」时就标记 backfill_done → 假完成（已修）。
-            # 随后又改用 `reached_since`（oldest_raw=min(publishTime) 是否 < since）判完成，
-            # **但实测 publishTime 元数据不可信**：对 2026 年的哥飞账号，代理竟返回伪造的
-            # 2024-08-16 时间戳，使 `oldest_raw < since` 恒成立 → 又一轮**假 reached_since**
-            # 标记 done，而该伪造老文章被 since 过滤剔除、从未落盘，深层历史(2025-04)照样没抓到。
-            # 且 since 过滤已把 < since 的文章剔除，post-filter 最老恒 >= since，reached_since
-            # 在过滤后本就失去意义。
-            #
-            # 结论：**discover 内绝不写 backfill_done**。唯一诚实的完成信号是外层驱动
-            # （monitors/backfill_deep.py）用「连续多轮 0 新」(EMPTY_THRESHOLD) 确认穷尽，
-            # 跨轮去重 + 可随时中断续跑。磁盘最老发布日期才是「抓到哪」的真相，勿信元数据。
             if not items:
-                print(f"[backfill-warn] {self.name} 本批 0 条（代理空/鉴权失败？），不标记完成，留待续批重试",
+                print(f"[backfill-warn] {self.name} 本批 0 条（代理空/鉴权失败？），不标记完成",
                       file=sys.stderr)
 
         # seen 标记范围：
