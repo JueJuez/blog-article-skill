@@ -303,9 +303,8 @@ class WechatSource:
             items = []
         # 标题级广告过滤（无干货内容直接剔除，过滤后不补）
         items = [it for it in items if not is_ad_by_title(it.get("title", ""))]
-        # backfill 完成判定需要的「代理最老可达日期」：在 since 过滤前取全量最小值，
-        # 用于区分「已越过 since 边界(reached_since)」vs「代理深度上限未到 since(proxy_depth)」。
-        oldest_raw = min((it.get("publishTime", 0) for it in items), default=0) if items else 0
+        # ⚠️ 注意：代理返回的 publishTime 元数据**不可信**（实测对 2026 账号返回伪造的
+        # 2024-08-16 时间戳），绝不可用它做完成判定或深度推断。见下方 backfill 分支注释。
         # 时间窗口（每日监控语义）：只保留最近 N 天发布的，不深挖历史；设为 0 则关闭窗口、抓全部最新 N 篇。
         window = int(os.environ.get("WECHAT_WINDOW_DAYS", "2"))
         if os.environ.get("WECHAT_BACKFILL") == "1":
@@ -333,29 +332,22 @@ class WechatSource:
         # batch 内 → 触底（代理深度上限）或已越过 since 边界，标记完成免后续重复拉取。
         # 按账号名 key 存 state["backfill"][name]，便于进度报告与重置，无需 mp_id 反解。
         if os.environ.get("WECHAT_BACKFILL") == "1":
-            # ⚠️ 乱序代理根因修复（2026-08-19）：weread 免费代理是**乱序分片**——
+            # ⚠️ 乱序代理根因修复（2026-08-19，二次）：weread 免费代理是**乱序分片**——
             # 单次 discover 只返回**一个随机分片**，并非从新到老的连续历史。
-            # 旧逻辑在「本批 0 新 / 未见数≤batch」时就标记 backfill_done，导致只抓到
-            # 一个分片（通常是近期、已被每日监控 seen 标记过的）就**假完成**，
-            # 深层历史（哥飞→2025-04、生财→2024-12，探针已实证可达）永远落不了盘。
+            # 旧逻辑在「本批 0 新 / 未见数≤batch」时就标记 backfill_done → 假完成（已修）。
+            # 随后又改用 `reached_since`（oldest_raw=min(publishTime) 是否 < since）判完成，
+            # **但实测 publishTime 元数据不可信**：对 2026 年的哥飞账号，代理竟返回伪造的
+            # 2024-08-16 时间戳，使 `oldest_raw < since` 恒成立 → 又一轮**假 reached_since**
+            # 标记 done，而该伪造老文章被 since 过滤剔除、从未落盘，深层历史(2025-04)照样没抓到。
+            # 且 since 过滤已把 < since 的文章剔除，post-filter 最老恒 >= since，reached_since
+            # 在过滤后本就失去意义。
             #
-            # 修复：完成判定**仅保留 reached_since**——只有当代理确实返回了早于 since
-            # 的文章（证明已越过目标边界）才落 done。其余两种「假完成」信号一律不在此标记：
-            #   - len(new)==0            → 只是撞上「已抓过的分片」或空窗，非历史抓完
-            #   - unseen_total<=batch    → 只是「当前分片较小」，乱序下还有别的碎片未覆盖
-            # 真正的「穷尽」改由外层驱动（monitors/backfill_deep.py）用「连续多轮 0 新」
-            # 确认后再写 done(exhausted_consecutive_empty)，跨轮去重 + 可随时中断续跑。
+            # 结论：**discover 内绝不写 backfill_done**。唯一诚实的完成信号是外层驱动
+            # （monitors/backfill_deep.py）用「连续多轮 0 新」(EMPTY_THRESHOLD) 确认穷尽，
+            # 跨轮去重 + 可随时中断续跑。磁盘最老发布日期才是「抓到哪」的真相，勿信元数据。
             if not items:
                 print(f"[backfill-warn] {self.name} 本批 0 条（代理空/鉴权失败？），不标记完成，留待续批重试",
                       file=sys.stderr)
-            else:
-                reached = oldest_raw < since
-                if reached:
-                    sd = state.setdefault("backfill", {}).setdefault(self.name, {})
-                    sd["backfill_done"] = True
-                    sd["backfill_done_reason"] = "reached_since"
-                    sd["backfill_oldest_ts"] = oldest_raw
-                    sd["backfill_done_at"] = int(time.time())
 
         # seen 标记范围：
         # - 非 backfill（每日监控）：标记全部 fetched，避免次日重复拉取已见候选
