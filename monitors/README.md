@@ -1,6 +1,6 @@
 # 订阅监控（monitors/）
 
-持续订阅 **B站UP主** 与 **公众号**，发现新内容 → AI 总结 → 默认落飞书（需 Obsidian 时加 `--obsidian` 双写，见 `RULES.md` §3.0）。
+持续订阅 **B站UP主**、**公众号** 与 **scys（生财有术）项目标签**，发现新内容 → AI 总结 → 默认落飞书（需 Obsidian 时加 `--obsidian` 双写，见 `RULES.md` §3.0）。
 本文件是监控模块的操作文档 + 注意事项；决策背景见 `docs/decisions/DECISION-20260720-sub-monitor.md`。
 
 ## 架构
@@ -11,7 +11,7 @@
 | `wechat.py` | 公众号源（经 `weread.111965.xyz` 转发发现新文）；token 数小时失效，交互式弹码续期、headless 跳过 |
 | `bilibili.py` | B站UP主源（官方 API + WBI 签名，带登录 Cookie） |
 | `ad_filter.py` | 广告过滤：整篇纯广告 skip / 干货夹广告净化保留 |
-| `run.py` | CLI + 调度入口（`--apply` 直接调总结管线）；末尾自动调 `drain_series_pending` 收尾系列课 |
+| `run.py` | CLI + 调度入口（`--apply` 直接调总结管线）；末尾自动调 `drain_series_pending` 收尾系列课；`--apply` 时按 `subscriptions.json` 的 `scys` 列表逐领域子进程跑 `scripts/scys_batch_fetch.py` 增量抓新帖（见下方「scys 新帖监控」） |
 | `_auth.py` | 公众号扫码登录 / 轮询换 JWT（落盘 `.wechat_auth.json`，日志 `.poll_daemon.log`） |
 | `apply_pending_series.py` | 系列课降级待总结队列 drainer：`drain_series_pending` 被 `run.py` 自动调用，把 `pending_series.json` 里已有 `.body.md` 的集串行落飞书 + 重生成总览（详见下方「系列课全自动闭环」） |
 | `../shared/series_state.py` | 系列课增量去重状态（`monitors/series_state.json`）：记录每集 base/URL 是否已总结，每日增量只抓未总结的集 |
@@ -49,10 +49,22 @@
    - 公众号文章：`fetch_web_content` **直连微信**抽正文（`WECHAT_GAP=6s`+抖动防限流），异常/空页进 `pending_refetch` 下次重抓。
    - B站视频/动态：视频 `summarize_video`；动态 API 正文内联，短动态存「速览」、完整动态走重模板。
    - FORCE_AGENT_MODE=1：**不自动总结**，全部进 `pending_summaries.json` 队列。
-4. **Agent 总结闭环**：本会话（执行模型）读队列 → 派**子 Agent** 按 `note_type` 模板总结 → `save_summary_only` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，见 `RULES.md` §3.0）→ 出队。**原子化**：成功才出队，中断可安全重跑。
-5. **看健康度行**：末尾 `📊 本轮健康度：...` 一行，异常（错误/限流待重试高）一眼可见。
+4. **scys 增量（`subscriptions.json` 配了 `scys` 列表才跑）**：逐领域子进程跑 `scripts/scys_batch_fetch.py`（默认近 7 天窗口、精华过滤按 `scys_projects.json` 默认、翻 2 页列表），抓到的原文进 `notes/_scraped/scys/pending_summaries.json` 队列（与批量补齐共用，`.lock` 互斥防并发写坏 state）。CDP 不可用（用户主 Chrome 未开 debug 端口）→ 告警跳过，不影响公众号/B站。
+5. **Agent 总结闭环**：本会话（执行模型）读队列 → 派**子 Agent** 按 `note_type` 模板总结 → `save_summary_only` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，见 `RULES.md` §3.0）→ 出队。**原子化**：成功才出队，中断可安全重跑。scys 队列同理（folder=生财有术/<领域>，语义见 `references/scys-fetch-sop.md` §9）。
+6. **看健康度行**：末尾 `📊 本轮健康度：...` 一行，异常（错误/限流待重试高）一眼可见。
 
 **重试矩阵（无需手动干预）**：token 失效→弹码等扫码 / 401 瞬错×3 / 代理空轮退避重试 / 正文限流→`pending_refetch`（`python run.py --refetch-only` 统一重抓）。
+
+## scys（生财有术）新帖监控（2026-08-20 接入）
+
+「跑一下」的第三源：`subscriptions.json` 的 `scys` 列表（当前=自媒体/出海/AI产品开发/小程序四领域，领域名与 menuId 的映射在 `scripts/scys_projects.json`）。
+
+- **机制**：`run.py --apply` 收尾阶段逐领域子进程调 `scripts/scys_batch_fetch.py --project <领域> --since-days <窗口> --pages 2`——复用补齐批量全链路（列表捕获 → 时间/精华过滤 → 限速抓正文含外链跟进 → 入 `notes/_scraped/scys/pending_summaries.json` 待总结队列），由执行模型按 §9 语义闭环总结（folder=生财有术/<领域>）。
+- **去重**：与批量补齐共用 `notes/_scraped/scys/state.json` 的 done 列表；已在补齐里抓过的帖不会重复抓/总结。
+- **窗口默认 7 天**（大于日窗）：新帖常在发布数日后才被标精华，窗口太窄会永久漏「晚精华」帖；窗口放大只多翻列表页（便宜），done 去重兜底不会重复抓正文。已知局限：发布超 7 天才标精华的帖会漏，靠半年一次的「补齐scys」兜底。
+- **前提**：用户主 Chrome 已开 `--remote-debugging-port`（CDP 登录态）。不可用 → 该领域告警跳过，公众号/B站不受影响。
+- **互斥**：`notes/_scraped/scys/.lock` 进程锁——「跑一下」的 scys 增量与「补齐scys」批量不会并发写坏 state/pending；若进程异常退出残留锁文件，确认无进程后手动删除即可。
+- **临时停用**：把 `subscriptions.json` 的 `scys` 列表清空即可，其他源照跑。
 
 ## 配置（`.env`）
 
@@ -71,6 +83,9 @@
 | `BILI_SHORT_DYNAMIC_MAX` | 80 | 短动态轻量化阈值（字） |
 | `FIRST_RUN_LIMIT` | 50 | 首跑每类型安全上限（同时影响视频/动态，实际受 `BILI_SAFETY_CAP` 夹取） |
 | `STATE_KEEP` | 1000 | 每源 `seen` 保留的最大 ID 数（防 `state.json` 膨胀） |
+| `SCYS_DAILY_WINDOW_DAYS` | 7 | scys 日常增量发布时间窗口（天） |
+| `SCYS_FIRST_WINDOW_DAYS` | 7 | scys 首跑（`--mode first`）窗口（天） |
+| `SCYS_DAILY_LIST_PAGES` | 2 | scys 日常增量每次翻的列表页数（每页 30 条） |
 
 ## 注意事项 / 已知坑
 

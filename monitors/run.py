@@ -24,6 +24,7 @@ import json
 import time
 import random
 import argparse
+import subprocess
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
@@ -86,6 +87,52 @@ DEFAULT_CATEGORY = os.environ.get("MONITOR_DEFAULT_CATEGORY", "投资交易")
 # 公众号文章连续抓取正文为空（限流空页 / 微信扫码墙 / 文章已删除）达到此次数，
 # 判定为「不可抓取」，移出重试队列并明确上报（不再无限重试刷虚假告警）。可调。
 WECHAT_MAX_REFETCH = int(os.environ.get("WECHAT_MAX_REFETCH", "3"))
+# ---- scys（生财有术）日常监控（「跑一下」第三源，2026-08-20 接入） ----
+# 复用 scripts/scys_batch_fetch.py 入口按领域增量抓新帖。窗口默认 7 天而非 1 天：
+# 新帖常在发布数日后才被标精华，窗口太窄会永久漏掉「晚精华」帖；重复抓由其
+# state.json 的 done 列表去重兜底，窗口放大只多翻列表页、不多抓正文。
+SCYS_CONFIG_PATH = os.path.join(BASE_DIR, "scripts", "scys_projects.json")
+SCYS_PENDING_PATH = os.path.join(BASE_DIR, "notes", "_scraped", "scys", "pending_summaries.json")
+SCYS_DAILY_WINDOW_DAYS = int(os.environ.get("SCYS_DAILY_WINDOW_DAYS", "7"))
+SCYS_FIRST_WINDOW_DAYS = int(os.environ.get("SCYS_FIRST_WINDOW_DAYS", "7"))
+SCYS_DAILY_LIST_PAGES = int(os.environ.get("SCYS_DAILY_LIST_PAGES", "2"))
+
+
+def _scys_daily_cmd(project: str, since_days: int) -> list:
+    return [sys.executable, os.path.join(BASE_DIR, "scripts", "scys_batch_fetch.py"),
+            "--project", project, "--since-days", str(since_days),
+            "--pages", str(SCYS_DAILY_LIST_PAGES)]
+
+
+def run_scys_daily(entries: list, mode: str = "auto") -> None:
+    """「跑一下」的 scys 分支：按 subscriptions.json 的 scys 列表逐领域增量抓新帖。
+
+    复用 scys_batch_fetch.py 全链路（列表 → 窗口/精华过滤 → 限速抓取 → 入 scys
+    待总结队列），去重靠其 state.json；CDP 不可用 / 单领域失败 → 告警跳过，
+    不影响公众号与 B站结果。领域必须存在于 scripts/scys_projects.json。
+    """
+    try:
+        with open(SCYS_CONFIG_PATH, "r", encoding="utf-8") as f:
+            known = json.load(f).get("projects", {})
+    except Exception:
+        known = {}
+    default_days = SCYS_FIRST_WINDOW_DAYS if mode == "first" else SCYS_DAILY_WINDOW_DAYS
+    for s in entries:
+        project = s.get("project", "")
+        if project not in known:
+            print(f"[warn] scys 领域「{project}」不在 scripts/scys_projects.json，跳过", file=sys.stderr)
+            continue
+        days = int(s.get("since_days") or default_days)
+        print(f"\n[scys] 领域「{project}」增量抓取（近 {days} 天窗口，精华过滤按配置默认）...")
+        try:
+            r = subprocess.run(_scys_daily_cmd(project, days), cwd=BASE_DIR)
+        except Exception as e:
+            print(f"[warn] scys {project} 启动失败: {e}", file=sys.stderr)
+            continue
+        if r.returncode != 0:
+            print(f"[warn] scys {project} 抓取退出码 {r.returncode}"
+                  f"（可能 CDP 不可用 / 已有 scys 抓取进程在跑），跳过该领域", file=sys.stderr)
+        time.sleep(3)
 
 
 def _decide_retry_or_drop(it: dict, max_retry: int):
@@ -737,6 +784,16 @@ def main():
         # 标记为 seen，后续 --apply 直接去重成 0）。
         save_state(state)
         apply_summaries(all_new, args.obsidian)
+        # scys（生财有术）日常增量：独立子进程复用 scys_batch_fetch.py 全链路，
+        # 抓到的原文进 scys 专属待总结队列（与单篇队列闭环方式相同）
+        if subs.get("scys"):
+            run_scys_daily(subs["scys"], mode=mode)
+            scys_pending = _load_json(SCYS_PENDING_PATH, [])
+            if scys_pending:
+                print(f"\n🤖 NEED_AGENT_SCYS_SUMMARY: scys {len(scys_pending)} 篇待总结。"
+                      f"清单见 {SCYS_PENDING_PATH}\n"
+                      f"   处理路径：Read 条目 output 指向的 md 原文 → 按模板总结 → "
+                      f"save_summary_only 落飞书（folder=生财有术/<领域>）→ 从队列移除该条。")
     else:
         print(json.dumps(all_new, ensure_ascii=False, indent=2))
 

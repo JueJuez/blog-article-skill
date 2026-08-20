@@ -10,5 +10,8 @@
     {
       "uid": "22675713"
     }
+  ],
+  "scys": [
+    {"project": "生财有术项目领域名，须存在于 scripts/scys_projects.json 的 projects"}
   ]
 }

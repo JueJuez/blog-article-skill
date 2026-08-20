@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import re
 import sys
@@ -65,6 +66,23 @@ BATCH_REST = (180, 480)
 
 def human_gap(rng: tuple[float, float]) -> None:
     time.sleep(random.uniform(*rng))
+
+
+def _acquire_lock() -> Path:
+    """进程互斥锁：补齐批量与日常监控共用 state/pending 文件，并发写会互相覆盖丢数据。"""
+    lock = BASE / ".lock"
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise SystemExit(f"[lock] 已有一个 scys 抓取进程在跑（{lock}）。"
+                         f"若确认没有进程在跑，手动删除该文件后重试。")
+    with os.fdopen(fd, "w") as f:
+        f.write(str(os.getpid()))
+    return lock
+
+
+def _release_lock(lock: Path) -> None:
+    lock.unlink(missing_ok=True)
 
 
 class ScysBatchFetcher:
@@ -317,6 +335,13 @@ class ScysBatchFetcher:
     # ---------- 主循环 ----------
 
     def run(self, list_only: bool = False) -> int:
+        lock = _acquire_lock()
+        try:
+            return self._run_with_retry(list_only)
+        finally:
+            _release_lock(lock)
+
+    def _run_with_retry(self, list_only: bool) -> int:
         # CDP 接管活 Chrome：用户关标签页/浏览器波动会抛 TargetClosedError，
         # state.json 断点续传使重跑幂等，自动重试最多 3 次
         last_err: Exception | None = None
