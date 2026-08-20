@@ -150,6 +150,7 @@ mklink /J "%LOCALAPPDATA%\Google\Chrome\DebugUDD" "%LOCALAPPDATA%\Google\Chrome\
 | `articles/skill_main` / `articles/run.py` | **任何文章链接（含 scys）**：`fetch_web_content` 检测到 `scys.com` 自动分流 CDP 登录态抓取，普通博客走 requests——**用户对模型说「总结这篇」即可，混合多篇也逐条自动分流** | scys 自动接管 Chrome；公开 URL 无 |
 | `scripts/login_cdp_fetch.py`（本 SOP） | 显式单篇登录态抓取（诊断 / 非文章页） | 接管用户主 Chrome 继承 |
 | `scripts/scys_batch_fetch.py`（§7） | 按项目领域批量抓 scys 帖子 | 同上 |
+| `scripts/feishu_ext_refetch.py`（2026-08-21） | **飞书 wiki/docx 懒加载截断的全文重抓**：增量滚动 `.bear-web-x-container` 容器逐视口收集 innerText 按行去重合并。用法 `python scripts/feishu_ext_refetch.py "<飞书URL>" <out.md>`（用 anaconda python）。批量抓取的 ext 只有目录+开头（500 字级）时用它补；PDF 预览型（canvas 渲染）与 404 仍无解，跳过即可 | 同上 |
 | `monitors/run.py --apply` | 公众号 / B站订阅 | 公众号 Cookie / `BILI_COOKIE` |
 | `videos/run.py --url` | 视频（YouTube / B站） | 无（字幕 API → CDP → ASR 兜底） |
 
