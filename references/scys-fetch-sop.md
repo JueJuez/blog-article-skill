@@ -154,3 +154,29 @@ mklink /J "%LOCALAPPDATA%\Google\Chrome\DebugUDD" "%LOCALAPPDATA%\Google\Chrome\
 | `videos/run.py --url` | 视频（YouTube / B站） | 无（字幕 API → CDP → ASR 兜底） |
 
 > 总结：**单篇（含 scys）一律走 `articles` 入口**，模型自动分流；批量按领域抓 scys 走 `scripts/scys_batch_fetch.py`；两者都依赖用户主 Chrome 的 CDP debug 端口（前提见 §1/§1.5）。回归测试钉死该行为：`tests/test_scys_routing.py`（含混合链接场景）。
+
+## 9. 触发词语义：「补齐 scys」（2026-08-20 定义）
+
+用户说**【补齐scys】**或**【补齐生财有术】** → 模型自动执行批量补齐闭环，不用再问流程。
+
+**默认参数**（未提及即用 `scripts/scys_projects.json` 默认，当前=四领域全跑、一年半、仅精华、每批 30 篇，顺序 AI产品开发→小程序→出海→自媒体）。
+
+**条件后缀**（自然语言，模型解析成 CLI 参数临时覆盖默认，可任意叠加）：
+
+| 用户说法 | 模型执行 |
+|---|---|
+| 补齐scys / 补齐生财有术 | 按默认四领域逐个跑 |
+| 补齐scys 出海 ｜ 出海+自媒体 | 只跑指定领域（可多个，+号或顿号连接） |
+| 补齐scys 近一年 / 近半年 / 近两年 | `--since-days 365 / 182 / 730` |
+| 补齐scys 全部时间 | `--since-days 0` |
+| 补齐scys 含非精华 / 非精华也要 | `--no-digested-only` |
+| 补齐scys 阅读过万 / 破万也抓 | `--no-digested-only --min-reading 10000` |
+| 新领域（配置里没有） | 先按 §7 捕获 menuId → 写进 `scys_projects.json` → 再跑 |
+
+**执行闭环（模型每批照做）**：
+1. 后台跑 `D:\App\anaconda3\python.exe -u scripts/scys_batch_fetch.py --project <领域> --limit 30`（断点续传，重复执行幂等，已抓自动跳过）
+2. 每批完成 → 派**子 Agent**（>3 篇必须拆子 Agent）总结落飞书（tags=`生财有术,<领域>`，入口 `articles/_save_summary.py`，详见 §7 总结落盘段）
+3. 总结完把 `pending_summaries.json` 对应条目标 `summarized:true`（防重复落飞书）
+4. 向用户汇报累计/剩余进度，然后启动下一批
+
+**半年重抓**：直接说「补齐scys」即可——`state.json` 断点续传自动只抓上次之后的新帖/漏帖；要扩时间窗加时间后缀（如「补齐scys 近两年」）。
