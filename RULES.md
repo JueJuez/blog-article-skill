@@ -89,7 +89,7 @@
 
 ### 路线 A：文章总结（`articles/`）
 - **入口**：`articles/run.py --url/--content/--batch`；或直接 `from articles import skill_main; skill_main({...})`。
-- **流程**：抓取 `articles.fetch.fetch_web_content` → 去重 `articles.dedup` → 自动分类 `prompts.classify.classify_note_type` → AI 总结 `articles.main.summarize_content` → 保存 `articles.manager.OutputManager.save_all`（**默认只写飞书；带 `obsidian` 时追加 Obsidian；本地 `notes/` 仅飞书不可用且未请求 Obsidian 时兜底，详见 §3.0**）。
+- **流程**：抓取 `articles.fetch.fetch_web_content`（**scys.com 链接自动分流 CDP 登录态抓取，普通博客走 requests，单篇/混合多篇均无感**；批量按领域抓 scys 走 `scripts/scys_batch_fetch.py`，配置见 `scripts/scys_projects.json`）→ 去重 `articles.dedup` → 自动分类 `prompts.classify.classify_note_type` → AI 总结 `articles.main.summarize_content` → 保存 `articles.manager.OutputManager.save_all`（**默认只写飞书；带 `obsidian` 时追加 Obsidian；本地 `notes/` 仅飞书不可用且未请求 Obsidian 时兜底，详见 §3.0**）。
 - **降级**：无外部 AI 时 `skill_main` 返回 `need_continue_summary` + `prompt` + 原文 + `raw_file` + `folder`，写入 `pending_summaries.json` 队列，**交外层派子 Agent 执行**（勿在主会话总结，污染上下文、降质量）；子 Agent 读 raw → 按模板总结 → 调 `save_summary_only` 存档。详见 `monitors/README.md`「降级闭环与子 Agent 委派」。
 - **细节**：见 `SKILL.md`「执行流程」与 `README.md`。
 

@@ -14,8 +14,13 @@
 ### 能力 1 · 一次性总结（文章 / 视频）
 用户给**文章链接、原文、或视频（YouTube / Bilibili）链接 / 字幕** → 总结成笔记。
 - **入口（任选）**
-  - 文章：`python articles/run.py "https://..."` 或 `from articles import skill_main; skill_main({"content": url_or_text})`
-  - 视频：`python videos/run.py --url "https://..."` 或 `from videos import summarize_video; summarize_video({"url": url})`
+  - **统一入口（推荐）**：`python articles/run.py "https://..."` 或 `from articles import skill_main; skill_main({"content": url_or_text})` —— `fetch_web_content` 检测到 `scys.com` 链接自动分流 CDP 登录态抓取，普通博客走 requests。**用户给单篇或多篇混合链接（普通博客 + scys）都逐条自动分流，前端无感。**（回归测试 `tests/test_scys_routing.py`）
+  - **需登录态文章的底层路径**（诊断 / 显式抓取时用）：按用户主 Chrome 状态自动判别——
+  - **路径 A · 接管活 Chrome**：用户主 Chrome 启过 `--remote-debugging-port`（一次性）→ Playwright 通过 CDP 直接接管活 Chrome，登录态由浏览器自动携带。入口：`python scripts/login_cdp_fetch.py "<URL>" [out.md]`。**scys（生财有术）付费文章专用照做 SOP 见 `references/scys-fetch-sop.md`（含前提 / 判别墙·真文 / 故障，新会话直接照做）。**
+  - **路径 B · profile-clone（fallback）**：用户主 Chrome 没启 debug → 复制 user-data-dir 到临时目录 + 启一个独立 headless Chromium 实例带登录态（DPAPI 同 Windows 用户）。入口：`python scripts/profile_clone_fetch.py "<URL>" [out.md]`。
+  - **重要现实（2026-08-19 实测）**：Chrome 136+ 用 `FILE_SHARE_NONE` 锁 cookie，路径 B 在用户主 Chrome 没启 debug 时**不能真正继承 cookie**（结构性约束，非 bug）—— 公开 URL 仍可用；登录站会撞墙。详见 `references/login-required-cdp-workflow.md` §11~§13 + §14 实测记录。
+  - **scys 按领域批量抓取**：`python scripts/scys_batch_fetch.py --project <领域>`（领域 / menuId / 时间窗在 `scripts/scys_projects.json` 配置，换领域每半年重抓只改 JSON 不改代码）。详见 `references/scys-fetch-sop.md` §7。
+  - 视频：`python videos/run.py --url "https://..."` 或 `from videos import summarize_video; summarize_video({"url": url})`（含 ASR 兜底）
 - 自动按内容类型选模板（`structured` / `key_points` / `interview` / `roundup` / `reading` / `case` / `opinion`）；**默认写飞书**，用户说「写到 obsidian / 双写」时才追加 Obsidian（传 `obsidian=True` 或 `--obsidian`，详见 `RULES.md` §3.0）。
 - **降级**：无外部 AI 时 `skill_main` 返回 `need_continue_summary` + 原文 + 模板 prompt；外层模型总结后调 `save_summary_only` 存档。
 

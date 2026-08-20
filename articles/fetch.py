@@ -9,6 +9,9 @@
 
 import os
 import re
+import sys
+from pathlib import Path
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -32,6 +35,24 @@ def _looks_like_wall(content: str) -> bool:
     if not content:
         return False
     return any(m in content for m in _WALL_MARKERS)
+
+
+def is_scys_url(url: str) -> bool:
+    """scys（生财有术）付费站链接需要 CDP 登录态抓取，走独立分流。"""
+    return isinstance(url, str) and url.startswith("https://scys.com/")
+
+
+def _scys_cdp_fetch(url: str, out_path=None, **kwargs) -> dict:
+    """接管用户主 Chrome 抓 scys 正文（scripts/login_cdp_fetch.fetch 的薄包装）。"""
+    scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    from login_cdp_fetch import fetch as cdp_fetch
+
+    if out_path is None:
+        out_path = (Path(__file__).resolve().parent.parent / "notes" / "_scraped"
+                    / "scys_single" / "latest.md")
+    return cdp_fetch(url, Path(out_path), **kwargs)
 
 
 
@@ -186,9 +207,30 @@ def _trafilatura_title(html: str) -> str:
 def fetch_web_content(url: str):
     """获取网页内容（增强版）。
 
+    scys.com 链接自动分流到 CDP 登录态抓取（用户主 Chrome 需启 debug 端口），
+    与普通文章共用同一条总结管道，前端无感。
+
     Returns:
         tuple: (title, content) 或 None
     """
+    if is_scys_url(url):
+        print("🔐 检测到 scys（生财有术）链接 → 走 CDP 登录态抓取")
+        try:
+            result = _scys_cdp_fetch(url)
+        except Exception as e:
+            print(f"❌ scys CDP 抓取失败: {e}")
+            print("💡 需要用户主 Chrome 以 --remote-debugging-port 启动过（见 references/scys-fetch-sop.md）")
+            return None
+        body = (Path(result["output"]).read_text(encoding="utf-8")
+                if Path(result["output"]).exists() else "")
+        if result.get("login_wall_hit"):
+            print(f"❌ 撞登录墙: {result['login_wall_hit']}")
+            return None
+        if len(body.strip()) < 100:
+            print("❌ scys 抓取正文过短，视为失败")
+            return None
+        return (result["title"], body)
+
     html, response = _download(url)
     if not html:
         print("❌ 抓取失败：无法访问链接")

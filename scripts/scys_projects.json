@@ -1,0 +1,23 @@
+{
+  "_comment": "scys 批量抓取配置：换领域/调时间窗改这里，脚本零改动。menuId 从 tags 页真实点击标签捕获（方法见 references/scys-fetch-sop.md §7）。",
+  "projects": {
+    "自媒体": 2850207,
+    "出海": 3492647,
+    "AI产品开发": 2892644,
+    "小程序": 7916782
+  },
+  "defaults": {
+    "since_days": 548,
+    "digested_only": true,
+    "min_reading": 0,
+    "batch_limit": 30,
+    "summary_tags_prefix": "生财有术"
+  },
+  "_known_menu_ids": {
+    "_comment2": "已捕获但暂未列入 projects 的标签 ID（换领域时把名字:ID 加进 projects 即可）",
+    "电商": null,
+    "IP": null,
+    "AI自媒体": null,
+    "AI编程": null
+  }
+}
