@@ -83,8 +83,8 @@
 | `BILI_SHORT_DYNAMIC_MAX` | 80 | 短动态轻量化阈值（字） |
 | `FIRST_RUN_LIMIT` | 50 | 首跑每类型安全上限（同时影响视频/动态，实际受 `BILI_SAFETY_CAP` 夹取） |
 | `STATE_KEEP` | 1000 | 每源 `seen` 保留的最大 ID 数（防 `state.json` 膨胀） |
-| `SCYS_DAILY_WINDOW_DAYS` | 7 | scys 日常增量发布时间窗口（天） |
-| `SCYS_FIRST_WINDOW_DAYS` | 7 | scys 首跑（`--mode first`）窗口（天） |
+| `SCYS_DAILY_WINDOW_DAYS` | 7 | scys 日常增量发布时间窗口（天）；**实际被 `subscriptions.json` 各 scys 条目的 `since_days`（当前=35）覆盖** |
+| `SCYS_FIRST_WINDOW_DAYS` | 7 | scys 首跑（`--mode first`）窗口（天）；同样可被 `subscriptions.json` 条目 `since_days` 覆盖 |
 | `SCYS_DAILY_LIST_PAGES` | 2 | scys 日常增量每次翻的列表页数（每页 30 条） |
 
 ## 注意事项 / 已知坑
