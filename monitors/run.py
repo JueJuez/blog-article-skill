@@ -89,8 +89,10 @@ DEFAULT_CATEGORY = os.environ.get("MONITOR_DEFAULT_CATEGORY", "投资交易")
 WECHAT_MAX_REFETCH = int(os.environ.get("WECHAT_MAX_REFETCH", "3"))
 # ---- scys（生财有术）日常监控（「跑一下」第三源，2026-08-20 接入） ----
 # 复用 scripts/scys_batch_fetch.py 入口按领域增量抓新帖。窗口默认 7 天而非 1 天：
-# 新帖常在发布数日后才被标精华，窗口太窄会永久漏掉「晚精华」帖；重复抓由其
-# state.json 的 done 列表去重兜底，窗口放大只多翻列表页、不多抓正文。
+# 新帖常在发布数日后才被标精华（互动也要时间发酵），窗口太窄会永久漏掉
+# 「晚精华/晚高互动」帖；重复抓由其 state.json 的 done 列表去重兜底，窗口放大
+# 只多翻列表页、不多抓正文。传 --no-digested-only：精华直通 + 非精华按互动门槛
+# （投锚≥30 或 点赞≥80，阈值在 scys_projects.json）过滤，兼顾官方指南污染问题。
 SCYS_CONFIG_PATH = os.path.join(BASE_DIR, "scripts", "scys_projects.json")
 SCYS_PENDING_PATH = os.path.join(BASE_DIR, "notes", "_scraped", "scys", "pending_summaries.json")
 SCYS_DAILY_WINDOW_DAYS = int(os.environ.get("SCYS_DAILY_WINDOW_DAYS", "7"))
@@ -101,7 +103,8 @@ SCYS_DAILY_LIST_PAGES = int(os.environ.get("SCYS_DAILY_LIST_PAGES", "2"))
 def _scys_daily_cmd(project: str, since_days: int) -> list:
     return [sys.executable, os.path.join(BASE_DIR, "scripts", "scys_batch_fetch.py"),
             "--project", project, "--since-days", str(since_days),
-            "--pages", str(SCYS_DAILY_LIST_PAGES)]
+            "--pages", str(SCYS_DAILY_LIST_PAGES),
+            "--no-digested-only"]
 
 
 def run_scys_daily(entries: list, mode: str = "auto") -> None:

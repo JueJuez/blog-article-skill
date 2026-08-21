@@ -33,7 +33,7 @@
   - 用户口头说「关注 / 订阅 / 监控 XXX」时，**模型应把对应条目写进这个 JSON**，不要手搓抓取代码。
 - **运行**
   - 首跑（回填最近 7 天）：`python monitors/run.py --mode first --apply`
-  - 每日增量：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「跑一次 / 跑一下」等关键词即触发，详见 `RULES.md` §3C）——**含 scys 四领域新帖增量**（2026-08-20 接入：`--apply` 收尾逐领域子进程跑 `scripts/scys_batch_fetch.py`，7 天窗口+精华过滤+done 去重+`.lock` 互斥，CDP 不可用则跳过不影响其他源）
+  - 每日增量：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「跑一次 / 跑一下」等关键词即触发，详见 `RULES.md` §3C）——**含 scys 四领域新帖增量**（2026-08-20 接入：`--apply` 收尾逐领域子进程跑 `scripts/scys_batch_fetch.py`；2026-08-21 起 35 天窗口+精华直通+非精华互动门槛（锚≥30 或 赞≥80，防官方帖污染）+done 去重+`.lock` 互斥，CDP 不可用则跳过不影响其他源）
   - **新会话执行步骤（照做即一帆风顺）**：
     1. 直接运行 `python monitors/run.py --mode auto --apply`。
     2. 公众号 token 失效 → 自动弹二维码（`RELOGIN_QR:` 路径），**本机会话扫码后续期，本次运行即继续抓取公众号**（刷新 token 后重试整轮）；headless/无人看码则本次跳过公众号、B站照跑不受影响。

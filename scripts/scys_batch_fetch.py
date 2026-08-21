@@ -85,10 +85,51 @@ def _release_lock(lock: Path) -> None:
     lock.unlink(missing_ok=True)
 
 
+def filter_todo(items: list[dict], done_ids: set, since_days: int = 0,
+                digested_only: bool = False, min_reading: int = 0,
+                engagement: dict = None) -> list[dict]:
+    """列表过滤链：去重 → 时间窗 → 精华/互动门槛 → 阅读数，返回待抓列表。
+
+    非精华高价值判定（2026-08-21 用户决策）：阅读数会被官方指南/推送帖污染，
+    改用互动组合——投锚 coinCount ≥ engagement["min_coin"] 或点赞 likeCount ≥
+    engagement["min_like"] 任一达标即保留；精华帖直通。engagement=None 时不做
+    互动过滤（保持旧的「非精华全抓」语义）。缺字段按 0 处理（兼容旧快照）。
+    """
+    todo = [it for it in items if str(it["topicId"]) not in done_ids]
+    if since_days > 0:
+        cutoff = time.time() - since_days * 86400
+        before = len(todo)
+        todo = [it for it in todo if (it.get("gmtCreate") or 0) >= cutoff]
+        print(f"[filter] 近 {since_days} 天内：{before} → {len(todo)} 篇")
+    if digested_only:
+        before = len(todo)
+        todo = [it for it in todo if it["isDigested"]]
+        print(f"[filter] 仅精华：{before} → {len(todo)} 篇")
+    elif engagement:
+        before = len(todo)
+        min_coin = engagement.get("min_coin", 0)
+        min_like = engagement.get("min_like", 0)
+
+        def _valuable(it: dict) -> bool:
+            if it["isDigested"]:
+                return True
+            return ((it.get("coinCount") or 0) >= min_coin > 0
+                    or (it.get("likeCount") or 0) >= min_like > 0)
+
+        todo = [it for it in todo if _valuable(it)]
+        print(f"[filter] 精华+非精华互动达标（锚≥{min_coin} 或 赞≥{min_like}）："
+              f"{before} → {len(todo)} 篇")
+    if min_reading > 0:
+        before = len(todo)
+        todo = [it for it in todo if (it.get("readingCount") or 0) >= min_reading]
+        print(f"[filter] 阅读数≥{min_reading}：{before} → {len(todo)} 篇")
+    return todo
+
+
 class ScysBatchFetcher:
     def __init__(self, name: str, menu_id: int, limit: int, pages: int,
                  since_days: int = 0, digested_only: bool = False,
-                 min_reading: int = 0) -> None:
+                 min_reading: int = 0, engagement: dict = None) -> None:
         self.name = name
         self.menu_id = menu_id
         self.limit = limit
@@ -96,6 +137,7 @@ class ScysBatchFetcher:
         self.since_days = since_days
         self.digested_only = digested_only
         self.min_reading = min_reading
+        self.engagement = engagement or {}
         self.state_path = BASE / "state.json"
         self.state: dict = self._load_json(self.state_path, default={})
         self.pending_path = BASE / "pending_summaries.json"
@@ -133,6 +175,9 @@ class ScysBatchFetcher:
                             "isDigested": bool(t.get("isDigested")),
                             "readingCount": t.get("readingCount") or 0,
                             "likeCount": t.get("likeCount") or 0,
+                            "coinCount": t.get("coinCount") or 0,
+                            "commentCount": t.get("commentsCount") or 0,
+                            "favoriteCount": t.get("favoriteCount") or 0,
                             "gmtCreate": t.get("gmtCreate"),
                             "aiSummary": t.get("aiSummaryContent") or "",
                             "articlePreview": t.get("articleContent") or "",
@@ -381,20 +426,10 @@ class ScysBatchFetcher:
                 print(f"[list-only] {self.name}: 共 {len(lst)} 篇，其中精华 {len(dig)} 篇")
                 page.close()
                 return 0
-            todo = [it for it in lst if str(it["topicId"]) not in done_ids]
-            if self.since_days > 0:
-                cutoff = time.time() - self.since_days * 86400
-                before = len(todo)
-                todo = [it for it in todo if (it.get("gmtCreate") or 0) >= cutoff]
-                print(f"[filter] 近 {self.since_days} 天内：{before} → {len(todo)} 篇")
-            if self.digested_only:
-                before = len(todo)
-                todo = [it for it in todo if it["isDigested"]]
-                print(f"[filter] 仅精华：{before} → {len(todo)} 篇")
-            if self.min_reading > 0:
-                before = len(todo)
-                todo = [it for it in todo if (it.get("readingCount") or 0) >= self.min_reading]
-                print(f"[filter] 阅读数≥{self.min_reading}：{before} → {len(todo)} 篇")
+            todo = filter_todo(lst, done_ids, since_days=self.since_days,
+                               digested_only=self.digested_only,
+                               min_reading=self.min_reading,
+                               engagement=self.engagement)
             if self.limit > 0:
                 todo = todo[: self.limit]
             print(f"[run] 本次目标 {len(todo)} 篇（已完成 {len(done_ids)} 篇）")
@@ -421,7 +456,8 @@ class ScysBatchFetcher:
                     "output": r["output"],
                     "external_docs": r["external_docs"], "related": r["related"],
                     "list_meta": {k: it.get(k) for k in
-                                  ("isDigested", "readingCount", "likeCount", "gmtCreate", "aiSummary")},
+                                  ("isDigested", "readingCount", "likeCount", "coinCount",
+                                   "commentCount", "favoriteCount", "gmtCreate", "aiSummary")},
                 })
                 self.pending_path.write_text(
                     json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -474,9 +510,11 @@ def main(argv: list[str]) -> int:
         ap.error("请用 --project 指定项目领域（或 --list-projects 查看可选项）")
 
     pages = 999 if args.pages == 0 else args.pages
+    engagement = {"min_coin": int(defaults.get("nondigested_min_coin", 30)),
+                  "min_like": int(defaults.get("nondigested_min_like", 80))}
     fetcher = ScysBatchFetcher(args.project, projects[args.project], args.limit, pages,
                                since_days=args.since_days, digested_only=args.digested_only,
-                               min_reading=args.min_reading)
+                               min_reading=args.min_reading, engagement=engagement)
     return fetcher.run(list_only=args.list_only)
 
 

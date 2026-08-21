@@ -11,7 +11,10 @@
     "digested_only": true,
     "min_reading": 0,
     "batch_limit": 30,
-    "summary_tags_prefix": "生财有术"
+    "summary_tags_prefix": "生财有术",
+    "_comment_nondigested": "非精华高价值互动门槛（2026-08-21 用户决策：阅读数会被官方指南污染，改用互动组合）。--no-digested-only 时生效：投锚 coinCount≥min_coin 或点赞 likeCount≥min_like 任一达标即抓，精华帖直通。校准依据：自媒体最新页样本精华锚 P50=61/赞 P50=169；阈值约为精华中位的 1/2。换领域觉得抓多/抓少改这两个数。",
+    "nondigested_min_coin": 30,
+    "nondigested_min_like": 80
   },
   "_known_menu_ids": {
     "_comment2": "已捕获但暂未列入 projects 的标签 ID（换领域时把名字:ID 加进 projects 即可）",

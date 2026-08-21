@@ -170,9 +170,11 @@ mklink /J "%LOCALAPPDATA%\Google\Chrome\DebugUDD" "%LOCALAPPDATA%\Google\Chrome\
 | 补齐scys 出海 ｜ 出海+自媒体 | 只跑指定领域（可多个，+号或顿号连接） |
 | 补齐scys 近一年 / 近半年 / 近两年 | `--since-days 365 / 182 / 730` |
 | 补齐scys 全部时间 | `--since-days 0` |
-| 补齐scys 含非精华 / 非精华也要 | `--no-digested-only` |
-| 补齐scys 阅读过万 / 破万也抓 | `--no-digested-only --min-reading 10000` |
+| 补齐scys 含非精华 / 非精华也要 | `--no-digested-only`（非精华按互动门槛过滤，见下） |
+| 补齐scys 阅读过万 / 破万也抓 | `--no-digested-only --min-reading 10000`（阅读门槛叠加在互动门槛之上） |
 | 新领域（配置里没有） | 先按 §7 捕获 menuId → 写进 `scys_projects.json` → 再跑 |
+
+**非精华高价值判定（2026-08-21 用户决策）**：阅读数和点赞都会被官方指南/运营帖污染（全站推送 → 阅读/赞虚高，如「航海报名倒计时」「课程上线通知」赞均过百），**投锚 coinCount 是真金白银的价值投票，判别力最强**。`--no-digested-only` 时：精华帖直通；非精华帖需 **锚 ≥ 30 或 赞 ≥ 80**（阈值在 `scys_projects.json` 的 `nondigested_min_coin/min_like`，校准依据：精华锚 P50=61/赞 P50=169，阈值≈中位一半）。觉得抓多/抓少改配置即可，无需动代码。
 
 **执行闭环（模型每批照做）**：
 1. 后台跑 `D:\App\anaconda3\python.exe -u scripts/scys_batch_fetch.py --project <领域> --limit 30`（断点续传，重复执行幂等，已抓自动跳过）
