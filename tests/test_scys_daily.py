@@ -30,7 +30,7 @@ class TestScysDailyCmd:
         assert "--pages" in cmd
 
     def test_cmd_includes_nondigested_engagement_mode(self):
-        # 2026-08-21：监控也抓高互动非精华新帖（锚≥30 或 赞≥80，精华直通），
+        # 2026-08-21：监控也抓高互动非精华新帖（锚≥30，或 赞≥80且锚≥10，精华直通），
         # 防止「晚精华/高互动答疑帖」永久漏抓
         cmd = run_mod._scys_daily_cmd("出海", 7)
         assert "--no-digested-only" in cmd

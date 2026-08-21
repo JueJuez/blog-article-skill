@@ -109,15 +109,18 @@ def filter_todo(items: list[dict], done_ids: set, since_days: int = 0,
         before = len(todo)
         min_coin = engagement.get("min_coin", 0)
         min_like = engagement.get("min_like", 0)
+        coin_floor = engagement.get("coin_floor", 0)
 
         def _valuable(it: dict) -> bool:
             if it["isDigested"]:
                 return True
-            return ((it.get("coinCount") or 0) >= min_coin > 0
-                    or (it.get("likeCount") or 0) >= min_like > 0)
+            coin = it.get("coinCount") or 0
+            like = it.get("likeCount") or 0
+            return (coin >= min_coin > 0
+                    or (like >= min_like > 0 and coin >= coin_floor))
 
         todo = [it for it in todo if _valuable(it)]
-        print(f"[filter] 精华+非精华互动达标（锚≥{min_coin} 或 赞≥{min_like}）："
+        print(f"[filter] 精华+非精华互动达标（锚≥{min_coin}，或 赞≥{min_like}且锚≥{coin_floor}）："
               f"{before} → {len(todo)} 篇")
     if min_reading > 0:
         before = len(todo)
@@ -511,7 +514,8 @@ def main(argv: list[str]) -> int:
 
     pages = 999 if args.pages == 0 else args.pages
     engagement = {"min_coin": int(defaults.get("nondigested_min_coin", 30)),
-                  "min_like": int(defaults.get("nondigested_min_like", 80))}
+                  "min_like": int(defaults.get("nondigested_min_like", 80)),
+                  "coin_floor": int(defaults.get("nondigested_coin_floor", 10))}
     fetcher = ScysBatchFetcher(args.project, projects[args.project], args.limit, pages,
                                since_days=args.since_days, digested_only=args.digested_only,
                                min_reading=args.min_reading, engagement=engagement)

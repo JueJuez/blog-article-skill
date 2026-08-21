@@ -29,7 +29,7 @@ def _item(tid: str, **kw) -> dict:
     return base
 
 
-ENG = {"min_coin": 30, "min_like": 80}
+ENG = {"min_coin": 30, "min_like": 80, "coin_floor": 10}
 
 
 class TestDigestedPassThrough:
@@ -54,10 +54,17 @@ class TestEngagementThresholds:
         assert [it["topicId"] for it in out] == ["1"]
 
     def test_nondigested_like_meets_threshold_kept(self):
-        items = [_item("1", likeCount=80)]
+        items = [_item("1", likeCount=80, coinCount=10)]
         out = filter_todo(items, set(), 0, digested_only=False,
                           min_reading=0, engagement=ENG)
         assert [it["topicId"] for it in out] == ["1"]
+
+    def test_official_post_high_like_low_coin_filtered(self):
+        # 官方运营帖：赞被推送拉高但没人抛锚 → 滤掉（实测招募/倒计时帖锚 0~6）
+        items = [_item("1", likeCount=343, coinCount=6)]
+        out = filter_todo(items, set(), 0, digested_only=False,
+                          min_reading=0, engagement=ENG)
+        assert out == []
 
     def test_nondigested_below_all_thresholds_filtered(self):
         items = [_item("1", coinCount=29, likeCount=79, commentCount=99)]
