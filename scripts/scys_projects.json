@@ -8,11 +8,11 @@
   },
   "defaults": {
     "since_days": 548,
-    "digested_only": true,
+    "digested_only": false,
     "min_reading": 0,
     "batch_limit": 30,
     "summary_tags_prefix": "生财有术",
-    "_comment_nondigested": "非精华高价值互动门槛（2026-08-21 用户决策：阅读数会被官方指南污染，改用互动组合）。--no-digested-only 时生效：锚≥min_coin，或 赞≥min_like 且锚≥coin_floor（防官方运营帖：官方帖赞虚高但锚个位数，实测招募/报名/倒计时帖锚 0~6）；精华帖直通。校准依据：精华锚 P50=61/赞 P50=169。觉得抓多/抓少改这三个数。",
+    "_comment_nondigested": "非精华高价值互动门槛（2026-08-21 用户决策：阅读数会被官方指南污染，改用互动组合；同日 digested_only=false 设为默认）。digested_only=false 时生效：锚≥min_coin，或 赞≥min_like 且锚≥coin_floor（防官方运营帖：官方帖赞虚高但锚个位数，实测招募/报名/倒计时帖锚 0~6）；精华帖直通。校准依据：精华锚 P50=61/赞 P50=169。觉得抓多/抓少改这三个数。",
     "nondigested_min_coin": 30,
     "nondigested_min_like": 80,
     "nondigested_coin_floor": 10

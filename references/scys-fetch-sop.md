@@ -131,9 +131,9 @@ mklink /J "%LOCALAPPDATA%\Google\Chrome\DebugUDD" "%LOCALAPPDATA%\Google\Chrome\
 
 **入口**：`python scripts/scys_batch_fetch.py --project <项目名> [--limit M]`
 
-- **可抓领域 / menuId 在 `scripts/scys_projects.json` 配置**（不在代码里）：projects（领域名→menuId）+ defaults（since_days=548 一年半 / digested_only=true / batch_limit=30 / min_reading）。**换领域、每半年调整时间窗、改批量大小都只改这个 JSON，脚本零改动。**
+- **可抓领域 / menuId 在 `scripts/scys_projects.json` 配置**（不在代码里）：projects（领域名→menuId）+ defaults（since_days=548 一年半 / digested_only=false 含非精华 / batch_limit=30 / min_reading）。**换领域、每半年调整时间窗、改批量大小都只改这个 JSON，脚本零改动。**
 - 新领域 menuId 捕获方法：tags 页真实点击该标签 → DevTools Network 里 `searchTopic` 请求的 `menuId` 参数（或 `--list-projects` 查看已配置项）
-- 命令行参数可临时覆盖配置：`--since-days` / `--no-digested-only` / `--min-reading` / `--limit`（非精华 P90 补抓：`--no-digested-only --min-reading 11097`）
+- 命令行参数可临时覆盖配置：`--since-days` / `--digested-only`（反向：仅精华）/ `--min-reading` / `--limit`
 - 机制：tags 页真实点击翻页捕获 `searchTopic` 响应（不手搓 API 请求）→ 按 `isDigested`+阅读数排序 → 逐篇 goto 正文页 DOM 抓取
 - 自动处理：站内 `articleDetail` 引用（前情提要）递归抓一层；外部知识库（飞书/语雀等）滚动到底抓全文；登录墙检测
 - **限速（模拟人类）**：篇间随机 15~40s；每 10~15 篇歇 3~8 分钟；翻页间 3~6s；CDP 页面被关自动重试（实测救回过）
@@ -160,7 +160,7 @@ mklink /J "%LOCALAPPDATA%\Google\Chrome\DebugUDD" "%LOCALAPPDATA%\Google\Chrome\
 
 用户说**【补齐scys】**或**【补齐生财有术】** → 模型自动执行批量补齐闭环，不用再问流程。
 
-**默认参数**（未提及即用 `scripts/scys_projects.json` 默认，当前=四领域全跑、一年半、仅精华、每批 30 篇，顺序 AI产品开发→小程序→出海→自媒体）。
+**默认参数**（未提及即用 `scripts/scys_projects.json` 默认，当前=四领域全跑、一年半、精华+高互动非精华、每批 30 篇，顺序 AI产品开发→小程序→出海→自媒体）。
 
 **条件后缀**（自然语言，模型解析成 CLI 参数临时覆盖默认，可任意叠加）：
 
@@ -170,11 +170,11 @@ mklink /J "%LOCALAPPDATA%\Google\Chrome\DebugUDD" "%LOCALAPPDATA%\Google\Chrome\
 | 补齐scys 出海 ｜ 出海+自媒体 | 只跑指定领域（可多个，+号或顿号连接） |
 | 补齐scys 近一年 / 近半年 / 近两年 | `--since-days 365 / 182 / 730` |
 | 补齐scys 全部时间 | `--since-days 0` |
-| 补齐scys 含非精华 / 非精华也要 | `--no-digested-only`（非精华按互动门槛过滤，见下） |
-| 补齐scys 阅读过万 / 破万也抓 | `--no-digested-only --min-reading 10000`（阅读门槛叠加在互动门槛之上） |
+| 补齐scys 仅精华 / 只要精华 | `--digested-only`（反向开关：非精华全不抓） |
+| 补齐scys 阅读过万 / 破万也抓 | `--min-reading 10000`（阅读门槛叠加在互动门槛之上） |
 | 新领域（配置里没有） | 先按 §7 捕获 menuId → 写进 `scys_projects.json` → 再跑 |
 
-**非精华高价值判定（2026-08-21 用户决策）**：阅读数和点赞都会被官方指南/运营帖污染（全站推送 → 阅读/赞虚高，如「航海报名倒计时」「课程上线通知」赞均过百），**投锚 coinCount 是真金白银的价值投票，判别力最强**。`--no-digested-only` 时：精华帖直通；非精华帖需 **锚 ≥ 30，或 赞 ≥ 80 且 锚 ≥ 10**（`coin_floor` 锚下限防官方帖：实测招募/报名/倒计时帖赞 288~343 但锚仅 0~6，没人抛锚的「高赞」就是推送灌出来的）。阈值在 `scys_projects.json` 的 `nondigested_min_coin/min_like/coin_floor`，校准依据：精华锚 P50=61/赞 P50=169，阈值≈中位一半。觉得抓多/抓少改配置即可，无需动代码。
+**非精华高价值判定（2026-08-21 用户决策，同日改为默认）**：阅读数和点赞都会被官方指南/运营帖污染（全站推送 → 阅读/赞虚高，如「航海报名倒计时」「课程上线通知」赞均过百），**投锚 coinCount 是真金白银的价值投票，判别力最强**。默认模式（`digested_only=false`）下：精华帖直通；非精华帖需 **锚 ≥ 30，或 赞 ≥ 80 且 锚 ≥ 10**（`coin_floor` 锚下限防官方帖：实测招募/报名/倒计时帖赞 288~343 但锚仅 0~6，没人抛锚的「高赞」就是推送灌出来的）。阈值在 `scys_projects.json` 的 `nondigested_min_coin/min_like/coin_floor`，校准依据：精华锚 P50=61/赞 P50=169，阈值≈中位一半。觉得抓多/抓少改配置即可，无需动代码。
 
 **执行闭环（模型每批照做）**：
 1. 后台跑 `D:\App\anaconda3\python.exe -u scripts/scys_batch_fetch.py --project <领域> --limit 30`（断点续传，重复执行幂等，已抓自动跳过）

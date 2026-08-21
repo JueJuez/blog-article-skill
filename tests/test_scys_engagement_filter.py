@@ -87,6 +87,24 @@ class TestEngagementThresholds:
         assert len(out) == 2
 
 
+class TestConfigDefaults:
+    def test_default_includes_nondigested(self):
+        # 2026-08-21 用户决策：说「补齐scys/跑一下」默认 = 精华 + 高互动非精华，
+        # 不再默认仅精华。此测试守住配置防回归。
+        import json
+        cfg = json.loads((BASE_DIR / "scripts" / "scys_projects.json")
+                         .read_text(encoding="utf-8"))
+        assert cfg["defaults"]["digested_only"] is False
+
+    def test_default_engagement_thresholds_present(self):
+        import json
+        cfg = json.loads((BASE_DIR / "scripts" / "scys_projects.json")
+                         .read_text(encoding="utf-8"))
+        d = cfg["defaults"]
+        for k in ("nondigested_min_coin", "nondigested_min_like", "nondigested_coin_floor"):
+            assert isinstance(d[k], int) and d[k] > 0
+
+
 class TestLegacyCompatibility:
     def test_missing_engagement_fields_treated_as_zero(self):
         # 旧列表快照没有 coin/comment 字段 → 按 0 处理不崩
