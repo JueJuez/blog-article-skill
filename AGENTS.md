@@ -40,7 +40,7 @@
     3. 发现 → 抓正文 → 进 `pending_summaries.json` 队列（FORCE_AGENT_MODE 下不自动总结）；系列课降级进 `pending_series.json` 队列；scys 新帖进 `notes/_scraped/scys/pending_summaries.json` 队列。
     4. 运行结束后，本会话（执行模型）**必须**在本次会议内闭环两类待总结队列（全自动，无需用户手动命令）：
        - **单篇**：读 `pending_summaries.json`，派**子 Agent** 按模板总结并 `save_summary_only` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，详见 `RULES.md` §3.0）。
-       - **scys**：读 `notes/_scraped/scys/pending_summaries.json`，派**子 Agent** 按 `references/scys-fetch-sop.md` §9 语义总结并落飞书（folder=生财有术/<领域>）→ 出队。
+       - **scys**：读 `notes/_scraped/scys/pending_summaries.json`，派**子 Agent** 按 `references/scys-fetch-sop.md` §9 语义总结并落飞书（folder=生财有术/<领域>）-> 出队。⚠️ 子 Agent **必须走正规入口**：先调 `get_note_prompt.py` 获取分类器自动选定的模板 prompt（含 `QUALITY_GATE_SELFCHECK` 质量自检闸门），按该模板总结。**不要全部用 structured 模板**（2026-08-22 分类修复，详见 `docs/decisions/DECISION-20260821-scys-classification-fix.md`）。
        - **系列课**：读 `pending_series.json`，对每个系列按 `notes/<系列名>/*_raw.md` 分片派**子 Agent** 总结成 `.body.md`，再跑 `python monitors/apply_pending_series.py` 落地（run.py 末尾已自动触发一次落地，body 存在时直接落；此处是为「刚总结出的新 body」补一遍落地）。系列课**只落飞书**，除非用户明确要双写/只写 Obsidian。
        - ⚠️ 系列课增量语义：每日重跑时，`videos.main` 已按 `monitors/series_state.json` 去重，**只把未总结的集**写入 raw 并排队；UP 更新后自动只抓新增集，已总结的旧集不会重复总结/落盘。
     5. 末尾看健康度行（视频/动态/文章/跳过/限流待重试/错误）确认是否异常。

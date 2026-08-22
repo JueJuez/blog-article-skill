@@ -7,7 +7,7 @@
     "小程序": 7916782
   },
   "defaults": {
-    "since_days": 548,
+    "since_days": 182,
     "digested_only": false,
     "min_reading": 0,
     "batch_limit": 30,

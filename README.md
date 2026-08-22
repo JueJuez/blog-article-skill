@@ -7,7 +7,7 @@
 ### 文章模块（articles）
 - **增强抓取（A1）**：trafilatura（主力）+ readability-lxml（次选）+ 原 bs4 兜底三层提取，自动剥离导航/广告，保留 sina/baijiahao/og:title 标题特例
 - **增量去重（A2）**：按规范化 URL（或正文 hash）持久化索引，重复链接/原文自动跳过，避免重复消耗 token
-- **自适应总结**：内置 `prompts` 模板注册表，支持结构化复盘 / 要点提炼 / 案例拆解 / 观点卡等多种笔记形态，未指定时按标题自动分类
+- **自适应总结**：内置 `prompts` 模板注册表，支持 **7 种笔记形态**：结构化复盘(structured) / 要点提炼(key_points) / 案例拆解(case) / 观点卡(opinion) / 访谈笔记(interview) / 盘点横评(roundup) / 读书笔记(reading)，未指定时按标题+正文自动分类
 - **标签建议（A5）**：未指定 tags 时由笔记类型 + 内容关键词自动生成默认标签
 - **Provider 健壮性（A4）**：限流/瞬错自动重试 + 指数退避；总结返回 token 用量并写入笔记 frontmatter
 - **批量目录（A3）**：`--batch <dir>` 对目录下所有 `.md/.txt` 原文逐篇总结
@@ -404,6 +404,7 @@ blog-article-skill/
 │   ├── test_templates.py
 │   ├── test_sub_monitor.py
 │   ├── test_note_quality.py
+│   ├── test_scys_classification.py  # scys boilerplate 污染修复回归（2026-08-22）
 │   ├── test_wechat_relogin_fallback.py
 │   └── test_asr_fallback.py  # ASR 兜底：环境自动处理 / 转写缓存 / 防御性删除（无需联网/模型）
 ├── transcripts/             # ASR 转写缓存（<id>.md，可重生成，被 gitignore）

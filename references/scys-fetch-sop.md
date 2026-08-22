@@ -139,7 +139,7 @@ mklink /J "%LOCALAPPDATA%\Google\Chrome\DebugUDD" "%LOCALAPPDATA%\Google\Chrome\
 - **限速（模拟人类）**：篇间随机 15~40s；每 10~15 篇歇 3~8 分钟；翻页间 3~6s；CDP 页面被关自动重试（实测救回过）
 - 断点续传：`notes/_scraped/scys/state.json`；中断重跑自动跳过已抓（关机/杀进程都不丢进度）
 - 产物：原文 `notes/_scraped/scys/<topicId>.md`；队列 `pending_summaries.json`（总结后标 `summarized:true` 防重复落飞书）
-- 总结落盘：子 Agent 读原文 → 按 `CONTENT_SUMMARY_PROMPT` 总结 → `python articles/_save_summary.py <md> --url ... --tags "生财有术,<项目>" --title ...`（默认飞书）
+- 总结落盘：子 Agent 读原文 -> **走正规入口获取分类器选定的模板**（`python get_note_prompt.py <raw> <title> --ext <ext_files>` 输出 note_type + prompt_file）-> 按 prompt（含 `QUALITY_GATE_SELFCHECK` 质量自检闸门）总结 -> `python articles/_save_summary.py <md> --url ... --tags "生财有术,<项目>" --title ...`（默认飞书）。⚠️ **不要全部用 structured 模板**：分类器会按内容自动选 structured/interview/opinion/case/roundup/key_points/reading 七种模板。
 - 已知限制：飞书 **PDF 预览型**文档文字在 canvas 里抓不到（落盘文件头有页码碎片），此类需下载 PDF 另行处理；文字型 wiki 滚动方案有效
 - python 环境：用 `D:\App\anaconda3\python.exe`（系统 python 无 playwright）
 
@@ -178,10 +178,12 @@ mklink /J "%LOCALAPPDATA%\Google\Chrome\DebugUDD" "%LOCALAPPDATA%\Google\Chrome\
 
 **执行闭环（模型每批照做）**：
 1. 后台跑 `D:\App\anaconda3\python.exe -u scripts/scys_batch_fetch.py --project <领域> --limit 30`（断点续传，重复执行幂等，已抓自动跳过）
-2. 每批完成 → 派**子 Agent**（>3 篇必须拆子 Agent）总结落飞书（tags=`生财有术,<领域>`，入口 `articles/_save_summary.py`，详见 §7 总结落盘段）
+2. 每批完成 -> 派**子 Agent**（>3 篇必须拆子 Agent）总结落飞书（tags=`生财有术,<领域>`，入口 `articles/_save_summary.py`，详见 §7 总结落盘段）。⚠️ 子 Agent **必须走正规入口**：先调 `get_note_prompt.py` 获取分类器自动选定的模板 prompt（含 `QUALITY_GATE_SELFCHECK`），按该模板总结。**不要全部用 structured 模板**。
 3. 总结完把 `pending_summaries.json` 对应条目标 `summarized:true`（防重复落飞书）
 4. 向用户汇报累计/剩余进度，然后启动下一批
 
 **半年重抓**：直接说「补齐scys」即可——`state.json` 断点续传自动只抓上次之后的新帖/漏帖；要扩时间窗加时间后缀（如「补齐scys 近两年」）。
 
 **首轮补齐完成记录（2026-08-21）**：四领域 180 篇全部抓取+总结落飞书（生财有术/<领域> 容器），队列 180/180 出队。飞书外链问题帖的用户决策（勿再追问）：**PDF 预览型 1 篇与 404 一篇不抓**；截断 wiki 中仅 2 篇用 `feishu_ext_refetch.py` 补全（小红书虚拟店铺 SOP、YouTube 150万订阅复盘，飞书存「（完整版）」笔记），其余截断篇用户已看过/不需要。
+
+**分类修复记录（2026-08-22）**：发现 scys boilerplate「AI问答」导致分类器将全部 309 篇误判为 interview（子 Agent 首轮全用了 structured 模板）。修复方案：从 INTERVIEW_KEYWORDS 移除「问答」、从 KEY_POINTS_KEYWORDS 移除「分享」（均因过于泛化）。修正后 65 篇应为非 structured 模板（case 17/opinion 16/key_points 15/interview 10/roundup 6/reading 1），已删除飞书旧节点并按正确模板重新总结落盘。子 Agent 改为走正规入口（`get_note_prompt.py` 获取分类器选定的模板 + `QUALITY_GATE_SELFCHECK` 质量自检闸门）。回归测试：`tests/test_scys_classification.py`（8 新 + 38 旧全通过）。详见 `docs/decisions/DECISION-20260821-scys-classification-fix.md`。
