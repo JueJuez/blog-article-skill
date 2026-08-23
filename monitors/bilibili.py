@@ -200,15 +200,15 @@ def _req_headers(uid: str, dynamic: bool = False) -> Dict:
     }
 
 
-def _fetch_vlist(uid: str, ps: int = 10, max_retry: int = 2) -> List[Dict]:
-    """返回视频 vlist；失败（风控/不可见/网络）时优雅返回 [] 并打印调试信息，不中断其他 UP。"""
+def _fetch_vlist_page(uid: str, pn: int, ps: int, max_retry: int = 2):
+    """返回单页视频 vlist；失败返回 ([], err_msg)。不可见(-404/-403)返回 ([], None) 表示停止分页。"""
     last_err = None
     last_resp = None
     for attempt in range(max_retry + 1):
         try:
             s = _get_session()
             p = _Wbi.sign({
-                "mid": uid, "ps": ps, "pn": 1, "order": "pubdate",
+                "mid": uid, "ps": ps, "pn": pn, "order": "pubdate",
                 "web_location": "333.1387", "order_avoided": 1,
             })
             url = f"{_BILI}/x/space/wbi/arc/search?" + urllib.parse.urlencode(p)
@@ -222,17 +222,17 @@ def _fetch_vlist(uid: str, ps: int = 10, max_retry: int = 2) -> List[Dict]:
                 time.sleep(_RETRY_BACKOFF * (attempt + 1))
                 continue
             if j.get("code") == 0:
-                return j.get("data", {}).get("list", {}).get("vlist", [])
+                return j.get("data", {}).get("list", {}).get("vlist", []), None
             code = j.get("code")
             last_err = f"code={code} msg={j.get('message')}"
             if code in (-404, -403):
                 # 稿件不可见/无权限（粉丝可见等）：直接跳过，重试无意义
                 print(f"[bili-skip] uid={uid} 视频不可见(code={code})，跳过", file=sys.stderr)
-                return []
+                return [], None
             if code == -352:
                 time.sleep(_RETRY_BACKOFF * (attempt + 1))
                 continue
-            return []
+            return [], last_err
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
             time.sleep(_RETRY_BACKOFF * (attempt + 1))
@@ -242,7 +242,32 @@ def _fetch_vlist(uid: str, ps: int = 10, max_retry: int = 2) -> List[Dict]:
               f"status={last_resp.status_code} body={last_resp.text[:300]!r}", file=sys.stderr)
     else:
         print(f"[bili-fail] uid={uid} 视频拉取失败: {last_err}", file=sys.stderr)
-    return []
+    return [], last_err
+
+
+def _fetch_vlist(uid: str, ps: int = 10, max_retry: int = 2, paginate: bool = False) -> List[Dict]:
+    """返回视频 vlist。paginate=True 时翻页直到空页/不足一页（用于「抓全部视频」）。
+
+    失败处理：单页失败且非不可见 → 返回 ([], err)；首页即失败向上返回 []（不影响其他 UP），
+    后续页失败则保留已累积部分并停止分页。正常单页路径（paginate=False）行为与原实现一致。
+    """
+    out: List[Dict] = []
+    pn = 1
+    while True:
+        page, err = _fetch_vlist_page(uid, pn, ps, max_retry)
+        if not page:
+            if pn == 1:
+                # 首页失败/为空：向上返回空（与旧行为一致，不影响其他 UP）
+                return []
+            break
+        out.extend(page)
+        if not paginate:
+            break
+        if len(page) < ps:
+            break
+        pn += 1
+        time.sleep(_INTRA_GAP)
+    return out
 
 
 def _normalize_dynamics(items: List[Dict]) -> List[Dict]:
@@ -359,10 +384,15 @@ def _fetch_dynamics(uid: str, ps: int = 10, max_retry: int = 2) -> List[Dict]:
 
 
 class BilibiliSource:
-    def __init__(self, uid: str, types: Optional[List[str]] = None):
+    def __init__(self, uid: str, types: Optional[List[str]] = None,
+                 all_videos: bool = False, window_days: Optional[float] = None):
         self.uid = str(uid)
         # 默认同时抓视频和动态
         self.types = types or ["video", "dynamic"]
+        # all_videos：抓该 UP 全部视频（超大窗口 + 翻页 + 取消安全上限），用于「抓所有视频」
+        self.all_videos = bool(all_videos)
+        # window_days：每源自定义时间窗口（天），覆盖首跑/每日窗口；None=走默认逻辑
+        self.window_days = window_days
 
     def source_key(self) -> str:
         return f"bilibili:{self.uid}"
@@ -375,8 +405,17 @@ class BilibiliSource:
 
         # 时间窗口（替代纯 count cap）：首跑回填窗口大（默认 7 天），每日增量窗口小（默认 1 天）。
         # 只处理窗口内发布的 content，不论条数——抓取条数多少不影响风控，频率（请求次数）才影响。
+        # 每源覆盖：all_videos=True → 超大窗口抓全站历史；window_days 显式指定 → 用该值。
         is_first = (mode == "first") or (mode == "auto" and not seen)
-        if is_first:
+        # all_videos 仅「首次运行」生效（用户语义：本次添加监控后的首次跑抓全部；
+        # 后续跑回退正常频率）。seen 在首跑后填充，is_first 自然变 False，无需手动清 flag。
+        all_videos_this_run = bool(self.all_videos) and is_first
+        if all_videos_this_run:
+            # 「抓所有视频」：窗口拉到 ~10 年，等效不按时间过滤；配合 paginate 翻全部分页。
+            win_days = float(os.environ.get("BILI_ALL_VIDEOS_DAYS", "3650"))
+        elif self.window_days is not None:
+            win_days = float(self.window_days)
+        elif is_first:
             win_days = _BILI_FIRST_WINDOW_DAYS
         else:
             # 自动补齐：距上次成功运行超过每日窗口时，按 gap 拉长窗口，抓回中间漏掉的内容；
@@ -386,10 +425,14 @@ class BilibiliSource:
             win_days = effective_window_days(_BILI_DAILY_WINDOW_DAYS, last_check, max_win)
         cutoff = int(time.time()) - int(win_days * 86400)
         # 每类型安全上限（防极端 UP 单窗口发几百条刷爆笔记）；正常情况下窗口+单页上限已约束。
-        cap = min(int(first_run_limit), _BILI_SAFETY_CAP)
+        # all_videos 时取消上限（用户明确要全量，且仅首跑生效），否则取 first_run_limit 与 _BILI_SAFETY_CAP 的较小值。
+        if all_videos_this_run:
+            cap = int(os.environ.get("BILI_ALL_VIDEOS_CAP", "100000"))
+        else:
+            cap = min(int(first_run_limit), _BILI_SAFETY_CAP)
 
         if "video" in self.types:
-            for v in _fetch_vlist(self.uid, ps=_BILI_PAGE_SIZE):
+            for v in _fetch_vlist(self.uid, ps=_BILI_PAGE_SIZE, paginate=all_videos_this_run):
                 bvid = v.get("bvid")
                 if not bvid or bvid in fetched_ids:
                     continue

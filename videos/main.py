@@ -179,7 +179,7 @@ def _local_write_enabled() -> bool:
 
 def _save_series_note(content: str, series_dir: str, base_name: str,
                       author: str, url: str, tags: list, note_type: str,
-                      obsidian: bool = False) -> str:
+                      obsidian: bool = False, folder: str = "") -> str:
     """把单集总结笔记同步到所有已配置输出（Obsidian / 飞书等）。
 
     满足用户需求：系列课先建一个「系列名」容器（Obsidian=同名子文件夹；
@@ -187,6 +187,9 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
     - 本地 notes/<系列名>/<第XX集_标题>.md：仅当没有配置 obsidian/飞书时才落盘
       （用户偏好：有云同步就不写本地）
     - 各外部输出：<容器>/<第XX集_标题>.md（自动建容器，非致命，失败仅告警）
+
+    folder：统一路由器算出的归档路径（如「【监控】/B站/价投小猪仔」）。传入时，
+    系列容器不再挂飞书根，而是挂在该 folder 节点下（【监控】/B站/<UP>/<系列>）。
 
     Returns 本地绝对路径（有云时不写本地，返回预期路径字符串）。
     """
@@ -203,12 +206,24 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
 
     # 同步到所有已配置输出（Obsidian / 飞书等）：每个输出下先建「系列名」容器再放笔记
     try:
-        series_folder = os.path.basename(series_dir)  # 如 "千刀千法"
+        series_title = os.path.basename(series_dir)  # 如 "千刀千法"
         mgr = articles_main.OutputManager(obsidian=obsidian)
         for out in mgr.get_available_outputs():
             try:
-                if out.save_series(formatted, filename, series_folder):
-                    print(f"   🔗 已同步 {out.name}：{series_folder}/{filename}")
+                if folder:
+                    # 归到统一路由器算出的节点（如 【监控】/B站/价投小猪仔/<系列>）
+                    dirs = [d for d in folder.split("/") if d]
+                    up_tok = out.ensure_folder_path(dirs)
+                    ser_tok = out.ensure_series_node(series_title, parent_token=up_tok) if up_tok else ""
+                    if ser_tok:
+                        ok = out.save(formatted, filename, parent_token=ser_tok)
+                    else:
+                        ok = False
+                        print(f"   ⚠️ {out.name} 上级节点创建失败，跳过：{folder}")
+                else:
+                    ok = out.save_series(formatted, filename, series_title)
+                if ok:
+                    print(f"   🔗 已同步 {out.name}：{(folder or series_title)}/{filename}")
             except Exception as e:
                 print(f"   ⚠️ {out.name} 同步跳过（非致命）：{e}")
     except Exception as e:
@@ -249,18 +264,23 @@ def _extract_one_liner(md: str) -> str:
     return ""
 
 
-def _read_series_from_feishu(series_title: str) -> list:
+def _read_series_from_feishu(series_title: str, parent_token: str = None) -> list:
     """从飞书「系列名」容器读回各集（云真值），抽取 集号 / H1 / 一句话核心结论。
 
     仅在本地不落盘时调用（用户偏好：有云同步就不写本地，
     总览改从云读，避免依赖本地未落盘的旧稿）。
+    parent_token：**系列容器本身的 node_token**（调用方已通过 ensure_series_node 解析过）。
+    ⚠️ 2026-08-23 修复：不再在此函数内再调 ensure_series_node——否则会在容器内
+    又建一个同名子容器（因为容器下是集节点、没有同名容器→ensure 误判不存在→新建）。
+    无 parent_token 时回退旧逻辑（ensure_series_node 从根找），仅向后兼容。
     Returns list of (page, h1, one_liner, note_link)。
     """
     from articles.feishu import FeishuOutput
     f = FeishuOutput()
     if not f.is_available():
         return []
-    ctok = f.ensure_series_node(series_title)
+    # parent_token 已是容器 token 时直接用；否则回退旧逻辑（从根/默认父找容器）
+    ctok = parent_token or f.ensure_series_node(series_title)
     if not ctok:
         return []
     res = f._run_cli_command(["wiki", "+node-list", "--parent-node-token", ctok,
@@ -327,7 +347,7 @@ def _render_series_overview(series_title: str, url: str, rows: list, learning_pa
 
 
 def _generate_series_overview(series_title: str, series_dir: str, url: str,
-                              obsidian: bool = False) -> str:
+                              obsidian: bool = False, folder: str = "") -> str:
     """系列课总览大纲：抽取各集 标题 + 一句话核心结论，生成 00_系列总览.md。
 
     用户规则：系列课总结必生成总览。
@@ -335,9 +355,12 @@ def _generate_series_overview(series_title: str, series_dir: str, url: str,
     - 有云同步（Obsidian/飞书）不写本地时：从飞书容器读回（云真值），
       避免依赖本地未落盘的旧稿。
 
+    folder：统一路由器算出的归档路径（如「【监控】/B站/价投小猪仔」）。传入时，
+    总览与系列容器同挂在该 folder 节点下，与单集落点一致。
     总览本身同步到所有已配置输出（Obsidian/飞书），本地仅当无云时落盘。
     Returns 本地绝对路径（无云时为 None）。
     """
+    series_title_base = os.path.basename(series_dir)
     # 本地不落盘（有云同步）时，从飞书容器读回各集（云真值）；否则读本地
     if _local_write_enabled():
         ep_files = sorted(
@@ -364,9 +387,22 @@ def _generate_series_overview(series_title: str, series_dir: str, url: str,
             rows.append((page, title, one, note_link))
     else:
         # 有云同步：从飞书「系列名」容器读回（避免依赖本地未落盘的旧稿）
-        rows = _read_series_from_feishu(series_title)
+        # 监控系列需把系列容器定位到 UP 节点下，故先算 parent_token
+        # 关键：folder 解析失败时【绝不回退到飞书根】建节点（会造出双份/根副本），
+        # 直接跳过读回，由后续写分支同样跳过。
+        _parent_tok = None
+        if folder:
+            from articles.feishu import FeishuOutput
+            _f = FeishuOutput()
+            if _f.is_available():
+                _up = _f.ensure_folder_path([d for d in folder.split("/") if d])
+                _parent_tok = _f.ensure_series_node(series_title_base, parent_token=_up) if _up else None
+        if _parent_tok:
+            rows = _read_series_from_feishu(series_title_base, parent_token=_parent_tok)
+        else:
+            rows = []
         if not rows:
-            print("   ⚠️ 飞书未读到子节点，总览跳过（非致命）")
+            print("   ⚠️ 飞书未读到子节点（或 folder 未解析），总览跳过（非致命）")
             return None
     rows.sort(key=lambda r: r[0])
 
@@ -403,12 +439,18 @@ def _generate_series_overview(series_title: str, series_dir: str, url: str,
 
     # 同步到所有已配置输出（Obsidian / 飞书等，非致命）
     try:
-        series_folder = os.path.basename(series_dir)
         mgr = articles_main.OutputManager(obsidian=obsidian)
         for out in mgr.get_available_outputs():
             try:
-                if out.save_series(content, overview_name, series_folder):
-                    print(f"   🔗 已同步 {out.name} 总览：{series_folder}/{overview_name}")
+                if folder:
+                    dirs = [d for d in folder.split("/") if d]
+                    up_tok = out.ensure_folder_path(dirs)
+                    ser_tok = out.ensure_series_node(series_title_base, parent_token=up_tok) if up_tok else None
+                    ok = out.save(content, overview_name, parent_token=ser_tok) if ser_tok else False
+                else:
+                    ok = out.save_series(content, overview_name, series_title_base)
+                if ok:
+                    print(f"   🔗 已同步 {out.name} 总览：{(folder or series_title_base)}/{overview_name}")
             except Exception as e:
                 print(f"   ⚠️ {out.name} 总览同步跳过（非致命）：{e}")
     except Exception as e:

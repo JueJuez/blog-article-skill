@@ -37,6 +37,7 @@ load_dotenv(os.path.join(ROOT, ".env"))
 
 import articles.main as articles_main
 from videos.main import _save_series_note, _generate_series_overview, _NOTE_TYPE_TAG, _sanitize_filename
+from shared.routing import resolve_folder
 from shared import series_state
 from shared import series_manifest as sm
 from shared import series_naming as sn
@@ -46,14 +47,18 @@ PENDING_SERIES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "
 NOTES_DIR = articles_main.NOTES_DIR
 
 
-def _delete_feishu_node(series_title: str, base: str):
-    """--regenerate：删除飞书系列容器下与 base 同名的旧节点，避免重复。"""
+def _delete_feishu_node(series_title: str, base: str, parent_token: str = None):
+    """--regenerate：删除飞书系列容器下与 base 同名的旧节点，避免重复。
+
+    parent_token：系列容器父节点（监控系列传 UP 节点 token，与 save 一致）；
+    不传则回退根容器（旧行为，勿用于监控系列，否则删不到正确节点）。
+    """
     try:
         from articles.feishu import FeishuOutput
         f = FeishuOutput()
         if not f.is_available():
             return
-        parent = f.ensure_series_node(series_title)
+        parent = f.ensure_series_node(series_title, parent_token=parent_token)
         if not parent:
             return
         for node in f.list_children(parent):
@@ -111,14 +116,18 @@ def _candidate_bodies(series_dir: str, manifest: "sm.SeriesManifest") -> list:
     return cands
 
 
-def _verify_in_feishu(series_title: str, base: str) -> bool:
-    """回读飞书确认节点存在（优化 B 删除门禁的依赖）。"""
+def _verify_in_feishu(series_title: str, base: str, parent_token: str = None) -> bool:
+    """回读飞书确认节点存在（优化 B 删除门禁的依赖）。
+
+    parent_token：系列容器父节点（监控系列传 UP 节点 token，与 save 一致）；
+    不传则回退根容器（旧行为，勿用于监控系列，否则查不到正确节点）。
+    """
     try:
         from articles.feishu import FeishuOutput
         f = FeishuOutput()
         if not f.is_available():
             return False
-        parent = f.ensure_series_node(series_title)
+        parent = f.ensure_series_node(series_title, parent_token=parent_token)
         if not parent:
             return False
         return f._verify_node_present(parent, os.path.splitext(base)[0])
@@ -157,7 +166,23 @@ def drain_series_pending(obsidian: bool = False, regenerate: bool = False,
         series_dir = s.get("series_dir") or os.path.join(NOTES_DIR, _sanitize_filename(series_title))
         url = s.get("url", "")
         author = s.get("author", "")
-        print(f"\n📚 系列「{series_title}」")
+        # 统一路由器：监控系列归到 【监控】/<平台>/<作者>/<系列>
+        full_folder = resolve_folder({"author": author, "series": series_title,
+                                       "source": "monitor_series", "platform": "bilibili"})
+        # 系列容器由 ensure_series_node(series_title) 单独建；folder 只需到「账号」层级，
+        # 不能再含系列名（否则 ensure_folder_path 会把系列名当目录再建一层，
+        # 造成 【账号】/<系列>/<系列> 嵌套/重复容器，见 2026-08-23 双建 bug）。
+        folder = full_folder.rsplit("/", 1)[0] if "/" in full_folder else full_folder
+        print(f"\n📚 系列「{series_title}」  →  账号落点 {folder}（系列容器另行建）")
+
+        # 由 folder 推导出「系列容器父节点 token」（UP 节点），供 verify/regenerate/对账
+        # 与 save 路径（_save_series_note 内 ensure_folder_path）保持一致，杜绝发散路径。
+        _up_tok = None
+        if folder:
+            from articles.feishu import FeishuOutput
+            _f = FeishuOutput()
+            if _f.is_available():
+                _up_tok = _f.ensure_folder_path([d for d in folder.split("/") if d])
 
         # 命名自愈（优化 E）
         fixed = _fix_stray_naming(series_dir)
@@ -165,8 +190,9 @@ def drain_series_pending(obsidian: bool = False, regenerate: bool = False,
             print(f"   🔧 纠正了 {fixed} 个命名错误")
 
         # 加载/对账 manifest（优化 A：磁盘+飞书自愈，取代「文件存在即续跑」）
+        # 传入 parent_token 让飞书对账在「正确的 UP 节点容器」里找，而非根容器。
         m = sm.load_or_init(series_title, url=url, author=author,
-                            notes_dir=NOTES_DIR, reconcile=True)
+                            notes_dir=NOTES_DIR, reconcile=True, parent_token=_up_tok)
         print(f"   {m.summary_line()}")
 
         progress_log = os.path.join(series_dir, ".series_progress.log")
@@ -191,13 +217,15 @@ def drain_series_pending(obsidian: bool = False, regenerate: bool = False,
                 note_type = "structured"
                 tags = [series_title, _NOTE_TYPE_TAG.get(note_type, "视频笔记")]
                 if regenerate:
-                    _delete_feishu_node(series_title, base)
+                    _delete_feishu_node(series_title, base, parent_token=_up_tok)
                 try:
-                    _save_series_note(body, series_dir, base, author, url, tags, note_type, obsidian=obsidian)
+                    _save_series_note(body, series_dir, base, author, url, tags, note_type,
+                                     obsidian=obsidian, folder=folder)
                     m.set_state(page, sm.LANDED)
                     series_state.mark_done(series_title, base, url=url, author=author)  # monitors 增量去重兼容
                     # 飞书回读校验 → verified（优化 B 删除门禁的前置条件）
-                    verified = _verify_in_feishu(series_title, base)
+                    # 传入 parent_token 让校验在正确的 UP 节点容器里找，而非根容器。
+                    verified = _verify_in_feishu(series_title, base, parent_token=_up_tok)
                     if verified:
                         m.set_state(page, sm.VERIFIED)
                     landed += 1
@@ -221,11 +249,13 @@ def drain_series_pending(obsidian: bool = False, regenerate: bool = False,
                             os.path.join(series_dir, f), NOTES_DIR))
 
         # 总览重生成（从飞书读回，upsert 不重复）
-        try:
-            _generate_series_overview(series_title, series_dir, url, obsidian=obsidian)
-            print(f"  🧭 系列总览已重生成")
-        except Exception as e:
-            print(f"  ⚠️ 总览重生成失败（非致命）：{e}")
+        # 守卫：仅当存在待落盘候选（有 body）时才建容器/总览，避免空系列在飞书建出空容器节点。
+        if cands:
+            try:
+                _generate_series_overview(series_title, series_dir, url, obsidian=obsidian, folder=folder)
+                print(f"  🧭 系列总览已重生成")
+            except Exception as e:
+                print(f"  ⚠️ 总览重生成失败（非致命）：{e}")
 
         # --cleanup：仅删 verified 的本地源（优化 B）
         cleaned = 0

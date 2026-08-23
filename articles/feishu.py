@@ -316,15 +316,18 @@ class FeishuOutput(BaseOutput):
         except Exception:
             return True
 
-    def ensure_series_node(self, series_title: str) -> str:
+    def ensure_series_node(self, series_title: str, parent_token: str = None) -> str:
         """确保「系列名」容器节点存在于父节点下，返回其 node_token（已存在则复用）。
 
         飞书 wiki 没有独立 folder 类型，容器即一个有子节点的 docx 节点，
         与用户需求「先生成一个文件叫<系列名>，下面才是课程内容」一致。
+
+        parent_token：显式父节点（如统一路由器算出的「【监控】/B站/<UP>」节点 token）。
+        不传则回退 wiki_parent_node（旧行为：系列挂在根下）。
         """
         if not self.is_available():
             return ""
-        parent = self.wiki_parent_node
+        parent = parent_token or self.wiki_parent_node
         space = self.wiki_space
         cache_key = f"{space}|{parent}|{series_title}"
         if cache_key in FeishuOutput._series_node_cache:
@@ -369,11 +372,16 @@ class FeishuOutput(BaseOutput):
             print(f"   ⚠️ 建飞书容器节点异常：{e}")
         return ""
 
-    def save_series(self, content: str, filename: str, series_title: str) -> bool:
-        """系列课保存：先确保父节点下有「系列名」容器，再在其下建文档。"""
+    def save_series(self, content: str, filename: str, series_title: str,
+                     parent_token: str = None) -> bool:
+        """系列课保存：先确保父节点下有「系列名」容器，再在其下建文档。
+
+        parent_token：系列容器挂到哪个节点下（默认根；监控系列应传 UP 节点 token，
+        使【监控】/B站/<UP>/<系列> 结构成立）。
+        """
         if not self.is_available():
             return False
-        parent = self.ensure_series_node(series_title)
+        parent = self.ensure_series_node(series_title, parent_token=parent_token)
         if not parent:
             return False
         return self.save(content, filename, parent_token=parent)

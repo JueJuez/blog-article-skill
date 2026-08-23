@@ -168,10 +168,20 @@ def _save_json(path: str, data) -> None:
 
 
 def _item_folder(it: dict) -> str:
-    """按「分类/账号名」生成归档子目录，如「投资交易/舟亦横」。"""
-    category = it.get("category") or DEFAULT_CATEGORY
-    name = it.get("sub_name") or it.get("mp_name") or ""
-    return f"{category}/{name}" if name else category
+    """统一路由器：监控内容归档到 【监控】/<平台>/<账号名>（或系列课子节点）。
+
+    单一真相源见 shared/routing.resolve_folder；不再用旧的「分类/账号」扁平路径。
+    """
+    from shared.routing import resolve_folder
+    return resolve_folder({
+        "author": it.get("mp_name") or it.get("sub_name"),
+        "mp_name": it.get("mp_name"),
+        "sub_name": it.get("sub_name"),
+        "source": it.get("source"),
+        "route": it.get("route"),
+        "url": it.get("url"),
+        "category": it.get("category"),
+    })
 
 
 # 泛化/问候型列表标题：这些标题在多个不同推文里重复使用，列表不可区分，
@@ -503,7 +513,9 @@ def discover_all(subs: dict, state: dict, mode: str = "auto") -> list:
                           f"（B站照常）；下次运行自动恢复。", file=sys.stderr)
 
     for b in subs.get("bilibili", []):
-        src = BilibiliSource(b["uid"], types=b.get("types"))
+        src = BilibiliSource(b["uid"], types=b.get("types"),
+                             all_videos=b.get("all_videos", False),
+                             window_days=b.get("window_days"))
         try:
             found = src.discover(state, first_run_limit=FIRST_RUN_LIMIT, mode=mode)
             for it in found:
@@ -596,9 +608,11 @@ def apply_summaries(items: list, obsidian: bool = False) -> None:
             src_text = f"{purified}\n\n---\n原文链接：{it['url']}"
             try:
                 from articles.main import skill_main
+                _cat = it.get("category", "")
                 res = skill_main({"content": src_text, "author": it.get("mp_name", ""),
                                   "publish_time": it.get("publish_time", 0),
                                   "original_title": it.get("title", ""),
+                                  "tags": [c for c in [_cat] if c],
                                   "folder": _item_folder(it), "obsidian": obsidian})
                 msg = res.get("message", "") if isinstance(res, dict) else str(res)
                 print(f"[{it['source']}] {it['title']}: {msg}")
@@ -649,7 +663,8 @@ def apply_summaries(items: list, obsidian: bool = False) -> None:
                     save_summarized_article(
                         f"（短动态速览 · 未做深度总结）\n\n{purified}",
                         original_url=it["url"], author=it.get("mp_name", ""),
-                        tags=["动态速览", "短动态"], original_title=it.get("title", ""),
+                        tags=["动态速览", "短动态"] + [c for c in [it.get("category", "")] if c],
+                        original_title=it.get("title", ""),
                         note_type="dynamic", publish_time=it.get("publish_time", 0),
                         folder=_item_folder(it), obsidian=obsidian,
                     )
@@ -662,9 +677,11 @@ def apply_summaries(items: list, obsidian: bool = False) -> None:
             src_text = f"{purified}\n\n---\n原文链接：{it['url']}"
             try:
                 from articles.main import skill_main
+                _cat = it.get("category", "")
                 res = skill_main({"content": src_text, "author": it.get("mp_name", ""),
                                   "publish_time": it.get("publish_time", 0),
                                   "original_title": it.get("title", ""),
+                                  "tags": [c for c in [_cat] if c],
                                   "folder": _item_folder(it), "obsidian": obsidian})
                 msg = res.get("message", "") if isinstance(res, dict) else str(res)
                 print(f"[bilibili-动态] {it['title']}: {msg}")

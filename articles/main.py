@@ -508,6 +508,21 @@ def skill_main(input_data: dict) -> dict:
     if not content:
         return {'success': False, 'message': '请提供文章内容或博客链接'}
 
+    # L7 修复（2026-08-23）：手贴 URL 且无显式 folder 时，提取作者并走统一路由器，
+    # 使手贴内容与监控内容归到同一账号节点（如手贴「中金点睛」链接 → 【监控】/公众号/中金点睛）。
+    # 监控路径已显式传 folder（_item_folder），此处不会重复触发，无副作用。
+    _content_str = content if isinstance(content, str) else ""
+    if not folder and re.match(r'https?://\S+', _content_str.strip()):
+        from shared.routing import resolve_folder, extract_author
+        if not author:
+            author = extract_author(_content_str.strip())
+        folder = resolve_folder({
+            "author": author, "url": _content_str.strip(),
+            "category": input_data.get("category", ""), "source": "user_link",
+        })
+        if author and author not in (tags or []):
+            tags = list(tags or []) + [author]
+
     try:
         result = summarize_and_save(content, author, tags, note_type=note_type, force=force, publish_time=publish_time, folder=folder, obsidian=obsidian)
         summarized, second, third, original_title, error_msg = result

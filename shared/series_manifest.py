@@ -169,14 +169,19 @@ class SeriesManifest:
                     self.set_state(page, SUMMARIZED)
 
     # ---- 飞书对账（自愈，确认已落定）----
-    def reconcile_feishu(self) -> None:
-        """读飞书系列容器，凡是已存在节点的集直接标 verified（防止重复落盘）。"""
+    def reconcile_feishu(self, parent_token: str = None) -> None:
+        """读飞书系列容器，凡是已存在节点的集直接标 verified（防止重复落盘）。
+
+        parent_token：系列容器挂哪个父节点（监控系列传 UP 节点 token，
+        否则默认根）。必须与 save 路径一致（都用 folder 推导的父节点），
+        否则对账会在根容器找、永远对不上，导致重复落盘 / 误判未落盘。
+        """
         try:
             from articles.feishu import FeishuOutput
             f = FeishuOutput()
             if not f.is_available():
                 return
-            ctok = f.ensure_series_node(self.series_title)
+            ctok = f.ensure_series_node(self.series_title, parent_token=parent_token)
             if not ctok:
                 return
             nodes = f.list_children(ctok)
@@ -209,16 +214,17 @@ class SeriesManifest:
 
 def load_or_init(series_title: str, url: str = "", author: str = "",
                  notes_dir: str = "", reconcile: bool = True,
-                 expected_total: int = 0) -> SeriesManifest:
+                 expected_total: int = 0, parent_token: str = None) -> SeriesManifest:
     """加载已有 manifest；若不存在则新建。reconcile=True 时做磁盘+飞书对账自愈。
 
     expected_total>0 时同步记录系列总集数（用于缺口检测，防误报完成）。
+    parent_token：飞书系列容器父节点（监控系列传 UP 节点 token，与 save 一致）。
     """
     m = SeriesManifest(series_title, url=url, author=author, notes_dir=notes_dir).load()
     if expected_total:
         m.set_expected_total(expected_total)
     if reconcile:
         m.reconcile_disk()
-        m.reconcile_feishu()
+        m.reconcile_feishu(parent_token=parent_token)
         m.save()
     return m

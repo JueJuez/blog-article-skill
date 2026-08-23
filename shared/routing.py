@@ -1,0 +1,202 @@
+"""shared/routing.py — 统一内容归档路由器（单一真相源）。
+
+所有落盘入口（监控 drain / 手贴文章 / 手贴视频 / 系列课 / scys）都通过 resolve_folder()
+决定归档路径，消除「手贴路径不看作者、同一作者内容散落多处」的根因（用户 2026-08-23 决策）。
+
+归档结构（详见项目 MEMORY 2026-08-23）：
+  【监控】/B站/<账号名>/              监控 B站 UP 的视频+动态同节点
+  【监控】/公众号/<账号名>/
+  【监控】/生财有术/<领域>/             scys（生财有术）按领域分子节点
+  【监控】/B站/<账号名>/<系列名>/       系列课：归属监控账号时挂其下
+  【监控】/系列课/<系列名>/             独立系列（无所属账号）
+  【我的笔记】/作者/<名>/               手贴：识别出非监控常驻作者
+  【我的笔记】/<分类>/                  手贴：散文按主题分类
+  【00_待归类】/                        兜底收件箱（一次性手动总结）
+
+节点注册表 node_registry(state.json) 记录 作者→节点路径，路由优先复用已存在节点，
+避免「先手贴后订阅」导致同作者内容分裂两处。
+"""
+import os
+import re
+import json
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+MONITOR_ROOT = "【监控】"
+MYNOTES_ROOT = "【我的笔记】"
+INBOX = "【00_待归类】"
+
+# 平台 → 文件夹名（平台比分类稳定：一个 UP 可能跨多个主题，且最贴「按账号名找」心智）
+_PLATFORM_FOLDER = {"bilibili": "B站", "wechat": "公众号", "scys": "生财有术"}
+_SCYS_AUTHOR = "生财有术"
+
+
+def _subs_path() -> str:
+    return os.path.join(BASE_DIR, "monitors", "subscriptions.json")
+
+
+def _state_path() -> str:
+    return os.path.join(BASE_DIR, "monitors", "state.json")
+
+
+def load_account_registry() -> dict:
+    """从 subscriptions.json 派生 作者→{platform, category, aliases, monitored}。
+
+    账号名 = 注册表主键（用户明确要「以 UP主/公众号名建子节点」）。
+    aliases 用于公众号作者字段漂移（如「中金点睛」文章常标「中金研究/中金公司」）。
+    """
+    reg: dict = {}
+    try:
+        with open(_subs_path(), encoding="utf-8") as f:
+            subs = json.load(f)
+    except Exception:
+        subs = {}
+    for w in subs.get("wechat", []) or []:
+        n = (w.get("name") or "").strip()
+        if n:
+            reg[n] = {"platform": "wechat", "category": w.get("category", "") or "",
+                      "aliases": w.get("aliases", []) or [], "monitored": True}
+    for b in subs.get("bilibili", []) or []:
+        n = (b.get("name") or "").strip()
+        if n:
+            reg[n] = {"platform": "bilibili", "category": b.get("category", "") or "",
+                      "aliases": b.get("aliases", []) or [], "monitored": True}
+    # scys：作者固定为「生财有术」，平台维度单列（非公众号、非 B站）
+    if subs.get("scys"):
+        reg[_SCYS_AUTHOR] = {"platform": "scys", "category": "副业增长",
+                             "aliases": [], "monitored": True}
+    return reg
+
+
+def _match_account(reg: dict, author: str):
+    """账号命中（含别名 / 包含匹配）。返回**规范账号名**（非原始 author 字符串）或 None。
+
+    关键：调用方必须用返回的规范名拼路径，不能用原始 author——否则别名命中后
+    会落成「中金研究」而非规范「中金点睛」（2026-08-23 干跑发现的根因）。
+    """
+    if not author:
+        return None
+    if author in reg:
+        return author
+    for name, info in reg.items():
+        if author in (info.get("aliases") or []):
+            return name
+    # 宽松包含：作者字段可能是「中金点睛：XXX」这类带前缀
+    for name, info in reg.items():
+        if name and name in (author or ""):
+            return name
+    return None
+
+
+def _infer_platform(item: dict) -> str:
+    url = item.get("url", "") or ""
+    route = item.get("route", "") or ""
+    source = item.get("source", "") or ""
+    if "scys.com" in url or source == "monitor_scys" or item.get("scys_domain"):
+        return "scys"
+    if "mp.weixin" in url or route in ("article", "cv") or source == "monitor_wechat":
+        return "wechat"
+    if "bilibili" in url or route in ("video", "dynamic") or "bilibili" in source:
+        return "bilibili"
+    return ""
+
+
+def load_node_registry(state: dict) -> dict:
+    return (state or {}).get("node_registry", {}) or {}
+
+
+def remember_node(state: dict, author: str, path: str) -> None:
+    """持久化 作者→节点路径（防「先手贴后订阅」分裂）。state 为 monitors/state.json 字典。"""
+    if not state or not author:
+        return
+    nr = load_node_registry(state)
+    if nr.get(author) != path:
+        nr[author] = path
+        state["node_registry"] = nr
+        try:
+            with open(_state_path(), "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+
+def resolve_folder(item: dict, state: dict = None) -> str:
+    """返回归档路径（纯计算，零 IO/落盘）。
+
+    输入 item 字段：author/mp_name/sub_name、url、source、route、category、series、
+    scys_domain/project/domain。
+    """
+    author = (item.get("author") or item.get("mp_name") or item.get("sub_name") or "").strip()
+
+    # 1) scys 特例：作者固定生财有术，按领域分子节点
+    if item.get("scys_domain") or "scys.com" in (item.get("url", "") or ""):
+        domain = item.get("scys_domain") or item.get("project") or item.get("domain") or "未分类"
+        return f"{MONITOR_ROOT}/生财有术/{domain}"
+
+    # 2) 系列课：归属监控账号则挂其下，否则归独立系列课容器
+    if item.get("series"):
+        acct_name = _match_account(load_account_registry(), author)
+        if acct_name:
+            acct = load_account_registry().get(acct_name, {})
+            if acct.get("monitored"):
+                pf = _PLATFORM_FOLDER.get(acct["platform"], acct["platform"])
+                return f"{MONITOR_ROOT}/{pf}/{acct_name}/{item['series']}"
+        return f"{MONITOR_ROOT}/系列课/{item['series']}"
+
+    # 3) 节点注册表复用（优先：已存在节点一律复用，防分裂）
+    nr = load_node_registry(state)
+    if author and author in nr:
+        return nr[author]
+
+    # 4) 监控账号命中（含别名）→ 【监控】/<平台>/<规范账号名>
+    acct_name = _match_account(load_account_registry(), author)
+    if acct_name:
+        acct = load_account_registry().get(acct_name, {})
+        pf = _PLATFORM_FOLDER.get(acct.get("platform", ""), acct.get("platform", ""))
+        return f"{MONITOR_ROOT}/{pf}/{acct_name}"
+
+    # 5) 手贴：识别出非监控作者 → 【我的笔记】/作者/<名>
+    if author and author not in ("未知", "", "匿名"):
+        return f"{MYNOTES_ROOT}/作者/{author}"
+
+    # 6) 手贴散文（有分类）→ 【我的笔记】/<分类>
+    cat = (item.get("category") or "").strip()
+    if cat:
+        return f"{MYNOTES_ROOT}/{cat}"
+
+    # 7) 兜底收件箱
+    return INBOX
+
+
+def extract_author(url: str) -> str:
+    """从 URL 尽力提取作者（手贴路径 L7 修复）。失败返回 ''（不阻断，落兜底）。
+
+    - B站视频：view API 取 owner.name（游客态通常可用）
+    - 其他：抓首页正则 <meta name=author> / 作者：XXX
+    """
+    if not url:
+        return ""
+    try:
+        if "bilibili" in url:
+            m = re.search(r"BV\w+", url)
+            if m:
+                import urllib.request
+                api = "https://api.bilibili.com/x/web-interface/view?bvid=" + m.group(0)
+                req = urllib.request.Request(api, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    d = json.loads(r.read().decode())
+                return (d.get("data", {}) or {}).get("owner", {}).get("name", "") or ""
+        from articles.fetch import fetch_web_content
+        txt = fetch_web_content(url)
+        if isinstance(txt, tuple):
+            txt = txt[1]
+        if txt:
+            m = re.search(r'<meta\s+name=["\']author["\']\s+content=["\']([^"\']+)', txt, re.I)
+            if m:
+                return m.group(1).strip()
+            m = re.search(r'作者[：:]\s*([^\n]{1,30})', txt)
+            if m:
+                return m.group(1).strip()
+    except Exception:
+        return ""
+    return ""
