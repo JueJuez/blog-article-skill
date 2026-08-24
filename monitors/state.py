@@ -68,7 +68,7 @@ def mark_seen(state: Dict[str, Any], source_key: str, ids: List[str],
     - 保持插入顺序：新抓的 ID 追加在末尾，裁剪时丢最旧的（头部），保留最新。
     - 去重：已存在的 ID 不再重复追加。
     - keep=None 时用 DEFAULT_STATE_KEEP（env STATE_KEEP，默认 1000）。
-      裁剪安全性：每日抓取窗口仅 1 天、首跑窗口 7 天，单源窗口内 ID 远小于 1000，
+      裁剪安全性：每日抓取窗口仅 1 天、首跑窗口 30 天，单源窗口内 ID 远小于 1000，
       被裁掉的都是早已超出窗口、不会再被抓回的旧 ID，不会触发重复总结。
     """
     if keep is None:

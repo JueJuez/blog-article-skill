@@ -11,7 +11,7 @@
 - 频率控制：同源视频/动态之间退避(_INTRA_GAP)；跨源退避(_SOURCE_GAP)；重试退避(_RETRY_BACKOFF)。
 - 充电专属视频(is_charging_arc)照常出现在列表，标记 is_charging；apply 时跳过正文抓取
   （付费内容抓不到 transcript，仅监控「发过」，不浪费 API）。
-- 抓取策略：按内容发布时间做「时间窗口」过滤（首跑 BILI_FIRST_WINDOW_DAYS=7 天 / 每日
+- 抓取策略：按内容发布时间做「时间窗口」过滤（首跑 BILI_FIRST_WINDOW_DAYS=30 天 / 每日
   BILI_DAILY_WINDOW_DAYS=1 天），单页拉满 BILI_PAGE_SIZE=50；无正文/无干货的动态（系统通知、
   充电问答回复等）直接屏蔽；每条内容带原始发布时间(publish_time)落盘，笔记自动标新鲜度标签。
 - 自动补齐（2026-07-28 新增）：每日窗口不再是死值——`auto` 非首次运行时按「距上次成功运行的天数
@@ -79,8 +79,8 @@ _INTRA_GAP = float(os.environ.get("BILI_INTRA_GAP", "2"))  # 同源视频/动态
 _RETRY_BACKOFF = float(os.environ.get("BILI_BACKOFF", "5"))  # 重试退避基数
 
 # 时间窗口抓取（替代纯 count cap）：只处理 N 天内发布的 content，不论条数。
-# 首跑回填窗口较大（默认 7 天），每日增量窗口较小（默认 1 天 = 当天）。
-_BILI_FIRST_WINDOW_DAYS = float(os.environ.get("BILI_FIRST_WINDOW_DAYS", "7"))
+# 首跑回填窗口较大（默认 30 天），每日增量窗口较小（默认 1 天 = 当天）。
+_BILI_FIRST_WINDOW_DAYS = float(os.environ.get("BILI_FIRST_WINDOW_DAYS", "30"))
 _BILI_DAILY_WINDOW_DAYS = float(os.environ.get("BILI_DAILY_WINDOW_DAYS", "1"))
 # 单次拉取页数上限（B站接口单页上限约 50）：拉满以覆盖整个时间窗口。
 _BILI_PAGE_SIZE = int(os.environ.get("BILI_PAGE_SIZE", "50"))
@@ -385,14 +385,21 @@ def _fetch_dynamics(uid: str, ps: int = 10, max_retry: int = 2) -> List[Dict]:
 
 class BilibiliSource:
     def __init__(self, uid: str, types: Optional[List[str]] = None,
-                 all_videos: bool = False, window_days: Optional[float] = None):
+                 all_videos: bool = False, window_days: Optional[float] = None,
+                 force_all: bool = False):
         self.uid = str(uid)
         # 默认同时抓视频和动态
         self.types = types or ["video", "dynamic"]
-        # all_videos：抓该 UP 全部视频（超大窗口 + 翻页 + 取消安全上限），用于「抓所有视频」
+        # all_videos：抓该 UP 全部视频（超大窗口 + 翻页 + 取消安全上限），用于「抓所有视频」。
+        # 仅「首次运行」生效（is_first 门禁）：系列课首跑抓整门课，后续跑 is_first 变 False，
+        # 自动回退到增量窗口（默认 1 天、封顶 30 天）+ seen 去重，与其他 UP 行为一致、不重复全抓。
         self.all_videos = bool(all_videos)
         # window_days：每源自定义时间窗口（天），覆盖首跑/每日窗口；None=走默认逻辑
         self.window_days = window_days
+        # force_all：无视 is_first / seen，强制全量翻页抓取。
+        # 这是「事后显式要全量重抓」时的开关（CLI --all-videos 传入，例如 seen 已填充想补历史）。
+        # 不持久化进 subscriptions.json——默认行为永远是「首跑全量 + 后续增量」。
+        self.force_all = bool(force_all)
 
     def source_key(self) -> str:
         return f"bilibili:{self.uid}"
@@ -403,13 +410,16 @@ class BilibiliSource:
         vids: List[Dict] = []
         dyns: List[Dict] = []
 
-        # 时间窗口（替代纯 count cap）：首跑回填窗口大（默认 7 天），每日增量窗口小（默认 1 天）。
+        # 时间窗口（替代纯 count cap）：首跑回填窗口大（默认 30 天），每日增量窗口小（默认 1 天）。
         # 只处理窗口内发布的 content，不论条数——抓取条数多少不影响风控，频率（请求次数）才影响。
-        # 每源覆盖：all_videos=True → 超大窗口抓全站历史；window_days 显式指定 → 用该值。
+        # 每源覆盖：all_videos=True → 超大窗口抓全站历史；window_days 显式指定 → 用该值；
+        # force_all=True → 强制全量（用户显式「全部抓取」，无视首跑/seen 门禁）。
         is_first = (mode == "first") or (mode == "auto" and not seen)
         # all_videos 仅「首次运行」生效（用户语义：本次添加监控后的首次跑抓全部；
         # 后续跑回退正常频率）。seen 在首跑后填充，is_first 自然变 False，无需手动清 flag。
-        all_videos_this_run = bool(self.all_videos) and is_first
+        # force_all 是显式全量开关：CLI --all-videos 触发，优先级高于 all_videos+is_first 组合，
+        # 保证「用户说全部抓取」必然全量、且不会因 seen 已填充而被静默跳过。
+        all_videos_this_run = bool(self.force_all) or (bool(self.all_videos) and is_first)
         if all_videos_this_run:
             # 「抓所有视频」：窗口拉到 ~10 年，等效不按时间过滤；配合 paginate 翻全部分页。
             win_days = float(os.environ.get("BILI_ALL_VIDEOS_DAYS", "3650"))
@@ -425,7 +435,7 @@ class BilibiliSource:
             win_days = effective_window_days(_BILI_DAILY_WINDOW_DAYS, last_check, max_win)
         cutoff = int(time.time()) - int(win_days * 86400)
         # 每类型安全上限（防极端 UP 单窗口发几百条刷爆笔记）；正常情况下窗口+单页上限已约束。
-        # all_videos 时取消上限（用户明确要全量，且仅首跑生效），否则取 first_run_limit 与 _BILI_SAFETY_CAP 的较小值。
+        # all_videos_this_run（含 force_all 显式全量）时取消上限，否则取 first_run_limit 与 _BILI_SAFETY_CAP 的较小值。
         if all_videos_this_run:
             cap = int(os.environ.get("BILI_ALL_VIDEOS_CAP", "100000"))
         else:

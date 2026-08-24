@@ -48,19 +48,16 @@ PORT_FILE_CANDIDATES = [
 COMMON_DEVTOOLS_PORTS = {9222, 5494}
 EXTRA_SCAN_RANGE = range(0)
 
-# 兜底命令（用户一次性启 Chrome debug 用，**复制粘贴直接跑**）。
-# ⚠️ Chrome 151+ 已强制：远程调试只能用「非默认 user-data-dir」，直接用默认目录 + 端口会报：
-#   DevTools remote debugging requires a non-default data directory.
-# 解法：先建一个指向真实 profile 的「目录联接（junction，一次性、无需管理员）」，
-# 再拿这个非默认路径启动 —— 实际读写同一份 profile（登录态原样保留）。
-# 联接只需建一次（持久化在磁盘，重启后仍在）。
-FALLBACK_LAUNCH_CMD = (
-    'mklink /J "%LOCALAPPDATA%\\Google\\Chrome\\DebugUDD" '
-    '"%LOCALAPPDATA%\\Google\\Chrome\\User Data" && '
-    '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" '
-    '--remote-debugging-port=5494 '
-    '--user-data-dir="%LOCALAPPDATA%\\Google\\Chrome\\DebugUDD"'
-)
+# 兜底方案：CDP 探测失败时，自动回退到 profile_clone_fetch（复制 profile 到临时目录）。
+# ⚠️ Chrome 151+ 已强制：远程调试只能用「非默认 user-data-dir」。
+# 旧方案用 junction（DebugUDD → User Data）绕过此限制，但 Chrome 151+ 能检测 junction
+# 指向同一物理目录，会触发安全清理：清空 extensions.settings + 调 extension_garbage_collector
+# 删除扩展文件 + 清 Google 账号关联。实测 2026-08-24 造成 22 个扩展被删。
+# login_persistent_fetch.py 也不行：它用 launch_persistent_context(user_data_dir=真实目录)，
+# Playwright 内部加 --remote-debugging-pipe，Chrome 151+ 同样拒绝在默认目录上开。
+# 新方案：profile_clone_fetch.py 复制真实 profile 到临时目录（非默认 dir），Chrome 151+ 放行。
+# 需先 kill Chrome 释放 FILE_SHARE_NONE cookie 锁，复制完启 headless Chrome 抓取。
+FALLBACK_SCRIPT = "python scripts/profile_clone_fetch.py"
 
 
 def find_devtools_port_file() -> Path | None:
@@ -160,16 +157,21 @@ def discover_chrome_devtools() -> tuple[int, str]:
             "（探测 /json/version 返回非 JSON 或被 404）。\n"
             "    根因通常是：① 文件已过期（当初带调试标志启动的 Chrome 已退出 / 被自动重启，"
             "新进程没带 --remote-debugging-port）；或 ② 该端口被非调试进程占用。\n"
-            "    修复：彻底关闭所有 Chrome 窗口（含后台自动重启的） → 执行下面这一行以调试模式重启"
-            " → 在浏览器重新登录目标站点 → 再跑 `smoke` 验证（应见到 [OK] + Chrome 版本号）：\n"
-            f"        {FALLBACK_LAUNCH_CMD}\n"
+            "    ⚠️ Chrome 151+ 已禁止在默认 user-data-dir 上开远程调试，旧的 junction 方案已废弃"
+            "（会触发扩展垃圾回收删除全部扩展）。\n"
+            "    新方案：本脚本会自动回退到 profile_clone_fetch（复制 profile 到临时目录）。"
+            "如未自动回退，手动执行：\n"
+            f"        {FALLBACK_SCRIPT} \"<URL>\"\n"
             "    详细：references/login-required-cdp-workflow.md §11。"
         )
     raise RuntimeError(
         "本机没找到任何 Chrome DevTools 监听端口（已检查 DevToolsActivePort 文件 + 9222 + 5494）。\n"
-        "    一次性启 Chrome debug 模式：先关闭所有 Chrome 窗口 → 然后执行下面这一行：\n"
-        f"        {FALLBACK_LAUNCH_CMD}\n"
-        "    启好后正常登录目标站点，下一次本脚本即全自动接管。\n"
+        "    ⚠️ Chrome 151+ 已禁止在默认 user-data-dir 上开远程调试，旧的 junction 方案已废弃"
+        "（会触发扩展垃圾回收删除全部扩展）。\n"
+        "    新方案：本脚本会自动回退到 profile_clone_fetch（复制 profile 到临时目录）。"
+        "如未自动回退，手动执行：\n"
+        f"        {FALLBACK_SCRIPT} \"<URL>\"\n"
+        "    需先关闭 Chrome（脚本会自动 kill），抓完后重新打开 Chrome 即可。\n"
         "    详细：references/login-required-cdp-workflow.md §11。"
     )
 
@@ -309,11 +311,31 @@ def main(argv: list[str]) -> int:
     try:
         info = fetch(url, out)
     except RuntimeError as e:
-        # 已知失败路径：chrome 没启 debug、URL 不可达等
-        print(f"\n[FAIL] {e}")
-        return 2
+        if "没找到任何 Chrome DevTools" in str(e) or "DevToolsActivePort" in str(e):
+            print(f"[fallback] CDP 不可用，回退到 profile_clone_fetch（复制 profile 到临时目录）")
+            from profile_clone_fetch import (
+                fetch_via_profile_clone,
+                DEFAULT_SRC_DIR,
+            )
+            # Kill Chrome to release FILE_SHARE_NONE locks on cookies
+            try:
+                import subprocess as _sp
+                _sp.run(["taskkill", "/F", "/IM", "chrome.exe", "/T"],
+                        capture_output=True, text=True, timeout=10)
+                print(f"[fallback] killed chrome.exe (release cookie locks)")
+                time.sleep(2)
+            except Exception:
+                pass
+            try:
+                info = fetch_via_profile_clone(url, out)
+            except Exception as e2:
+                print(f"\n[FAIL] profile_clone_fetch 也失败: {e2}")
+                print(f"        请手动跑：python scripts/profile_clone_fetch.py \"{url}\"")
+                return 2
+        else:
+            print(f"\n[FAIL] {e}")
+            return 2
     except Exception as e:
-        # 未知失败：保留 traceback 便于诊断
         raise
 
     # 若撞登录墙，告警但仍落盘（用户可手动登录后重抓）

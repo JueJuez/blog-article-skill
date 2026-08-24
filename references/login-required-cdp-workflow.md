@@ -1,8 +1,14 @@
 # 需登录站点抓取 · 「接管用户主 Chrome」CDP 方案
 
+> ⚠️ **2026-08-24 重大更新：Chrome 151+ 废弃 junction 方案**
+> 旧方案用 junction（DebugUDD→User Data）+ 焊快捷方式 flags 绕过 Chrome 151+ 远程调试限制。
+> Chrome 151 能检测 junction 指向同一物理目录，触发 `extension_garbage_collector` 删扩展 + 清账号。
+> **新方案**：`login_cdp_fetch.py` CDP 不可用时自动回退到 `profile_clone_fetch.py`（持久化 ProfileClone 目录，
+> 非默认 dir → Chrome 151+ 放行）。详见 `docs/decisions/DECISION-20260824-chrome151-junction-deprecation.md`。
+> 本文件 §1.1~§1.2 已更新为新方案；§2 及之后的历史记录保留但 **junction 相关内容已作废**。
+
 > **本文件是「需登录态才能访问」的网站的通用抓取工作流。**
 > 与 `references/youtube-cdp-workflow.md`（独立 Chrome-CDP 副本，仅代理）的关系见 §7。
-> 本方案直接接管用户的**主 Chrome**（同一 user-data-dir），自动继承全部登录态 —— **不再导 cookie、不再抓登录态、有效期内复用**。
 
 ---
 
@@ -41,59 +47,47 @@ python scripts/login_cdp_fetch.py "<需登录的URL>" [out.md]
 > 不这么做 → 我方任何代码都连不上 Chrome。
 > 不需要重启 Chrome —— 一次性加 flag 即可（保留所有标签 + cookies + 登录态）。
 
-### 1.1 Windows：快捷方式改属性（推荐 · 已实施 ✅）
+### 1.1 Windows：快捷方式改属性（已废弃 · Chrome 151+ 破坏扩展）
 
-> **2026-08-20 更新**：用户已授权把调试 flags **焊进 Chrome 快捷方式**（见下方详情）。新会话/新模型**不需要再让用户手动改快捷方式**——直接 `smoke` 验证即可。若 smoke 失败，再按 §1.2 的 junction 命令恢复。
+> ⚠️ **2026-08-24 更新：junction 方案已废弃！**
+> 旧方案把 `--user-data-dir=DebugUDD --remote-debugging-port=5494` 焊进 Chrome 快捷方式，
+> 其中 `DebugUDD` 是指向真实 `User Data` 的 junction。
+> Chrome 151+ 能检测 junction 指向同一物理目录，触发安全清理：
+> 清空 `extensions.settings` → `extension_garbage_collector` 删扩展文件 → 清 Google 账号关联。
+> 实测 2026-08-24 造成 22 个扩展被删、Google 账号被登出。
+>
+> **新方案**：Chrome 快捷方式**不加任何参数**（已恢复干净）。
+> `login_cdp_fetch.py` 探测不到 debug 端口时自动回退到 `profile_clone_fetch.py`
+> （复制真实 profile 到临时目录，非默认 dir → Chrome 151+ 放行）。
+> 代价：抓取时需短暂关闭 Chrome（脚本自动 kill 释放 cookie 锁），复制 ~16GB profile 需 ~1 分钟，抓完后用户重开即可。
 
-**已实施的永久方案（2026-08-20 用户授权）**：
+### 1.2 命令行启动（新方案 · 复制 profile 到临时目录）
 
-三处用户级快捷方式均已植入 flags `--user-data-dir=C:\Users\O1830\AppData\Local\Google\Chrome\DebugUDD --remote-debugging-port=5494`：
+> **新方案（Chrome 151+）**：不需要 `--remote-debugging-port`，不需要 junction。
+> 用 `profile_clone_fetch.py`，它复制真实 profile 到临时目录，用临时 dir 启 headless Chrome，
+> 非默认 dir → Chrome 151+ 放行，自动继承登录态。
+>
+> ```bash
+> # 统一入口（自动回退到 profile_clone_fetch）
+> python scripts/login_cdp_fetch.py "<URL>" [out.md]
+>
+> # 或直接调 profile_clone_fetch
+> python scripts/profile_clone_fetch.py "<URL>" [out.md]
+> ```
+>
+> <details><summary>旧 junction 方案（已废弃 · 勿用）</summary>
+>
+> ⚠️ 以下方案在 Chrome 151+ 会触发扩展垃圾回收删除所有扩展，已废弃。
+> junction: `mklink /J DebugUDD "User Data"` + `chrome.exe --remote-debugging-port=5494 --user-data-dir=DebugUDD`
+>
+> </details>
 
-| 快捷方式 | 路径 | 状态 |
-|---|---|---|
-| 任务栏 pin | `...\Quick Launch\User Pinned\TaskBar\Google Chrome.lnk` | ✅ |
-| 快速启动栏 | `...\Quick Launch\Google Chrome.lnk` | ✅ |
-| 桌面（新建兜底） | `C:\Users\O1830\Desktop\Google Chrome.lnk` | ✅ |
-
-原快捷方式备份在 `C:\Users\O1830\AppData\Local\Temp\chrome_lnk_backup\`。
-
-**效果**：用户正常双击/点任务栏开 Chrome → 自动带调试端口 + 继承登录态。Chrome 自动更新/重启后再开也自动恢复。
-
-> ⚠️ 若某次 scys 抓不通且 smoke 报端口失败：优先检查是否从**公共开始菜单**（`ProgramData`，未改的那枚）或**旧缓存 AppID** 启动的 Chrome。从桌面那枚新建快捷方式重新 pin 任务栏即可。**不要让用户手动敲命令**——除非快捷方式被破坏或用户主动要求。
-
-<details><summary>旧方法（仅 Chrome <151 或参考）</summary>
-
-⚠️ **以下旧命令在 Chrome 151+ 会报错** `DevTools remote debugging requires a non-default data directory`。仅作历史参考，实际请用 §1.2 的 junction 方案：
-
-1. 右键任务栏/桌面的 Google Chrome 图标 → **属性**
-2. 「快捷方式」标签页 → 「目标」行加 `--remote-debugging-port=5494`
-3. 先关闭所有 Chrome 窗口 → 再点改后的快捷方式
-
-</details>
-
-### 1.2 命令行启动（适合脚本场景）
-
-> ⚠️ **Chrome 151+ 已改规则**：直接在**默认** user-data-dir 上开远程调试会被拒，报错
-> `DevTools remote debugging requires a non-default data directory`。
-> 所以**不能**再用「`chrome.exe --remote-debugging-port=5494`（不带 user-data-dir）」这种旧命令。
-> 解法：建一个指向真实 profile 的**目录联接（junction）**，再拿这个「非默认路径」启动——
-> 实际读写同一份 profile，登录态原样保留，但 Chrome 认为它是非默认目录而放行调试。
-
-```bash
-:: ① 建联接（一次性，无需管理员，重启后仍在）
-mklink /J "%LOCALAPPDATA%\Google\Chrome\DebugUDD" "%LOCALAPPDATA%\Google\Chrome\User Data"
-:: ② 用非默认目录启动调试 Chrome（仍指向你的真实 profile）
-"C:/Program Files/Google/Chrome/Application/chrome.exe" --remote-debugging-port=5494 --user-data-dir="%LOCALAPPDATA%\Google\Chrome\DebugUDD"
-```
-
-> 联接建好后，以后只需跑第 ② 行即可。若 `DebugUDD` 联接已存在，`mklink` 会报「文件已存在」，忽略即可。
-
-### 1.3 验证 Chrome 真的启用了 Debug
+### 1.3 验证抓取能力
 
 ```bash
-curl -s http://127.0.0.1:5494/json/version
-# 期望回 JSON: {"Browser":"Chrome/...", ...}
-# 若回 404 / 连不上 = 不是 DevTools 服务 / Chrome 没启 debug
+python scripts/login_cdp_fetch.py smoke
+# 期望：[OK] port ... devtools-bridge alive（CDP 可用时）
+# 或：[FAIL]... → 自动回退到 persistent_fetch（正常行为，Chrome 151+ 默认走这条）
 ```
 
 或直接跑：
@@ -238,8 +232,8 @@ with sync_playwright() as p:
 
 | 现象 | 真因 | 处理 |
 |---|---|---|
-| TCP 端口在 listen 但 HTTP `/json/version` 返 **404** / Playwright 直连 ws 根返 **403** | 三种可能：① 端口被非 DevTools 进程占用；② Chrome 曾带 flag 启动但之后被重启/自动更新（Chrome 151+ 默认目录被拒后更常见），只剩 stale 的 `DevToolsActivePort` 文件（文件在、服务不在）；③ Chrome 151+ 用旧命令（不带 `--user-data-dir`）启动，端口占位但调试服务未真正起来 | 脚本已能精准区分「文件过期/非调试实例」与「端口真没开」并分别报错。修复：彻底关闭所有 Chrome → 按 §1.2 junction 命令重启 |
-| `connect_over_cdp` 永远卡死、无任何输出 | ws 握手被 Chrome 因默认 user-data-dir + 同 Origin 拒绝；或用了过期的 ws uuid 连到 404 | 确认 Chrome 用了 `--remote-debugging-port=XXXX --user-data-dir=...DebugUDD` 启动（带这两个 flag 时 Chrome 151+ 才放行 ws）。脚本已改为永远从 `/json/version` 实时取 ws 路径，不信磁盘文件 uuid |
+| TCP 端口在 listen 但 HTTP `/json/version` 返 **404** / Playwright 直连 ws 根返 **403** | 三种可能：① 端口被非 DevTools 进程占用；② Chrome 曾带 flag 启动但之后被重启/自动更新，只剩 stale 的 `DevToolsActivePort` 文件（文件在、服务不在）；③ Chrome 151+ 用旧命令启动，端口占位但调试服务未真正起来 | 脚本已能精准区分「文件过期/非调试实例」与「端口真没开」并分别报错。修复：`login_cdp_fetch.py` 会自动回退到 profile_clone_fetch，无需手动操作 |
+| `connect_over_cdp` 永远卡死、无任何输出 | ws 握手被 Chrome 拒绝；或用了过期的 ws uuid 连到 404 | 脚本已改为永远从 `/json/version` 实时取 ws 路径，不信磁盘文件 uuid。Chrome 151+ 废弃 junction 后此场景罕见 |
 | 抓到的是「请登录 / 扫码登录 / 订阅解锁」之类内容 | Cookie 未发送 = 用户实际在该域名未登录 | 让用户在浏览器手工登录一次，再让 AI 抓 |
 | 页面空白 / 长白雪 | SPA 还在 render | `page.wait_for_timeout` 增加；或显式等某 selector：`page.wait_for_selector(".article-body", timeout=15000)` |
 | 抓到的正文混着广告 / 推荐区 | 选择器取得不准 | 用脚本里 selector 链：`.article-content / .topic-content / article / main / body`，按长度取最长一段 |
@@ -280,7 +274,7 @@ Playwright `connect_over_cdp` **可以**创建多个 `page` 并发在同一 cont
 | 文件 | 接管对象 | user-data-dir | 目的 |
 |---|---|---|---|
 | `references/youtube-cdp-workflow.md` | **独立 Chrome-CDP 副本**（`%LOCALAPPDATA%\Google\Chrome-CDP`）| **非默认**（副本）| 视频字幕抓取（带代理扩展 iGuge，**不需要用户登录态**）|
-| **`references/login-required-cdp-workflow.md`**（本文件） | **用户主 Chrome**（通过 junction `DebugUDD` 指向真实 profile）| **非默认**（junction，继承登录态）| **任何需登录态的页面**（不带代理，纯靠用户的真实登录态）|
+| **`references/login-required-cdp-workflow.md`**（本文件） | **ProfileClone**（持久化副本，非默认 dir，Chrome 151+ 放行）| **非默认**（ProfileClone，同步 cookie 继承登录态）| **任何需登录态的页面**（不带代理，纯靠用户的真实登录态）|
 
 两者**互不干扰**，可以并存。
 

@@ -1,7 +1,9 @@
 """一次性定向抓取：仅对指定 UP 主抓取其内容并入降级队列（不写飞书）。
 
-- 价投小猪仔：all_videos=True（首跑全量，~101 视频，分页拉全 + 取消上限）
-- 笨笨的韭菜：window_days=7（首跑仅近 7 天）
+策略（2026-08-24 起）：系列课首跑抓全部视频（整门课），后续跑只处理新增。
+- 价投小猪仔：all_videos=True（本脚本用 mode="first"，首跑全量抓整门课，~101 视频，分页拉全 + 取消上限）
+- 笨笨的韭菜：window_days=30（首跑近 30 天，对齐默认首跑窗口）
+- 若事后想对已抓过的 UP 强制重抓全部，加 CLI --all-videos 或临时 all_videos=True。
 
 复用真实管线 BilibiliSource.discover + run.apply_summaries；FORCE_AGENT_MODE=1 时
 apply_summaries 只抓正文/字幕并入 pending（folder 已由统一路由器算成新结构），不写飞书，
@@ -24,7 +26,7 @@ from monitors.run import apply_summaries
 
 TARGETS = [
     {"uid": "3707002469485044", "name": "价投小猪仔", "all_videos": True},
-    {"uid": "11473291", "name": "笨笨的韭菜", "all_videos": False, "window_days": 7},
+    {"uid": "11473291", "name": "笨笨的韭菜", "all_videos": False, "window_days": 30},
 ]
 
 

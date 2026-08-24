@@ -108,8 +108,8 @@
 - **B站**：`{"uid": "数字UP主ID"}`，需 `BILI_COOKIE`（动态接口硬性要求）；**公众号**：`{"mp_id": "..."}` 或 `{"share_url": "公众号分享链接"}`。
 - **公众号 token 不稳定（无稳+免费+免维护方案）**：`weread.111965.xyz` 转发 JWT 数小时即失效。检测到失效时 `run.py` **自动弹二维码**（`RELOGIN_QR:` 路径），交互式（Windows 本机）会话用户扫码续期后**本次运行即继续抓取**公众号（刷新 token 后重试整轮）；headless/自动化下无人看码等价于本次跳过公众号、保 B站照跑。详见 `monitors/README.md` 注意事项。
   - **2026-07-28 修复（过期不再静默丢源）**：`is_token_valid` 探针由 `list_articles`（过期返回 200 空、失明）改为 `resolve_mp(force=True)`（过期稳定 401），过期 token 不再被误判有效而静默跳过；`discover_all` 新增「全源零结果 + 持续 401」兜底自动重登。回归测试 `tests/test_wechat_relogin_fallback.py`。
-- **用户口头「关注 XXX」时，模型应把对应条目写进 `subscriptions.json`**，不要手搓抓取代码。
-- **规则要点（暂定）**：首跑 7 天 / 每日 1 天时间窗口；无干货动态屏蔽；短动态轻量化；新鲜度标签；state 按源裁剪防膨胀。本文件不堆细节。
+- **用户口头「关注 XXX」时，走机械命令** `monitors/run.py --subscribe --uid <id> --name <名> --category <类> [--sub-all | --sub-window <天>]`（先查重、已在名单则回「已在监控名单内」不添加）；公众号/scys 仍改 `subscriptions.json`。不要手搓抓取代码、不要手搓 B站条目 JSON。
+- **规则要点（暂定）**：首跑 30 天 / 每日 1 天时间窗口（断跑自动拉长、封顶 30 天）；无干货动态屏蔽；短动态轻量化；新鲜度标签；state 按源裁剪防膨胀。本文件不堆细节。
 - **触发方式（已移除自动调度 · 2026-07-24）**：不再挂每日 10:00/17:00 自动化。改为**用户主动触发**——用户说「跑一次 / 跑一下」等关键词时，运行 `python monitors/run.py --mode auto --apply`（按 `subscriptions.json` 抓公众号 + B站UP + scys 四领域新帖，正文入队后由执行模型/子 Agent 总结，默认写飞书、需 Obsidian 时双写，见 §3.0）。公众号 token 失效时按上条跳过公众号、保 B站。**scys 新帖监控（2026-08-20 接入）**：`subscriptions.json` 的 `scys` 列表（领域→menuId 映射在 `scripts/scys_projects.json`），`--apply` 收尾逐领域子进程跑 `scripts/scys_batch_fetch.py`（默认 7 天窗口 + 精华过滤 + done 去重 + `.lock` 互斥），原文进 `notes/_scraped/scys/pending_summaries.json` 由执行模型闭环总结；CDP 不可用则跳过 scys、其他源不受影响。细节见 `monitors/README.md`「scys 新帖监控」。
 - **禁止**：手写抓取脚本、手搓 B站 / 微信私有 API——一律走 `monitors/run.py` 入口。
 

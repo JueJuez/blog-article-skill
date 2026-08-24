@@ -20,43 +20,22 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 ## 1. 前提（用户侧一次性，其余全自动）
 
 1. **用户已在浏览器登录 scys.com**（用户唯一被允许做的事）。
-2. **用户主 Chrome 已以调试模式启动**（非默认 user-data-dir + `--remote-debugging-port=5494`）。
-   - ⚠️ **Chrome 151+ 已禁止在默认 user-data-dir 上开远程调试**，所以不能直接用「`chrome.exe --remote-debugging-port=5494`」（会报 `requires a non-default data directory`）。
-   - 正确起法：建一个指向真实 profile 的**目录联接（junction）**，再拿这个非默认路径启动（见下「启动命令」）。这会读写同一份 profile，登录态原样保留。
-   - 没启 → 脚本会清晰报错并给出一键命令（见 §4）。
+2. **脚本自动选择抓取方式**（无需用户手动启 debug）：
+   - **优先**：探测到 Chrome DevTools 端口 → `connect_over_cdp` 接管活 Chrome（不关浏览器）。
+   - **回退**（Chrome 151+ 默认）：没有 debug 端口 → 自动回退到 `profile_clone_fetch`（复制真实 profile 到临时目录，用临时 dir 启 headless Chrome，非默认 dir → Chrome 151+ 放行）→ 需要先关闭 Chrome（脚本自动 kill 释放 cookie 锁），复制 ~16GB 需 ~1 分钟，抓完后用户重新打开 Chrome 即可。
 
-<details><summary>启动命令（一次性建联接 + 以后直接起）</summary>
+> ⚠️ **Chrome 151+ 已废弃 junction 方案**（2026-08-24 实测）：
+> 旧方案用 junction（`DebugUDD` → `User Data`）绕过 Chrome 151+「远程调试不能用默认 user-data-dir」的限制。
+> 但 Chrome 151 能检测 junction 指向同一物理目录，触发安全清理：
+> 1. 清空 `extensions.settings`（扩展注册表）
+> 2. 调 `extension_garbage_collector` 删除扩展文件（实测 22 个扩展被删）
+> 3. 清 Google 账号关联（`gaia_id` 变空）
+>
+> **新方案**：不再用 junction / 不再改 Chrome 快捷方式 / 不再需要 `--remote-debugging-port`。
+> `login_cdp_fetch.py` 探测不到 debug 端口时自动回退到 `profile_clone_fetch.py`（持久化 ProfileClone 目录，
+> 非默认 dir → Chrome 151+ 放行，不会删扩展）。首次全量复制 ~16GB，后续只同步 9 个 cookie 文件（秒级）。
 
-```bash
-:: ① 建联接（一次性，无需管理员，重启后仍在）
-mklink /J "%LOCALAPPDATA%\Google\Chrome\DebugUDD" "%LOCALAPPDATA%\Google\Chrome\User Data"
-:: ② 用非默认目录启动调试 Chrome（仍指向你的真实 profile）
-"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=5494 --user-data-dir="%LOCALAPPDATA%\Google\Chrome\DebugUDD"
-```
-</details>
-
-> ⚠️ **「一次性」的真正含义 = 对该 Chrome 进程的生命周期有效，不是永久有效。**
-> `--remote-debugging-port` 是**启动参数**，只对「带这个参数启动的那一个 Chrome 进程」生效。
-> Chrome 发生**自动更新 / 崩溃自重启 / 你手动重开**后，新进程不会带这个 flag → 调试端口消失（但磁盘上的 `DevToolsActivePort` 旧文件可能还在，造成「文件说开着、实际没服务」的假象，脚本探测会命中 404）。
-> 另一个 2026-08-20 新坑：**Chrome 升级到 151 后，默认目录直接开调试会被拒**，必须走上面的 junction 方案（旧「只带端口」命令已失效，这就是「上次能、这次不能」的真凶）。
-> 所以「我没关过浏览器，为什么突然不能访问」的标准答案：**Chrome 在你不知情时被重启 / 自动更新**，flag 随之丢失或旧命令不再生效。
-> 修复永远是同一条：彻底关掉所有 Chrome 窗口 → 用上面的 ② 命令以调试模式重启 → 重新登录 → `smoke` 验证见到 `[OK]`。
-
-> ⚠️ **登录态所在的浏览器是用户的 Chrome，不是 Edge** —— Edge 里没有 scys 登录态。2026-08-19 实测确认。若 CDP 误接到 Edge，会抓到「登录墙」而不是正文。
-
-### 1.5 永久零操作方案（已在 2026-08-20 实施，优先用这个）
-
-> 用户在 2026-08-20 授权，已把调试 flags **焊进 Chrome 快捷方式**，从此无需任何手动命令。
-
-- **已改的快捷方式**（用户级，无需管理员）：
-  - 任务栏 pin：`...\Quick Launch\User Pinned\TaskBar\Google Chrome.lnk`
-  - 快速启动栏：`...\Quick Launch\Google Chrome.lnk`
-  - 桌面兜底（新建）：`C:\Users\O1830\Desktop\Google Chrome.lnk`
-  - 三处 `Arguments` 均已含 `--user-data-dir=C:\Users\O1830\AppData\Local\Google\Chrome\DebugUDD --remote-debugging-port=5494`。
-  - 原快捷方式备份在 `C:\Users\O1830\AppData\Local\Temp\chrome_lnk_backup\`。
-- **因此**：用户**正常双击/点任务栏开 Chrome** 就会自动带调试端口 + 继承登录态。Chrome 自动更新/重启后再开也自动恢复，**用户零操作**。
-- **下个会话遇 scys 抓不通**：先 `python scripts/login_cdp_fetch.py smoke`；若 flag 没生效，优先怀疑「任务栏 pin 缓存了旧 AppID」（从桌面那枚新快捷方式重新 pin 任务栏即可），而不是 junction 失效（junction 在磁盘上持久化，不会丢）。**不要**再让用户手动敲启动命令——除非用户主动要求或快捷方式被破坏。
-- 唯一仍需用户的可能动作：首次（或 Chrome 大版本更新后）弹一次 Windows 防火墙「允许 Chrome 通信」——与 8-19 那次一模一样，点允许即可。
+> ⚠️ **登录态所在的浏览器是用户的 Chrome，不是 Edge** —— Edge 里没有 scys 登录态。2026-08-19 实测确认。
 
 ---
 
@@ -101,11 +80,12 @@ mklink /J "%LOCALAPPDATA%\Google\Chrome\DebugUDD" "%LOCALAPPDATA%\Google\Chrome\
 
 | 现象 | 根因 | 修法 |
 |---|---|---|
-| `[FAIL] 本机没找到任何 Chrome DevTools 监听端口…` | 用户 Chrome 没启 debug（或端口被占） | 一次性加 flag 启 Chrome（用 junction 方案，Chrome 151+ 必须）：先关所有 Chrome 窗口 → 执行下面两行 → 正常登录 scys 后重跑<br>```mklink /J "%LOCALAPPDATA%\Google\Chrome\DebugUDD" "%LOCALAPPDATA%\Google\Chrome\User Data"<br>"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=5494 --user-data-dir="%LOCALAPPDATA%\Google\Chrome\DebugUDD"```<br>⚠️ **快捷方式已焊好 flags（2026-08-20）**，正常重开 Chrome 即可。若仍失败才需手动跑上面命令。 |
-| `http://127.0.0.1:5494/json/version` 返 **404 / 403**，或 smoke 报 `[FAIL] port 5494 不是 Chrome DevTools` | 三种可能：① Chrome 曾带 flag 启动但之后被重启/自动更新（Chrome 151+ 默认目录被拒后更常见），只剩 stale 的 `DevToolsActivePort` 文件；② 端口被非调试进程占用；③ 用了旧命令（不带 `--user-data-dir`）启动，Chrome 151+ 调试服务未真正起来 | **彻底关闭所有 Chrome 窗口** → 用上面的 junction 两行命令重新启动 → 若 Windows 防火墙弹窗问「允许 Chrome 通信吗」，点 **允许** → 登录 scys → 重跑 smoke |
-| `[3/3] body_chars 很小 + login_wall 命中` | 用户在 scys 没登录，或 CDP 误接到 Edge（Edge 无 scys 登录态） | 确认 Chrome 是主浏览器且已登录 scys；`http://127.0.0.1:5494/json/version` 的 `Browser` 字段应是 `Chrome/...`（不是 `Edg/...`） |
+| `[FAIL] 本机没找到任何 Chrome DevTools 监听端口…` | Chrome 151+ 废弃了 junction 方案，不再有 debug 端口 | **正常现象**——`login_cdp_fetch.py` 会自动回退到 `profile_clone_fetch`。若未自动回退，手动跑：<br>`python scripts/profile_clone_fetch.py "<URL>"` |
+| `[fallback] CDP 不可用，回退到 profile_clone_fetch` | 正常行为 | 脚本自动 kill Chrome → 同步 cookie 到 ProfileClone（首次全量复制，后续秒级）→ 启 headless Chrome → 抓取 → 用户重开 Chrome |
+| `[FAIL] Chrome 还在跑，user-data-dir 被锁` | Chrome 没完全退出 | 脚本会自动 kill Chrome；如手动跑 profile_clone_fetch 则先 taskkill |
+| `[3/3] body_chars 很小 + login_wall 命中` | 用户在 scys 没登录，或登录态过期 | 确认 Chrome 已登录 scys（打开 scys 看页面是否已登录），然后重跑 |
 | 页面空白 / 长白雪 | SPA 还没渲染完 | 脚本默认等 8s；在 `fetch()` 调 `wait_ms=` 调大（如 15000） |
-| `ModuleNotFoundError: playwright` | 缺包 | `python -m pip install playwright`（不需下载浏览器，连现有 Chrome 即可） |
+| `ModuleNotFoundError: playwright` | 缺包 | `D:\App\anaconda3\python.exe -m pip install playwright` |
 
 ---
 
@@ -114,7 +94,7 @@ mklink /J "%LOCALAPPDATA%\Google\Chrome\DebugUDD" "%LOCALAPPDATA%\Google\Chrome\
 - **机制**：L3（设计如此，通用文档 §3 描述）。
 - **scys 案例**：
   - 2026-08-19 21:18 会话用本流程跑通 —— 落盘 `scys_article.md`（49 226 字节 / 正文 **21 264 字** / 无登录墙）。
-  - **2026-08-20 12:33 最终验证通过**（L1）：Chrome 151 根因定位 → junction 解法 → 快捷方式永久化 → smoke OK → scys tag 页 **106,389 字 + 主 tags 页 49,192 字**均无登录墙。永久 debug 模式已实施，新会话零操作。详见通用文档 §2.2 实操记录。
+  - **2026-08-24 最新验证**（L1）：Chrome 151+ junction 废弃 → profile_clone_fetch 持久化 ProfileClone → scys 抓取 **21265 字无登录墙**。首次全量复制 ~16GB，后续只同步 9 个 cookie 文件（18.9 秒含 Chrome 启动+抓取）。详见 `docs/decisions/DECISION-20260824-chrome151-junction-deprecation.md`。
 
 ---
 

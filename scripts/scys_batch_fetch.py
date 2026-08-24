@@ -413,69 +413,99 @@ class ScysBatchFetcher:
 
         BASE.mkdir(parents=True, exist_ok=True)
         done_ids: set[str] = set(self.state.get("done", []))
-        port, ws_path = discover_chrome_devtools()
-        print(f"[CDP] ws://127.0.0.1:{port}{ws_path}")
+
+        # Chrome 151+：CDP 优先，不可用则回退到 profile_clone（持久化 ProfileClone）
+        use_cdp = True
+        tmpdir = None
+        try:
+            port, ws_path = discover_chrome_devtools()
+            print(f"[CDP] ws://127.0.0.1:{port}{ws_path}")
+        except RuntimeError:
+            use_cdp = False
+            print(f"[fallback] CDP 不可用，回退到 profile_clone（持久化 ProfileClone）")
+            import subprocess as sp
+            sp.run(["taskkill", "/F", "/IM", "chrome.exe", "/T"],
+                    capture_output=True, text=True, timeout=10)
+            time.sleep(2)
+            from profile_clone_fetch import ensure_profile_clone
+            tmpdir = ensure_profile_clone()
 
         fetched = 0
         pending: list[dict] = []
         with sync_playwright() as p:
-            browser = p.chromium.connect_over_cdp(f"ws://127.0.0.1:{port}{ws_path}")
-            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-            page = ctx.new_page()
+            if use_cdp:
+                browser = p.chromium.connect_over_cdp(f"ws://127.0.0.1:{port}{ws_path}")
+                ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = ctx.new_page()
+            else:
+                ctx = p.chromium.launch_persistent_context(
+                    user_data_dir=str(tmpdir),
+                    headless=True,
+                    args=["--disable-blink-features=AutomationControlled",
+                          "--no-sandbox", "--disable-dev-shm-usage"],
+                    viewport={"width": 1280, "height": 800},
+                    ignore_https_errors=True,
+                )
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
 
-            lst = self.collect_list(page)
-            if list_only:
-                dig = [it for it in lst if it["isDigested"]]
-                print(f"[list-only] {self.name}: 共 {len(lst)} 篇，其中精华 {len(dig)} 篇")
+            try:
+                lst = self.collect_list(page)
+                if list_only:
+                    dig = [it for it in lst if it["isDigested"]]
+                    print(f"[list-only] {self.name}: 共 {len(lst)} 篇，其中精华 {len(dig)} 篇")
+                    return 0
+                todo = filter_todo(lst, done_ids, since_days=self.since_days,
+                                   digested_only=self.digested_only,
+                                   min_reading=self.min_reading,
+                                   engagement=self.engagement)
+                if self.limit > 0:
+                    todo = todo[: self.limit]
+                print(f"[run] 本次目标 {len(todo)} 篇（已完成 {len(done_ids)} 篇）")
+
+                batch_at = random.randint(*BATCH_SIZE_RANGE)
+                pending = self._load_json(self.pending_path, default=[])
+                for it in todo:
+                    tid = str(it["topicId"])
+                    print(f"  [{fetched + 1}/{len(todo)}] {it['showTitle'][:50]}")
+                    try:
+                        r = self.fetch_article(page, tid)
+                    except Exception as e:
+                        msg = str(e)
+                        if "has been closed" in msg or "Target closed" in msg:
+                            raise  # 页面/浏览器级故障：交给外层重试
+                        print(f"      [FAIL] {e}")
+                        continue
+                    done_ids.add(tid)
+                    self.state["done"] = sorted(done_ids)
+                    self._save_state()
+                    pending.append({
+                        "topicId": tid, "project": self.name, "title": r["title"],
+                        "url": r["url"], "chars": r["chars"],
+                        "output": r["output"],
+                        "external_docs": r["external_docs"], "related": r["related"],
+                        "list_meta": {k: it.get(k) for k in
+                                      ("isDigested", "readingCount", "likeCount", "coinCount",
+                                       "commentCount", "favoriteCount", "gmtCreate", "aiSummary")},
+                    })
+                    self.pending_path.write_text(
+                        json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
+                    fetched += 1
+
+                    if fetched >= batch_at:
+                        rest = random.uniform(*BATCH_REST)
+                        print(f"  [rest] 已抓 {fetched} 篇，休息 {rest:.0f}s（模拟人类）")
+                        time.sleep(rest)
+                        batch_at = fetched + random.randint(*BATCH_SIZE_RANGE)
+                    else:
+                        gap = random.uniform(*ARTICLE_GAP)
+                        print(f"      (下篇间隔 {gap:.0f}s)")
+                        time.sleep(gap)
+            finally:
                 page.close()
-                return 0
-            todo = filter_todo(lst, done_ids, since_days=self.since_days,
-                               digested_only=self.digested_only,
-                               min_reading=self.min_reading,
-                               engagement=self.engagement)
-            if self.limit > 0:
-                todo = todo[: self.limit]
-            print(f"[run] 本次目标 {len(todo)} 篇（已完成 {len(done_ids)} 篇）")
+                if not use_cdp:
+                    ctx.close()
 
-            batch_at = random.randint(*BATCH_SIZE_RANGE)
-            pending = self._load_json(self.pending_path, default=[])
-            for it in todo:
-                tid = str(it["topicId"])
-                print(f"  [{fetched + 1}/{len(todo)}] {it['showTitle'][:50]}")
-                try:
-                    r = self.fetch_article(page, tid)
-                except Exception as e:
-                    msg = str(e)
-                    if "has been closed" in msg or "Target closed" in msg:
-                        raise  # 页面/浏览器级故障：交给外层重试
-                    print(f"      [FAIL] {e}")
-                    continue
-                done_ids.add(tid)
-                self.state["done"] = sorted(done_ids)
-                self._save_state()
-                pending.append({
-                    "topicId": tid, "project": self.name, "title": r["title"],
-                    "url": r["url"], "chars": r["chars"],
-                    "output": r["output"],
-                    "external_docs": r["external_docs"], "related": r["related"],
-                    "list_meta": {k: it.get(k) for k in
-                                  ("isDigested", "readingCount", "likeCount", "coinCount",
-                                   "commentCount", "favoriteCount", "gmtCreate", "aiSummary")},
-                })
-                self.pending_path.write_text(
-                    json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
-                fetched += 1
-
-                if fetched >= batch_at:
-                    rest = random.uniform(*BATCH_REST)
-                    print(f"  [rest] 已抓 {fetched} 篇，休息 {rest:.0f}s（模拟人类）")
-                    time.sleep(rest)
-                    batch_at = fetched + random.randint(*BATCH_SIZE_RANGE)
-                else:
-                    gap = random.uniform(*ARTICLE_GAP)
-                    print(f"      (下篇间隔 {gap:.0f}s)")
-                    time.sleep(gap)
-            page.close()
+        # ProfileClone 是持久化的，不删除（下次只同步 cookie 文件）
 
         print(f"[done] 本次抓取 {fetched} 篇，累计 {len(done_ids)} 篇，队列 {len(pending)} 待总结")
         return 0

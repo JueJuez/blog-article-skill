@@ -1,11 +1,20 @@
 # -*- coding: utf-8 -*-
-"""profile_clone_fetch.py — 复制用户 Chrome profile 到临时目录，启新 Chromium 实例带登录态访问。
+"""profile_clone_fetch.py — 复制用户 Chrome profile 到持久化 ProfileClone 目录，启新 Chromium 实例带登录态访问。
 
 设计（用户 0 操作 · 模型全自动）：
-    用户的 Chrome 没启 debug、不动用户的 Chrome、不打 debug flag、不重启任何东西。
-    把用户的 user-data-dir 复制到一个临时目录 → 用 Playwright 启动一个 headless Chromium 实例
-    指定 user-data-dir=临时副本 → 访问 URL → 取正文 → 关闭实例 → 删临时目录。
+    用户的 Chrome 没启 debug → login_cdp_fetch.py 自动回退到本模块。
+    持久化 ProfileClone 目录（%LOCALAPPDATA%\\Google\\Chrome\\ProfileClone）：
+    - 首次：全量复制 user-data-dir（~16GB，robocopy + ctypes 兜底锁文件）
+    - 后续：只同步 9 个 cookie/login 文件（秒级，ensure_profile_clone()）
+    用 Playwright launch_persistent_context 指定 user-data-dir=ProfileClone（非默认 dir → Chrome 151+ 放行）
+    → 访问 URL → 取正文 → 关闭实例（ProfileClone 保留供下次复用）。
     同 Windows 用户 + DPAPI ⇒ 复制后的 cookie db 自动可解 ⇒ 登录态自动生效。
+
+⚠️ Chrome 151+ 限制：
+    - --remote-debugging-port 在默认 user-data-dir 上被拒（Chrome 136+ 起）
+    - --remote-debugging-pipe（Playwright 内部用的）在默认 user-data-dir 上也被拒（Chrome 151+ 起）
+    - junction 指向默认目录会被检测，触发 extension_garbage_collector 删扩展（2026-08-24 实测）
+    → ProfileClone 是非默认目录的真实副本，Chrome 151+ 放行调试，不触发安全清理
 
 依赖：
     pip install playwright
@@ -15,7 +24,7 @@
     python scripts/profile_clone_fetch.py "<URL>" [out.md]
     python scripts/profile_clone_fetch.py smoke        # 自检：用公开 URL 验证整条机制能跑通
 
-详见 references/login-required-cdp-workflow.md §12。
+详见 references/login-required-cdp-workflow.md §1.2。
 """
 from __future__ import annotations
 
@@ -35,6 +44,24 @@ DEFAULT_SRC_DIR_EDGE = Path(os.environ.get("LOCALAPPDATA", r"C:\Users\O1830\AppD
 
 DEFAULT_BROWSER = os.environ.get("LOGIN_CLONE_BROWSER", "chrome")  # 或 edge
 
+# 持久化 profile 副本目录（非临时，首次全量复制后保留，后续只同步 cookie）
+CLONE_DIR = Path(os.environ.get("LOCALAPPDATA", r"C:\Users\O1830\AppData\Local")) / r"Google\Chrome\ProfileClone"
+
+# 增量同步文件清单（只需这些文件保持最新即可继承登录态）
+SYNC_FILES = [
+    "Default/Cookies",
+    "Default/Cookies-journal",
+    "Default/Network/Cookies",
+    "Default/Network/Cookies-journal",
+    "Default/Login Data",
+    "Default/Login Data-journal",
+    "Default/Web Data",
+    "Default/Web Data-journal",
+    "Default/Preferences",
+    "Default/Secure Preferences",
+    "Local State",
+]
+
 
 def pick_source_user_data_dir() -> Path:
     """选一个有 profile 的 user-data-dir：Chrome 优先（多数用户的登录态所在地）。"""
@@ -44,6 +71,48 @@ def pick_source_user_data_dir() -> Path:
     raise FileNotFoundError(
         f"找不到 Chrome/Edge user-data-dir。已查：\n  - {DEFAULT_SRC_DIR}\n  - {DEFAULT_SRC_DIR_EDGE}"
     )
+
+
+def ensure_profile_clone(src: Path | None = None) -> Path:
+    """确保持久化 ProfileClone 副本可用。首次全量复制(~16GB)，后续只同步 cookie 文件(~秒级)。
+
+    返回 CLONE_DIR 路径。调用方负责 kill Chrome 释放 cookie 锁后再调用。
+    """
+    src = src or pick_source_user_data_dir()
+    cookie_check = CLONE_DIR / "Default" / "Network" / "Cookies"
+    if not CLONE_DIR.exists() or not cookie_check.exists():
+        print(f"[clone] 首次全量复制 {src.name} → {CLONE_DIR} (约 16GB，一次性)")
+        CLONE_DIR.mkdir(parents=True, exist_ok=True)
+        copy_user_data_dir(src, CLONE_DIR)
+        for lock_name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+            for p in CLONE_DIR.rglob(lock_name):
+                try: p.unlink()
+                except Exception: pass
+        print(f"[clone] 全量复制完成，后续运行只同步 cookie 文件")
+    else:
+        print(f"[clone] 增量同步 cookie 文件 → {CLONE_DIR}")
+        synced = 0
+        for rel in SYNC_FILES:
+            src_file = src / rel
+            dst_file = CLONE_DIR / rel
+            if not src_file.exists():
+                continue
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(src_file, dst_file)
+                synced += 1
+            except PermissionError:
+                ok, msg = _copy_locked_file(src_file, dst_file)
+                if ok:
+                    synced += 1
+                else:
+                    print(f"        [skip] {rel} ({msg})")
+        for lock_name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+            for p in CLONE_DIR.rglob(lock_name):
+                try: p.unlink()
+                except Exception: pass
+        print(f"[clone] 同步 {synced} 个文件完成")
+    return CLONE_DIR
 
 
 """复制 user-data-dir 到临时目录。用 robocopy 处理可读文件，用 ctypes 兜底被锁文件。
@@ -174,97 +243,69 @@ def fetch_via_profile_clone(url: str, out_path: Path, *,
     from playwright.sync_api import sync_playwright  # type: ignore
 
     src = src_dir or pick_source_user_data_dir()
-    src_size = sum(f.stat().st_size for f in src.rglob("*") if f.is_file())
-    print(f"[1/6] src user-data-dir: {src}  ({src_size/1024/1024:.1f} MB)")
 
-    tmpdir = Path(tempfile.mkdtemp(prefix="profile_clone_"))
-    try:
-        print(f"[2/6] copy → {tmpdir}  (这一步对用户 Chrome 无副作用)")
-        copy_user_data_dir(src, tmpdir)
-        copied = sum(f.stat().st_size for f in tmpdir.rglob("*") if f.is_file())
-        src_n = sum(1 for _ in src.rglob("*") if _.is_file())
-        dst_n = sum(1 for _ in tmpdir.rglob("*") if _.is_file())
-        print(f"        copied {copied/1024/1024:.1f} MB  (src={src_n} dst={dst_n} 文件)")
-        if dst_n < src_n:
-            missing = list({p.relative_to(src) for p in src.rglob("*") if p.is_file()} -
-                          {p.relative_to(tmpdir) for p in tmpdir.rglob("*") if p.is_file()})
-            print(f"        ! 仍有 {len(missing)} 文件未复制：")
-            for m in sorted(missing, key=str)[:20]:
-                print(f"          - {m}")
+    # 持久化 ProfileClone：首次全量复制，后续只同步 cookie 文件
+    tmpdir = ensure_profile_clone(src)
+    copied = sum(f.stat().st_size for f in tmpdir.rglob("*") if f.is_file())
 
-        print(f"[3/6] launch headless chromium on user_data_dir={tmpdir}")
-        with sync_playwright() as p:
-            browser_ctx = p.chromium.launch_persistent_context(
-                user_data_dir=str(tmpdir),
-                headless=headless,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                ],
-                viewport={"width": 1280, "height": 800},
-                ignore_https_errors=True,
-            )
-            try:
-                print(f"[4/6] new page + goto {url}")
-                page = browser_ctx.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-                if wait_ms:
-                    page.wait_for_timeout(wait_ms)
-                title = page.title()
-                body = ""
-                if selector:
-                    try:
-                        page.wait_for_selector(selector, timeout=10_000)
-                    except Exception:
-                        pass
-                for sel in [
-                    selector,
-                    ".article-content", ".article-detail", "#articleContent",
-                    ".topic-content", ".post-content", ".markdown-body",
-                    "article", "main", "body",
-                ]:
-                    if not sel: continue
-                    try:
-                        el = page.query_selector(sel)
-                        if el:
-                            t = el.inner_text().strip()
-                            if len(t) > len(body):
-                                body = t
-                    except Exception:
-                        continue
-                if not body:
-                    body = page.evaluate("() => document.body.innerText")
-                page.close()
-            finally:
-                print(f"[5/6] close browser ctx")
-                browser_ctx.close()
-
-        login_markers = ["立即登录", "登录后查看", "请登录", "扫码登录",
-                         "您还未登录", "成为会员", "开通会员", "订阅后"]
-        hit = [m for m in login_markers if m in body]
-        print(f"[6/6] title = {title!r}  body_chars = {len(body)}  login_wall = {hit or '无'}")
-        write_output(out_path, url, title, body)
-        print(f"        saved → {out_path}")
-        return {
-            "title": title, "url": url, "chars": len(body),
-            "login_wall_hit": hit, "output": str(out_path),
-            "src_dir": str(src), "tmpdir": str(tmpdir),
-            "copied_mb": round(copied/1024/1024, 1),
-        }
-    finally:
-        # 14GB 大目录 rmtree 非常慢（分钟级）；用后台进程异步清理，不阻塞 main return
+    with sync_playwright() as p:
+        browser_ctx = p.chromium.launch_persistent_context(
+            user_data_dir=str(tmpdir),
+            headless=headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
+            viewport={"width": 1280, "height": 800},
+            ignore_https_errors=True,
+        )
         try:
-            subprocess.Popen(
-                ["cmd", "/c", "rd", "/s", "/q", str(tmpdir)],
-                shell=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=0x00000008,  # DETACHED_PROCESS —— 即便父进程退出也跑
-            )
-            print(f"        cleanup scheduled: {tmpdir}")
-        except Exception as e:
-            print(f"        cleanup skipped: {e}")
+            print(f"[4/6] new page + goto {url}")
+            page = browser_ctx.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            if wait_ms:
+                page.wait_for_timeout(wait_ms)
+            title = page.title()
+            body = ""
+            if selector:
+                try:
+                    page.wait_for_selector(selector, timeout=10_000)
+                except Exception:
+                    pass
+            for sel in [
+                selector,
+                ".article-content", ".article-detail", "#articleContent",
+                ".topic-content", ".post-content", ".markdown-body",
+                "article", "main", "body",
+            ]:
+                if not sel: continue
+                try:
+                    el = page.query_selector(sel)
+                    if el:
+                        t = el.inner_text().strip()
+                        if len(t) > len(body):
+                            body = t
+                except Exception:
+                    continue
+            if not body:
+                body = page.evaluate("() => document.body.innerText")
+            page.close()
+        finally:
+            browser_ctx.close()
+
+    login_markers = ["立即登录", "登录后查看", "请登录", "扫码登录",
+                     "您还未登录", "成为会员", "开通会员", "订阅后"]
+    hit = [m for m in login_markers if m in body]
+    print(f"[6/6] title = {title!r}  body_chars = {len(body)}  login_wall = {hit or '无'}")
+    write_output(out_path, url, title, body)
+    print(f"        saved → {out_path}")
+    return {
+        "title": title, "url": url, "chars": len(body),
+        "login_wall_hit": hit, "output": str(out_path),
+        "src_dir": str(src), "clone_dir": str(tmpdir),
+        "copied_mb": round(copied/1024/1024, 1),
+    }
 
 
 def write_output(out_path: Path, url: str, title: str, body: str) -> None:

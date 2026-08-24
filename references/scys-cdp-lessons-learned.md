@@ -1,7 +1,13 @@
 # scys CDP 抓取 · 问题沉淀与新会话畅通指南
 
+> ⚠️ **2026-08-24 重大更新：junction 方案已废弃**
+> 本文档中所有关于 junction、DebugUDD、焊快捷方式 flags 的内容**已全部作废**。
+> Chrome 151+ 能检测 junction 指向同一物理目录，触发 `extension_garbage_collector` 删扩展。
+> 新方案：`profile_clone_fetch.py` 持久化 ProfileClone 目录（非默认 dir），`ensure_profile_clone()` 首次全量复制后后续只同步 cookie 文件。
+> 详见 `docs/decisions/DECISION-20260824-chrome151-junction-deprecation.md`。
+
 > **用途**：新会话 / 新前端模型接手 scys（或任何需登录态站点）抓取任务时，**先读本文档**。
-> 汇总 2026-08-20 全天排查的所有问题、根因、解决状态、以及**下次是否还会踩坑**的预判。
+> 汇总 2026-08-20 全天排查的所有问题、根因、解决状态，以及**下次是否还会踩坑**的预判。
 > 与 `login-required-cdp-workflow.md`（机制文档）和 `scys-fetch-sop.md`（操作 SOP）配套：本文档回答"**会不会再出问题**"，那两份回答"**怎么做**"。
 
 ---

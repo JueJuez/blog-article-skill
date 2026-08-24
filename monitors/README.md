@@ -19,7 +19,7 @@
 ## 抓取规则（当前版本 · 暂定）
 
 - **时间窗口替代纯数量**（关键改动）：
-  - 首跑（`--mode first`）：最近 `BILI_FIRST_WINDOW_DAYS`=**7 天**
+  - 首跑（`--mode first`）：最近 `BILI_FIRST_WINDOW_DAYS`=**30 天**
   - 每日增量（`--mode auto`）：基础窗口 `BILI_DAILY_WINDOW_DAYS`=**1 天**，**自动补齐**（见下）——断跑数日再跑会按 gap 拉长窗口抓回漏掉的内容，平时按时跑则维持 1 天不变
   - 单页拉满 `BILI_PAGE_SIZE`=**50** 覆盖整个窗口；每类型另有安全上限 `BILI_SAFETY_CAP`=**50**（防极端 UP 单窗口刷爆笔记）。正常情况下窗口 + 单页上限已约束条数。
 - **自动补齐窗口（2026-07-28 新增 · 解决断跑丢内容）**：`auto` 非首次运行时，窗口不再死用每日值，而是 `max(BILI_DAILY_WINDOW_DAYS, 距上次成功运行天数 + 1)`，封顶 `BILI_MAX_WINDOW_DAYS`=**30** / `WECHAT_MAX_WINDOW_DAYS`=**30**。由 `state.json` 的 per-source `last_check` 驱动，`seen` 去重保证多跑/漏跑都不会重复总结。即：**你多久没跑，它就自动补多久（封顶 30 天）**，无需改命令、无需手动 `--mode first`。
@@ -49,7 +49,7 @@
    - 公众号文章：`fetch_web_content` **直连微信**抽正文（`WECHAT_GAP=6s`+抖动防限流），异常/空页进 `pending_refetch` 下次重抓。
    - B站视频/动态：视频 `summarize_video`；动态 API 正文内联，短动态存「速览」、完整动态走重模板。
    - FORCE_AGENT_MODE=1：**不自动总结**，全部进 `pending_summaries.json` 队列。
-4. **scys 增量（`subscriptions.json` 配了 `scys` 列表才跑）**：逐领域子进程跑 `scripts/scys_batch_fetch.py`（默认近 7 天窗口、精华过滤按 `scys_projects.json` 默认、翻 2 页列表），抓到的原文进 `notes/_scraped/scys/pending_summaries.json` 队列（与批量补齐共用，`.lock` 互斥防并发写坏 state）。CDP 不可用（用户主 Chrome 未开 debug 端口）→ 告警跳过，不影响公众号/B站。
+4. **scys 增量（`subscriptions.json` 配了 `scys` 列表才跑）**：逐领域子进程跑 `scripts/scys_batch_fetch.py`（默认近 7 天窗口、精华过滤按 `scys_projects.json` 默认、翻 2 页列表），抓到的原文进 `notes/_scraped/scys/pending_summaries.json` 队列（与批量补齐共用，`.lock` 互斥防并发写坏 state）。CDP 不可用时自动回退到 `profile_clone_fetch`（持久化 ProfileClone，Chrome 151+ 默认走这条），不影响公众号/B站。
 5. **Agent 总结闭环**：本会话（执行模型）读队列 → 派**子 Agent** 按 `note_type` 模板总结 → `save_summary_only` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，见 `RULES.md` §3.0）→ 出队。**原子化**：成功才出队，中断可安全重跑。scys 队列同理（folder=生财有术/<领域>，语义见 `references/scys-fetch-sop.md` §9）。
 6. **看健康度行**：末尾 `📊 本轮健康度：...` 一行，异常（错误/限流待重试高）一眼可见。
 
@@ -62,7 +62,7 @@
 - **机制**：`run.py --apply` 收尾阶段逐领域子进程调 `scripts/scys_batch_fetch.py --project <领域> --since-days <窗口> --pages 2`——复用补齐批量全链路（列表捕获 → 时间/精华过滤 → 限速抓正文含外链跟进 → 入 `notes/_scraped/scys/pending_summaries.json` 待总结队列），由执行模型按 §9 语义闭环总结（folder=生财有术/<领域>）。
 - **去重**：与批量补齐共用 `notes/_scraped/scys/state.json` 的 done 列表；已在补齐里抓过的帖不会重复抓/总结。
 - **窗口默认 7 天**（大于日窗）：新帖常在发布数日后才被标精华，窗口太窄会永久漏「晚精华」帖；窗口放大只多翻列表页（便宜），done 去重兜底不会重复抓正文。已知局限：发布超 7 天才标精华的帖会漏，靠半年一次的「补齐scys」兜底。
-- **前提**：用户主 Chrome 已开 `--remote-debugging-port`（CDP 登录态）。不可用 → 该领域告警跳过，公众号/B站不受影响。
+- **前提**：用户已在 Chrome 登录 scys.com。CDP 可用时走 CDP 接管活 Chrome；不可用时自动回退 profile_clone（kill Chrome → 同步 cookie 到 ProfileClone → headless 抓取），不影响公众号/B站。
 - **互斥**：`notes/_scraped/scys/.lock` 进程锁——「跑一下」的 scys 增量与「补齐scys」批量不会并发写坏 state/pending；若进程异常退出残留锁文件，确认无进程后手动删除即可。
 - **临时停用**：把 `subscriptions.json` 的 `scys` 列表清空即可，其他源照跑。
 
@@ -76,7 +76,7 @@
 | `BILI_GAP` | 30 | 跨源退避秒数 |
 | `BILI_INTRA_GAP` | 2 | 同源视频→动态退避秒数 |
 | `BILI_BACKOFF` | 5 | 重试退避基数 |
-| `BILI_FIRST_WINDOW_DAYS` | 7 | 首跑时间窗口（天） |
+| `BILI_FIRST_WINDOW_DAYS` | 30 | 首跑时间窗口（天） |
 | `BILI_DAILY_WINDOW_DAYS` | 1 | 每日增量基础时间窗口（天）；断跑时自动拉长补齐 |
 | `BILI_MAX_WINDOW_DAYS` | 30 | 每日增量窗口封顶（天）；断跑超过此天数只补到此处（更长历史需手动 `--mode first`） |
 | `BILI_PAGE_SIZE` | 50 | 单页拉取条数 |
@@ -154,7 +154,7 @@ B站系列课（多集连续内容）走一套独立的「全系列一次性总�
 ```bash
 # 仅发现新内容（输出 JSON，不总结）
 python monitors/run.py                 # 等价 --mode auto
-python monitors/run.py --mode first    # 首跑回填（7 天窗口）
+python monitors/run.py --mode first    # 首跑回填（30 天窗口）
 
 # 发现并直接调总结管线落盘（默认飞书，需 Obsidian 时加 --obsidian）
 python monitors/run.py --apply

@@ -219,7 +219,7 @@ def fetch_web_content(url: str):
             result = _scys_cdp_fetch(url)
         except Exception as e:
             print(f"❌ scys CDP 抓取失败: {e}")
-            print("💡 需要用户主 Chrome 以 --remote-debugging-port 启动过（见 references/scys-fetch-sop.md）")
+            print("💡 login_cdp_fetch 会自动回退到 profile_clone_fetch（见 references/scys-fetch-sop.md）")
             return None
         body = (Path(result["output"]).read_text(encoding="utf-8")
                 if Path(result["output"]).exists() else "")

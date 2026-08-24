@@ -16,9 +16,9 @@
 - **入口（任选）**
   - **统一入口（推荐）**：`python articles/run.py "https://..."` 或 `from articles import skill_main; skill_main({"content": url_or_text})` —— `fetch_web_content` 检测到 `scys.com` 链接自动分流 CDP 登录态抓取，普通博客走 requests。**用户给单篇或多篇混合链接（普通博客 + scys）都逐条自动分流，前端无感。**（回归测试 `tests/test_scys_routing.py`）
   - **需登录态文章的底层路径**（诊断 / 显式抓取时用）：按用户主 Chrome 状态自动判别——
-  - **路径 A · 接管活 Chrome**：用户主 Chrome 启过 `--remote-debugging-port`（一次性）→ Playwright 通过 CDP 直接接管活 Chrome，登录态由浏览器自动携带。入口：`python scripts/login_cdp_fetch.py "<URL>" [out.md]`。**scys（生财有术）付费文章专用照做 SOP 见 `references/scys-fetch-sop.md`（含前提 / 判别墙·真文 / 故障，新会话直接照做）。**
-  - **路径 B · profile-clone（fallback）**：用户主 Chrome 没启 debug → 复制 user-data-dir 到临时目录 + 启一个独立 headless Chromium 实例带登录态（DPAPI 同 Windows 用户）。入口：`python scripts/profile_clone_fetch.py "<URL>" [out.md]`。
-  - **重要现实（2026-08-19 实测）**：Chrome 136+ 用 `FILE_SHARE_NONE` 锁 cookie，路径 B 在用户主 Chrome 没启 debug 时**不能真正继承 cookie**（结构性约束，非 bug）—— 公开 URL 仍可用；登录站会撞墙。详见 `references/login-required-cdp-workflow.md` §11~§13 + §14 实测记录。
+  - **路径 A · CDP 接管活 Chrome（优先）**：Chrome 恰好带 debug 端口运行 → Playwright 通过 CDP 接管，登录态由浏览器携带。入口：`python scripts/login_cdp_fetch.py "<URL>" [out.md]`。**scys（生财有术）付费文章专用照做 SOP 见 `references/scys-fetch-sop.md`（含前提 / 判别墙·真文 / 故障，新会话直接照做）。**
+  - **路径 B · profile_clone_fetch（Chrome 151+ 默认回退）**：没有 debug 端口 → `login_cdp_fetch.py` 自动回退到 `profile_clone_fetch.py`（复制真实 profile 到临时目录，用临时 dir 启 headless Chrome，非默认 dir → Chrome 151+ 放行）。入口：`python scripts/profile_clone_fetch.py "<URL>" [out.md]`。代价：需短暂关闭 Chrome（脚本自动 kill 释放 cookie 锁），复制 ~16GB profile 需 ~1 分钟，抓完重开 Chrome。`python scripts/login_cdp_fetch.py "<URL>"` 也会自动回退。
+  - ⚠️ **Chrome 151+ 已废弃 junction 方案**（2026-08-24 实测）：旧方案用 junction（`DebugUDD` → `User Data`）绕过远程调试限制，但 Chrome 151 能检测 junction 指向同一物理目录，触发安全清理：清空 `extensions.settings` → `extension_garbage_collector` 删扩展文件（实测 22 个扩展被删）→ 清 Google 账号关联。**新方案不再用 junction / 不再改 Chrome 快捷方式 / 不再需要 `--remote-debugging-port`。** 详见 `references/login-required-cdp-workflow.md` §1.1~§1.2。
   - **scys 按领域批量抓取**：`python scripts/scys_batch_fetch.py --project <领域>`（领域 / menuId / 时间窗在 `scripts/scys_projects.json` 配置，换领域每半年重抓只改 JSON 不改代码）。**触发词：用户说「补齐scys / 补齐生财有术」即自动启动全流程（默认=精华+高互动非精华，2026-08-21 起），后缀自然语言改参数（领域/时间/仅精华），语义见 `references/scys-fetch-sop.md` §9。**
   - 视频：`python videos/run.py --url "https://..."` 或 `from videos import summarize_video; summarize_video({"url": url})`（含 ASR 兜底）
 - 自动按内容类型选模板（`structured` / `key_points` / `interview` / `roundup` / `reading` / `case` / `opinion`）；**默认写飞书**，用户说「写到 obsidian / 双写」时才追加 Obsidian（传 `obsidian=True` 或 `--obsidian`，详见 `RULES.md` §3.0）。
@@ -30,10 +30,10 @@
   - B站：`{"uid": "数字UP主ID"}`
   - 公众号：`{"mp_id": "..."}` 或 `{"share_url": "公众号分享链接"}`
   - scys：`{"project": "领域名"}`（领域→menuId 映射在 `scripts/scys_projects.json`，当前=自媒体/出海/AI产品开发/小程序）
-  - 用户口头说「关注 / 订阅 / 监控 XXX」时，**模型应把对应条目写进这个 JSON**，不要手搓抓取代码。
+  - 用户口头说「关注 / 订阅 / 监控 XXX」时，**走机械命令** `python monitors/run.py --subscribe --uid <id> --name <名> --category <类> [--sub-all | --sub-window <天>]`（命令会先查重，已在名单则回「已在监控名单内」且不添加，不手搓 JSON）；公众号/scys 仍按下方格式改 JSON。不要手搓抓取代码。
 - **运行**
-  - 首跑（回填最近 7 天）：`python monitors/run.py --mode first --apply`
-  - 每日增量：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「跑一次 / 跑一下」等关键词即触发，详见 `RULES.md` §3C）——**含 scys 四领域新帖增量**（2026-08-20 接入：`--apply` 收尾逐领域子进程跑 `scripts/scys_batch_fetch.py`；2026-08-21 起 35 天窗口+精华直通+非精华互动门槛（锚≥30，或 赞≥80且锚≥10 防官方帖污染）+done 去重+`.lock` 互斥，CDP 不可用则跳过不影响其他源）
+  - 首跑（回填最近 30 天）：`python monitors/run.py --mode first --apply`
+  - 每日增量：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「跑一次 / 跑一下」等关键词即触发，详见 `RULES.md` §3C）——**含 scys 四领域新帖增量**（2026-08-20 接入：`--apply` 收尾逐领域子进程跑 `scripts/scys_batch_fetch.py`；2026-08-21 起 35 天窗口+精华直通+非精华互动门槛（锚≥30，或 赞≥80且锚≥10 防官方帖污染）+done 去重+`.lock` 互斥，CDP 不可用则自动回退 profile_clone 不影响其他源）
   - **新会话执行步骤（照做即一帆风顺）**：
     1. 直接运行 `python monitors/run.py --mode auto --apply`。
     2. 公众号 token 失效 → 自动弹二维码（`RELOGIN_QR:` 路径），**本机会话扫码后续期，本次运行即继续抓取公众号**（刷新 token 后重试整轮）；headless/无人看码则本次跳过公众号、B站照跑不受影响。
@@ -46,7 +46,7 @@
        - ⚠️ 系列课落盘结构（2026-08-23 修复）：系列容器挂 `【监控】/<平台>/<UP>/<系列名>/` 下（不是根），由统一路由器 `shared/routing.py: resolve_folder` 算路径。`apply_pending_series.py` 传给 `_save_series_note` 的 `folder` **只到账号层**（`rsplit('/',1)[0]`），系列容器由 `ensure_series_node` 单建——否则系列名被建两次造成嵌套。`_read_series_from_feishu` 的 `parent_token` 已是容器 token 时直接用，不再内部 `ensure_series_node`。
     5. 末尾看健康度行（视频/动态/文章/跳过/限流待重试/错误）确认是否异常。
     - 内置重试（无需手动）：token 失效弹码等扫码(≤180s) / 401 瞬错 ×3 / 代理空轮退避重试 / 正文限流进 `pending_refetch` 下次重抓。
-- **抓取规则**：按时间窗口（首跑 7 天 / 每日 1 天）+ 无干货动态屏蔽 + 短动态轻量化 + 新鲜度标签。细节见 `monitors/README.md`。
+- **抓取规则**：按时间窗口（首跑 30 天 / 每日 1 天，断跑自动拉长封顶 30 天）+ 无干货动态屏蔽 + 短动态轻量化 + 新鲜度标签。细节见 `monitors/README.md`。
 - **历史回溯（续批）**：把某公众号 N 年内历史文章分批抓全（例：哥飞可到 2025 年中、生财有术代理深度仅 2026-06，更早文章代理侧不可达、代码无解）。入口 `python monitors/run.py --backfill --names <逗号名> --since <YYYY-MM-DD> --batch 15`（入队 + 跑一批）；`--drain` 从 `monitors/backfill_targets.json` 取第一个未完成 job 自动续批（适合 recurring 自动化）。范围门禁只动目标号；游标复用 `state.json` 的 `seen` + `state["backfill"][name]`，不重置即可续批。完整机制见 `monitors/README.md`「公众号历史回溯（续批）」+ `references/config.md` backfill 段。
 - B站需要登录态：`BILI_COOKIE` 环境变量（动态接口硬性要求）。
 

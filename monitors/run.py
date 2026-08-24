@@ -347,6 +347,84 @@ def load_subscriptions() -> dict:
     return {"wechat": [], "bilibili": []}
 
 
+def write_subscriptions(subs: dict) -> None:
+    with open(SUB_PATH, "w", encoding="utf-8") as f:
+        json.dump(subs, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def find_subscription(subs: dict, query: str):
+    """机械查重：某 UP/公众号/scys 是否已在监控名单。
+
+    返回 (platform, entry) 或 None。query 匹配：B站按 uid/name/aliases；
+    公众号按 name/aliases/share_url/mp_id；scys 按 project。大小写不敏感、精确匹配。
+    用于「新增订阅前先查重」，杜绝手搓 JSON 导致的重复添加（不再靠记忆）。
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return None
+
+    def _hit(entry: dict) -> bool:
+        for key in ("uid", "name", "mp_id", "project", "share_url"):
+            v = entry.get(key)
+            if v is not None and str(v).lower() == q:
+                return True
+        for alias in entry.get("aliases", []) or []:
+            if str(alias).lower() == q:
+                return True
+        return False
+
+    for b in subs.get("bilibili", []):
+        if _hit(b):
+            return ("bilibili", b)
+    for w in subs.get("wechat", []):
+        if _hit(w):
+            return ("wechat", w)
+    for s in subs.get("scys", []):
+        if _hit(s):
+            return ("scys", s)
+    return None
+
+
+def cmd_subscribe(args, subs: dict) -> None:
+    """机械新增 B站UP 监控：先查重，已在名单则回『已在监控名单内』且不修改；
+    不在则按窗口参数追加到 subscriptions.json 并落盘。
+
+    窗口语义（对齐「监控新增 / 首抓逻辑」总纲）：
+      --sub-all       → 首跑全量（all_videos:true，抓整门课/全部视频）
+      --sub-window N  → 首跑窗口 N 天（N个月=N*30；1年=365；2年=730）
+      都不传          → 首跑默认 30 天（靠 _BILI_FIRST_WINDOW_DAYS 常量）
+    """
+    uid = (args.uid or "").strip()
+    name = (args.name or "").strip()
+    if not uid or not name:
+        print("❌ --subscribe 需同时提供 --uid 与 --name", file=sys.stderr)
+        return
+    # 查重：按 name 或 uid 任一命中即视为已监控
+    hit = find_subscription(subs, name) or find_subscription(subs, uid)
+    if hit:
+        platform, entry = hit
+        print(f"✅ 「{name}」已在监控名单内（{platform}），无需重复添加。"
+              f"如需按指定窗口一次性抓取，请显式说明。")
+        return
+    entry = {"name": name, "uid": uid}
+    if args.category:
+        entry["category"] = args.category
+    if args.sub_all:
+        entry["all_videos"] = True
+    elif args.sub_window:
+        entry["window_days"] = args.sub_window
+    subs.setdefault("bilibili", []).append(entry)
+    write_subscriptions(subs)
+    if args.sub_all:
+        win_desc = "首跑全量(all_videos)"
+    elif args.sub_window:
+        win_desc = f"首跑窗口 {args.sub_window} 天"
+    else:
+        win_desc = "首跑默认 30 天"
+    print(f"➕ 已新增 B站监控：{name}（uid={uid}）— {win_desc}。")
+
+
 def load_weread_auth() -> tuple:
     """优先取环境变量 WEREAD_TOKEN/WEREAD_VID，否则回落到扫码保存的 .wechat_auth.json。"""
     token = os.environ.get("WEREAD_TOKEN", "")
@@ -416,7 +494,8 @@ def _discover_wechat_retry(src, state, mode, name, retries: int = 3) -> tuple:
     return [], auth_failed
 
 
-def discover_all(subs: dict, state: dict, mode: str = "auto") -> list:
+def discover_all(subs: dict, state: dict, mode: str = "auto",
+                 force_all: bool = False) -> list:
     all_new: list = []
     token, vid = load_weread_auth()
 
@@ -515,7 +594,8 @@ def discover_all(subs: dict, state: dict, mode: str = "auto") -> list:
     for b in subs.get("bilibili", []):
         src = BilibiliSource(b["uid"], types=b.get("types"),
                              all_videos=b.get("all_videos", False),
-                             window_days=b.get("window_days"))
+                             window_days=b.get("window_days"),
+                             force_all=force_all)
         try:
             found = src.discover(state, first_run_limit=FIRST_RUN_LIMIT, mode=mode)
             for it in found:
@@ -759,6 +839,24 @@ def main():
                         help="统一抓取重试入口：重抓 pending_refetch 中的限流文章，并把 pending_summaries 里 raw 为空的条目也提升回重试；重抓后自动重总结")
     parser.add_argument("--obsidian", action="store_true",
                         help="同时写入 Obsidian（默认只写飞书）")
+    parser.add_argument("--all-videos", action="store_true",
+                        help="事后强制全量重抓：无视首跑/seen 门禁，翻全部分页抓所有 B站视频。"
+                             "仅用于『seen 已填充、想补历史』的显式场景；"
+                             "默认不传则首跑按各源配置（全抓=all_videos / 指定窗口 / 默认30天）、"
+                             "之后增量（1~2天窗口、封顶30天 + seen 去重）只处理新增")
+    # ---- 机械新增/查重订阅 ----
+    parser.add_argument("--check-subscribed", type=str, default="",
+                        help="机械查重：输入名字/uid，报告是否已在监控名单（bilibili/wechat/scys）")
+    parser.add_argument("--subscribe", action="store_true",
+                        help="机械新增 B站UP 监控：先查重，已在名单则回『已在监控名单内』不添加；"
+                             "否则按窗口参数追加到 subscriptions.json")
+    parser.add_argument("--uid", type=str, default="", help="--subscribe 用：B站UP主 uid")
+    parser.add_argument("--name", type=str, default="", help="--subscribe 用：UP主名字")
+    parser.add_argument("--category", type=str, default="", help="--subscribe 用：分类标签")
+    parser.add_argument("--sub-all", action="store_true",
+                        help="--subscribe 用：首跑全量（all_videos:true，抓整门课/全部视频）")
+    parser.add_argument("--sub-window", type=float, default=0,
+                        help="--subscribe 用：首跑窗口天数（N个月=N*30；1年=365；2年=730）")
     # ---- 公众号历史回溯（续批）功能 ----
     parser.add_argument("--backfill", action="store_true",
                         help="公众号历史回溯（续批）模式：配合 --names/--since 入队，或 --drain 取队列 job")
@@ -778,6 +876,19 @@ def main():
     subs = load_subscriptions()
     state = load_state()
 
+    if args.check_subscribed:
+        hit = find_subscription(subs, args.check_subscribed)
+        if hit:
+            platform, entry = hit
+            print(f"✅ 已在监控名单内（{platform}）：{entry.get('name', entry)}")
+        else:
+            print(f"ℹ️ 不在监控名单内：{args.check_subscribed}")
+        return
+
+    if args.subscribe:
+        cmd_subscribe(args, subs)
+        return
+
     if args.refetch_only:
         n = _promote_empty_summaries()
         if n:
@@ -789,7 +900,7 @@ def main():
         cmd_backfill(args, subs, state)
         return
 
-    all_new = discover_all(subs, state, mode=mode)
+    all_new = discover_all(subs, state, mode=mode, force_all=args.all_videos)
 
     if not all_new:
         # 首跑踩坑：discover_all 返回 0 时容易被误认成「成功无新内容」，这里显式提示，
