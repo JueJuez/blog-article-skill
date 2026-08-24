@@ -11,7 +11,7 @@
 - 范围：B站UP主监控 + **公众号监控（路线 B）**。公众号经 weread 代理（weread.111965.xyz）发现新文。
 - AI 引擎：用 WorkBuddy 内置 AI，由 automation 定时驱动；run.py 降级时顶层 AI 兜底总结。
 - 输出：Obsidian（OBSIDIAN_VAULT_PATH 已配）+ 飞书（FEISHU_WIKI_* 已配），双写。
-- 抓取策略：**按内容发布时间做「时间窗口」过滤**（首跑 `BILI_FIRST_WINDOW_DAYS`=7 天 / 每日 `BILI_DAILY_WINDOW_DAYS`=1 天），单页拉满 `BILI_PAGE_SIZE`=50；不在首跑硬取"最近 N 条"。详见 `monitors/README.md`。
+- 抓取策略：**按内容发布时间做「时间窗口」过滤**（首跑 `BILI_FIRST_WINDOW_DAYS`=30 天 / 每日 `BILI_DAILY_WINDOW_DAYS`=1 天，断跑自动拉长封顶 30 天），单页拉满 `BILI_PAGE_SIZE`=50；不在首跑硬取"最近 N 条"。详见 `monitors/README.md`。
 - 调度：**已移除自动调度（2026-07-24）**，改为用户主动触发（说「跑一次 / 跑一下」等关键词即跑 `--mode auto`）。原「每日 10:00/17:00 自动化」方案已废弃，见 `RULES.md` §3C。
 - 去重：本地 `monitors/state.json` 记录已处理 文章id / BV / 专栏 id / dyn:id，per-source 裁剪（`STATE_KEEP` 默认 1000）防膨胀。
 - 路由：公众号文章→`articles.skill_main`；B站视频→`videos.summarize_video`；B站专栏(cv)→`articles.skill_main`；B站动态→`articles.skill_main`（短动态走轻量「速览」）。
@@ -19,7 +19,7 @@
 ## 不做什么
 - 不自己逆向微信读书私有API（复用 weread.111965.xyz 代理）。
 - 不接外部 AI key（本轮用内置 AI）。
-- 不回溯全部历史：默认只处理时间窗口内的内容（首跑 7 天）；如需更大窗口调 `BILI_FIRST_WINDOW_DAYS`。
+- 不回溯全部历史：默认只处理时间窗口内的内容（首跑 30 天）；如需更大窗口调 `BILI_FIRST_WINDOW_DAYS` 或在订阅时显式指定（`--sub-window` / `--sub-all`）。
 
 ## 实现状态（2026-07-22，已落地并经本机验证）
 - `monitors/` 包已落地：state.py（去重+裁剪）/ wechat.py（WereadClient+WechatSource，token 数小时失效、交互式弹码续期）/ bilibili.py（**B站官方 API + WBI 签名，不依赖 RSSHub**）/ ad_filter.py（广告过滤）/ run.py（CLI）/ _auth.py（扫码登录）。
