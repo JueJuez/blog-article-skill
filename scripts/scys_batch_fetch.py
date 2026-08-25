@@ -68,14 +68,41 @@ def human_gap(rng: tuple[float, float]) -> None:
     time.sleep(random.uniform(*rng))
 
 
+LOCK_STALE_HOURS = 6
+
+
+def _lock_is_stale(lock: Path) -> bool:
+    """残留锁判定：持有进程已死（PID 判定）→ True；PID 读不出/无 psutil → 锁龄超 LOCK_STALE_HOURS。"""
+    try:
+        pid_txt = lock.read_text(encoding="utf-8").strip()
+    except OSError:
+        pid_txt = ""
+    if pid_txt.isdigit():
+        try:
+            import psutil
+            return not psutil.pid_exists(int(pid_txt))
+        except ImportError:
+            pass
+    try:
+        return (time.time() - lock.stat().st_mtime) > LOCK_STALE_HOURS * 3600
+    except OSError:
+        return False
+
+
 def _acquire_lock() -> Path:
-    """进程互斥锁：补齐批量与日常监控共用 state/pending 文件，并发写会互相覆盖丢数据。"""
+    """进程互斥锁：补齐批量与日常监控共用 state/pending 文件，并发写会互相覆盖丢数据。
+    残留自动释放（DECISION-20260825）：持有进程已退出或锁超龄 → 自动接管，不再需手动删。"""
     lock = BASE / ".lock"
     try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
-        raise SystemExit(f"[lock] 已有一个 scys 抓取进程在跑（{lock}）。"
-                         f"若确认没有进程在跑，手动删除该文件后重试。")
+        if _lock_is_stale(lock):
+            print("[lock] 检测到残留锁（持有进程已退出或锁超龄），自动接管")
+            lock.unlink(missing_ok=True)
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        else:
+            raise SystemExit(f"[lock] 已有一个 scys 抓取进程在跑（{lock}）。"
+                             f"若确认没有进程在跑，手动删除该文件后重试。")
     with os.fdopen(fd, "w") as f:
         f.write(str(os.getpid()))
     return lock

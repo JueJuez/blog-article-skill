@@ -37,6 +37,7 @@ def main():
     parser.add_argument('--author', '-a', type=str, default='', help='作者信息')
     parser.add_argument('--tags', '-t', type=str, default='', help='标签，逗号分隔')
     parser.add_argument('--title', type=str, default='', help='原始文章标题（可选，用于文件名）')
+    parser.add_argument('--force', action='store_true', help='强制重写（跳过已总结去重闸门）')
 
     args = parser.parse_args()
 
@@ -62,6 +63,14 @@ def main():
 
     tags = [t.strip() for t in args.tags.split(',')] if args.tags else []
 
+    # 机械去重闸门（DECISION-20260825）：URL 已总结过 → 跳过写入（子 Agent 可安全标记队列条目完成）
+    from articles import dedup
+    if args.url and not args.force:
+        rec = dedup.is_summarized(url=args.url)
+        if rec:
+            print(f"⏭️ 该链接已总结过，机械跳过写入（{rec.get('filename', '')}）。如需重写加 --force")
+            return 0
+
     from articles.main import save_summarized_article
 
     try:
@@ -72,6 +81,7 @@ def main():
             tags=tags,
             original_title=args.title
         )
+        dedup.mark_summarized(url=args.url, title=args.title, filename=filename)
         print(f"\n✅ 文章总结保存完成！")
         print(f"   文件名: {filename}")
         return 0

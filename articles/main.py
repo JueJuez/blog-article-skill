@@ -477,12 +477,22 @@ def save_summary_only(input_data: dict) -> dict:
     obsidian = input_data.get('obsidian', False)
     if not summarized_content:
         return {'success': False, 'message': '请提供总结好的内容'}
+    # 机械去重闸门（DECISION-20260825）：URL 已总结过 → 不再写飞书，按成功出队；
+    # force=True 为强制重写逃生舱。AI 只交总结，写不写由代码决定。
+    if original_url and not input_data.get('force', False):
+        rec = dedup.is_summarized(url=original_url)
+        if rec:
+            print(f"⏭️ 该链接已总结过，机械跳过写入（{rec.get('filename', '')}）。如需重写传 force=True")
+            return {'success': True, 'skipped': True,
+                    'message': f"ALREADY_EXISTS:{rec.get('filename', '')}",
+                    'filename': rec.get('filename', '')}
     try:
         formatted_note, filename = save_summarized_article(
             summarized_content, original_url=original_url, author=author,
             tags=tags, original_title=original_title, publish_time=publish_time,
             folder=folder, obsidian=obsidian
         )
+        dedup.mark_summarized(url=original_url, title=original_title, filename=filename)
         return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note}
     except Exception as e:
         return {'success': False, 'message': f'保存失败: {str(e)}'}

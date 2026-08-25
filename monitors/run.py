@@ -254,6 +254,12 @@ def _queue_pending_summary(it: dict, res: dict) -> None:
     url = it.get("url", "")
     if url and any(p.get("url") == url for p in pending):
         return
+    # 机械前置①（DECISION-20260825）：已总结过的 URL 不入队，省 AI 总结 token
+    if url:
+        from articles import dedup as _dedup
+        if _dedup.is_summarized(url=url):
+            print(f"[need-summary] 跳过入队（已总结过）: {url}")
+            return
     # 标题从正文提炼：列表标题若泛化（如「大家好，我是哥飞。」），改从 body 首句命名
     list_title = res.get("original_title") or it.get("title", "")
     entry_title = derive_title_from_body(res.get("raw_file", ""), list_title)
@@ -842,6 +848,7 @@ def main():
     parser.add_argument("--all-videos", action="store_true",
                         help="事后强制全量重抓：无视首跑/seen 门禁，翻全部分页抓所有 B站视频。"
                              "仅用于『seen 已填充、想补历史』的显式场景；"
+                             "已总结过的视频（dedup 索引命中）自动跳过，不会重复入队/重复落盘。"
                              "默认不传则首跑按各源配置（全抓=all_videos / 指定窗口 / 默认30天）、"
                              "之后增量（1~2天窗口、封顶30天 + seen 去重）只处理新增")
     # ---- 机械新增/查重订阅 ----

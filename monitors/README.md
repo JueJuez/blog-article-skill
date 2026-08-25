@@ -63,7 +63,7 @@
 - **去重**：与批量补齐共用 `notes/_scraped/scys/state.json` 的 done 列表；已在补齐里抓过的帖不会重复抓/总结。
 - **窗口默认 7 天**（大于日窗）：新帖常在发布数日后才被标精华，窗口太窄会永久漏「晚精华」帖；窗口放大只多翻列表页（便宜），done 去重兜底不会重复抓正文。已知局限：发布超 7 天才标精华的帖会漏，靠半年一次的「补齐scys」兜底。
 - **前提**：用户已在 Chrome 登录 scys.com。CDP 可用时走 CDP 接管活 Chrome；不可用时自动回退 profile_clone（kill Chrome → 同步 cookie 到 ProfileClone → headless 抓取），不影响公众号/B站。
-- **互斥**：`notes/_scraped/scys/.lock` 进程锁——「跑一下」的 scys 增量与「补齐scys」批量不会并发写坏 state/pending；若进程异常退出残留锁文件，确认无进程后手动删除即可。
+- **互斥**：`notes/_scraped/scys/.lock` 进程锁——「跑一下」的 scys 增量与「补齐scys」批量不会并发写坏 state/pending；**2026-08-25 起残留自动释放**（锁内记录 PID：持有进程已死 → 自动接管；PID 读不出/无 psutil → 锁龄超 6 小时接管），无需再手动删锁。
 - **临时停用**：把 `subscriptions.json` 的 `scys` 列表清空即可，其他源照跑。
 
 ## 配置（`.env`）
@@ -107,6 +107,7 @@
 无 `AI_PROVIDER` 时，`skill_main` 进入降级：把原文 + 模板 `prompt` + `raw_file` + `folder` 写入 **`pending_summaries.json`**（按 `url` 去重），`run.py` 末尾打印 `NEED_CONTINUE_SUMMARY` 提示。该队列**不会自动消化**，由外层模型接单：
 
 - **派子 Agent 执行（强制，保持主会话干净）**：每文件夹起一个子 Agent（如 `副业增长/生财有术` 一个、`投资交易/中金点睛` 一个），串行处理避免飞书并发建节点重复；子 Agent 读 `raw_file` → 按 `note_type` 模板总结 → 调 `scripts/persist_summary.py` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，保存成功后**自动从队列移除该条**，中途停止可安全重跑）。
+- **派单前先跑 `python scripts/filter_pending.py`**（机械清洗两队列：URL 命中 dedup 索引的条目自动出队，scys 队列同时清 `summarized:true`——多 Agent 接力时已总结内容不再消耗 AI token、不再重复落飞书；决策见 `docs/decisions/DECISION-20260825-dedup-frontload-and-lock-release.md`）。
 - 严禁在主会话里直接总结——会污染上下文、降低总结质量。
 
 **双队列模型（务必分清）**：
