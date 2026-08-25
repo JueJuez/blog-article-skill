@@ -3,12 +3,27 @@
     {
       "mp_id": "MP_WXS_此处替换",
       "name": "公众号名称（可选，仅用于笔记作者栏）",
-      "share_url": "公众号分享链接（二选一：填 mp_id 或 share_url）"
+      "share_url": "公众号分享链接（二选一：填 mp_id 或 share_url）",
+      "category": "分类（投资交易/独立开发出海/...）",
+      "series_patterns": [
+        {
+          "pattern": "标题命中子串（如 SEO）",
+          "series": "系列容器名（如 哥飞SEO教程）"
+        }
+      ]
     }
   ],
   "bilibili": [
     {
-      "uid": "22675713"
+      "uid": "22675713",
+      "name": "UP主名（规范名；展示名带空格如 'Mark Huang' 会自动归一匹配 'Mark__Huang'）",
+      "category": "分类",
+      "series_patterns": [
+        {
+          "pattern": "直播回放",
+          "series": "直播回放"
+        }
+      ]
     }
   ],
   "scys": [

@@ -177,6 +177,7 @@ def _item_folder(it: dict) -> str:
         "author": it.get("mp_name") or it.get("sub_name"),
         "mp_name": it.get("mp_name"),
         "sub_name": it.get("sub_name"),
+        "title": it.get("title"),
         "source": it.get("source"),
         "route": it.get("route"),
         "url": it.get("url"),

@@ -60,6 +60,8 @@ class FeishuOutput(BaseOutput):
         self.wiki_space = os.getenv("FEISHU_WIKI_SPACE", "")
         self.wiki_parent_node = os.getenv("FEISHU_WIKI_PARENT_NODE", "")
         self._cli_available = None
+        # 最近一次 save 创建的文档信息（供总览索引使用）
+        self._last_created = None
 
     @staticmethod
     def _rate_limit_text(text: str) -> bool:
@@ -206,7 +208,7 @@ class FeishuOutput(BaseOutput):
     _inbox_node_cache: dict = {}
 
     def ensure_inbox_node(self) -> str:
-        """确保「【00_待归类】」收件箱节点存在于父节点下，返回其 node_token（已存在则复用）。
+        """确保「【待归类】」收件箱节点存在于父节点下，返回其 node_token（已存在则复用）。
 
         与 ensure_series_node 同理：单篇总结默认落此节点，用户后续手动拖到分类节点。
         """
@@ -214,7 +216,7 @@ class FeishuOutput(BaseOutput):
             return ""
         parent = self.wiki_parent_node
         space = self.wiki_space
-        cache_key = f"{space}|{parent}|【00_待归类】"
+        cache_key = f"{space}|{parent}|【待归类】"
         if cache_key in FeishuOutput._inbox_node_cache:
             return FeishuOutput._inbox_node_cache[cache_key]
         # 1) 查已有子节点
@@ -227,7 +229,7 @@ class FeishuOutput(BaseOutput):
             ])
             if listing and listing.get("ok"):
                 for item in listing.get("data", {}).get("nodes", []):
-                    if item.get("title") == "【00_待归类】":
+                    if item.get("title") == "【待归类】":
                         tok = item.get("node_token", "")
                         FeishuOutput._inbox_node_cache[cache_key] = tok
                         return tok
@@ -237,7 +239,7 @@ class FeishuOutput(BaseOutput):
         try:
             result = self._run_cli_command([
                 "wiki", "+node-create",
-                "--title", "【00_待归类】",
+                "--title", "【待归类】",
                 "--node-type", "origin",
                 "--obj-type", "docx",
                 "--parent-node-token", parent,
@@ -248,7 +250,7 @@ class FeishuOutput(BaseOutput):
                 node = result.get("data", {})
                 tok = node.get("node_token") or (node.get("node", {}) or {}).get("node_token")
                 if tok:
-                    print(f"   📥 已建飞书收件箱节点「【00_待归类】」：{tok}")
+                    print(f"   📥 已建飞书收件箱节点「【待归类】」：{tok}")
                     FeishuOutput._inbox_node_cache[cache_key] = tok
                     return tok
         except Exception as e:
@@ -292,6 +294,33 @@ class FeishuOutput(BaseOutput):
             print(f"   ⚠️ 删节点异常：{e}")
             return False
 
+
+    def move_node(self, node_token: str, target_parent_token: str) -> bool:
+        """把 wiki 节点移动到目标父节点下（迁移/重归档用）。
+
+        封装 lark-cli `wiki +move --node-token <tok> --target-parent-token <parent>`。
+        返回是否成功。无权限即时移动时 CLI 可能返回长任务，这里仅触发、不轮询
+        （迁移脚本在移动后重建总览，最终一致性由 rebuild 兜底）。
+        """
+        if not node_token or not target_parent_token or not self.is_available():
+            return False
+        try:
+            result = self._run_cli_command([
+                "wiki", "+move",
+                "--node-token", node_token,
+                "--target-parent-token", target_parent_token,
+                "--as", "user", "--json",
+            ])
+            if result and result.get("ok"):
+                return True
+            # CLI 可能返回 task（异步移动），也算已接受
+            if result and (result.get("task") or result.get("data", {}).get("task")):
+                return True
+            print(f"   ⚠️ 移动节点 {node_token} 返回非 ok：{result}")
+            return False
+        except Exception as e:
+            print(f"   ⚠️ 移动节点异常：{e}")
+            return False
 
     def _verify_node_present(self, parent_token: str, title: str) -> bool:
         """保存后最佳努力校验：在 parent 下查找刚写入的 title 节点。
@@ -482,7 +511,7 @@ class FeishuOutput(BaseOutput):
             parent_token = self.ensure_folder_path(dirs)
         filename = base_name
 
-        # 单篇总结默认进「【00_待归类】」收件箱（用户手动归类）；系列课走 save_series 显式传 parent_token
+        # 单篇总结默认进「【待归类】」收件箱（用户手动归类）；系列课走 save_series 显式传 parent_token
         if not parent_token:
             parent_token = self.ensure_inbox_node()
 
@@ -519,8 +548,17 @@ class FeishuOutput(BaseOutput):
             result = self._run_cli_command(args, input_text=content)
 
             if result and (result.get("ok") or result.get("code") == 0):
-                doc_url = result.get("data", {}).get("doc_url")
-                node_token = result.get("data", {}).get("node_token")
+                _d = result.get("data", {}) or {}
+                _doc = _d.get("document", {}) or {}
+                # 修复：真实返回结构是 data.document.url / data.document.document_id，
+                # 旧的 data.doc_url / data.node_token 恒为 None（导致从未拿到链接）。
+                doc_url = _doc.get("url") or _d.get("doc_url") or ""
+                node_token = _doc.get("document_id") or _d.get("node_token") or ""
+                # 记录本次创建结果，供总览索引使用
+                self._last_created = {
+                    "title": title, "url": doc_url,
+                    "node_token": node_token, "parent_token": parent_token or "",
+                }
 
                 print(f"✓ 文档创建成功")
                 if doc_url:
@@ -547,7 +585,7 @@ class FeishuOutput(BaseOutput):
             parent_token = self.ensure_folder_path(dirs)
         filename = base_name
 
-        # 单篇总结默认进「【00_待归类】」收件箱；系列课走 save_series 显式传 parent_token
+        # 单篇总结默认进「【待归类】」收件箱；系列课走 save_series 显式传 parent_token
         if not parent_token:
             parent_token = self.ensure_inbox_node()
 
@@ -579,8 +617,14 @@ class FeishuOutput(BaseOutput):
             result = await self._run_cli_command_async(args, input_text=content)
 
             if result and (result.get("ok") or result.get("code") == 0):
-                doc_url = result.get("data", {}).get("doc_url")
-                node_token = result.get("data", {}).get("node_token")
+                _d = result.get("data", {}) or {}
+                _doc = _d.get("document", {}) or {}
+                doc_url = _doc.get("url") or _d.get("doc_url") or ""
+                node_token = _doc.get("document_id") or _d.get("node_token") or ""
+                self._last_created = {
+                    "title": title, "url": doc_url,
+                    "node_token": node_token, "parent_token": parent_token or "",
+                }
 
                 print(f"✓ 文档创建成功（异步）")
                 if doc_url:

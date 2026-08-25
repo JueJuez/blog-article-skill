@@ -300,6 +300,23 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
 
     manager.save_all(formatted_note, filename, title=title)
 
+    # 总览索引维护（仅监控路径 folder 非空时）：落盘成功后把本篇插入账号容器总览，
+    # 解决飞书按创建时间排、补历史数据后顺序乱的问题（用户 2026-08-25 决策）。
+    # 系列课有集数顺序、走自有总览，不重复进账号总览。
+    if folder:
+        feishu_out = next((o for o in manager.get_available_outputs() if o.name == "feishu"), None)
+        last = getattr(feishu_out, "_last_created", None) if feishu_out else None
+        if last and last.get("url"):
+            try:
+                from shared import feishu_overview as fo
+                fo.add_entry(
+                    folder,
+                    parent_token=last.get("parent_token"),
+                    entry={"title": title, "url": last["url"], "publish_time": publish_time},
+                )
+            except Exception as e:
+                print(f"  ⚠️ 总览索引更新失败（非致命，不影响落盘）：{e}")
+
     print(f"\n文章总结保存完成！")
     print(f"文件名: {filename}")
     print(f"已保存到: {', '.join([o.name for o in manager.get_available_outputs()])}")
@@ -533,6 +550,7 @@ def skill_main(input_data: dict) -> dict:
             author = extract_author(_content_str.strip())
         folder = resolve_folder({
             "author": author, "url": _content_str.strip(),
+            "title": input_data.get("original_title", ""),
             "category": input_data.get("category", ""), "source": "user_link",
         })
         if author and author not in (tags or []):
