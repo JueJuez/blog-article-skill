@@ -81,6 +81,19 @@ def is_summarized(url: str = "", content: str = "") -> dict:
     return {}
 
 
+def batch_is_summarized(urls) -> set:
+    """批量查询：返回 urls 中已总结的子集（一次读索引，避免逐条读文件 IO）。
+
+    用于需要大量判断的场景——如 `--all-videos` 全量重抓时跳过已总结视频，
+    防止 seen 门禁被绕过后又把已总结项重新入队/重复落盘。
+    """
+    urls = [u for u in urls if u and u.strip()]
+    if not urls:
+        return set()
+    index = _load_index()
+    return {u for u in urls if index.get(_key_for(u)[1])}
+
+
 def mark_summarized(url: str = "", content: str = "", title: str = "", filename: str = "") -> None:
     """记录一次成功总结。"""
     prefix, h = _key_for(url, content)

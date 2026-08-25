@@ -65,7 +65,7 @@ class OutputManager:
             self._resolved = self._resolve()
         return self._resolved
 
-    def save_all(self, content: str, filename: str) -> None:
+    def save_all(self, content: str, filename: str, title: str = "") -> None:
         available_outputs = self.get_available_outputs()
 
         if not available_outputs:
@@ -79,7 +79,7 @@ class OutputManager:
         for output in available_outputs:
             print(f"\n[{output.name}]")
             try:
-                ok = output.save(content, filename)
+                ok = output.save(content, filename, title=title)
             except Exception as e:
                 ok = False
                 print(f"✗ 输出模块 {output.name} 异常: {str(e)}")

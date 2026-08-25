@@ -17,7 +17,7 @@ class ObsidianOutput(BaseOutput):
             return filename
         return f"{OBSIDIAN_INBOX}/{filename}"
 
-    def save(self, content: str, filename: str) -> bool:
+    def save(self, content: str, filename: str, title: str = "") -> bool:
         if not self.is_available():
             return False
 

@@ -442,16 +442,35 @@ class BilibiliSource:
             cap = min(int(first_run_limit), _BILI_SAFETY_CAP)
 
         if "video" in self.types:
-            for v in _fetch_vlist(self.uid, ps=_BILI_PAGE_SIZE, paginate=all_videos_this_run):
+            # 先收集全部视频（force_all 翻全部分页；普通增量单页）。force_all 时预读 dedup 索引：
+            # seen 已填充后，--all-videos 补历史必须跳过 seen 门禁（否则抓回的旧视频全被 seen 跳过=白抓），
+            # 但已总结过的（dedup 索引命中）要跳过，避免重新入队/重复落盘。
+            vlist = list(_fetch_vlist(self.uid, ps=_BILI_PAGE_SIZE, paginate=all_videos_this_run))
+            summarized_urls: set = set()
+            if all_videos_this_run:
+                try:
+                    from articles import dedup as _dedup  # lazy import：run.py 已保证 sys.path + load_dotenv
+                    summarized_urls = _dedup.batch_is_summarized(
+                        f"https://www.bilibili.com/video/{v.get('bvid')}" for v in vlist if v.get("bvid")
+                    )
+                except Exception:
+                    summarized_urls = set()  # dedup 不可用时不拦截（能抓回历史优先，不因去重失败全放弃）
+            for v in vlist:
                 bvid = v.get("bvid")
                 if not bvid or bvid in fetched_ids:
                     continue
-                fetched_ids.append(bvid)
-                # 时间窗口过滤：只保留窗口内发布的视频
+                # 时间窗口过滤：只保留窗口内发布的视频。
+                # 窗口外的绝不 mark_seen（与微信对齐）——否则更新频率低的 UP 首页 50 条覆盖几个月，
+                # 断跑后 effective_window_days 补齐窗口时，本该补抓的旧视频已被 seen 永久跳过=漏抓。
                 if int(v.get("created", 0) or 0) < cutoff:
                     continue
-                if bvid in seen:
+                # seen 去重：日常增量只处理新增；force_all（--all-videos 补历史）跳过 seen 门禁
+                if bvid in seen and not all_videos_this_run:
                     continue
+                # force_all 补历史：已总结过的跳过（防重复入队/重复落盘），未总结的错标历史才能补回
+                if f"https://www.bilibili.com/video/{bvid}" in summarized_urls:
+                    continue
+                fetched_ids.append(bvid)
                 is_charging = bool(v.get("is_charging_arc"))
                 vids.append({
                     "source": "bilibili",
@@ -474,8 +493,7 @@ class BilibiliSource:
                 did = f"dyn:{d['id']}"
                 if did in fetched_ids:
                     continue
-                fetched_ids.append(did)  # 无论是否干货都记 seen，避免下次重复拉取
-                # 时间窗口过滤：只保留窗口内发布的动态
+                # 时间窗口过滤：只保留窗口内发布的动态（窗口外不 mark_seen，与视频/微信对齐）
                 if int(d.get("pub_ts", 0) or 0) < cutoff:
                     continue
                 if did in seen:
@@ -483,6 +501,7 @@ class BilibiliSource:
                 # 无正文/无干货（系统通知、空壳动态）直接屏蔽，不进总结管线
                 if not _dynamic_is_substantive(d.get("text", "")):
                     continue
+                fetched_ids.append(did)  # 窗口内（含无干货）都记 seen，避免下次重复拉取判断
                 dyns.append({
                     "source": "bilibili",
                     "mp_name": d.get("author", ""),

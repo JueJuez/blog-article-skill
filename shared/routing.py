@@ -8,10 +8,10 @@
   【监控】/公众号/<账号名>/
   【监控】/生财有术/<领域>/             scys（生财有术）按领域分子节点
   【监控】/B站/<账号名>/<系列名>/       系列课：归属监控账号时挂其下
-  【监控】/系列课/<系列名>/             独立系列（无所属账号）
-  【我的笔记】/作者/<名>/               手贴：识别出非监控常驻作者
-  【我的笔记】/<分类>/                  手贴：散文按主题分类
-  【00_待归类】/                        兜底收件箱（一次性手动总结）
+  【我的总结】/系列课/<系列名>/         独立系列（无所属账号，手贴归我的总结；飞书内该节点由用户自行迁移整理）
+  【我的总结】/作者/<名>/               手贴：识别出非监控常驻作者（含其系列课 作者/<名>/<系列>）
+  【我的总结】/<分类>/                  手贴：无作者、有分类的散文（与 作者/ 同级兄弟）
+  【00_待归类】/                        兜底收件箱（作者未知且无分类）
 
 节点注册表 node_registry(state.json) 记录 作者→节点路径，路由优先复用已存在节点，
 避免「先手贴后订阅」导致同作者内容分裂两处。
@@ -23,7 +23,7 @@ import json
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 MONITOR_ROOT = "【监控】"
-MYNOTES_ROOT = "【我的笔记】"
+MYNOTES_ROOT = "【我的总结】"
 INBOX = "【00_待归类】"
 
 # 平台 → 文件夹名（平台比分类稳定：一个 UP 可能跨多个主题，且最贴「按账号名找」心智）
@@ -133,7 +133,10 @@ def resolve_folder(item: dict, state: dict = None) -> str:
         domain = item.get("scys_domain") or item.get("project") or item.get("domain") or "未分类"
         return f"{MONITOR_ROOT}/生财有术/{domain}"
 
-    # 2) 系列课：归属监控账号则挂其下，否则归独立系列课容器
+    # 2) 系列课：
+    #    - 归属监控账号 → 【监控】/<平台>/<账号>/<系列>
+    #    - 归属非监控作者（订阅名单外的作者字段）→ 【我的总结】/作者/<作者>/<系列>
+    #    - 无作者归属的独立系列 → 【我的总结】/系列课/<系列>（手贴独立系列，归我的总结；飞书内该节点由用户自行迁移整理）
     if item.get("series"):
         acct_name = _match_account(load_account_registry(), author)
         if acct_name:
@@ -141,7 +144,10 @@ def resolve_folder(item: dict, state: dict = None) -> str:
             if acct.get("monitored"):
                 pf = _PLATFORM_FOLDER.get(acct["platform"], acct["platform"])
                 return f"{MONITOR_ROOT}/{pf}/{acct_name}/{item['series']}"
-        return f"{MONITOR_ROOT}/系列课/{item['series']}"
+            return f"{MYNOTES_ROOT}/作者/{acct_name}/{item['series']}"
+        if author:
+            return f"{MYNOTES_ROOT}/作者/{author}/{item['series']}"
+        return f"{MYNOTES_ROOT}/系列课/{item['series']}"
 
     # 3) 节点注册表复用（优先：已存在节点一律复用，防分裂）
     nr = load_node_registry(state)

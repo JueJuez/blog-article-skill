@@ -12,7 +12,7 @@ class LocalOutput(BaseOutput):
             os.path.dirname(__file__), "..", "..", "notes")
         return os.path.abspath(default_path)
 
-    def save(self, content: str, filename: str) -> bool:
+    def save(self, content: str, filename: str, title: str = "") -> bool:
         try:
             os.makedirs(self.base_path, exist_ok=True)
             file_path = os.path.join(self.base_path, filename)

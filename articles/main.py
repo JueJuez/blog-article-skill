@@ -298,7 +298,7 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
     if fm:
         formatted_note = _yaml_frontmatter(fm) + formatted_note
 
-    manager.save_all(formatted_note, filename)
+    manager.save_all(formatted_note, filename, title=title)
 
     print(f"\n文章总结保存完成！")
     print(f"文件名: {filename}")
@@ -395,7 +395,12 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None,
                 error_msg = "❌ 内容获取失败：无法访问链接或解析内容"
                 print(error_msg)
                 return None, None, None, None, error_msg
-            original_title, article_content = result
+            original_title, article_content, page_publish_time = result
+            # 散文：优先用页面提取的「文章发布时间」命名文件名；
+            # 调用方显式传入（如监控 feed 自带发布时间）则尊重，不覆盖；
+            # 两者皆无 → 回退到处理时间（generate_filename 内部 datetime.now()）。
+            if not publish_time and page_publish_time:
+                publish_time = page_publish_time
             print(f"   ✅ 内容获取成功，标题: {original_title}")
         else:
             print("   直接处理输入的文章内容")
@@ -550,7 +555,7 @@ def skill_main(input_data: dict) -> dict:
         if summarized is not None:
             formatted_note = second
             filename = third
-            return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note}
+            return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note, 'original_title': original_title}
         elif second:
             article_content = second
             original_url = third

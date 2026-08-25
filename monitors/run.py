@@ -184,6 +184,44 @@ def _item_folder(it: dict) -> str:
     })
 
 
+# 账号/周刊通称后缀：命中这些词时，列表标题视为「无实质主题」，需从正文提炼真实标题
+_ACCOUNT_GENERIC_SUFFIXES = (
+    # 单字/双字通称
+    "研究", "精选", "周报", "日报", "晨报", "晚报", "周评", "月报",
+    "季报", "年报", "热点", "要闻", "资讯", "动态", "合集", "专辑",
+    "目录", "汇总", "回顾", "前瞻", "观察", "点评", "解读", "聚焦",
+    # 常见组合
+    "本周精选", "本月精选", "本周热点", "本周要闻", "本周资讯", "本周动态",
+    "本周汇总", "本周回顾", "本周前瞻", "本周观察", "本周点评", "本周解读",
+    "今日热点", "今日要闻", "今日资讯", "今日精选",
+    "本周研究", "本周研报", "行业研究", "市场点评", "策略点评",
+)
+
+
+def _is_account_generic_title(title: str) -> bool:
+    """标题等于监控账号名/alias，或「账号名/alias + 通称后缀」时，判为泛化。"""
+    t = (title or "").strip()
+    if not t:
+        return True
+    try:
+        from shared.routing import load_account_registry
+        reg = load_account_registry()
+    except Exception:
+        reg = {}
+    for name, info in reg.items():
+        aliases = [name] + list(info.get("aliases") or [])
+        for a in aliases:
+            a = (a or "").strip()
+            if not a:
+                continue
+            if t == a:
+                return True
+            for suf in _ACCOUNT_GENERIC_SUFFIXES:
+                if t == a + suf or t == suf:
+                    return True
+    return False
+
+
 # 泛化/问候型列表标题：这些标题在多个不同推文里重复使用，列表不可区分，
 # 必须改从正文首句提炼真标题（如「大家好，我是哥飞。」是哥飞真实推文标题，
 # 但每篇都叫这名；中金也常把不同文章都叫「中金研究」）。
@@ -205,6 +243,9 @@ def _is_generic_title(title: str) -> bool:
         return True
     # 过短且无实质中文（如纯账号名/符号）
     if len(t) <= 6 and not re.search(r'[\u4e00-\u9fff]{4,}', t):
+        return True
+    # 账号名/alias + 通称后缀（如「中金研究」「中金点睛本周精选」）也需从正文提炼
+    if _is_account_generic_title(t):
         return True
     return False
 
@@ -630,6 +671,8 @@ def apply_summaries(items: list, obsidian: bool = False) -> None:
     if refetch_prev:
         print(f"[refetch] 恢复上次限流未抓到正文的 {len(refetch_prev)} 篇，优先重抓")
         items = refetch_prev + items
+    # 按发布时间倒序处理：新的先创建，使飞书 wiki 默认列表呈现「日期近在前，旧在后」
+    items.sort(key=lambda x: x.get("publish_time", 0) or 0, reverse=True)
     refetch_next = []  # 本轮仍抓空的，写回队列下次再试
     dropped = []  # 连续多次抓不到（墙文/已删除/持续限流），移出队列待上报
     _first_article = True
@@ -697,7 +740,7 @@ def apply_summaries(items: list, obsidian: bool = False) -> None:
                 _cat = it.get("category", "")
                 res = skill_main({"content": src_text, "author": it.get("mp_name", ""),
                                   "publish_time": it.get("publish_time", 0),
-                                  "original_title": it.get("title", ""),
+                                  "original_title": real_title,
                                   "tags": [c for c in [_cat] if c],
                                   "folder": _item_folder(it), "obsidian": obsidian})
                 msg = res.get("message", "") if isinstance(res, dict) else str(res)

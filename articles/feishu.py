@@ -373,7 +373,7 @@ class FeishuOutput(BaseOutput):
         return ""
 
     def save_series(self, content: str, filename: str, series_title: str,
-                     parent_token: str = None) -> bool:
+                     parent_token: str = None, title: str = "") -> bool:
         """系列课保存：先确保父节点下有「系列名」容器，再在其下建文档。
 
         parent_token：系列容器挂到哪个节点下（默认根；监控系列应传 UP 节点 token，
@@ -384,7 +384,7 @@ class FeishuOutput(BaseOutput):
         parent = self.ensure_series_node(series_title, parent_token=parent_token)
         if not parent:
             return False
-        return self.save(content, filename, parent_token=parent)
+        return self.save(content, filename, parent_token=parent, title=title)
 
     # 多级目录节点缓存：{space|parent|a/b/c: node_token}
     _folder_path_cache: dict = {}
@@ -472,7 +472,7 @@ class FeishuOutput(BaseOutput):
                 return node
         return None
 
-    def save(self, content: str, filename: str, parent_token: str = None) -> bool:
+    def save(self, content: str, filename: str, parent_token: str = None, title: str = "") -> bool:
         if not self.is_available():
             return False
 
@@ -488,7 +488,8 @@ class FeishuOutput(BaseOutput):
 
         print("正在上传到飞书知识库...")
 
-        title = _sanitize_title(os.path.splitext(filename)[0])
+        # 节点标题优先用真实标题（original_title），避免标题退化成「中金研究-20260723」这类文件名
+        title = _sanitize_title(title or os.path.splitext(filename)[0])
 
         # upsert：父节点下已存在同名子文档则「删旧 + 新建」，避免重复节点。
         # 注意：feishu 的 docs +update --command overwrite 会把文档标题也改写成正文首行，
@@ -536,7 +537,7 @@ class FeishuOutput(BaseOutput):
             print(f"✗ 创建文档失败: {str(e)}")
             return False
 
-    async def save_async(self, content: str, filename: str, parent_token: str = None) -> bool:
+    async def save_async(self, content: str, filename: str, parent_token: str = None, title: str = "") -> bool:
         if not self.is_available():
             return False
 
@@ -552,7 +553,7 @@ class FeishuOutput(BaseOutput):
 
         print("正在上传到飞书知识库（异步）...")
 
-        title = _sanitize_title(os.path.splitext(filename)[0])
+        title = _sanitize_title(title or os.path.splitext(filename)[0])
 
         # upsert（与同步 save 一致）：同名已存在则「删旧 + 新建」，避免重复节点
         # （不用 docs +update overwrite：它会把标题改写成正文首行，破坏去重）

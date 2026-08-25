@@ -7,13 +7,18 @@
 绝不因某个解析库不可用而整体失败。
 """
 
+import json
 import os
 import re
 import sys
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
+
+# 中国时区（文章发布时间多为北京时间；naive 日期统一按 +08:00 解释，避免依赖系统 TZ）
+_CHINA_TZ = timezone(timedelta(hours=8))
 
 
 # 微信扫码墙 / 反爬页的 UI 特征文本。这些只出现在未登录态的墙页，绝不会出现在真实正文里。
@@ -201,6 +206,85 @@ def _trafilatura_title(html: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 发布时间提取（A 系列增强：散文单篇也用「文章发布时间」命名文件名）
+# ---------------------------------------------------------------------------
+
+def _parse_date_to_epoch(s: str) -> int:
+    """把常见日期字符串解析成 epoch 秒；解析失败返回 0。
+
+    支持：ISO 8601（含 +08:00 / Z / 无时区）、`2026-08-25 13:00:00`、
+    中文 `2026年08月25日`。naive 日期按北京时间（+08:00）解释，
+    使结果不依赖运行机器的系统时区。
+    """
+    if not s:
+        return 0
+    s = s.strip()
+    # 中文「年/月/日」归一为 ISO 日期
+    m = re.search(r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日', s)
+    if m:
+        s = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    # 截取第一个像日期的片段（去掉末尾 "(UTC)" / "GMT" 之类的尾巴）
+    m = re.search(
+        r'(\d{4}-\d{2}-\d{2}'
+        r'(?:[ T]\d{2}:\d{2}(?::\d{2})?'
+        r'(?:[Zz]|[+\-]\d{2}:?\d{2})?)?)',
+        s,
+    )
+    if not m:
+        return 0
+    ds = (m.group(1)
+          .replace(' ', 'T')
+          .replace('Z', '+00:00')
+          .replace('+0800', '+08:00')
+          .replace('+0000', '+00:00'))
+    try:
+        dt = datetime.fromisoformat(ds)
+    except ValueError:
+        return 0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_CHINA_TZ)
+    return int(dt.timestamp())
+
+
+def _extract_publish_time(soup: BeautifulSoup, html: str = "") -> int:
+    """从 HTML 提取文章原始发布时间（epoch 秒）。多源候选，取第一个能解析的。
+
+    候选顺序：meta(article:published_time / og:published_time / datePublished 等)
+    → itemprop=datePublished → <time datetime> → JSON-LD 的 datePublished。
+    """
+    candidates = []
+    for prop in ("article:published_time", "article:published",
+                 "og:article:published_time", "og:published_time",
+                 "datePublished", "publishDate", "pubdate", "publishdate"):
+        tag = (soup.find("meta", attrs={"property": prop})
+               or soup.find("meta", attrs={"name": prop}))
+        if tag and tag.get("content"):
+            candidates.append(tag["content"].strip())
+    tag = soup.find(attrs={"itemprop": "datePublished"})
+    if tag and tag.get("content"):
+        candidates.append(tag["content"].strip())
+    for t in soup.find_all("time"):
+        if t.get("datetime"):
+            candidates.append(t["datetime"].strip())
+    # JSON-LD
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+        except Exception:
+            continue
+        for it in (data if isinstance(data, list) else [data]):
+            if isinstance(it, dict):
+                dp = it.get("datePublished") or it.get("dateCreated") or it.get("uploadDate")
+                if dp:
+                    candidates.append(str(dp).strip())
+    for c in candidates:
+        epoch = _parse_date_to_epoch(c)
+        if epoch:
+            return epoch
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # 对外主函数
 # ---------------------------------------------------------------------------
 
@@ -211,7 +295,10 @@ def fetch_web_content(url: str):
     与普通文章共用同一条总结管道，前端无感。
 
     Returns:
-        tuple: (title, content) 或 None
+        tuple: (title, content, publish_time) 或 None
+            - publish_time: 文章原始发布时间（epoch 秒，从页面 meta/JSON-LD 提取），
+              提取不到为 0。散文单篇据此命名文件名；监控/补齐用各自 feed 的发布时间，
+              不会被此处覆盖。
     """
     if is_scys_url(url):
         print("🔐 检测到 scys（生财有术）链接 → 走 CDP 登录态抓取")
@@ -229,7 +316,7 @@ def fetch_web_content(url: str):
         if len(body.strip()) < 100:
             print("❌ scys 抓取正文过短，视为失败")
             return None
-        return (result["title"], body)
+        return (result["title"], body, 0)
 
     html, response = _download(url)
     if not html:
@@ -261,7 +348,10 @@ def fetch_web_content(url: str):
     # 标题：bs4 优先（保留特例），无则 trafilatura 元数据
     title = _extract_title(soup, url) or _trafilatura_title(html) or "未命名文章"
 
-    return (title, content)
+    # 发布时间：从页面 meta/JSON-LD 提取（散文单篇据此命名文件名）
+    publish_time = _extract_publish_time(soup, html)
+
+    return (title, content, publish_time)
 
 
 def async_fetch_web_content(url: str):

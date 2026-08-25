@@ -31,7 +31,7 @@ def _client_with(articles):
 
 def _make_articles(n=20, start_ts=None):
     if start_ts is None:
-        start_ts = 1000
+        start_ts = int(time.time())  # 贴近 now：时间窗口机制引入后，远古时间戳会被窗口过滤导致误判
     return [{"id": f"a{i}", "title": f"t{i}", "publishTime": start_ts - i}
             for i in range(n)]
 
@@ -84,7 +84,7 @@ class TestWechatSource(unittest.TestCase):
             parser.parse_args(["--mode", "daily"])
 
     def test_resolve_via_share_url(self):
-        client = _client_with([{"id": "a0", "title": "t", "publishTime": 1}])
+        client = _client_with([{"id": "a0", "title": "t", "publishTime": int(time.time())}])
         src = WechatSource(client, share_url="https://mp.weixin.qq.com/s/xxx")
         state = load_state()
         src.discover(state)
@@ -92,7 +92,7 @@ class TestWechatSource(unittest.TestCase):
         self.assertEqual(src.mp_id, "MP_X")
 
     def test_article_url_shape(self):
-        client = _client_with([{"id": "abc123", "title": "t", "publishTime": 1}])
+        client = _client_with([{"id": "abc123", "title": "t", "publishTime": int(time.time())}])
         src = WechatSource(client, mp_id="MP_X")
         state = load_state()
         new = src.discover(state)
@@ -101,12 +101,13 @@ class TestWechatSource(unittest.TestCase):
 
     def test_ad_filtered_in_discover(self):
         # 标题含营销词的文章在 discover 阶段被剔除，且不补
+        now = int(time.time())
         arts = [
-            {"id": "good1", "title": "干货文章一篇", "publishTime": 2000},
-            {"id": "ad1", "title": "生财3天免费体验营第161期即将开营", "publishTime": 1999},
-            {"id": "ad2", "title": "限时报名领取福利", "publishTime": 1998},
-            {"id": "good2", "title": "另一篇干货", "publishTime": 1997},
-            {"id": "good3", "title": "第三篇干货", "publishTime": 1996},
+            {"id": "good1", "title": "干货文章一篇", "publishTime": now - 100},
+            {"id": "ad1", "title": "生财3天免费体验营第161期即将开营", "publishTime": now - 200},
+            {"id": "ad2", "title": "限时报名领取福利", "publishTime": now - 300},
+            {"id": "good2", "title": "另一篇干货", "publishTime": now - 400},
+            {"id": "good3", "title": "第三篇干货", "publishTime": now - 500},
         ]
         client = _client_with(arts)
         src = WechatSource(client, mp_id="MP_X")
@@ -279,6 +280,47 @@ class TestBilibiliSource(unittest.TestCase):
             state = load_state()
             new = src.discover(state, first_run_limit=5)
         self.assertEqual(len(new), 5)
+
+    def test_force_all_skips_seen_but_dedup_blocks_summarized(self):
+        # --all-videos（force_all）补历史：seen 门禁被跳过（错标/漏标的历史能补回），
+        # 但已总结过的（dedup 索引命中）必须跳过，否则重复入队/重复落盘。
+        now = int(time.time())
+        videos = [
+            {"bvid": "BV_SEEN_SUMM", "title": "已总结", "author": "UP", "created": now - 100},
+            {"bvid": "BV_SEEN_NOTSUMM", "title": "错标历史", "author": "UP", "created": now - 200},
+            {"bvid": "BV_NEW", "title": "新视频", "author": "UP", "created": now - 300},
+        ]
+        with patch("monitors.bilibili._fetch_vlist", return_value=videos), \
+             patch("monitors.bilibili._fetch_dynamics", return_value=[]), \
+             patch("articles.dedup.batch_is_summarized",
+                   return_value={"https://www.bilibili.com/video/BV_SEEN_SUMM"}):
+            src = BilibiliSource("123", types=["video"], force_all=True)
+            state = load_state()
+            mark_seen(state, src.source_key(), ["BV_SEEN_SUMM", "BV_SEEN_NOTSUMM"])
+            new = src.discover(state, first_run_limit=50)
+        ids = {n["id"] for n in new}
+        self.assertNotIn("BV_SEEN_SUMM", ids)      # 已总结 -> dedup 挡住
+        self.assertIn("BV_SEEN_NOTSUMM", ids)      # 错标历史 -> seen 被跳过，补回
+        self.assertIn("BV_NEW", ids)               # 未 seen 未总结 -> 正常
+
+    def test_window_outside_not_marked_seen(self):
+        # 修复②：窗口外的视频/动态绝不 mark_seen（与微信对齐）。
+        # 否则断跑后 effective_window_days 补齐窗口时，本该补抓的旧内容已被 seen 永久跳过=漏抓。
+        now = int(time.time())
+        # 首跑窗口默认 30 天（_BILI_FIRST_WINDOW_DAYS），90 天前的视频在窗口外
+        videos = [
+            {"bvid": "BV_OLD", "title": "老视频", "author": "UP", "created": now - 90 * 86400},
+            {"bvid": "BV_NEW2", "title": "新视频", "author": "UP", "created": now - 60},
+        ]
+        with patch("monitors.bilibili._fetch_vlist", return_value=videos), \
+             patch("monitors.bilibili._fetch_dynamics", return_value=[]):
+            src = BilibiliSource("123", types=["video"])
+            state = load_state()
+            new = src.discover(state, first_run_limit=50, mode="first")
+        self.assertEqual([n["id"] for n in new], ["BV_NEW2"])
+        seen = get_seen(state, src.source_key())
+        self.assertNotIn("BV_OLD", seen)   # 窗口外不标记
+        self.assertIn("BV_NEW2", seen)     # 窗口内标记
 
 
 if __name__ == "__main__":

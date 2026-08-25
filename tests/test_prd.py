@@ -230,7 +230,7 @@ def test_a1_fetch_trafilatura(monkeypatch):
     monkeypatch.setattr(af, "_download", lambda url: (_SAMPLE_HTML, None))
     result = af.fetch_web_content("https://example.com/article")
     assert result is not None
-    title, content = result
+    title, content, _ = result
     assert "OG测试标题" in title
     assert "trafilatura" not in content.lower() or True  # 正文应已提取
     assert "人工智能" in content
