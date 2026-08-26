@@ -1,0 +1,535 @@
+{
+  "series": "中国好公司",
+  "author": "土斯土耶夫斯基",
+  "series_dir": "D:\\Code\\Skills\\blog-article-skill\\notes\\中国好公司",
+  "todo_count": 71,
+  "batches": [
+    [
+      {
+        "page": "01",
+        "raw": "第01集_老司机日记204：中国好公司-前言_raw.md",
+        "body": "第01集_老司机日记204：中国好公司-前言.body.md",
+        "title": "老司机日记204：中国好公司-前言",
+        "url": "https://www.bilibili.com/video/BV1smWHe9EiW"
+      },
+      {
+        "page": "02",
+        "raw": "第02集_老司机日记205：中国好公司之快消品行业，伊利股份_raw.md",
+        "body": "第02集_老司机日记205：中国好公司之快消品行业，伊利股份.body.md",
+        "title": "老司机日记205：中国好公司之快消品行业，伊利股份",
+        "url": "https://www.bilibili.com/video/BV1fLWheqEXk"
+      },
+      {
+        "page": "03",
+        "raw": "第03集_老司机日记206：中国好公司之快消品行业，农夫山泉_raw.md",
+        "body": "第03集_老司机日记206：中国好公司之快消品行业，农夫山泉.body.md",
+        "title": "老司机日记206：中国好公司之快消品行业，农夫山泉",
+        "url": "https://www.bilibili.com/video/BV17ssTeTEKA"
+      },
+      {
+        "page": "05",
+        "raw": "第05集_老司机日记214：中国好公司之快消行业，海天味业_raw.md",
+        "body": "第05集_老司机日记214：中国好公司之快消行业，海天味业.body.md",
+        "title": "老司机日记214：中国好公司之快消行业，海天味业",
+        "url": "https://www.bilibili.com/video/BV18DsoeaEdC"
+      },
+      {
+        "page": "07",
+        "raw": "第07集_老司机日记220：中国好公司7，可选消费，同仁堂_raw.md",
+        "body": "第07集_老司机日记220：中国好公司7，可选消费，同仁堂.body.md",
+        "title": "老司机日记220：中国好公司7，可选消费，同仁堂",
+        "url": "https://www.bilibili.com/video/BV1zAy3Y2E3j"
+      }
+    ],
+    [
+      {
+        "page": "08",
+        "raw": "第08集_老司机日记223：中国好公司8，可选消费，片仔癀_raw.md",
+        "body": "第08集_老司机日记223：中国好公司8，可选消费，片仔癀.body.md",
+        "title": "老司机日记223：中国好公司8，可选消费，片仔癀",
+        "url": "https://www.bilibili.com/video/BV1NESiY3EbN"
+      },
+      {
+        "page": "09",
+        "raw": "第09集_老司机日记227：中国好公司-9可选消费，马应龙_raw.md",
+        "body": "第09集_老司机日记227：中国好公司-9可选消费，马应龙.body.md",
+        "title": "老司机日记227：中国好公司-9可选消费，马应龙",
+        "url": "https://www.bilibili.com/video/BV1dkmUYsEBs"
+      },
+      {
+        "page": "10",
+        "raw": "第10集_老司机日记229：中国好公司10可选消费，白酒&茅台_raw.md",
+        "body": "第10集_老司机日记229：中国好公司10可选消费，白酒&茅台.body.md",
+        "title": "老司机日记229：中国好公司10可选消费，白酒&茅台",
+        "url": "https://www.bilibili.com/video/BV1kESFYeENZ"
+      },
+      {
+        "page": "11",
+        "raw": "第11集_中国好公司-11可选消费，五粮液_raw.md",
+        "body": "第11集_中国好公司-11可选消费，五粮液.body.md",
+        "title": "中国好公司-11可选消费，五粮液",
+        "url": "https://www.bilibili.com/video/BV1aBSFYDESC"
+      },
+      {
+        "page": "13",
+        "raw": "第13集_老司机日记125：中国好公司13，小米_raw.md",
+        "body": "第13集_老司机日记125：中国好公司13，小米.body.md",
+        "title": "老司机日记125：中国好公司13，小米",
+        "url": "https://www.bilibili.com/video/BV1g7i2YyEGu"
+      }
+    ],
+    [
+      {
+        "page": "14",
+        "raw": "第14集_老司机日记239：中国好公司14，美的集团_raw.md",
+        "body": "第14集_老司机日记239：中国好公司14，美的集团.body.md",
+        "title": "老司机日记239：中国好公司14，美的集团",
+        "url": "https://www.bilibili.com/video/BV1Upq8YFEwB"
+      },
+      {
+        "page": "15",
+        "raw": "第15集_老司机日记241：中国好公司15，两轮电动车，雅迪九号_raw.md",
+        "body": "第15集_老司机日记241：中国好公司15，两轮电动车，雅迪九号.body.md",
+        "title": "老司机日记241：中国好公司15，两轮电动车，雅迪九号",
+        "url": "https://www.bilibili.com/video/BV1zukGYCEVE"
+      },
+      {
+        "page": "16",
+        "raw": "第16集_老司机日记246：中国好公司16，餐饮，海底捞_raw.md",
+        "body": "第16集_老司机日记246：中国好公司16，餐饮，海底捞.body.md",
+        "title": "老司机日记246：中国好公司16，餐饮，海底捞",
+        "url": "https://www.bilibili.com/video/BV1pmCnYCEgT"
+      },
+      {
+        "page": "17",
+        "raw": "第17集_老司机日记249：中国好公司17，为什么不对安踏估值_raw.md",
+        "body": "第17集_老司机日记249：中国好公司17，为什么不对安踏估值.body.md",
+        "title": "老司机日记249：中国好公司17，为什么不对安踏估值",
+        "url": "https://www.bilibili.com/video/BV1rEr5YHEX9"
+      },
+      {
+        "page": "19",
+        "raw": "第19集_中国好公司19，腾讯：微信已经成为一个自给自足的操作系统_raw.md",
+        "body": "第19集_中国好公司19，腾讯：微信已经成为一个自给自足的操作系统.body.md",
+        "title": "中国好公司19，腾讯：微信已经成为一个自给自足的操作系统",
+        "url": "https://www.bilibili.com/video/BV141PRevEod"
+      }
+    ],
+    [
+      {
+        "page": "20",
+        "raw": "第20集_中国好公司20：阿里巴巴，一个充满博弈性的投资标的_raw.md",
+        "body": "第20集_中国好公司20：阿里巴巴，一个充满博弈性的投资标的.body.md",
+        "title": "中国好公司20：阿里巴巴，一个充满博弈性的投资标的",
+        "url": "https://www.bilibili.com/video/BV1drA3esE57"
+      },
+      {
+        "page": "21",
+        "raw": "第21集_中国好公司21，拼多多，一家只有矛没有盾的企业_raw.md",
+        "body": "第21集_中国好公司21，拼多多，一家只有矛没有盾的企业.body.md",
+        "title": "中国好公司21，拼多多，一家只有矛没有盾的企业",
+        "url": "https://www.bilibili.com/video/BV1tb9jYiEQn"
+      },
+      {
+        "page": "22",
+        "raw": "第22集_老司机日记274：快刷小米集团2024年报&Q4报_raw.md",
+        "body": "第22集_老司机日记274：快刷小米集团2024年报&Q4报.body.md",
+        "title": "老司机日记274：快刷小米集团2024年报&Q4报",
+        "url": "https://www.bilibili.com/video/BV1HnQZYKEWE"
+      },
+      {
+        "page": "23",
+        "raw": "第23集_中国好公司22，分众传媒，一个人的公司_raw.md",
+        "body": "第23集_中国好公司22，分众传媒，一个人的公司.body.md",
+        "title": "中国好公司22，分众传媒，一个人的公司",
+        "url": "https://www.bilibili.com/video/BV1jeXaYsEtn"
+      },
+      {
+        "page": "24",
+        "raw": "第24集_中国好公司23，长和&长实，下一个日本五大商社？_raw.md",
+        "body": "第24集_中国好公司23，长和&长实，下一个日本五大商社？.body.md",
+        "title": "中国好公司23，长和&长实，下一个日本五大商社？",
+        "url": "https://www.bilibili.com/video/BV1XAoLYLEqH"
+      }
+    ],
+    [
+      {
+        "page": "25",
+        "raw": "第25集_中国好公司24，长实集团，下一个日本五大商社？_raw.md",
+        "body": "第25集_中国好公司24，长实集团，下一个日本五大商社？.body.md",
+        "title": "中国好公司24，长实集团，下一个日本五大商社？",
+        "url": "https://www.bilibili.com/video/BV1vD5rz8EyH"
+      },
+      {
+        "page": "26",
+        "raw": "第26集_中国好公司25，如何投资金融股_raw.md",
+        "body": "第26集_中国好公司25，如何投资金融股.body.md",
+        "title": "中国好公司25，如何投资金融股",
+        "url": "https://www.bilibili.com/video/BV1QtLJzfEFy"
+      },
+      {
+        "page": "27",
+        "raw": "第27集_老司机日记286：硬着陆还是软着陆，白酒行业进入全面主动去库存_raw.md",
+        "body": "第27集_老司机日记286：硬着陆还是软着陆，白酒行业进入全面主动去库存.body.md",
+        "title": "老司机日记286：硬着陆还是软着陆，白酒行业进入全面主动去库存",
+        "url": "https://www.bilibili.com/video/BV16wGbzZEgq"
+      },
+      {
+        "page": "28",
+        "raw": "第28集_老司机日记287：谁能软着陆？茅台，五粮液，泸州老窖，汾酒去库存分析_raw.md",
+        "body": "第28集_老司机日记287：谁能软着陆？茅台，五粮液，泸州老窖，汾酒去库存分析.body.md",
+        "title": "老司机日记287：谁能软着陆？茅台，五粮液，泸州老窖，汾酒去库存分析",
+        "url": "https://www.bilibili.com/video/BV1fjVuzzEyR"
+      },
+      {
+        "page": "29",
+        "raw": "第29集_中国好公司26：中国平安为例，看如何投资金融股_raw.md",
+        "body": "第29集_中国好公司26：中国平安为例，看如何投资金融股.body.md",
+        "title": "中国好公司26：中国平安为例，看如何投资金融股",
+        "url": "https://www.bilibili.com/video/BV1dB55zQEQ7"
+      }
+    ],
+    [
+      {
+        "page": "30",
+        "raw": "第30集_中国好公司27，阿里巴巴财报问题，电商拐点未现_raw.md",
+        "body": "第30集_中国好公司27，阿里巴巴财报问题，电商拐点未现.body.md",
+        "title": "中国好公司27，阿里巴巴财报问题，电商拐点未现",
+        "url": "https://www.bilibili.com/video/BV1zAJhznEfv"
+      },
+      {
+        "page": "31",
+        "raw": "第31集_中国好公司28：向伊利学习如何“优化”财报_raw.md",
+        "body": "第31集_中国好公司28：向伊利学习如何“优化”财报.body.md",
+        "title": "中国好公司28：向伊利学习如何“优化”财报",
+        "url": "https://www.bilibili.com/video/BV1JJJzzrELY"
+      },
+      {
+        "page": "32",
+        "raw": "第32集_中国好公司29，AI变革下，海康威视的未来在哪里？_raw.md",
+        "body": "第32集_中国好公司29，AI变革下，海康威视的未来在哪里？.body.md",
+        "title": "中国好公司29，AI变革下，海康威视的未来在哪里？",
+        "url": "https://www.bilibili.com/video/BV1xb7NzSEak"
+      },
+      {
+        "page": "33",
+        "raw": "第33集_中国好公司30：国补下的企业众生相，小米会更好？or 拼多多会更差？_raw.md",
+        "body": "第33集_中国好公司30：国补下的企业众生相，小米会更好？or 拼多多会更差？.body.md",
+        "title": "中国好公司30：国补下的企业众生相，小米会更好？or 拼多多会更差？",
+        "url": "https://www.bilibili.com/video/BV1kG7mzhEbs"
+      },
+      {
+        "page": "34",
+        "raw": "第34集_中国好公司30，汇川技术，成败都在新能源_raw.md",
+        "body": "第34集_中国好公司30，汇川技术，成败都在新能源.body.md",
+        "title": "中国好公司30，汇川技术，成败都在新能源",
+        "url": "https://www.bilibili.com/video/BV1CGK1zYEUi"
+      }
+    ],
+    [
+      {
+        "page": "35",
+        "raw": "第35集_中国好公司31，国电南瑞，具有专营权的智能电网龙头_raw.md",
+        "body": "第35集_中国好公司31，国电南瑞，具有专营权的智能电网龙头.body.md",
+        "title": "中国好公司31，国电南瑞，具有专营权的智能电网龙头",
+        "url": "https://www.bilibili.com/video/BV1dx8xzxEoZ"
+      },
+      {
+        "page": "36",
+        "raw": "第36集_快刷海康威视2025半年报，短期业绩触底？_raw.md",
+        "body": "第36集_快刷海康威视2025半年报，短期业绩触底？.body.md",
+        "title": "快刷海康威视2025半年报，短期业绩触底？",
+        "url": "https://www.bilibili.com/video/BV1SxttzjEJu"
+      },
+      {
+        "page": "37",
+        "raw": "第37集_老司机日记317，茅台半年报看白酒去库存，犹抱琵琶半遮面_raw.md",
+        "body": "第37集_老司机日记317，茅台半年报看白酒去库存，犹抱琵琶半遮面.body.md",
+        "title": "老司机日记317，茅台半年报看白酒去库存，犹抱琵琶半遮面",
+        "url": "https://www.bilibili.com/video/BV176h9zCEmv"
+      },
+      {
+        "page": "38",
+        "raw": "第38集_中国好公司改版计划&跟踪企业半年报快刷_raw.md",
+        "body": "第38集_中国好公司改版计划&跟踪企业半年报快刷.body.md",
+        "title": "中国好公司改版计划&跟踪企业半年报快刷",
+        "url": "https://www.bilibili.com/video/BV1AhY3zqEWP"
+      },
+      {
+        "page": "39",
+        "raw": "第39集_中国好公司32，从颐海国际，天味食品看企业管理层的重要性_raw.md",
+        "body": "第39集_中国好公司32，从颐海国际，天味食品看企业管理层的重要性.body.md",
+        "title": "中国好公司32，从颐海国际，天味食品看企业管理层的重要性",
+        "url": "https://www.bilibili.com/video/BV1nKpJz8EfN"
+      }
+    ],
+    [
+      {
+        "page": "40",
+        "raw": "第40集_白酒投资的新常态，买确定，买现金，忘记增长_raw.md",
+        "body": "第40集_白酒投资的新常态，买确定，买现金，忘记增长.body.md",
+        "title": "白酒投资的新常态，买确定，买现金，忘记增长",
+        "url": "https://www.bilibili.com/video/BV1Gqptz3Efn"
+      },
+      {
+        "page": "41",
+        "raw": "第41集_老司机日记330：两次白酒库存危机的分析 上，未来是延长线吗？_raw.md",
+        "body": "第41集_老司机日记330：两次白酒库存危机的分析 上，未来是延长线吗？.body.md",
+        "title": "老司机日记330：两次白酒库存危机的分析 上，未来是延长线吗？",
+        "url": "https://www.bilibili.com/video/BV1XbWEzUEfA"
+      },
+      {
+        "page": "42",
+        "raw": "第42集_老司机日记331：两次白酒库存危机的分析与比较，白酒行业迎来变革时代_raw.md",
+        "body": "第42集_老司机日记331：两次白酒库存危机的分析与比较，白酒行业迎来变革时代.body.md",
+        "title": "老司机日记331：两次白酒库存危机的分析与比较，白酒行业迎来变革时代",
+        "url": "https://www.bilibili.com/video/BV1SDW4ziEde"
+      },
+      {
+        "page": "43",
+        "raw": "第43集_中国好公司35：马应龙渠道库存问题凸显，2025半年报分析_raw.md",
+        "body": "第43集_中国好公司35：马应龙渠道库存问题凸显，2025半年报分析.body.md",
+        "title": "中国好公司35：马应龙渠道库存问题凸显，2025半年报分析",
+        "url": "https://www.bilibili.com/video/BV15ZsnzhEm2"
+      },
+      {
+        "page": "44",
+        "raw": "第44集_头部白酒企业进入杀财报阶段？_raw.md",
+        "body": "第44集_头部白酒企业进入杀财报阶段？.body.md",
+        "title": "头部白酒企业进入杀财报阶段？",
+        "url": "https://www.bilibili.com/video/BV1D6xczNEa8"
+      }
+    ],
+    [
+      {
+        "page": "45",
+        "raw": "第45集_五粮液三季报腰斩。五粮液凉了？泸州老窖稳了？_raw.md",
+        "body": "第45集_五粮液三季报腰斩。五粮液凉了？泸州老窖稳了？.body.md",
+        "title": "五粮液三季报腰斩。五粮液凉了？泸州老窖稳了？",
+        "url": "https://www.bilibili.com/video/BV1vg23BMEi2"
+      },
+      {
+        "page": "46",
+        "raw": "第46集_贵州茅台三季报分析，控量保价，被动开启_raw.md",
+        "body": "第46集_贵州茅台三季报分析，控量保价，被动开启.body.md",
+        "title": "贵州茅台三季报分析，控量保价，被动开启",
+        "url": "https://www.bilibili.com/video/BV1MqCkBgE36"
+      },
+      {
+        "page": "47",
+        "raw": "第47集_中国好公司36，腾讯三季报，业绩优秀，为何不涨反跌_raw.md",
+        "body": "第47集_中国好公司36，腾讯三季报，业绩优秀，为何不涨反跌.body.md",
+        "title": "中国好公司36，腾讯三季报，业绩优秀，为何不涨反跌",
+        "url": "https://www.bilibili.com/video/BV1FzCiByEoh"
+      },
+      {
+        "page": "48",
+        "raw": "第48集_小米集团三季报，汽车决定未来_raw.md",
+        "body": "第48集_小米集团三季报，汽车决定未来.body.md",
+        "title": "小米集团三季报，汽车决定未来",
+        "url": "https://www.bilibili.com/video/BV1LYy3BiEYe"
+      },
+      {
+        "page": "49",
+        "raw": "第49集_中国好公司37：阿里巴巴Q3财报，外卖大战成效几何_raw.md",
+        "body": "第49集_中国好公司37：阿里巴巴Q3财报，外卖大战成效几何.body.md",
+        "title": "中国好公司37：阿里巴巴Q3财报，外卖大战成效几何",
+        "url": "https://www.bilibili.com/video/BV1jyUdB6EmB"
+      }
+    ],
+    [
+      {
+        "page": "50",
+        "raw": "第50集_中国好公司三季度财报总结，可选消费全面承压_raw.md",
+        "body": "第50集_中国好公司三季度财报总结，可选消费全面承压.body.md",
+        "title": "中国好公司三季度财报总结，可选消费全面承压",
+        "url": "https://www.bilibili.com/video/BV1ro2HB2EkR"
+      },
+      {
+        "page": "53",
+        "raw": "第53集_中国好公司39：联影医疗，未来的医疗设备王者_raw.md",
+        "body": "第53集_中国好公司39：联影医疗，未来的医疗设备王者.body.md",
+        "title": "中国好公司39：联影医疗，未来的医疗设备王者",
+        "url": "https://www.bilibili.com/video/BV1meq2BKECG"
+      },
+      {
+        "page": "54",
+        "raw": "第54集_老司机日记349：去库存周期，贵州茅台如何估值？_raw.md",
+        "body": "第54集_老司机日记349：去库存周期，贵州茅台如何估值？.body.md",
+        "title": "老司机日记349：去库存周期，贵州茅台如何估值？",
+        "url": "https://www.bilibili.com/video/BV1SCvQBmE7X"
+      },
+      {
+        "page": "55",
+        "raw": "第55集_中国好公司40：同仁堂科技，看看捡烟蒂式投资_raw.md",
+        "body": "第55集_中国好公司40：同仁堂科技，看看捡烟蒂式投资.body.md",
+        "title": "中国好公司40：同仁堂科技，看看捡烟蒂式投资",
+        "url": "https://www.bilibili.com/video/BV1YiquBgE8v"
+      },
+      {
+        "page": "56",
+        "raw": "第56集_中国好公司41：拼多多，全球电商的蛰伏与野望_raw.md",
+        "body": "第56集_中国好公司41：拼多多，全球电商的蛰伏与野望.body.md",
+        "title": "中国好公司41：拼多多，全球电商的蛰伏与野望",
+        "url": "https://www.bilibili.com/video/BV1rA6kBQEZK"
+      }
+    ],
+    [
+      {
+        "page": "57",
+        "raw": "第57集_老司机日记360：腾讯为何跌跌不休_raw.md",
+        "body": "第57集_老司机日记360：腾讯为何跌跌不休.body.md",
+        "title": "老司机日记360：腾讯为何跌跌不休",
+        "url": "https://www.bilibili.com/video/BV1aLZLB6EdZ"
+      },
+      {
+        "page": "58",
+        "raw": "第58集_伊利股份的关键问题：短债，现金流，增长_raw.md",
+        "body": "第58集_伊利股份的关键问题：短债，现金流，增长.body.md",
+        "title": "伊利股份的关键问题：短债，现金流，增长",
+        "url": "https://www.bilibili.com/video/BV1PZPWziEYJ"
+      },
+      {
+        "page": "60",
+        "raw": "第60集_小米集团四季度报，一份意料之中的糟糕财报_raw.md",
+        "body": "第60集_小米集团四季度报，一份意料之中的糟糕财报.body.md",
+        "title": "小米集团四季度报，一份意料之中的糟糕财报",
+        "url": "https://www.bilibili.com/video/BV1oYQmBdECb"
+      },
+      {
+        "page": "61",
+        "raw": "第61集_茅台逆市涨价，供不应求？重回增长？_raw.md",
+        "body": "第61集_茅台逆市涨价，供不应求？重回增长？.body.md",
+        "title": "茅台逆市涨价，供不应求？重回增长？",
+        "url": "https://www.bilibili.com/video/BV1C89uBwEMN"
+      },
+      {
+        "page": "62",
+        "raw": "第62集_中国好公司42：转型阵痛中的阿里巴巴_raw.md",
+        "body": "第62集_中国好公司42：转型阵痛中的阿里巴巴.body.md",
+        "title": "中国好公司42：转型阵痛中的阿里巴巴",
+        "url": "https://www.bilibili.com/video/BV1MSQwBEE1K"
+      }
+    ],
+    [
+      {
+        "page": "63",
+        "raw": "第63集_寿险行业转型分析，中国平安转分红战略的逻辑和风险_raw.md",
+        "body": "第63集_寿险行业转型分析，中国平安转分红战略的逻辑和风险.body.md",
+        "title": "寿险行业转型分析，中国平安转分红战略的逻辑和风险",
+        "url": "https://www.bilibili.com/video/BV1Y8QEBKErJ"
+      },
+      {
+        "page": "64",
+        "raw": "第64集_贵州茅台，告别幻想，走向现实_raw.md",
+        "body": "第64集_贵州茅台，告别幻想，走向现实.body.md",
+        "title": "贵州茅台，告别幻想，走向现实",
+        "url": "https://www.bilibili.com/video/BV14roSBoEF3"
+      },
+      {
+        "page": "65",
+        "raw": "第65集_海康威视何时重回增长？_raw.md",
+        "body": "第65集_海康威视何时重回增长？.body.md",
+        "title": "海康威视何时重回增长？",
+        "url": "https://www.bilibili.com/video/BV1Ru5j63E2N"
+      },
+      {
+        "page": "67",
+        "raw": "第67集_马应龙应收大增74%，库存风险？财务创新？_raw.md",
+        "body": "第67集_马应龙应收大增74%，库存风险？财务创新？.body.md",
+        "title": "马应龙应收大增74%，库存风险？财务创新？",
+        "url": "https://www.bilibili.com/video/BV12xGi65ER8"
+      },
+      {
+        "page": "68",
+        "raw": "第68集_小米的底部决定于汽车业务，小米集团2026Q1财报深度解析_raw.md",
+        "body": "第68集_小米的底部决定于汽车业务，小米集团2026Q1财报深度解析.body.md",
+        "title": "小米的底部决定于汽车业务，小米集团2026Q1财报深度解析",
+        "url": "https://www.bilibili.com/video/BV1TrGy6TEHz"
+      }
+    ],
+    [
+      {
+        "page": "70",
+        "raw": "第70集_万华化学深度分析，从周期循环重回成长_raw.md",
+        "body": "第70集_万华化学深度分析，从周期循环重回成长.body.md",
+        "title": "万华化学深度分析，从周期循环重回成长",
+        "url": "https://www.bilibili.com/video/BV1wwE165EHH"
+      },
+      {
+        "page": "71",
+        "raw": "第71集_投资万华化学需要关注的四个战场和一个X因素_raw.md",
+        "body": "第71集_投资万华化学需要关注的四个战场和一个X因素.body.md",
+        "title": "投资万华化学需要关注的四个战场和一个X因素",
+        "url": "https://www.bilibili.com/video/BV1K6jv6DEPE"
+      },
+      {
+        "page": "72",
+        "raw": "第72集_法拉电子，未来科技背后的隐形冠军_raw.md",
+        "body": "第72集_法拉电子，未来科技背后的隐形冠军.body.md",
+        "title": "法拉电子，未来科技背后的隐形冠军",
+        "url": "https://www.bilibili.com/video/BV1tp7G6ZE6R"
+      },
+      {
+        "page": "73",
+        "raw": "第73集_汇川技术，优秀企业难敌产业内卷_raw.md",
+        "body": "第73集_汇川技术，优秀企业难敌产业内卷.body.md",
+        "title": "汇川技术，优秀企业难敌产业内卷",
+        "url": "https://www.bilibili.com/video/BV1ejMw6UEcR"
+      },
+      {
+        "page": "74",
+        "raw": "第74集_从营销效率看白电三巨头的投资价值，美的_格力_海尔_raw.md",
+        "body": "第74集_从营销效率看白电三巨头的投资价值，美的_格力_海尔.body.md",
+        "title": "从营销效率看白电三巨头的投资价值，美的_格力_海尔",
+        "url": "https://www.bilibili.com/video/BV1xxMn6sE3w"
+      }
+    ],
+    [
+      {
+        "page": "75",
+        "raw": "第75集_分众传媒深度分析，巧妇难为无米之炊_raw.md",
+        "body": "第75集_分众传媒深度分析，巧妇难为无米之炊.body.md",
+        "title": "分众传媒深度分析，巧妇难为无米之炊",
+        "url": "https://www.bilibili.com/video/BV1HxKP6YEUV"
+      },
+      {
+        "page": "76",
+        "raw": "第76集_飞天茅台提价，白酒周期要见底了吗？_raw.md",
+        "body": "第76集_飞天茅台提价，白酒周期要见底了吗？.body.md",
+        "title": "飞天茅台提价，白酒周期要见底了吗？",
+        "url": "https://www.bilibili.com/video/BV1KM3M6FE4U"
+      },
+      {
+        "page": "77",
+        "raw": "第77集_海康威视，重回增长轨道？2026半年报深度分析_raw.md",
+        "body": "第77集_海康威视，重回增长轨道？2026半年报深度分析.body.md",
+        "title": "海康威视，重回增长轨道？2026半年报深度分析",
+        "url": "https://www.bilibili.com/video/BV1mk376oEqh"
+      },
+      {
+        "page": "78",
+        "raw": "第78集_自由现金流转负如何影响腾讯，腾讯控股q2报深度解读_raw.md",
+        "body": "第78集_自由现金流转负如何影响腾讯，腾讯控股q2报深度解读.body.md",
+        "title": "自由现金流转负如何影响腾讯，腾讯控股q2报深度解读",
+        "url": "https://www.bilibili.com/video/BV1wkg56MEK8"
+      },
+      {
+        "page": "79",
+        "raw": "第79集_小米全面承压，等待周期触底，小米集团2026Q2报深度_raw.md",
+        "body": "第79集_小米全面承压，等待周期触底，小米集团2026Q2报深度.body.md",
+        "title": "小米全面承压，等待周期触底，小米集团2026Q2报深度",
+        "url": "https://www.bilibili.com/video/BV1uU8j6zEHB"
+      }
+    ],
+    [
+      {
+        "page": "80",
+        "raw": "第80集_茅台中报爆雷？白酒去库存进展如何_raw.md",
+        "body": "第80集_茅台中报爆雷？白酒去库存进展如何.body.md",
+        "title": "茅台中报爆雷？白酒去库存进展如何",
+        "url": "https://www.bilibili.com/video/BV1KC8y62Eov"
+      }
+    ]
+  ]
+}

@@ -27,6 +27,10 @@ import re
 import sys
 import json
 import argparse
+import tempfile
+import hashlib
+import time
+import contextlib
 from datetime import datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -46,6 +50,41 @@ from videos.asr import safe_remove_one
 
 PENDING_SERIES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_series.json")
 NOTES_DIR = articles_main.NOTES_DIR
+
+# 系列级 drain 进程锁：防止两个会话/进程同时落同一系列，造成重复节点。
+# 用原子 O_EXCL 锁文件实现；超时 120s 则放弃加锁、继续执行（依赖 manifest+预查兜底）。
+_DRAIN_LOCK_DIR = os.path.join(tempfile.gettempdir(), "blog_article_skill_drain_locks")
+
+
+@contextlib.contextmanager
+def _drain_lock(series_title: str):
+    """为指定系列获取 drain 进程锁。"""
+    key = hashlib.md5(f"drain|{series_title}".encode("utf-8")).hexdigest()
+    os.makedirs(_DRAIN_LOCK_DIR, exist_ok=True)
+    lock_path = os.path.join(_DRAIN_LOCK_DIR, f"{key}.lock")
+    fd = None
+    deadline = time.time() + 120
+    while fd is None:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            break
+        except FileExistsError:
+            if time.time() > deadline:
+                print(f"   ⚠️ 无法获取系列「{series_title}」drain 锁（可能其他进程正在跑），继续执行但请检查是否有并发")
+                break
+            time.sleep(0.2)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.remove(lock_path)
+            except OSError:
+                pass
 
 
 def _delete_feishu_node(series_title: str, base: str, parent_token: str = None):
@@ -181,104 +220,132 @@ def drain_series_pending(obsidian: bool = False, regenerate: bool = False,
         # 由 folder 推导出「系列容器父节点 token」（UP 节点），供 verify/regenerate/对账
         # 与 save 路径（_save_series_note 内 ensure_folder_path）保持一致，杜绝发散路径。
         _up_tok = None
+        _container_tok = None
+        _existing_titles = set()
         if folder:
             from articles.feishu import FeishuOutput
             _f = FeishuOutput()
             if _f.is_available():
                 _up_tok = _f.ensure_folder_path([d for d in folder.split("/") if d])
+                _container_tok = _f.ensure_series_node(series_title, parent_token=_up_tok)
+                if _container_tok:
+                    # 预读容器内已有子节点标题（含 sanitize 版本），作为去重白名单。
+                    # 这能绕过飞书 list API 的最终一致延迟，避免批量顺序落盘时产生重复节点。
+                    for n in _f.list_children(_container_tok):
+                        t = n.get("title", "")
+                        if t:
+                            _existing_titles.add(t)
+                            _existing_titles.add(_sanitize_title(t))
+                    print(f"   📋 容器内已有 {len(_existing_titles)//2} 个子节点标题")
 
-        # 命名自愈（优化 E）
-        fixed = _fix_stray_naming(series_dir)
-        if fixed:
-            print(f"   🔧 纠正了 {fixed} 个命名错误")
+        # 系列级进程锁：防止两个 apply_pending_series.py 实例并发落同一系列。
+        with _drain_lock(series_title):
+            # 命名自愈（优化 E）
+            fixed = _fix_stray_naming(series_dir)
+            if fixed:
+                print(f"   🔧 纠正了 {fixed} 个命名错误")
 
-        # 加载/对账 manifest（优化 A：磁盘+飞书自愈，取代「文件存在即续跑」）
-        # 传入 parent_token 让飞书对账在「正确的 UP 节点容器」里找，而非根容器。
-        m = sm.load_or_init(series_title, url=url, author=author,
-                            notes_dir=NOTES_DIR, reconcile=True, parent_token=_up_tok)
-        print(f"   {m.summary_line()}")
+            # 加载/对账 manifest（优化 A：磁盘+飞书自愈，取代「文件存在即续跑」）
+            # 传入 parent_token 让飞书对账在「正确的 UP 节点容器」里找，而非根容器。
+            m = sm.load_or_init(series_title, url=url, author=author,
+                                notes_dir=NOTES_DIR, reconcile=True, parent_token=_up_tok)
+            print(f"   {m.summary_line()}")
 
-        progress_log = os.path.join(series_dir, ".series_progress.log")
-        cands = _candidate_bodies(series_dir, m)
-        print(f"   待落盘候选：{len(cands)} 集")
+            progress_log = os.path.join(series_dir, ".series_progress.log")
+            cands = _candidate_bodies(series_dir, m)
+            print(f"   待落盘候选：{len(cands)} 集")
 
-        landed = 0
-        # 分批处理（优化 G）：每批 batch 集，单集异常不中断整轮
-        for i in range(0, len(cands), batch):
-            chunk = cands[i:i + batch]
-            for page, body_abs, base in chunk:
-                # 根因修复：每集必须传「正确的单集 URL」，而非系列级 url。
-                # 否则 formatter 会给每集追加同一个（错误的）来源链接 → 触发误判重复删除。
-                ep = m.get(page) or {}
-                ep_url = (ep.get("url")
-                          or (f"https://www.bilibili.com/video/{ep['bvid']}" if ep.get("bvid") else "")
-                          or url)
-                try:
-                    body = open(body_abs, encoding="utf-8").read()
-                except Exception as e:
-                    print(f"  ❌ 读 body 失败 {body_abs}: {e}")
-                    _log_progress(progress_log, page, base, False, f"read fail: {e}")
-                    continue
-                if not body.strip():
-                    print(f"  ⚠️ body 为空，跳过：{base}")
-                    _log_progress(progress_log, page, base, False, "empty body")
-                    continue
-                note_type = "structured"
-                tags = [series_title, _NOTE_TYPE_TAG.get(note_type, "视频笔记")]
-                if regenerate:
-                    _delete_feishu_node(series_title, base, parent_token=_up_tok)
-                try:
-                    _save_series_note(body, series_dir, base, author, ep_url, tags, note_type,
-                                     obsidian=obsidian, folder=folder)
-                    m.set_state(page, sm.LANDED)
-                    series_state.mark_done(series_title, base, url=url, author=author)  # monitors 增量去重兼容
-                    # 飞书回读校验 → verified（优化 B 删除门禁的前置条件）
-                    # 传入 parent_token 让校验在正确的 UP 节点容器里找，而非根容器。
-                    verified = _verify_in_feishu(series_title, base, parent_token=_up_tok)
-                    if verified:
+            landed = 0
+            # 分批处理（优化 G）：每批 batch 集，单集异常不中断整轮
+            for i in range(0, len(cands), batch):
+                chunk = cands[i:i + batch]
+                for page, body_abs, base in chunk:
+                    # 机械门禁：如果飞书容器里已经有同名节点，直接标 verified、跳过落盘。
+                    # 与 save() 内部 upsert 形成双重保险，杜绝重复节点。
+                    if _container_tok and (base in _existing_titles or _sanitize_title(base) in _existing_titles):
                         m.set_state(page, sm.VERIFIED)
-                    landed += 1
-                    st = "verified" if verified else "landed(未回读确认)"
-                    print(f"  ✅ 已落盘：{base} [{st}]")
-                    _log_progress(progress_log, page, base, True, st)
-                except Exception as e:
-                    print(f"  ❌ 落盘失败 {base}: {e}")
-                    _log_progress(progress_log, page, base, False, f"land fail: {e}")
-
-        m.save()
-
-        # 仍只有 raw 无 body 的集（需要 Agent 总结）→ 留在队列
-        remaining_raws = []
-        if os.path.isdir(series_dir):
-            for f in os.listdir(series_dir):
-                if f.endswith("_raw.md"):
-                    body_candidate = f[:-len("_raw.md")] + ".body.md"
-                    if not os.path.exists(os.path.join(series_dir, body_candidate)):
-                        remaining_raws.append(os.path.relpath(
-                            os.path.join(series_dir, f), NOTES_DIR))
-
-        # 总览重生成（从飞书读回，upsert 不重复）
-        # 守卫：仅当存在待落盘候选（有 body）时才建容器/总览，避免空系列在飞书建出空容器节点。
-        if cands:
-            try:
-                _generate_series_overview(series_title, series_dir, url, obsidian=obsidian, folder=folder)
-                print(f"  🧭 系列总览已重生成")
-            except Exception as e:
-                print(f"  ⚠️ 总览重生成失败（非致命）：{e}")
-
-        # --cleanup：仅删 verified 的本地源（优化 B）
-        cleaned = 0
-        if cleanup:
-            for page in m.verified_pages():
-                ep = m.get(page)
-                raw_rel = ep.get("raw")
-                body_rel = ep.get("body")
-                for rel in (raw_rel, body_rel):
-                    if not rel:
+                        print(f"  ⏭️  飞书已有同名节点，跳过：{base}")
+                        _log_progress(progress_log, page, base, True, "skipped(existing)")
                         continue
-                    p = os.path.join(NOTES_DIR, rel)
-                    if os.path.exists(p) and safe_remove_one(p):
-                        cleaned += 1
+
+                    # 根因修复：每集必须传「正确的单集 URL」，而非系列级 url。
+                    # 否则 formatter 会给每集追加同一个（错误的）来源链接 → 触发误判重复删除。
+                    ep = m.get(page) or {}
+                    ep_url = (ep.get("url")
+                              or (f"https://www.bilibili.com/video/{ep['bvid']}" if ep.get("bvid") else "")
+                              or url)
+                    try:
+                        body = open(body_abs, encoding="utf-8").read()
+                    except Exception as e:
+                        print(f"  ❌ 读 body 失败 {body_abs}: {e}")
+                        _log_progress(progress_log, page, base, False, f"read fail: {e}")
+                        continue
+                    if not body.strip():
+                        print(f"  ⚠️ body 为空，跳过：{base}")
+                        _log_progress(progress_log, page, base, False, "empty body")
+                        continue
+                    note_type = "structured"
+                    tags = [series_title, _NOTE_TYPE_TAG.get(note_type, "视频笔记")]
+                    if regenerate:
+                        _delete_feishu_node(series_title, base, parent_token=_up_tok)
+                        # regenerate 删旧后要从白名单移除，确保后面重建
+                        _existing_titles.discard(base)
+                        _existing_titles.discard(_sanitize_title(base))
+                    try:
+                        _save_series_note(body, series_dir, base, author, ep_url, tags, note_type,
+                                         obsidian=obsidian, folder=folder)
+                        m.set_state(page, sm.LANDED)
+                        series_state.mark_done(series_title, base, url=url, author=author)  # monitors 增量去重兼容
+                        # 飞书回读校验 → verified（优化 B 删除门禁的前置条件）
+                        # 传入 parent_token 让校验在正确的 UP 节点容器里找，而非根容器。
+                        verified = _verify_in_feishu(series_title, base, parent_token=_up_tok)
+                        if verified:
+                            m.set_state(page, sm.VERIFIED)
+                        landed += 1
+                        st = "verified" if verified else "landed(未回读确认)"
+                        print(f"  ✅ 已落盘：{base} [{st}]")
+                        _log_progress(progress_log, page, base, True, st)
+                        # 成功落盘后立刻加入白名单，后续候选不再重复上传
+                        _existing_titles.add(base)
+                        _existing_titles.add(_sanitize_title(base))
+                    except Exception as e:
+                        print(f"  ❌ 落盘失败 {base}: {e}")
+                        _log_progress(progress_log, page, base, False, f"land fail: {e}")
+
+            m.save()
+
+            # 仍只有 raw 无 body 的集（需要 Agent 总结）→ 留在队列
+            remaining_raws = []
+            if os.path.isdir(series_dir):
+                for f in os.listdir(series_dir):
+                    if f.endswith("_raw.md"):
+                        body_candidate = f[:-len("_raw.md")] + ".body.md"
+                        if not os.path.exists(os.path.join(series_dir, body_candidate)):
+                            remaining_raws.append(os.path.relpath(
+                                os.path.join(series_dir, f), NOTES_DIR))
+
+            # 总览重生成（从飞书读回，upsert 不重复）
+            # 守卫：仅当存在待落盘候选（有 body）时才建容器/总览，避免空系列在飞书建出空容器节点。
+            if cands:
+                try:
+                    _generate_series_overview(series_title, series_dir, url, obsidian=obsidian, folder=folder)
+                    print(f"  🧭 系列总览已重生成")
+                except Exception as e:
+                    print(f"  ⚠️ 总览重生成失败（非致命）：{e}")
+
+            # --cleanup：仅删 verified 的本地源（优化 B）
+            cleaned = 0
+            if cleanup:
+                for page in m.verified_pages():
+                    ep = m.get(page)
+                    raw_rel = ep.get("raw")
+                    body_rel = ep.get("body")
+                    for rel in (raw_rel, body_rel):
+                        if not rel:
+                            continue
+                        p = os.path.join(NOTES_DIR, rel)
+                        if os.path.exists(p) and safe_remove_one(p):
+                            cleaned += 1
             print(f"  🧹 已清理 {cleaned} 个本地源文件（verified）")
 
         if remaining_raws:
