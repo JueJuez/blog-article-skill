@@ -35,7 +35,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 让 shared 包可导入
 from login_cdp_fetch import discover_chrome_devtools, write_output
+from shared.cdp_session import SharedCdpSession
 
 CONFIG_PATH = Path(__file__).resolve().parent / "scys_projects.json"
 
@@ -441,40 +443,12 @@ class ScysBatchFetcher:
         BASE.mkdir(parents=True, exist_ok=True)
         done_ids: set[str] = set(self.state.get("done", []))
 
-        # Chrome 151+：CDP 优先，不可用则回退到 profile_clone（持久化 ProfileClone）
-        use_cdp = True
-        tmpdir = None
-        try:
-            port, ws_path = discover_chrome_devtools()
-            print(f"[CDP] ws://127.0.0.1:{port}{ws_path}")
-        except RuntimeError:
-            use_cdp = False
-            print(f"[fallback] CDP 不可用，回退到 profile_clone（持久化 ProfileClone）")
-            import subprocess as sp
-            sp.run(["taskkill", "/F", "/IM", "chrome.exe", "/T"],
-                    capture_output=True, text=True, timeout=10)
-            time.sleep(2)
-            from profile_clone_fetch import ensure_profile_clone
-            tmpdir = ensure_profile_clone()
-
+        # 单一共享 CDP 会话：活 Chrome 优先，不可用才回退 profile_clone。
+        # 公众号 / scys 共用同一生命周期（只开关一次浏览器，用户 2026-08-26 决策）。
         fetched = 0
         pending: list[dict] = []
-        with sync_playwright() as p:
-            if use_cdp:
-                browser = p.chromium.connect_over_cdp(f"ws://127.0.0.1:{port}{ws_path}")
-                ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-                page = ctx.new_page()
-            else:
-                ctx = p.chromium.launch_persistent_context(
-                    user_data_dir=str(tmpdir),
-                    headless=True,
-                    args=["--disable-blink-features=AutomationControlled",
-                          "--no-sandbox", "--disable-dev-shm-usage"],
-                    viewport={"width": 1280, "height": 800},
-                    ignore_https_errors=True,
-                )
-                page = ctx.pages[0] if ctx.pages else ctx.new_page()
-
+        with SharedCdpSession() as sess:
+            page = sess.new_page()
             try:
                 lst = self.collect_list(page)
                 if list_only:
@@ -528,9 +502,7 @@ class ScysBatchFetcher:
                         print(f"      (下篇间隔 {gap:.0f}s)")
                         time.sleep(gap)
             finally:
-                page.close()
-                if not use_cdp:
-                    ctx.close()
+                page.close()  # 浏览器由 SharedCdpSession.__exit__ 统一关闭
 
         # ProfileClone 是持久化的，不删除（下次只同步 cookie 文件）
 

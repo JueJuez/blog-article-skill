@@ -30,7 +30,10 @@
   - B站：`{"uid": "数字UP主ID"}`
   - 公众号：`{"mp_id": "..."}` 或 `{"share_url": "公众号分享链接"}`
   - scys：`{"project": "领域名"}`（领域→menuId 映射在 `scripts/scys_projects.json`，当前=自媒体/出海/AI产品开发/小程序）
-  - 用户口头说「关注 / 订阅 / 监控 XXX」时，**走机械命令** `python monitors/run.py --subscribe --uid <id> --name <名> --category <类> [--sub-all | --sub-window <天>]`（命令会先查重，已在名单则回「已在监控名单内」且不添加，不手搓 JSON）；公众号/scys 仍按下方格式改 JSON。不要手搓抓取代码。
+  - 用户口头说「关注 / 订阅 / 监控 XXX」时：
+    - **B站UP主**：**走机械命令** `python monitors/run.py --subscribe --uid <id> --name <名> --category <类> [--sub-all | --sub-window <天>]`（命令会先查重，已在名单则回「已在监控名单内」且不添加，不手搓 JSON）。
+    - **公众号 / scys 领域**：编辑 `monitors/subscriptions.json`，格式参考 `monitors/subscriptions.example.json`（公众号：`{"mp_id":"..."}` 或 `{"share_url":"..."}`；scys：`{"project":"领域名"}`）。
+    - 不要手搓抓取代码。
 - **运行**
   - 首跑（回填最近 30 天）：`python monitors/run.py --mode first --apply`
   - 每日增量：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「跑一次 / 跑一下」等关键词即触发，详见 `RULES.md` §3C）——**含 scys 四领域新帖增量**（2026-08-20 接入：`--apply` 收尾逐领域子进程跑 `scripts/scys_batch_fetch.py`；2026-08-21 起 35 天窗口+精华直通+非精华互动门槛（锚≥30，或 赞≥80且锚≥10 防官方帖污染）+done 去重+`.lock` 互斥，CDP 不可用则自动回退 profile_clone 不影响其他源）

@@ -24,6 +24,7 @@ from articles.main import (
     call_ai_summary_with_meta,
     save_summarized_article,
 )
+from shared.title_norm import choose_node_title
 from prompts.templates import (
     get_note_prompt, format_note_with_prompt,
     verify_note, should_gate_retry, build_gate_critique, QUALITY_GATE_SELFCHECK,
@@ -129,9 +130,11 @@ def _summarize_and_save(segments, source_url: str, title: str, author: str,
 
     label = _NOTE_TYPE_TAG.get(note_type, "视频笔记")
     save_tags = list(tags) if tags else [label]
+    # 视频真实标题（fetch/ASR 来源）经确定性清洗再落盘，不依赖模型自创标题
+    clean_title = choose_node_title(title, "") or "视频总结"
     formatted, filename = save_summarized_article(
         final, original_url=source_url, author=author,
-        tags=save_tags, original_title=title or "视频总结", note_type=note_type,
+        tags=save_tags, original_title=clean_title, note_type=note_type,
         publish_time=publish_time, folder=folder, obsidian=obsidian
     )
     return (filename, final, False, None, note_type)
@@ -296,7 +299,10 @@ def _read_series_from_feishu(series_title: str, parent_token: str = None) -> lis
             # 跳过非单集节点（如 00_系列总览），避免总览把自己列成"第00集"
             continue
         page = int(m.group(1))
-        h1 = node_title
+        # 真实单集标题 = 节点名剥掉「第XX集_」前缀（即 B站分P 真实标题），
+        # 优先于模型自创的总结 H1（用户 2026-08-25：视频/文章标题一律用真实来源标题）。
+        real_ep_title = re.sub(r'^第\d{2}集_', '', node_title).strip()
+        h1 = real_ep_title
         one = "（待总结）"
         if obj:
             try:
@@ -305,7 +311,9 @@ def _read_series_from_feishu(series_title: str, parent_token: str = None) -> lis
                                          "--as", "user", "--json"])
                 content = (r.get("data", {}).get("document", {}).get("content", "")
                              if isinstance(r, dict) else "")
-                h1 = _extract_h1(content) or node_title
+                # 优先真实单集标题，模型 H1 仅作兜底（且须非段标题）
+                from shared.title_norm import choose_node_title
+                h1 = choose_node_title(real_ep_title, _extract_h1(content))
                 one = _extract_one_liner(content) or "（待总结）"
             except Exception:
                 pass
@@ -378,7 +386,8 @@ def _generate_series_overview(series_title: str, series_dir: str, url: str,
                     md = fh.read()
             except Exception:
                 md = ""
-            title = _extract_h1(md) or (m.group(2) if m else f)
+            # 优先真实单集标题（文件名第XX集_ 后的分P标题），模型 H1 仅兜底且须非段标题
+            title = choose_node_title(m.group(2) if m else "", _extract_h1(md))
             one = '（待总结）' if is_raw else (_extract_one_liner(md) or '（待总结）')
             # 表格内禁用竖线，避免破坏 markdown 表格
             title = title.replace('|', '/')

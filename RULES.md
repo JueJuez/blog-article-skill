@@ -27,7 +27,6 @@
 | `SKILL.md` | 技能触发条件 + 调用入口 + 对话输出规范（面向「怎么用」） | 少量用法，规则指向 RULES.md |
 | `AGENTS.md` | **平台无关真源入口**（跨 WorkBuddy / Cursor / Claude / Codex / Copilot / 裸 API 通用） | 能力清单 + 接口速查 + 配置引导 + 各平台加载方式，指向本文件 |
 | `references/` | 专项详细文档（`config.md` 配置、`youtube-cdp-workflow.md` 抓取流程、`PRD.md` 需求、`testing_rules.md` TDD 流程） | ✅ 放深入细节 |
-| `references/` | 专项详细文档（`config.md` 配置、`youtube-cdp-workflow.md` 抓取流程、`PRD.md` 需求、`testing_rules.md` TDD 流程） | ✅ 放深入细节 |
 | `docs/decisions/` | grill_rules 的「产出 A：决策清单」存放地（`DECISION-YYYYMMDD-{slug}.md`，≤15 行） | ✅ 极轻量 |
 | `articles/` `videos/` `prompts/` `shared/` | 实现细节的唯一真相 | ✅ 代码即文档 |
 | `.workbuddy/memory/MEMORY.md` | 长期要点 + 「规则摘要」（会话开始注入） | ❌ 只摘要点 |
@@ -228,7 +227,7 @@ NOTE_GATE_THRESHOLD=85     # 评分阈值，默认 85；低于此分触发重试
 - [ ] **存档后自检落盘（§3.0）**：确认**飞书**知识库「AI 总结笔记」下出现对应节点；本次带了 `obsidian` 才检查 Obsidian vault 对应文件（没带则 Obsidian 不应有新文件，是预期不是失败）；本地 `notes/` **预期为空**（有飞书即不落本地），**不要因本地为空而误判失败**；飞书 user 身份须 `lark-cli auth status` ready，否则只告警不落飞书。
 - [ ] 本文件（RULES.md）变更 → 同步进 `MEMORY.md`「规则摘要」并视作平台规则。
 - [ ] 遇到网络/代理问题 → 先查 `references/youtube-cdp-workflow.md`，不要绕去挖代理配置。
-- [ ] YouTube 字幕抓取返回 None 且页面已加载、`captionTracks` 为空 → **原样回「【此视频暂无 CC 字幕，无法为你抓取字幕总结内容。】」并停止**，不补 ASR、不改动代码（§4.4）。
+- [ ] YouTube 字幕抓取返回 None 且页面已加载、`captionTracks` 为空 → `videos/main` 自动走 ASR 兜底；ASR 也失败才回终态文案「【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】」并停止（§4.4）。
 - [ ] 笔记作者栏**必须显示真实作者/UP主**；视频链路 `series.get("author","") or input_data.get("author","")` 已兜底，调用方无需手传，禁止无端输出【作者未知】（§4.5）。
 - [ ] **质量闸门（可选 · 默认关）**：要更严质检时在 `.env` 设 `NOTE_QUALITY_GATE=1`（阈值 `NOTE_GATE_THRESHOLD` 默认 85）；降级无外部 AI 时闸门自动转自检段，按 6 红线自核对，无需手动开。详见 `references/config.md` §九 与 §4.6。
 - [ ] **涉及架构级改动 / 新功能链路 / 跨多模块改动** → 先按 §6 grill_rules 拷问拉齐认知，再动手。

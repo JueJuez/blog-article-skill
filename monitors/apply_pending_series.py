@@ -204,6 +204,12 @@ def drain_series_pending(obsidian: bool = False, regenerate: bool = False,
         for i in range(0, len(cands), batch):
             chunk = cands[i:i + batch]
             for page, body_abs, base in chunk:
+                # 根因修复：每集必须传「正确的单集 URL」，而非系列级 url。
+                # 否则 formatter 会给每集追加同一个（错误的）来源链接 → 触发误判重复删除。
+                ep = m.get(page) or {}
+                ep_url = (ep.get("url")
+                          or (f"https://www.bilibili.com/video/{ep['bvid']}" if ep.get("bvid") else "")
+                          or url)
                 try:
                     body = open(body_abs, encoding="utf-8").read()
                 except Exception as e:
@@ -219,7 +225,7 @@ def drain_series_pending(obsidian: bool = False, regenerate: bool = False,
                 if regenerate:
                     _delete_feishu_node(series_title, base, parent_token=_up_tok)
                 try:
-                    _save_series_note(body, series_dir, base, author, url, tags, note_type,
+                    _save_series_note(body, series_dir, base, author, ep_url, tags, note_type,
                                      obsidian=obsidian, folder=folder)
                     m.set_state(page, sm.LANDED)
                     series_state.mark_done(series_title, base, url=url, author=author)  # monitors 增量去重兼容

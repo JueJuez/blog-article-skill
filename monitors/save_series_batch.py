@@ -44,7 +44,7 @@ def save_one(content: str, base_name: str, url: str, obsidian: bool = False):
     """写到所有可用输出端（默认仅飞书；带 obsidian 时追加 Obsidian），返回「失败的输出名」列表（用于末尾汇总，绝不静默吞掉）。"""
     formatted = format_note_with_prompt(
         content=content, author=AUTHOR, url=url,
-        tags=["要点提炼", "转载"], add_metadata=False,
+        tags=["要点提炼", "转载"], add_metadata=True,
     )
     filename = base_name + ".md"
     failed = []

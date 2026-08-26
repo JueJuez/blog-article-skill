@@ -53,22 +53,24 @@ pip install -e ".[extract,video,asr,google]"
 cp .env.example .env
 ```
 
-配置至少一种 AI Provider（不配也行，会自动降级由当前对话模型总结）：
+**当前默认运行模式**：`FORCE_AGENT_MODE=1`（由 `.env.example` 默认开启），总结由当前执行模型（主/子 Agent）完成，**不再默认调用外部 AI Provider**。外部 Provider 仅作为可选备用。
+
+可选的外部 AI Provider（不配也行，会自动降级由当前对话模型总结）：
 
 ```env
-# OpenAI（推荐）
-AI_PROVIDER=openai
-OPENAI_API_KEY=sk-xxxx
+# 强制由当前 Agent 总结（默认开启；关闭则尝试外部 Provider）
+FORCE_AGENT_MODE=1
 
-# 或 Anthropic Claude
+# 外部 Provider 仅在 FORCE_AGENT_MODE=0 或显式指定时生效
+# AI_PROVIDER=openai
+# OPENAI_API_KEY=sk-xxxx
+
 # AI_PROVIDER=anthropic
 # ANTHROPIC_API_KEY=sk-ant-xxxx
 
-# 或 Google Gemini
 # AI_PROVIDER=google
 # GOOGLE_API_KEY=xxxx
 
-# 或 本地 Ollama
 # AI_PROVIDER=local
 # LOCAL_API_BASE=http://localhost:11434/v1
 
@@ -171,7 +173,7 @@ python videos/run.py --file "/path/to/video.mp4"
 | `fetch_web_content(url)` | 抓取网页，返回 `(title, content)` 或 `None` |
 | `summarize_and_save(url, author, tags, obsidian=False)` | 全自动：抓取→总结→保存（默认飞书，obsidian=True 追加 Obsidian） |
 | `skill_main(params_dict)` | 技能系统统一入口，处理链接/原文/降级逻辑（`params_dict` 可带 `obsidian`） |
-| `save_summarized_article(content, url, author, tags, obsidian=False)` | 保存已总结好的内容（默认飞书，obsidian=True 追加 Obsidian） |
+| `save_summarized_article(content, url, author, tags, original_title='', meta=None, note_type='', publish_time=0, folder='', obsidian=False)` | 保存已总结好的内容（默认飞书，obsidian=True 追加 Obsidian） |
 | `save_summary_only(input_data)` | 降级模式下外层总结完后的保存入口 |
 | `summarize_content(content, author, url, tags, original_title)` | 调用 AI 对内容做结构化总结 |
 
@@ -182,7 +184,13 @@ save_summarized_article(
     summarized_content="AI 总结好的内容...",
     original_url="https://example.com/article",  # 可选
     author="作者名",                               # 可选
-    tags=["AI", "技术"]                            # 可选
+    tags=["AI", "技术"],                          # 可选
+    original_title="",                            # 可选：来源侧原标题
+    meta=None,                                    # 可选：额外 frontmatter 字典
+    note_type="",                                 # 可选：影响标签与格式化
+    publish_time=0,                               # 可选：Unix 时间戳，用于新鲜度标签
+    folder="",                                    # 可选：指定落点目录
+    obsidian=False                                # True 时追加 Obsidian
 )
 ```
 
@@ -211,7 +219,7 @@ save_summarized_article(
 | `trae` | Trae SDK | 需安装 trae Python 包，显式设置 `AI_PROVIDER=trae` |
 | `mock` | 模拟 Provider | 仅测试用 |
 
-自动检测优先级：`openai` > `anthropic` > `google` > `local`（Trae 不参与自动检测）
+自动检测优先级：`openai` > `anthropic` > `google` > `local`（Trae 不参与自动检测）。**当前默认 `FORCE_AGENT_MODE=1`，外部 Provider 不参与自动检测，仅作备用。**
 
 ### OutputManager
 

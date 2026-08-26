@@ -93,9 +93,13 @@ def drain(indices, temp_dir, apply, obsidian):
             bad += 1
             continue
         content = open(sum_file, encoding="utf-8").read()
-        # 优先用总结文件 H1 作节点标题（子 Agent 已从正文提炼，质量最高、最通用）；
-        # 退回 pending 标题（已由 derive_title_from_body 从 body 命名，或原高质量标题）。
-        node_title = _extract_h1(content) or title
+        # 标题机械优先序（用户 2026-08-25 决策：不依赖模型）：
+        #   来源侧标题（title，已由 derive_title_from_body 确定性提炼）> 总结 H1 > 来源；
+        #   全程 normalize_title 清洗（去模型段标题/非法字符/折叠空白/截断）。
+        # 旧逻辑 node_title = _extract_h1(content) or title 把"模型自创的段标题"
+        # 当节点标题，是飞书标题乱/错的根因，已废弃。
+        from shared.title_norm import choose_node_title
+        node_title = choose_node_title(title, _extract_h1(content))
         # L1 硬卡①：标题为空则直接报错跳过，绝不静默落盘成「未命名笔记」
         if not node_title.strip():
             print(f"  ❌ 索引 {i} 标题为空，跳过落盘（防未命名笔记）")

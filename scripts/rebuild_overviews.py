@@ -1,8 +1,13 @@
-"""scripts/rebuild_overviews.py — 重建监控账号容器的总览索引（历史数据兜底）。
+"""scripts/rebuild_overviews.py — 重建总览索引（历史数据兜底）。
 
 用法：
-  python scripts/rebuild_overviews.py --folder "【监控】/公众号/哥飞"
-  python scripts/rebuild_overviews.py --folder "【监控】/B站/价投小猪仔"
+  # ⚠️ 必须传「日更」层 folder，不要传账号层！
+  #    rebuild 只扫你传入 folder 的【直接子节点】；若传账号层
+  #    「【监控】/公众号/哥飞」，其直接子节点是「日更」容器 + 总览自身，
+  #    「日更」因"有子节点"被跳过 → 一条都扫不到。
+  #    正确：传含「日更」的路径，直接子节点才是文章文档。
+  python scripts/rebuild_overviews.py --folder "【监控】/公众号/哥飞/日更"
+  python scripts/rebuild_overviews.py --folder "【监控】/B站/价投小猪仔/日更"
   python scripts/rebuild_overviews.py --all          # 重建 state 里记录的所有 folder
 
 场景：用户在飞书手动补的历史节点（非本系统落盘）没有进总览，或总览被改乱，

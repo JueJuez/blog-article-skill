@@ -186,17 +186,20 @@ C:/Users/O1830/.workbuddy/binaries/python/versions/3.13.12/python.exe videos/run
 
 ## 8. 无 CC 字幕的情况（终端行为，必须照做）
 
-> 这条是**终态约定**（权威定义见 `RULES.md` §4.4）。视频在 YouTube 上没字幕时，AI 原样回下面这句话并停止，**不得补救、不得开发**。
+> 权威定义见 `RULES.md` §4.4。视频在 YouTube 上没字幕时，**先由 `videos/main` 自动走 ASR 兜底**；ASR 也失败才进入终态回话，**不要自己开发新兜底**。
 
-### 8.1 判定与回话
+### 8.1 判定与流程
 
 当 `fetch_transcript(url)` 返回 `None`，且 CDP 已成功打开页面（能拿到标题、`ytInitialPlayerResponse.captions` 为空 / 播放器 `movie_player` 字幕 tracklist 为空），即判定为**视频本身在 YouTube 上没有任何 CC / 自动字幕轨道**。
 
-**AI 必须原样回这句话，然后停止：**
+此时 `videos/main._handle_single_video` 会自动调用 `videos.asr.transcribe_video`：
 
-> **【此视频暂无 CC 字幕，无法为你抓取字幕总结内容。】**
+- ASR 成功（下载音频 + 本地 faster-whisper 转写出文本）→ 继续正常总结并落盘。
+- ASR 也失败（环境无 ffmpeg / faster-whisper / yt-dlp，或 Python 无 YouTube 出口下不了音频）→ **AI 原样回下面这句话并停止**：
 
-- **禁止**自作主张走 ASR 语音转写（本环境也不可行：无 ffmpeg / faster-whisper / yt-dlp，HuggingFace 不可达，且 Python 无 YouTube 出口下不了音频）。
+> **【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】**
+
+- **禁止**在 `videos/asr.py` 已提供的兜底之外「自作主张开发新兜底」。
 - **禁止**改动代码去「优化/开发」兜底——除非用户**明确**要求开发。
 
 ### 8.2 区分「真无字幕」vs「抓取机制故障」（关键，避免误判乱调试）
@@ -204,7 +207,7 @@ C:/Users/O1830/.workbuddy/binaries/python/versions/3.13.12/python.exe videos/run
 | 信号 | 结论 | 做法 |
 |------|------|------|
 | 9222 连不上 / 页面空白 / YouTube 打不开（代理失效） | **抓取机制故障**（基础设施问题，不是视频没字幕） | 按 §6 排查：重跑 `python videos/cdp_launch.py` 自修复；**不要**回「无字幕」 |
-| 页面正常加载、能拿到标题、但 `captionTracks` 为空 | **真无字幕** | **原样回 §8.1 那句话并停止**，不要调试、不要 ASR |
+| 页面正常加载、能拿到标题、但 `captionTracks` 为空 | **真无 CC 字幕** | 交给 `videos/main` 自动 ASR 兜底；ASR 失败才回 §8.1 终态文案 |
 | `fetch_transcript` 返回有效 `(title, segments)` | 成功 | 正常进入总结/存档流程 |
 
-> 一句话：**页面打得开却没字幕轨道 = 真没字幕，直接回话；页面都打不开 = 基础设施坏了，去修 CDP，别把它当「无字幕」。**
+> 一句话：**页面打得开却没字幕轨道 = 让 ASR 兜底；页面都打不开 = 基础设施坏了，去修 CDP，别把它当「无字幕」。**

@@ -5,9 +5,13 @@
 配置文件 `.env` 需要放在技能根目录下：
 
 ```env
-# AI Provider 配置（留空自动检测）
-AI_PROVIDER=openai
-OPENAI_API_KEY=sk-xxxx
+# AI Provider 配置
+# 默认 FORCE_AGENT_MODE=1：总结由当前执行模型（主/子 Agent）完成，不再调用外部 Provider。
+# 外部 Provider 仅在 FORCE_AGENT_MODE=0 或代码显式调用外部接口时生效。
+FORCE_AGENT_MODE=1
+
+# AI_PROVIDER=openai
+# OPENAI_API_KEY=sk-xxxx
 
 # 输出目标配置
 OBSIDIAN_VAULT_PATH=D:\你的Obsidian库路径
@@ -33,10 +37,10 @@ FEISHU_WIKI_PARENT_NODE=父节点Token
 
 ### 自动检测逻辑
 
-1. 优先使用 `AI_PROVIDER` 环境变量指定的外部 Provider（openai/anthropic/google/local）
-2. 如果未指定或指定的 Provider 不可用，按优先级自动检测：`openai` > `anthropic` > `google` > `local`
-3. Trae SDK 不参与自动检测，需显式设置 `AI_PROVIDER=trae` 才会启用；无外部 Provider 时触发降级流程，由外层对话接手
-4. 使用第一个可用的 Provider
+1. 若 `FORCE_AGENT_MODE=1`（默认）：总结由当前执行模型完成，**不检测也不调用外部 Provider**。
+2. 若 `FORCE_AGENT_MODE=0`：优先使用 `AI_PROVIDER` 指定的外部 Provider（openai/anthropic/google/local）；未指定则按 `openai` > `anthropic` > `google` > `local` 自动检测。
+3. Trae SDK 不参与自动检测，需显式设置 `AI_PROVIDER=trae` 才会启用；无外部 Provider 时触发降级流程，由外层对话接手。
+4. 使用第一个可用的 Provider。
 
 ### 配置示例
 

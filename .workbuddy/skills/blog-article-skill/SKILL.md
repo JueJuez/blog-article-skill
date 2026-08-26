@@ -17,14 +17,14 @@ description: "文章/视频结构化总结与多渠道归档技能：抓取链�
 1. **直接运行**：`videos/run.py --url <youtube_url>` 或调 `videos.fetch.fetch_transcript(<youtube_url>)`。
 2. **看结果**：
    - 返回了字幕 → 继续总结/保存。
-   - 返回 `None` 且页面能打开（`captionTracks` 为空）→ **原样回用户**：
-     > **【此视频暂无 CC 字幕，无法为你抓取字幕总结内容。】**
    - 页面都打不开 / 9222 连不上 → 才是 CDP 机制故障，按 `references/youtube-cdp-workflow.md` 修。
+   - 页面能打开但 `captionTracks` 为空（真无 CC 字幕）→ `videos/main` 会自动走 ASR 兜底（下载音频 + 本地 faster-whisper 转写），成功则继续总结；ASR 也失败才终态回用户：
+     > **【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】**
 
 **禁止行为**：
 - ❌ 写 `_collect_subtitle.py` / `_debug_tmp.py` 等临时脚本。
 - ❌ API 失败后去“诊断为什么失败”——`fetch_transcript` 内部会自动回退 CDP，失败即表示无字幕或机制不可用，按上表返回即可。
-- ❌ 无 CC 字幕时走 ASR / 改代码“优化/开发”，除非用户明确说要做。
+- ❌ 在 `videos/asr.py` 已提供的兜底之外“自作主张开发新兜底”。环境坑（HF 镜像 / xet / CUDA dll / 沙箱安全删除）已由 `asr.py` 的 `_apply_env_defaults()` 自动处理，无需手敲 export。
 
 ---
 
@@ -40,7 +40,7 @@ description: "文章/视频结构化总结与多渠道归档技能：抓取链�
 - [ ] 总结完成后，我会调用 `save_summarized_article()` 保存到所有配置目标
 - [ ] 默认不在对话框输出完整笔记正文；只输出 1~3 句核心结论与成品文件路径（用户明确要求看全文时才展示）
 - [ ] 执行完后输出一句话总结 + 笔记类型 + 成品路径
-- [ ] **如果 YouTube 返回 None 且页面已加载、无字幕轨道，我会直接回固定文案，不诊断、不走 ASR、不开发兜底**
+- [ ] **如果 YouTube 返回 None 且页面已加载、无字幕轨道，我会先等 videos/main 自动走 ASR 兜底；ASR 也失败才回固定终态文案，不诊断、不额外开发兜底**
 - [ ] **质量闸门（可选 · 默认关）**：要更严质检时我会在 `.env` 设 `NOTE_QUALITY_GATE=1`（阈值 `NOTE_GATE_THRESHOLD` 默认 85）；降级无外部 AI 时闸门自动转自检段，我按 6 红线自核对，无需手动开（详见 `references/config.md` §九）
 
 **违反任何一项 = 执行失败**
@@ -186,7 +186,7 @@ if result.get('need_continue_summary'):
 | 文件写入失败 | 返回异常原因，不自动换路径 |
 | 飞书 CLI 没装或没配置 | 跳过飞书输出，不影响其他目标 |
 | Obsidian 路径没配置 | 跳过 Obsidian 输出，不影响其他目标 |
-| YouTube 视频**无 CC 字幕**（`fetch_transcript` 返回 None，且页面已加载、`captionTracks` 为空） | **原样回：「【此视频暂无 CC 字幕，无法为你抓取字幕总结内容。】」并停止**；不补 ASR、不改动代码。详见 `RULES.md` §4.4 与 `references/youtube-cdp-workflow.md` §8 |
+| YouTube 视频**无 CC 字幕**（`fetch_transcript` 返回 None，且页面已加载、`captionTracks` 为空） | `videos/main` 自动走 ASR 兜底；ASR 也失败才回：「【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】」并停止。详见 `RULES.md` §4.4 与 `references/youtube-cdp-workflow.md` §8 |
 
 ## 6. 核心接口速查（给 AI 调用用）
 
@@ -196,7 +196,7 @@ if result.get('need_continue_summary'):
 | `summarize_and_save(url, author, tags, note_type)` | 全自动：抓→总结→保存，一步到位 |
 | `skill_main(params_dict)` | 技能系统入口，处理链接/原文/降级逻辑 |
 | `skill_continue_summary(article_content, summary_content, ...)` | **降级模式专用**：AI 做完总结后调用此函数保存 |
-| `save_summarized_article(content, url, author, tags)` | 保存已总结好的内容到所有目标 |
+| `save_summarized_article(content, url, author, tags, original_title='', meta=None, note_type='', publish_time=0, folder='', obsidian=False)` | 保存已总结好的内容到所有目标 |
 | `save_summary_only(input_data)` | 降级模式下，外层总结完后的保存入口 |
 | `prompts.get_note_prompt(note_type)` | 按笔记类型取对应的总结模板 |
 | `prompts.list_note_types()` | 列出所有可用笔记类型（key / 名称 / 说明） |
@@ -268,4 +268,4 @@ blog-article-skill/
 
 **禁止**：手写抓取脚本、手搓 B站 / 微信 API——一律走 `monitors/run.py` 入口。
 
-**抓取规则（暂定 · 概要）**：首跑 7 天 / 每日 1 天时间窗口；无干货动态屏蔽；短动态轻量化（≤`BILI_SHORT_DYNAMIC_MAX` 字走速览）；新鲜度标签（#🔥当日 / #本周 / #更早）；state 按源裁剪防膨胀。
+**抓取规则（暂定 · 概要）**：首跑 30 天 / 每日 1 天时间窗口；无干货动态屏蔽；短动态轻量化（≤`BILI_SHORT_DYNAMIC_MAX` 字走速览）；新鲜度标签（#🔥当日 / #本周 / #更早）；state 按源裁剪防膨胀。
