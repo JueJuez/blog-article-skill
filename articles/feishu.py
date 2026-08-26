@@ -19,11 +19,19 @@ import subprocess
 import json
 import time
 import asyncio
+import contextlib
+import tempfile
+import hashlib
 from .base import BaseOutput
 
 # lark-cli 在 Windows 上是 .CMD 包装；用 shell=False + 解析出的完整路径调用，
 # 可彻底避免 Windows cmd 把标题里的 & | < > 等当成元字符（曾导致含 & 的标题推送崩溃）。
 _LARK_CLI_CACHE = None
+
+# 跨进程建节点串行化锁目录：防止两个会话并发新建同一容器（如作者文件夹 土斯）的 TOCTOU 竞态。
+# 用原子 O_EXCL 创建锁文件实现（Windows/Linux 通用，无第三方依赖）；加锁超时（默认 60s）则
+# 放弃加锁、回落到「建失败→重查复用」兜底，保证不重复建、不落空（RCG 门禁：确定性硬卡）。
+_NODE_LOCK_DIR = os.path.join(tempfile.gettempdir(), "blog_article_skill_feishu_locks")
 
 
 def _lark_cli():
@@ -358,6 +366,9 @@ class FeishuOutput(BaseOutput):
 
         parent_token：显式父节点（如统一路由器算出的「【监控】/B站/<UP>」节点 token）。
         不传则回退 wiki_parent_node（旧行为：系列挂在根下）。
+
+        并发安全（跨进程 TOCTOU 防护）：同 _ensure_child_node —— 用文件锁串行化查-建，
+        仅一个进程建节点，另一进程建失败后重查复用，绝不重复建/落空。
         """
         if not self.is_available():
             return ""
@@ -366,44 +377,47 @@ class FeishuOutput(BaseOutput):
         cache_key = f"{space}|{parent}|{series_title}"
         if cache_key in FeishuOutput._series_node_cache:
             return FeishuOutput._series_node_cache[cache_key]
-        # 1) 查已有子节点，避免重复建
-        try:
-            listing = self._run_cli_command([
-                "wiki", "+node-list",
-                "--parent-node-token", parent,
-                "--space-id", space,
-                "--as", "user", "--json", "--page-all"
-            ])
-            if listing and listing.get("ok"):
-                # 注意：+node-list 返回结构是 data.nodes（非 items）
-                for item in listing.get("data", {}).get("nodes", []):
-                    if item.get("title") == series_title:
-                        return item.get("node_token", "")
-        except Exception:
-            pass
-        # 2) 不存在则创建（docx 节点作为容器）
-        try:
-            result = self._run_cli_command([
-                "wiki", "+node-create",
-                "--title", series_title,
-                "--node-type", "origin",
-                "--obj-type", "docx",
-                "--parent-node-token", parent,
-                "--space-id", space,
-                "--as", "user", "--json"
-            ])
-            if result and result.get("ok"):
-                node = result.get("data", {})
-                token = node.get("node_token") or (node.get("node", {}) or {}).get("node_token")
-                if token:
-                    print(f"   📁 已建飞书容器节点「{series_title}」：{token}")
-                    FeishuOutput._series_node_cache[cache_key] = token
-                    return token
-            else:
+        # 1) 先查（无锁命中即返回）
+        existing = self._find_child_token(parent, series_title)
+        if existing:
+            FeishuOutput._series_node_cache[cache_key] = existing
+            return existing
+        # 2) 串行化查-建，避免并发重复建
+        with self._node_creation_lock(parent, series_title):
+            existing = self._find_child_token(parent, series_title)
+            if existing:
+                FeishuOutput._series_node_cache[cache_key] = existing
+                return existing
+            try:
+                result = self._run_cli_command([
+                    "wiki", "+node-create",
+                    "--title", series_title,
+                    "--node-type", "origin",
+                    "--obj-type", "docx",
+                    "--parent-node-token", parent,
+                    "--space-id", space,
+                    "--as", "user", "--json"
+                ])
+                if result and result.get("ok"):
+                    node = result.get("data", {})
+                    token = node.get("node_token") or (node.get("node", {}) or {}).get("node_token")
+                    if token:
+                        print(f"   📁 已建飞书容器节点「{series_title}」：{token}")
+                        FeishuOutput._series_node_cache[cache_key] = token
+                        return token
+                # 建失败（重名冲突/并发抢建/超时未加锁）→ 重查复用
+                retry = self._find_child_token(parent, series_title)
+                if retry:
+                    FeishuOutput._series_node_cache[cache_key] = retry
+                    return retry
                 err = result.get("error", {}).get("message", "未知错误") if result else "命令失败"
                 print(f"   ⚠️ 建飞书容器节点失败：{err}")
-        except Exception as e:
-            print(f"   ⚠️ 建飞书容器节点异常：{e}")
+            except Exception as e:
+                retry = self._find_child_token(parent, series_title)
+                if retry:
+                    FeishuOutput._series_node_cache[cache_key] = retry
+                    return retry
+                print(f"   ⚠️ 建飞书容器节点异常：{e}")
         return ""
 
     def save_series(self, content: str, filename: str, series_title: str,
@@ -423,42 +437,93 @@ class FeishuOutput(BaseOutput):
     # 多级目录节点缓存：{space|parent|a/b/c: node_token}
     _folder_path_cache: dict = {}
 
+    def _find_child_token(self, parent_token: str, title: str) -> str:
+        """在 parent_token 下查同名子节点，返回 node_token（含 sanitize 容错）；无则 ''。
+
+        封装 _find_child_node（返回 dict，被 save() upsert 复用），供容器节点查-建流程取 token。
+        """
+        node = self._find_child_node(parent_token, title)
+        return node.get("node_token", "") if node else ""
+
+    @contextlib.contextmanager
+    def _node_creation_lock(self, parent_token: str, title: str):
+        """跨进程串行化「查-建」的上下文管理器（TOCTOU 防护）。
+
+        同一 (space, parent_token, title) 同一时刻仅一个进程持锁，确保 list-then-create
+        原子执行，杜绝两个会话并发新建同一容器（如作者文件夹 土斯）导致重复建/落空。
+        用原子 O_EXCL 锁文件实现；加锁超时（60s）则放弃加锁、回落到建失败重查复用兜底，
+        保证极端情况下仍能前进、不永久阻塞。
+        """
+        key = hashlib.md5(
+            f"{self.wiki_space}|{parent_token}|{title}".encode("utf-8")
+        ).hexdigest()
+        os.makedirs(_NODE_LOCK_DIR, exist_ok=True)
+        lock_path = os.path.join(_NODE_LOCK_DIR, f"node_{key}.lock")
+        fd = None
+        deadline = time.time() + 60
+        while fd is None:
+            try:
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                break
+            except FileExistsError:
+                if time.time() > deadline:
+                    break
+                time.sleep(0.1)
+        try:
+            yield
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                try:
+                    os.remove(lock_path)
+                except OSError:
+                    pass
+
     def _ensure_child_node(self, parent_token: str, title: str) -> str:
-        """确保 parent_token 下存在名为 title 的容器节点，返回其 node_token。"""
-        space = self.wiki_space
-        # 1) 查已有子节点
-        try:
-            listing = self._run_cli_command([
-                "wiki", "+node-list",
-                "--parent-node-token", parent_token,
-                "--space-id", space,
-                "--as", "user", "--json", "--page-all"
-            ])
-            if listing and listing.get("ok"):
-                for item in listing.get("data", {}).get("nodes", []):
-                    if item.get("title") == title:
-                        return item.get("node_token", "")
-        except Exception:
-            pass
-        # 2) 不存在则创建（docx 节点作容器）
-        try:
-            result = self._run_cli_command([
-                "wiki", "+node-create",
-                "--title", title,
-                "--node-type", "origin",
-                "--obj-type", "docx",
-                "--parent-node-token", parent_token,
-                "--space-id", space,
-                "--as", "user", "--json"
-            ])
-            if result and result.get("ok"):
-                node = result.get("data", {})
-                tok = node.get("node_token") or (node.get("node", {}) or {}).get("node_token")
-                if tok:
-                    print(f"   📁 已建飞书容器节点「{title}」：{tok}")
-                    return tok
-        except Exception as e:
-            print(f"   ⚠️ 建飞书容器节点「{title}」异常：{e}")
+        """确保 parent_token 下存在名为 title 的容器节点，返回其 node_token。
+
+        并发安全（跨进程 TOCTOU 防护）：两个会话同时新建同一容器（如作者文件夹 土斯）时，
+        用文件锁串行化查-建，仅一个进程建节点，另一进程建失败后重查复用，绝不重复建/落空。
+        """
+        # 1) 先查（无锁命中即返回）
+        existing = self._find_child_token(parent_token, title)
+        if existing:
+            return existing
+        # 2) 串行化查-建，避免并发重复建
+        with self._node_creation_lock(parent_token, title):
+            existing = self._find_child_token(parent_token, title)
+            if existing:
+                return existing
+            try:
+                result = self._run_cli_command([
+                    "wiki", "+node-create",
+                    "--title", title,
+                    "--node-type", "origin",
+                    "--obj-type", "docx",
+                    "--parent-node-token", parent_token,
+                    "--space-id", self.wiki_space,
+                    "--as", "user", "--json"
+                ])
+                if result and result.get("ok"):
+                    node = result.get("data", {})
+                    tok = node.get("node_token") or (node.get("node", {}) or {}).get("node_token")
+                    if tok:
+                        print(f"   📁 已建飞书容器节点「{title}」：{tok}")
+                        return tok
+                # create 未成功（重名冲突/并发抢建/超时未加锁）→ 重查复用
+                retry = self._find_child_token(parent_token, title)
+                if retry:
+                    return retry
+                err = result.get("error", {}).get("message", "未知错误") if result else "命令失败"
+                print(f"   ⚠️ 建飞书容器节点失败（重查无同名）：{err}")
+            except Exception as e:
+                retry = self._find_child_token(parent_token, title)
+                if retry:
+                    return retry
+                print(f"   ⚠️ 建飞书容器节点「{title}」异常：{e}")
         return ""
 
     def ensure_folder_path(self, dirs: list) -> str:
@@ -494,15 +559,17 @@ class FeishuOutput(BaseOutput):
         return parts[:-1], parts[-1]
 
     def _find_child_node(self, parent_token: str, title: str):
-        """在 parent_token 下查找与 title 同名的子节点，返回节点 dict（含 node_token/obj_token）。
+        """在 parent_token 下查找与 title 同名的子节点，返回节点 dict（含 node_token/obj_token），无则 None。
 
-        用于 save() 的 upsert：系列总览固定标题重生成、单篇重跑等场景下，
-        同名节点已存在时改为「删旧 + 新建」（见 save 内 upsert 分支）。
+        用于 save() 的 upsert（删旧+新建，避免重复节点），及容器节点查-建取 token（经 _find_child_token）。
+        匹配含 sanitize 容错：飞书实际存 sanitize 后标题，原始 title 与 sanitize(title) 双重比对。
         """
         if not parent_token or not self.is_available():
             return None
+        san = _sanitize_title(title)
         for node in self.list_children(parent_token):
-            if node.get("title") == title:
+            t = node.get("title", "")
+            if t == title or _sanitize_title(t) == san:
                 return node
         return None
 
