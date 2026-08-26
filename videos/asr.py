@@ -427,10 +427,14 @@ def transcribe_audio(wav: str, model_size: str = "medium",
         print("❌ ASR 因硬超时中止（本集跳过，不会无限卡死）")
         return None
     except Exception as e:
-        # CUDA 运行库缺失等 GPU 错误 → 回退 CPU 重试一次（仅当未显式锁定 cuda）
+        # CUDA 运行库缺失（cublas/cudnn dll 找不到）/ 加载或推理期 CUDA 错误 → 回退 CPU 重试。
+        # 关键修复（2026-08-26）：transcribe_video 会「强制锁 cuda」（优化 D），导致 device=="cuda"，
+        # 旧守卫 `if device != "cuda"` 直接放过、不回退 → CUDA 推理期缺 cublas dll 时静默失败。
+        # 现改为「只要错误本身是 CUDA/cublas 类，无论 device 怎么被锁定都回退 CPU」，
+        # 与 _load_model 的 CUDA 加载失败回退保持一致，杜绝「本机缺 CUDA 运行库却卡死 ASR」的复发。
         err = str(e)
-        if device != "cuda" and ("cublas" in err or "cudnn" in err
-                                 or "CUDA" in err or "not found or cannot be loaded" in err):
+        if ("cublas" in err or "cudnn" in err
+                or "CUDA" in err or "not found or cannot be loaded" in err):
             print(f"   ⚠️ GPU 转写失败（{e}），回退 CPU/int8 重试")
             cpu_model = _load_model(model_size, "cpu")
             try:

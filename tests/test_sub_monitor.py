@@ -245,31 +245,29 @@ class TestBilibiliSource(unittest.TestCase):
         self.assertEqual(out[0]["id"], "222")
         self.assertIn("复盘大盘", out[0]["text"])
 
-    def test_dynamic_only_keeps_word_skips_av(self):
-        # discover 拿到的是已标准化的动态（AV/空文案已由 _normalize_dynamics 剔除）
+    def test_dynamic_request_is_ignored(self):
+        # 全局停用动态抓取：即使显式 types=["dynamic"]，代码门禁也强制剔除 -> 不抓任何动态
         norm = _normalize_dynamics(self._dynamics())
         with patch("monitors.bilibili._fetch_vlist", return_value=[]), \
              patch("monitors.bilibili._fetch_dynamics", return_value=norm):
             src = BilibiliSource("123", types=["dynamic"])
             state = load_state()
             new = src.discover(state, first_run_limit=5)
-        self.assertEqual(len(new), 1)
-        self.assertEqual(new[0]["route"], "dynamic")
-        self.assertEqual(new[0]["id"], "dyn:222")
-        self.assertIn("复盘大盘", new[0]["content"])
-        self.assertEqual(new[0]["url"], "https://t.bilibili.com/222")
+        self.assertEqual(len(new), 0)
 
-    def test_both_types_combined(self):
+    def test_default_is_video_only_after_dynamic_guard(self):
+        # 全局停用动态抓取后：默认 types 只含 video（dynamic 被代码门禁剔除），只抓视频
         with patch("monitors.bilibili._fetch_vlist", return_value=self._videos(3)), \
              patch("monitors.bilibili._fetch_dynamics", return_value=_normalize_dynamics(self._dynamics())):
-            src = BilibiliSource("123")  # 默认 video+dynamic
+            src = BilibiliSource("123")  # 默认现在只有 video（dynamic 被剔除）
             state = load_state()
             new = src.discover(state, first_run_limit=5)
         routes = {n["route"] for n in new}
         self.assertIn("video", routes)
-        self.assertIn("dynamic", routes)
+        self.assertNotIn("dynamic", routes)
 
-    def test_dynamic_first_run_caps_to_limit(self):
+    def test_dynamic_cap_ignored_when_disabled(self):
+        # 动态抓取已停用：即使传 types=["dynamic"] 且数量超过 cap，也不应抓任何动态
         now = int(time.time())
         many = [{"id": str(i), "type": "DYNAMIC_TYPE_WORD", "author": "UP",
                  "pub_ts": now - i * 60,
@@ -279,7 +277,7 @@ class TestBilibiliSource(unittest.TestCase):
             src = BilibiliSource("123", types=["dynamic"])
             state = load_state()
             new = src.discover(state, first_run_limit=5)
-        self.assertEqual(len(new), 5)
+        self.assertEqual(len(new), 0)
 
     def test_force_all_skips_seen_but_dedup_blocks_summarized(self):
         # --all-videos（force_all）补历史：seen 门禁被跳过（错标/漏标的历史能补回），

@@ -2,8 +2,8 @@
 
 优先级（命中即返回，前者优先）：
 教学超信号(structured) > 访谈/对话(interview) > 要点提炼(key_points) >
-盘点/横评(roundup) > 读书/书摘(reading) > 观点卡(opinion) > 案例拆解(case) >
-结构化复盘(structured, 兜底)。
+盘点/横评(roundup) > 读书/书摘(reading) > 观点卡(opinion) > 创作解剖(dissection) >
+案例拆解(case) > 结构化复盘(structured, 兜底)。
 都不命中时默认 structured（最完整、最安全的兜底形态）。
 
 补充：
@@ -46,6 +46,19 @@ CASE_KEYWORDS = [
 STRUCTURED_KEYWORDS = [
     "教程", "课程", "指南", "方法论", "实操", "从零", "如何", "干货",
     "复盘", "拆解", "保姆", "手把手", "入门", "进阶",
+]
+
+# 命中即归为「创作解剖」的信号词（爆款拆解/带货复盘/账号运营类，2026-08-26 新增）
+# 定位：内容创作域的拆解/复盘——case 总结「发生了什么」，dissection 额外提炼
+# 「可复用结构模具」（标题公式/钩子/节奏/CTA），模板移植自 ppt-master 的
+# note_dissection_sop.md。排在 opinion 之后、case 之前：抢走「带货复盘」「爆款拆解」
+# 这类创作域复盘，但不抢真观点文与普通商业案例。
+# 词表纪律（见 2026-08-21 教训）：只收内容创作域专有词，禁泛化词——
+# 「引流」有医学引流术义、「变现」「粉丝」「选题」过于泛化，均不收。
+DISSECTION_KEYWORDS = [
+    "爆款拆解", "爆款笔记", "爆款视频", "爆款文案", "爆款标题",
+    "涨粉", "起号", "带货", "账号运营", "私域",
+    "内容创作", "小红书运营", "抖音运营", "公众号运营", "自媒体运营",
 ]
 
 # 教学/教程类超信号：命中即判 structured，优先级高于 KEY_POINTS 的"视频"匹配。
@@ -114,9 +127,13 @@ def classify_note_type(title: str = "", content: str = "") -> str:
 
     Returns:
         "structured" / "key_points" / "opinion" / "case" /
-        "interview" / "roundup" / "reading"
+        "interview" / "roundup" / "reading" / "dissection"
     """
     text = f"{title}\n{(content or '')[:800]}".lower()
+    # 「评论区」是账号运营内容的高频实体（如「评论区运营」），不是观点信号；
+    # 剔除后再匹配 OPINION，避免带货/涨粉复盘被「评论」二字误抢成 opinion
+    #（同类教训见 2026-08-21 的「问答」「分享」清理）。
+    text_no_comment_section = text.replace("评论区", "")
     # 教学超信号优先：教学/教程类视频（手把手/保姆/实操/从零/教程/课程）应走
     # structured（方法论复盘），而非被 KEY_POINTS 的"视频"误判为口播要点。
     if any(kw.lower() in text for kw in TUTORIAL_SUPER_SIGNALS):
@@ -143,8 +160,12 @@ def classify_note_type(title: str = "", content: str = "") -> str:
         if kw.lower() in text:
             return "reading"
     for kw in OPINION_KEYWORDS:
-        if kw.lower() in text:
+        if kw.lower() in text_no_comment_section:
             return "opinion"
+    # 创作解剖：内容创作域的拆解/复盘（带货复盘、爆款拆解、涨粉起号等）。
+    for kw in DISSECTION_KEYWORDS:
+        if kw.lower() in text:
+            return "dissection"
     for kw in CASE_KEYWORDS:
         if kw.lower() in text:
             return "case"

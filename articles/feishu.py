@@ -336,8 +336,13 @@ class FeishuOutput(BaseOutput):
             return True
         try:
             children = self.list_children(parent_token)
+            # 关键修复（2026-08-26）：save() 落盘时会对标题做 _sanitize_title
+            # （如 30%→30％、！→!），而调用方传入的是「原始 base」。两端不一致会导致
+            # 含特殊字符的标题永远查不到刚写入节点 → 误报「landed(未回读确认)」。
+            # 故同时按「原始标题」与「sanitize 标题」匹配，与 save 实际写入对齐。
+            want = {title, _sanitize_title(title)}
             for node in children:
-                if node.get("title") == title:
+                if node.get("title") in want:
                     return True
             print(f"   ⚠️ 校验告警：父节点下未找到刚写入的「{title}」"
                   f"（可能最终一致延迟，或推送实际未生效，请运行 audit_sync.py 复核）")

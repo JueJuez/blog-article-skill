@@ -119,7 +119,7 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 - **限速（模拟人类）**：篇间随机 15~40s；每 10~15 篇歇 3~8 分钟；翻页间 3~6s；CDP 页面被关自动重试（实测救回过）
 - 断点续传：`notes/_scraped/scys/state.json`；中断重跑自动跳过已抓（关机/杀进程都不丢进度）
 - 产物：原文 `notes/_scraped/scys/<topicId>.md`；队列 `pending_summaries.json`（总结后标 `summarized:true` 防重复落飞书）
-- 总结落盘：子 Agent 读原文 -> **走正规入口获取分类器选定的模板**（`python get_note_prompt.py <raw> <title> --ext <ext_files>` 输出 note_type + prompt_file）-> 按 prompt（含 `QUALITY_GATE_SELFCHECK` 质量自检闸门）总结 -> `python articles/_save_summary.py <md> --url ... --tags "生财有术,<项目>" --title ...`（默认飞书；**已内置机械去重闸门**：URL 已总结过自动跳过，强制重写加 `--force`）。⚠️ **不要全部用 structured 模板**：分类器会按内容自动选 structured/interview/opinion/case/roundup/key_points/reading 七种模板。
+- 总结落盘：子 Agent 读原文 -> **走正规入口获取分类器选定的模板**（`python get_note_prompt.py <raw> <title> --ext <ext_files>` 输出 note_type + prompt_file）-> 按 prompt（含 `QUALITY_GATE_SELFCHECK` 质量自检闸门）总结 -> `python articles/_save_summary.py <md> --url ... --tags "生财有术,<项目>" --title ...`（默认飞书；**已内置机械去重闸门**：URL 已总结过自动跳过，强制重写加 `--force`）。⚠️ **不要全部用 structured 模板**：分类器会按内容自动选 structured/interview/opinion/case/roundup/key_points/reading/dissection 八种模板（2026-08-26 起含 dissection 创作解剖：爆款拆解/带货/涨粉/账号运营类 scys 文章会走它，额外提炼可复用结构模具）。
 - 已知限制：飞书 **PDF 预览型**文档文字在 canvas 里抓不到（落盘文件头有页码碎片），此类需下载 PDF 另行处理；文字型 wiki 滚动方案有效
 - python 环境：用 `D:\App\anaconda3\python.exe`（系统 python 无 playwright）
 

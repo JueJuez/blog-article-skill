@@ -388,8 +388,10 @@ class BilibiliSource:
                  all_videos: bool = False, window_days: Optional[float] = None,
                  force_all: bool = False):
         self.uid = str(uid)
-        # 默认同时抓视频和动态
-        self.types = types or ["video", "dynamic"]
+        # 默认只抓视频，不再抓取 B站动态（需求：2026-08-26 起全局停止 B站动态抓取）。
+        # 代码门禁：即使订阅配置显式写 types=["video","dynamic"]，也强制剔除 "dynamic"，
+        # 不依赖订阅配置或 AI 记忆来保证「从此不再抓动态」。视频/系列课抓取不受影响。
+        self.types = [t for t in (types or ["video"]) if t != "dynamic"]
         # all_videos：抓该 UP 全部视频（超大窗口 + 翻页 + 取消安全上限），用于「抓所有视频」。
         # 仅「首次运行」生效（is_first 门禁）：系列课首跑抓整门课，后续跑 is_first 变 False，
         # 自动回退到增量窗口（默认 1 天、封顶 30 天）+ seen 去重，与其他 UP 行为一致、不重复全抓。

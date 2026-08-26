@@ -21,7 +21,7 @@
   - ⚠️ **Chrome 151+ 已废弃 junction 方案**（2026-08-24 实测）：旧方案用 junction（`DebugUDD` → `User Data`）绕过远程调试限制，但 Chrome 151 能检测 junction 指向同一物理目录，触发安全清理：清空 `extensions.settings` → `extension_garbage_collector` 删扩展文件（实测 22 个扩展被删）→ 清 Google 账号关联。**新方案不再用 junction / 不再改 Chrome 快捷方式 / 不再需要 `--remote-debugging-port`。** 详见 `references/login-required-cdp-workflow.md` §1.1~§1.2。
   - **scys 按领域批量抓取**：`python scripts/scys_batch_fetch.py --project <领域>`（领域 / menuId / 时间窗在 `scripts/scys_projects.json` 配置，换领域每半年重抓只改 JSON 不改代码）。**触发词：用户说「补齐scys / 补齐生财有术」即自动启动全流程（默认=精华+高互动非精华，2026-08-21 起），后缀自然语言改参数（领域/时间/仅精华），语义见 `references/scys-fetch-sop.md` §9。**
   - 视频：`python videos/run.py --url "https://..."` 或 `from videos import summarize_video; summarize_video({"url": url})`（含 ASR 兜底）
-- 自动按内容类型选模板（`structured` / `key_points` / `interview` / `roundup` / `reading` / `case` / `opinion`）；**默认写飞书**，用户说「写到 obsidian / 双写」时才追加 Obsidian（传 `obsidian=True` 或 `--obsidian`，详见 `RULES.md` §3.0）。
+- 自动按内容类型选模板（`structured` / `key_points` / `interview` / `roundup` / `reading` / `case` / `opinion` / `dissection` 创作解剖——爆款拆解/带货/涨粉/账号运营复盘额外提炼可复用结构模具）；**默认写飞书**，用户说「写到 obsidian / 双写」时才追加 Obsidian（传 `obsidian=True` 或 `--obsidian`，详见 `RULES.md` §3.0）。
 - **降级**：无外部 AI 时 `skill_main` 返回 `need_continue_summary` + 原文 + 模板 prompt；外层模型总结后调 `save_summary_only` 存档。
 
 ### 能力 2 · 订阅监控（关注 B站UP主 / 公众号 / scys 领域）

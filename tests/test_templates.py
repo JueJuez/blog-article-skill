@@ -31,7 +31,7 @@ from prompts.templates import (
 
 def test_all_four_types_present():
     expected = {"structured", "key_points", "case", "opinion",
-                 "interview", "roundup", "reading"}
+                 "interview", "roundup", "reading", "dissection"}
     assert expected <= set(NOTE_TEMPLATES)
 
 
@@ -137,7 +137,7 @@ def test_universal_rules_merged_into_light_templates():
 def test_list_note_types_shape():
     rows = list_note_types()
     expected = {"structured", "key_points", "case", "opinion",
-                "interview", "roundup", "reading"}
+                "interview", "roundup", "reading", "dissection"}
     assert expected <= {r["key"] for r in rows}
     for r in rows:
         assert r["name"] and r["desc"]

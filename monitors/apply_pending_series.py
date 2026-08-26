@@ -37,6 +37,7 @@ load_dotenv(os.path.join(ROOT, ".env"))
 
 import articles.main as articles_main
 from videos.main import _save_series_note, _generate_series_overview, _NOTE_TYPE_TAG, _sanitize_filename
+from articles.feishu import _sanitize_title
 from shared.routing import resolve_folder
 from shared import series_state
 from shared import series_manifest as sm
@@ -62,7 +63,9 @@ def _delete_feishu_node(series_title: str, base: str, parent_token: str = None):
         if not parent:
             return
         for node in f.list_children(parent):
-            if node.get("title") == os.path.splitext(base)[0]:
+            # save() 写入的是 sanitize 后的标题；删除去重须按 sanitize 标题匹配，
+            # 否则含 %/！ 等字符的标题永远删不到旧节点，--regenerate 产生重复节点。
+            if node.get("title") == _sanitize_title(os.path.splitext(base)[0]):
                 f.delete_node(node.get("node_token"))
                 print(f"   🗑️ 已删飞书旧节点：{base}")
     except Exception as e:
