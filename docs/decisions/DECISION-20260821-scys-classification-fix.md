@@ -13,4 +13,4 @@
 ## 影响
 修正后分布：structured 244(79%) / case 17(6%) / opinion 16(5%) / key_points 15(5%) / interview 10(3%) / roundup 6(2%) / reading 1
 - 65 篇用错模板的文章已删除飞书旧节点并重新总结
-- 子 Agent 改为走正规入口（get_note_prompt.py 获取分类器选定的模板 + QUALITY_GATE_SELFCHECK）
+- 子 Agent **消费队列中已算好的 prompt**（`articles/main.py` 按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好随 `pending_summaries.json` 投递，无需自调 CLI）

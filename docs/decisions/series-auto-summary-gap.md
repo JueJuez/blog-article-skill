@@ -41,7 +41,7 @@
    - `_handle_bilibili_series` 降级返回补齐 `need_continue_summary / series_title /
      series_dir / url / author / degraded_raws`（让 monitors 感知系列待总结）。
 2. `monitors/run.py`
-   - 新增 `PENDING_SERIES_PATH = .../pending_series.json`。
+   - 新增 `PENDING_SERIES_PATH = monitors/pending_series.json`。
    - 视频分支：降级且含 raws 时改调 `_queue_pending_series()`（去重同系列）。
    - 末尾新增 `NEED_AGENT_SERIES_SUMMARY` 打印。
 3. `monitors/apply_pending_series.py`（新建）

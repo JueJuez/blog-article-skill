@@ -4,7 +4,7 @@
 > 旧方案用 junction（DebugUDD→User Data）+ 焊快捷方式 flags 绕过 Chrome 151+ 远程调试限制。
 > Chrome 151 能检测 junction 指向同一物理目录，触发 `extension_garbage_collector` 删扩展 + 清账号。
 > **新方案**：`login_cdp_fetch.py` CDP 不可用时自动回退到 `profile_clone_fetch.py`（持久化 ProfileClone 目录，
-> 非默认 dir → Chrome 151+ 放行）。详见 `docs/decisions/DECISION-20260824-chrome151-junction-deprecation.md`。
+> 非默认 dir → Chrome 151+ 放行）。详见 `.workbuddy/memory/_archive/decisions/DECISION-20260824-chrome151-junction-deprecation.md`（已归档）。
 > 本文件 §1.1~§1.2 已更新为新方案；§2 及之后的历史记录保留但 **junction 相关内容已作废**。
 
 > **本文件是「需登录态才能访问」的网站的通用抓取工作流。**
