@@ -120,36 +120,28 @@ structured 的「十一、字数与拆分」段（~L153）追加一句：
 
 **验收**：《打榜攻略》非 roundup；《读完这篇论文》非 reading；既有点击/盘点/读书正例不回归。
 
-### P1-6 · 补齐 get_note_prompt.py CLI（修文档-代码漂移）
+### P1-6 · 修文档漂移（删 CLI 承诺，改为消费队列已算 prompt）
 
-**背景**：`AGENTS.md`（能力 2 第 4 步）与 `references/scys-fetch-sop.md`（L122/L161）多处
-指示子 Agent 执行：
-```
-python get_note_prompt.py <raw> <title> --ext <ext_files>   # 输出 note_type + prompt_file
-```
-**该脚本不存在**——仓库只有 `prompts/templates.py: get_note_prompt()` 函数。子 Agent 照
-文档执行直接失败，只能自行 `python -c` 内联，行为不可复现、不可回归测试。
+**背景**：`AGENTS.md`（能力 2 第 4 步）、`references/scys-fetch-sop.md`（L161/L169）、
+`docs/decisions/DECISION-20260821-scys-classification-fix.md`（L16）多处指示子 Agent 执行
+`python get_note_prompt.py <raw> <title>`。**该脚本从不存在**（git 历史证实：字符串仅作为
+文档承诺出现在 2026-08-21/22 两次提交，仓库只有 `prompts/templates.py: get_note_prompt()` 函数）。
+但真相是：子 Agent 根本不需要自调 CLI —— `articles/main.py:585` 已按分类器选定模板 +
+`QUALITY_GATE_SELFCHECK` 把 prompt **算好塞进返回 dict，随 `pending_summaries.json` 队列 in-band
+投递**；子 Agent 读队列条目直接 `save_summary_only` 落盘即可。CLI 是「承诺即过时」的文档意图，被
+队列内联投递架构取代，因此无调用方、无失败触发，成幽灵。
 
-**方案**：新建 `scripts/get_note_prompt.py` 薄 CLI，对齐文档承诺的接口：
-- 入参：`<raw_file> <title> [--ext <files>]`
-- 行为：读 raw → `classify_note_type(title, content)` → `get_note_prompt(note_type) +
-  QUALITY_GATE_SELFCHECK` → prompt 写入 `<raw 同目录>/<stem>_prompt.md`
-- stdout 输出两行：`note_type=<类型>` 与 `prompt_file=<路径>`（子 Agent 按此消费）
-- **注意**：脚本需做 sys.path 注入（`sys.path.insert(0, 项目根)`，参考
-  `scripts/audit_fidelity.py` L19-20 的写法），且 .env 加载用脚本相对路径（项目硬约束，
-  见 project_memory：曾因 cwd 相对路径翻车）。
+**方案**：不补脚本，改修文档漂移 —— 将上述三处「子 Agent 先调 `get_note_prompt.py`」改为
+「子 Agent 消费队列中已算好的 prompt（无需自调 CLI）」。若未来确有子 Agent 需独立取 prompt，
+让其 `from prompts.templates import get_note_prompt`（同 `main.py` 路径）即可，不造新脚本。
 
-**验收**（端到端，用户偏好场景测试而非单元测试）：
-```python
-def test_get_note_prompt_cli_end_to_end(tmp_path):
-    raw = tmp_path / "raw.md"; raw.write_text("带货复盘正文...", encoding="utf-8")
-    r = subprocess.run([sys.executable, "scripts/get_note_prompt.py", str(raw), "带货复盘"],
-                       capture_output=True, text=True, cwd=ROOT)
-    assert r.returncode == 0
-    assert "note_type=dissection" in r.stdout
-    assert "prompt_file=" in r.stdout
-    # prompt 文件内容含模板头 + 质量闸门
-```
+**改动清单**：
+- `AGENTS.md:47` 能力 2 第 4 步 scys 子项：删 `get_note_prompt.py` 引用。
+- `references/scys-fetch-sop.md:161` / `:169`：删 `get_note_prompt.py` 引用。
+- `docs/decisions/DECISION-20260821-scys-classification-fix.md:16`：删 `get_note_prompt.py` 引用。
+
+**验收**：仓库内 `get_note_prompt.py`（作脚本名）零引用；`grep -rn 'get_note_prompt\.py' --include=*.md`
+输出为空（仅保留 `get_note_prompt()` 函数本身的合法引用）。
 
 ### P1-4 · 拆「兜底 structured」与「教程 structured」（本批最大改动，放最后）
 
@@ -279,3 +271,105 @@ UNIVERSAL_RULES 中。不能逐字断言（structured 是改写非复制），�
 | 测试 | `tests/test_templates.py` / `test_dissection_template.py` / `test_scys_classification.py` | 字符串断言惯例 |
 | 质量配置 | `references/config.md` L214-229 | `NOTE_QUALITY_GATE` / `NOTE_GATE_THRESHOLD` |
 | 已有审计 | `scripts/audit_fidelity.py` | `--stage mechanical/fidelity`（P2-9 复用） |
+
+---
+
+# 附录 B · 分类器架构设计（路线 B 预研 · 先设计后改）
+
+> 缘起：评审时用户将 P0-1 从「词表互斥收紧」升级为「多面性 + 加权倾向裁决」，本质是对 9 级优先链的局部架构改动；C 点（整体架构升级为加权 top-k + 规则裁决）用户要求「先设计后改」。本附录即 C 的设计预研，也是 P0-1 的实现蓝图。开发前必读，开发时严格按 §B.5 分阶段。
+> ⚠️ **本附录（路线 B 加权引擎）已于 2026-08-27 搁置 SHELVED**：经评审属 YAGNI（本项目无多面性路由消费者）。实际落地为最小版——dissection 共现护栏 + `general` 兜底（见 `prompts/classify.py`）。原独立设计文档 `DESIGN-20260827-classifier-rewrite.md` 已归档 `_archive/decisions/`，**勿照此实现**；多面性消费者出现前勿 revive 加权引擎。
+
+## B.1 现状审计（为什么 9 级链不够）
+当前 `classify_note_type`（prompts/classify.py L121-175）是 **11 步命中即返回 + default structured**：
+1. TUTORIAL_SUPER_SIGNALS → structured
+2. INTERVIEW_KEYWORDS → interview
+3. `_content_looks_interview` → interview
+4. KEY_POINTS_KEYWORDS → key_points
+5. ROUNDUP_KEYWORDS → roundup
+6. 《》书名号 → reading
+7. READING_KEYWORDS → reading
+8. OPINION_KEYWORDS → opinion（已剔「评论区」）
+9. DISSECTION_KEYWORDS → dissection
+10. CASE_KEYWORDS → case
+11. STRUCTURED_KEYWORDS → structured
+12. default → structured
+
+结构性问题：
+- **顺序即命运**：dissection 在 step 9、structured 在 step 11 → 「私域运营方法论」被 step 9 的「私域」抢成 dissection（错配，P0-1 根因；按用户决策方法论应走 structured）。
+- **dissection 纯领域词无动作搭配即触发**：DISSECTION_KEYWORDS 全是领域词（带货/私域/起号/账号运营/内容创作/小红书运营…），只要出现任一即 dissection，无「拆解/复盘/打法」动作搭配 → 高误判。
+- **赢家通吃**：命中即返回，无法表达多面性（同一篇能吃出教程味也能吃出复盘味，只能取第一个）。
+- **加类=堆词+护栏**：每加一类靠补词+回归测试，边际成本递增。
+
+## B.2 优化边界（哪些硬短路、哪些加权）
+**保留硬短路（强信号、几乎零错配、格式级区分，不进加权池）**：
+- TUTORIAL_SUPER_SIGNALS（手把手/保姆/实操/从零/教程/课程/step by step）→ structured
+- INTERVIEW 标题关键词 + 内容级探针 → interview
+- 《》书名号（标题强信号）→ reading
+
+**进入加权池（多面性、需倾向裁决）**：
+key_points / roundup / reading(关键词) / opinion / dissection / case / structured / general(新增)
+
+## B.3 业务流程（分类器被谁调、产出怎么用）
+- **调用点**：`articles/main.py:339` 分类；`:580` 降级回退；`videos/main.py`（3 处 L80/489/725）。
+- **当前接口**：`classify_note_type(title, content) -> str`（单类型）。
+- **加权后接口（向后兼容）**：
+  - `classify_note_type(title, content) -> str` **签名不变**，内部返回 top-1，所有调用方零改。
+  - 新增 `classify_note_type_scored(title, content) -> ScoredResult`（dataclass：top1, top2, gap, signals:list[(type, weight, matched_kw)]），供 P2-7 自评留痕 / 调试 / 未来路由。
+- **与 prompt 衔接**：`articles/main.py:585` 已 `get_note_prompt(note_type)`；P0-2 改签名为 `get_note_prompt(note_type, length=None)`（length 由 `len(content)` 映射注入，机械封顶）。
+
+## B.4 加权算法（初版权重表 · 待 TDD 校准）
+**信号权重（命中单词计权，可累加）**：
+| 组 | 单词权重 | 说明 |
+|---|---|---|
+| TUTORIAL_SUPER_SIGNALS | +100（硬短路，不进池） | 极强教程信号 |
+| INTERVIEW 标题 kw | +100（硬短路） | |
+| INTERVIEW 内容探针 | +90（硬短路） | |
+| 《》书名号 | +100（硬短路） | |
+| KEY_POINTS | +28 / 词 | 口播要点 |
+| ROUNDUP | +28 / 词（P1-5 清「榜」残留） | 盘点横评 |
+| READING kw | +28 / 词 | 读书书摘 |
+| OPINION | +24 / 词（已剔评论区） | 观点立场 |
+| CASE | +30 / 词 | 案例复盘 |
+| STRUCTURED kw | +34 / 词 | 教程方法论兜底 |
+| general | 基础分 +10（兜底，低于任何实命中即不赢） | 极简骨架 |
+| **DISSECTION** | 见下方共现公式 | 内容创作域拆解 |
+
+**dissection 共现公式（P0-1 核心）**：
+```
+dom = 命中 DISSECTION_DOMAIN 词数（带货/私域/起号/账号运营/内容创作/小红书运营/抖音运营/公众号运营/自媒体运营）
+act = 命中 DISSECTION_ACTION 词数（拆解/复盘/打法/公式/钩子/节奏/CTA/选题/爆款/起号逻辑/运营sop）
+dissection_score = dom*W_DOM(12) + act*W_ACT(30) + (dom>0 and act>0 ? COOCCUR_BONUS(40) : 0)
+# 护栏：dom>0 但 act==0（纯领域词无动作，如「私域运营方法论」）→ dissection_score 仅 12，低于 STRUCTURED 的「方法论」+34 → 不赢，落到 structured（符合用户决策）
+# dom>0 且 act>0（如「带货复盘」「爆款拆解起号」）→ +82 起，稳赢
+```
+> 注：当前 `DISSECTION_KEYWORDS` 的纯领域词（带货/私域/起号…）拆为 `DISSECTION_DOMAIN`；动作词另立 `DISSECTION_ACTION`。「起号」按用户原意归 DOMAIN（它是领域信号，不是动作）。
+
+**top-1 / top-2 裁决（多面性留痕）**：
+```
+GAP_PASS = 20   # 初版阈值，待 309 篇抽样校准
+if top1.score - top2.score >= GAP_PASS: 置信高，返回 top1
+else: 置信低，仍返回 top1，但 ScoredResult.low_confidence=True（供 P2-7 标「模板适配：低」）
+```
+- 硬短路组（TUTORIAL/INTERVIEW/《》）命中即直接返回，不参与 gap 比较（它们零歧义）。
+
+## B.5 过渡规则（不破坏 21+ 用例 · 严格分阶段）
+- **阶段 0（等价翻译，零行为变更）**：把现有 11 步链逐条翻译成 §B.4 权重表，使 `classify_note_type` 输出与现状**完全一致** → 全测试绿（零回归）。此阶段不改任何分类结果。
+- **阶段 1（应用 dissection 共现收紧 = 原 P0-1 行为变更）**：启用 §B.4 共现公式。此变更会改变部分预期 → 更新预期变更的测试（PLAN §5 已标 `test_prd/test_sub_monitor` 5 + `test_asr_fallback` 3 已知失败，勿修勿跳；**行为变更引入的新失败须改预期或加 RED 测试**）。
+- **阶段 2（general 接入 = P1-4）**：把 §B.4 的 general 基础分 + 兜底分支 `return "general"` 接入，作为新加权项。
+- **门禁**：每阶段结束 `pytest tests/` 全绿（已知存量失败集合一致）才进下一阶段；任何词表/权重改动须同步本附录 §B.4 表（单一真相源，防文档-代码漂移）。
+
+## B.6 决策记录要求
+- （路线 B 加权引擎已 SHELVED，本 DECISION 不再撰写；最小版落地结论见项目 MEMORY.md「🚫 已否决方案护栏」。）
+- 零回归判据：git stash 对照法（改动前后失败集合一致），参考 PLAN §5.4。
+
+## B.7 风险与校准
+- 权重初版须对 309 篇 scys 重跑抽样，确认分布不炸（dissection 占比、general 占比合理）。
+- GAP_PASS 阈值需校准：过低→全标低置信（P2-7 噪声大）；过高→错配静默。先用 20，按抽检调整。
+- 硬短路组（TUTORIAL/INTERVIEW/《》）保持不变，降低回归面。
+
+## B.8 与本 PLAN 其他项的关系
+- P0-1 实现蓝图 = 本附录 §B.4 共现公式 + §B.5 阶段 1。
+- P0-2 机械封顶 = `get_note_prompt` 加 length 参数（§B.3），AI 凝练度仍交模型。
+- P0-3 忠实红线 = 模板文案改写（不属分类器，独立项）。
+- P1-4 general = §B.4 general 基础分 + §B.5 阶段 2。
+- P2-7 自评 = 消费 §B.3 `classify_note_type_scored` 的 low_confidence 留痕。

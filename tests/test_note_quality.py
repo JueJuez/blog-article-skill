@@ -130,8 +130,8 @@ def test_video_keyword_no_longer_forces_key_points():
     仅含「视频」而无其他 cue 的，不再被抢成 key_points。"""
     # 教学类视频 → structured（教学超信号拦截，而非被「视频」抢成口播）
     assert classify_note_type("从零搭建个人笔记系统 视频") == "structured"
-    # 纯「视频」无其它 cue → 落入默认兜底 structured（不再误归 key_points）
-    assert classify_note_type("某产品发布视频", "") == "structured"
+    # 纯「视频」无其它 cue → 落入默认兜底 general（P1-4，不再误归 key_points/structured）
+    assert classify_note_type("某产品发布视频", "") == "general"
 
 
 # --------------------------------------------------------------------------

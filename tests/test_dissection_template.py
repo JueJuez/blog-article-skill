@@ -170,7 +170,7 @@ def test_guard_generic_article_stays_structured():
 
 
 def test_guard_scys_boilerplate_not_dissection():
-    """scys boilerplate 回归：导航噪声不触发 dissection，普通教程仍走 structured。"""
+    """scys boilerplate 回归：导航噪声不触发 dissection；无特化信号时兜底 general（P1-4）。"""
     title = "我用Cursor做了一个DeepSeek提示词管理工具"
     content = (
         "---\n\n"
@@ -179,4 +179,51 @@ def test_guard_scys_boilerplate_not_dissection():
         "零基础用Cursor + Claude3.7做了一个 DeepSeek 提示词管理工具\n"
         "首先要感谢生财3月份AI网站开发航海，让我这个零基础的人也能做出产品。"
     )
+    assert classify_note_type(title, content) != "dissection"
+    assert classify_note_type(title, content) == "general"
+
+
+# --------------------------------------------------------------------------
+# P0-1 修复：纯领域词不触发 dissection（须配动作词）
+# --------------------------------------------------------------------------
+
+def test_guard_pure_domain_not_dissection():
+    """纯领域词「私域」单独出现（无动作词）不触发 dissection -> 落到 structured。
+
+    P0-1 根因回归：「私域运营方法论」曾被 step9 的纯领域词「私域」抢成 dissection，
+    正确应走 structured（方法论复盘）。
+    """
+    title = "私域运营方法论：从0搭建你的私域池"
+    content = "本文讲私域运营的底层方法论与实操步骤。"
+    assert classify_note_type(title, content) != "dissection"
     assert classify_note_type(title, content) == "structured"
+
+
+def test_guard_domain_without_action_falls_through():
+    """领域词「带货」+ 方法论，但无动作词（拆解/复盘…）-> 不 dissection。"""
+    title = "带货方法论：如何搭建带货团队"
+    content = "本文讲带货业务的整体思路与组织方式，不涉及具体执行步骤。"
+    assert classify_note_type(title, content) != "dissection"
+
+
+def test_cooccurrence_domain_plus_action_still_dissection():
+    """领域词 ∩ 动作词共现仍判 dissection（如「带货复盘」）。"""
+    title = "视频号图书带货单号营收50万复盘"
+    content = "回顾这个带货账号从0到50万的全过程，包括选品和话术。"
+    assert classify_note_type(title, content) == "dissection"
+
+
+# --------------------------------------------------------------------------
+# P1-4：零信号兜底为 general
+# --------------------------------------------------------------------------
+
+def test_default_general_when_no_signal():
+    """无任何特化信号 -> general（而非强塞 structured）。"""
+    assert classify_note_type("今天天气真好") == "general"
+    assert classify_note_type("随便聊聊") == "general"
+
+
+def test_general_template_registered():
+    """general 必须注册进 NOTE_TEMPLATES，且能取到 prompt（不静默回退）。"""
+    assert "general" in NOTE_TEMPLATES
+    assert get_note_prompt("general") == NOTE_TEMPLATES["general"]["prompt"]

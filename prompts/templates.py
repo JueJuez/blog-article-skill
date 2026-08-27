@@ -687,6 +687,11 @@ NOTE_TEMPLATES = {
         "desc": "爆款拆解/带货/涨粉/账号运营复盘类：背景→打法→结果→可复用结构模具（标题公式/钩子/节奏/CTA 占位符化）",
         "prompt": DISSECTION_PROMPT,
     },
+    "general": {
+        "name": "通用笔记",
+        "desc": "兜底通用形态：无明确特化信号时的默认总结（概念→要点→可复用结论），等价于结构化复盘的通用版",
+        "prompt": CONTENT_SUMMARY_PROMPT,
+    },
 }
 
 
