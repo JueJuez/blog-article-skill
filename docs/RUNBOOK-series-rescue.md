@@ -124,11 +124,11 @@ PY="/c/Users/O1830/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
 4. **cublas "not found" 偶发**：只加了 cublas/bin，没加 cuda_runtime/bin（cublas 依赖 cudart64_12.dll）。
 5. **落盘判据只看 lark-cli**：飞书落盘走 `lark-cli`（`articles/feishu.FeishuOutput`），与面板 feishu MCP 连接器是两套独立机制；判据只看 `is_available()`（`FEISHU_WIKI_SPACE` 已配 + `lark-cli --version` 可执行）。落盘前跑 `apply_pending_series.py --check` 一行自报，看到 `is_available : True` 就落，无需关注面板连接器状态。
    → `_ensure_cuda_dlls` 现加入**所有** nvidia/*/bin 目录 + PATH；若仍报，先跑 `--check` 看 CUDA 设备数。
-5. **ugc_season 单 P 集误拼 `?p=N`**：每集是独立 BV，拼 `?p=5` 会让 yt-dlp 报"No video formats found"。
+6. **ugc_season 单 P 集误拼 `?p=N`**：每集是独立 BV，拼 `?p=5` 会让 yt-dlp 报"No video formats found"。
    → `fetch.py` 已修：仅当视频确为多 P 且 page 有效才拼 `?p=N`。
-6. **后台任务总时长连坐**：一个 bash 脚本里顺序跑多集，前一集占满后后续被总时长上限杀掉。
+7. **后台任务总时长连坐**：一个 bash 脚本里顺序跑多集，前一集占满后后续被总时长上限杀掉。
    → 每集各自独立 `run_in_background` 任务。
-7. **误报"完成"**：reconcile 时缺失集只是"不在字典里"，无任何占位 → 以为全做完了。
+8. **误报"完成"**：reconcile 时缺失集只是"不在字典里"，无任何占位 → 以为全做完了。
    → manifest 记 `expected_total`，`gap_pages()` 显式标缺口；汇报前必跑 `--status`。
 
 ---

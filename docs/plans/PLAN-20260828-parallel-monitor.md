@@ -1,6 +1,6 @@
 # PLAN-20260828 · 监控流水线并行化 + 状态 Ledger 改造
 
-> 状态：**✅ 已完成（P0~P3 全落地，2026-08-28）；真环境验收待用户新会话跑 `python monitors/run.py --parallel --mode auto`**（受控单测已按用户要求删除，不入库）
+> 状态：**✅ 已完成（P0~P3 全落地 + 并行双竞态修复 #11/#12，2026-08-29）；竞态修复已 commit `14a5c5c` 并 push 至 github；真环境验收待用户新会话跑 `python monitors/run.py --parallel --mode auto`**（受控单测已按用户要求删除，不入库）
 > 目标消费者：状态 ledger 主要供**前端/模型查询与重抓**，非人肉翻文件 → schema 以"模型可查询、可重驱"为先。
 
 ## 1. 要解决的痛点（来自 2026-08-27~28 诊断）
@@ -18,7 +18,7 @@ discover_all()              # B站 + 公众号 一起发现（串行）
 而用户截图担心的「B站游客」「scys 没用 FDP」均为**误读**（cookie 正常 / scys 一直走 CDP，profile_clone 只是无 debug 端口时的兜底）——无需修。
 
 另外：公众号依赖的 `weread.111965.xyz` 免费代理常返 5xx（瞬时），会使该轮扫码续期失败，但**只影响公众号**，B站/scys 独立。
-更严重的是：**token 是否过期是"经代理检测"的**——`is_token_valid`（`monitors/wechat.py:145`）通过打代理接口 `resolve_mp` 的 `401` 判过期，无任何本地过期时间戳。该函数在代理 `5xx`/断网时与 `401` 共用同一套重试，重试耗尽后 `return False` 被当成"token 过期"**误弹二维码**（详见 §7.5 #10，这是审计原稿漏掉的真 bug）。
+更严重的是：**token 是否过期是"经代理检测"的**——`is_token_valid`（`monitors/wechat.py:156`）通过打代理接口 `resolve_mp` 的 `401` 判过期，无任何本地过期时间戳。该函数在代理 `5xx`/断网时与 `401` 共用同一套重试，重试耗尽后 `return False` 被当成"token 过期"**误弹二维码**（详见 §7.5 #10，这是审计原稿漏掉的真 bug）。
 
 ## 2. 目标架构
 
@@ -109,7 +109,7 @@ orchestrator (monitors/run_parallel.py)
 ### A. 已有机制可复用（不必从零造）
 | 边界问题 | 现状 | 处置 |
 |---|---|---|
-| 公众号限流空正文→重抓 | `pending_refetch.json` 跨轮收集+前置重抓（run.py:671/827） | ASR redrive 复用同范式（§3.5） |
+| 公众号限流空正文→重抓 | `pending_refetch.json` 跨轮收集+前置重抓（run.py:469/474 持久化 + 855 `apply_summaries` 重载前置） | ASR redrive 复用同范式（§3.5） |
 | 飞书重复节点 | series drain 锁 + 落盘前 children 白名单查重 | 落盘阶段串行，沿用即可 |
 | 无字幕超时误杀 | `rescue_episode._probe_timeout` 时长×3+600 | ASR 池每集复用 |
 | 单源 5xx 不拖垮全链 | 拆子进程后天然隔离 | 架构自带 |
@@ -135,7 +135,7 @@ orchestrator (monitors/run_parallel.py)
 
 1. 注入单源故障（如 weread 返 5xx）验证 B站/scys 仍跑完、ledger 正确记 `skip`。
 2. 注入一条无字幕 B站视频，验证其余视频不阻塞、ASR 在子进程完成、ledger 记 `transcribe` 阶段。
-3. 跑完查 `status_cli.py summary` / `failures` 可读性；`redrive` 能把失败项重新入队并成功补抓。
+3. 跑完查 `status_cli.py summary` 看 latest 汇总（`failures`/`redrive` 子命令已随 `failures.jsonl` 死链移除，跨轮重抓由 `pending_refetch.json` 自动闭环，下轮运行即自动补抓）。
 
 ### 实施状态（2026-08-28 收官）
 - P0~P3 全部落地：新增 `status_store.py` / `status_cli.py` / `run_lock.py` / `run_parallel.py`；改动 `run.py` / `wechat.py` / `asr.py` / `articles/main.py` / `articles/feishu.py` / `articles/local.py`（含 `local.py` 预存在"本地兜底落盘路径多爬一层"bug 根因修复）。
