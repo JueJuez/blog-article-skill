@@ -44,6 +44,7 @@ orchestrator (monitors/run_parallel.py)
 - 三源各一个 **worker 子进程**（非线程）：隔离故障——公众号 weread 5xx 崩了它的 worker，B站/scys 照跑。
 - B站 worker 内：无字幕视频投递到 **ASR 子进程池**（有界并发，数见 §3.5 铁律2，默认按资源推导，防资源打满）；转写完成回调把 transcript 落文件并触发该条 summarize；worker 继续处理其他视频。
 - **容错**：每个 worker 只写自己的 queue 文件 + ledger 记录，**父进程不依赖 worker 返回值**，只轮询文件。单源崩不影响其他源、不丢账。
+- **三源队列契约（worker 产出 → Landing 消费 的数据接口）**：单篇草稿写入既有 `pending_summaries.json`、系列课写入 `pending_series.json`（Landing 阶段沿用现有消费逻辑）；B站无字幕视频先入 `asr_queue.jsonl` 转写完成后再入 `pending_summaries.json`。Landing 阶段（P2 起）消费上述队列统一落盘。
 
 ### 3.5 ASR 重抓统一设计（回答用户 Q1：先统计 vs 遇到即起）
 
@@ -51,14 +52,14 @@ orchestrator (monitors/run_parallel.py)
 - **运行期内 offload**：本轮 B站 worker 遇到无字幕视频，不阻塞，投递到 ASR 池异步转写（其余视频/源照跑）。
 - **跨轮 redrive**：上轮没抓完/崩溃的，下轮或手动 `redrive` 统一补（复用 `pending_refetch.json` 范式）。二者共用队列 + 有界池，区别仅在触发时机。
 
-**队列落点（消除断点5 悬空）**：`monitors/asr_queue.jsonl`（append-only），**与 `failures.jsonl` 职责分离**——`asr_queue` 存"待转写/转写中"，`failures.jsonl` 存"跨运行最终失败待重抓"。生命周期：`pending → transcribing → done`；崩溃卡在 `transcribing` 由陈旧看门狗复位 `pending`。
+**队列落点（消除断点5 悬空）**：`monitors/asr_queue.jsonl`（append-only），**与 `failures.jsonl` 职责分离**——`asr_queue` 存"待转写/转写中"，`failures.jsonl` 存"跨运行最终失败待重抓"。生命周期：`pending → transcribing → done`；崩溃卡在 `transcribing` 由陈旧看门狗复位 `pending`；`asr_queue.jsonl` 收尾将 `done` 条目归档至 `.archive/`，避免无限增长。
 
 **5 条铁律**：
 1. 先写队列、再起子进程——进程崩了内存里待转写列表丢失 → 视频永久漏抓。
 2. 有界并发（`ASR_MAX_CONCURRENCY` env，默认按资源推导：无 CUDA=1、有 CUDA=2），**禁止"遇到 N 个起 N 个"**（20 条无字幕=20 个 Whisper→OOM/抢 GPU 雪崩）。
 3. 每集清临时音频文件 + 落盘前磁盘预检，防堆积。
 4. 落盘（笔记/飞书）前先做 children 查重——`asr_queue` 出的条目同样走单篇幂等（见 §5 落盘改动）。
-5. redrive 过滤器：`status in (failed, timeout, pending)` **且 attempts<MAX**；并加**陈旧 `transcribing` 看门狗**（卡超阈值自动复位 `pending`）——修掉"转写中崩溃永久丢失"的数据丢失路径（审计 #4）。
+5. redrive 过滤器：`status in (failed, timeout, pending, transcribe_failed)` **且 attempts<MAX**；并加**陈旧 `transcribing` 看门狗**（卡超阈值自动复位 `pending`）——修掉"转写中/转写失败"的数据丢失路径（审计 #4；`transcribe_failed` 为转写耗尽尝试后的终态，必须纳入否则永久漏抓）。
 
 ## 4. 状态 Ledger（JSON，模型可查询）
 
@@ -72,7 +73,7 @@ orchestrator (monitors/run_parallel.py)
 - **查询/重抓入口** `monitors/status_cli.py`：
   - `summary`：打印 latest 汇总
   - `failures [--source X] [--status timeout] [--since <ts>]`
-  - `redrive [--source X] [--status timeout]`：把失败项重新投递到对应 pending 队列，下次运行或立即重跑。过滤器 `status in (failed, timeout, pending)` 且 `attempts<MAX`；并自动复位**陈旧 `transcribing`**（卡超阈值的看门狗）为 `pending` 一并重驱（审计 #4 闭环）。
+  - `redrive [--source X] [--status timeout]`：把失败项重新投递到对应 pending 队列，下次运行或立即重跑。过滤器 `status in (failed, timeout, pending, transcribe_failed)` 且 `attempts<MAX`；并自动复位**陈旧 `transcribing`**（卡超阈值的看门狗）为 `pending` 一并重驱（审计 #4 闭环）。
 
 ## 5. 改动文件
 
@@ -85,13 +86,14 @@ orchestrator (monitors/run_parallel.py)
 | `videos/asr.py` / `videos/rescue_episode.py` | 改 | 暴露"投递式"接口（输入 url→输出 transcript 文件，不阻塞调用方） |
 | `monitors/wechat.py` | 改 | `is_token_valid` 按 HTTP 状态码**分类**：`401`=真过期→弹窗；`5xx`/网络断=代理异常→标记 `source_error`、跳过公众号、**不弹窗**（修掉"代理抽风误弹二维码"，见 §7.5 #10）；弹窗前先 `WECHAT_PROXY_OK` 探活代理 |
 | Feishu 落盘逻辑 | **改** | 单篇落盘也加 `list_children` 查重（series 级 drain 锁 + 单篇幂等），复用已有白名单查重函数；消除重复节点竞态（审计 #1/#2/#6） |
+| `articles`/`videos` `skill_main` / `OutputManager` | **改** | 增 `draft_only` 模式（P2 启用）：worker 路径只生成本地 `_summary_*.md`，**不调飞书**；落盘交由 Landing 阶段统一执行，避免 worker 与 Landing 双重落盘（修掉审计断点6：§2 架构隐含"worker 不落盘"但 §5 原未列此关键改动） |
 
 ## 6. 分阶段实施
 
 - **P0 · 状态 ledger 模块**：`status_store` + `status_cli`，可单测；先接在现有 `run.py` 末尾，记录每源结果（不改动并行行为）。
-- **P1 · 三源并行 worker（故障隔离）**：核心痛点。解决"单源故障级联拖垮全链路"。
-- **P2 · B站 ASR 子进程池卸载**：无字幕视频不再阻塞其余视频。
-- **P3 · redrive 接入 + 模型查询联调**：失败项可一键重抓。
+- **P1 · 三源并行 worker + 级联止血（D8 折叠 P-fix）**：故障隔离 + B站无字幕 ASR 卸载（§3.5 有界池）+ 公众号 auth 分类跳过（D5/D9）。worker 仍经现有 series drain 锁**直接落飞书**（Design Y，不动落盘路径），仅把阻塞点异步化；直接落盘复用现有幂等机制，不引入新竞态。→ 完整交付"单源故障不拖垮全链路"。
+- **P2 · 落盘解耦与幂等强化（D1）**：`skill_main` 增 `draft_only` 模式（worker 只写本地 `_summary_*.md`，不调飞书）；新增串行 Landing 阶段消费三源队列统一落盘；单篇落盘加 `list_children` 查重。→ 落地 §2 架构图的 Landing 分离，并为 redrive 提供统一落盘记账。
+- **P3 · redrive 接入 + 模型查询联调（D2/D4）**：失败项（含 `transcribe_failed` 与陈旧 `transcribing`）可一键重抓。
 
 ## 7. 风险与缓解
 
@@ -99,7 +101,7 @@ orchestrator (monitors/run_parallel.py)
 |------|------|
 | worker 崩溃丢账 | 每 worker 只写自己的 queue + ledger，父进程轮询文件不依赖返回值 |
 | 飞书重复节点 | 落盘保持串行 + drain 锁（已验证）；并行仅限抓取/转写/总结 |
-| weread 5xx 影响扫码 | 仅公众号 relogin 受影响，已优雅跳过；ledger 记 `status=skip(reason=token)`，模型可读后建议重跑 |
+| weread 5xx 影响扫码 | 仅公众号 relogin 受影响，已优雅跳过；ledger 记 `status=skip(reason=source_error)`（与真 token 过期 401 区分，见 #10），模型可读后建议重跑 |
 | 代理 5xx 误判 token 过期 | `is_token_valid` 把代理 500/断网重试耗尽后 `return False` → 被当 token 过期**误弹二维码**（代码与 docstring 不一致，原写"保守返回 True 放行"实际返 False） | `is_token_valid` 按状态码分类（§5 wechat.py 改动）；弹窗前先确认代理连通，不通则记 `source_error` 不弹窗 |
 | 回退 | 保留 `--parallel` 开关，出问题切回旧串行路径 |
 
@@ -120,14 +122,14 @@ orchestrator (monitors/run_parallel.py)
 | # | 边界问题 | 风险 | 应对 |
 |---|---|---|---|
 | 1 | **崩溃丢队列** | 进程在「投递未落盘」时崩 → 漏抓 | 投递即写持久队列（§3.5 规则1） |
-| 2 | **同文件夹并发落盘竞态** | 两 worker 同时 `ensure_folder_path` 都判「不存在」→ 建出重复文件夹节点 | 全局飞书令牌桶限流 + 落盘前查 children 去重（单条路径也加，不只 series） |
-| 3 | **ASR 资源打满/OOM** | 池过大或临时文件堆积 | 有界池(1~2) + 每集清临时音频 + 磁盘预检 |
-| 4 | **两次运行重叠** | 自动化重复触发 → 同写 ledger/pending 竞态 | 顶层 `monitors/.run.lock`（PID+心跳），二次调用拒绝/等待 |
+| 2 | **落盘重复文件夹/节点** | 飞书 `list_children` **最终一致性**：即使串行 Landing 连续两次 `ensure_folder_path` 同一文件夹，首次 create 未传播 → 第二次仍判「不存在」→ 重复节点；另，本运行与另一次旧路径运行若未互斥也会并发 | **落盘前二次查 children 去重**（D1 核心修复，series 级 drain 锁白名单机制沿用）+ `.run.lock` 防跨运行重叠（#4）；全局飞书令牌桶仅作 API 限流（非互斥，不解决此竞态） |
+| 3 | **ASR 资源打满/OOM** | 池过大或临时文件堆积 | 有界池(`ASR_MAX_CONCURRENCY` env，默认无 CUDA=1/有 CUDA=2，见 §3.5 铁律2) + 每集清临时音频 + 磁盘预检 |
+| 4 | **两次运行重叠** | 自动化重复触发 / 手动跑旧 `run.py` 与 `run_parallel.py` 同时 → 同写 ledger/pending 竞态 | 顶层 `monitors/.run.lock`（PID+心跳），**`run.py`（含旧串行模式与 `--parallel`）与 `run_parallel.py` 均须 acquire 同一锁**，二次调用拒绝/等待 |
 | 5 | **ledger 并发写竞争** | 多个 ASR 子进程同时改同一 JSON | 每任务 **append-only JSONL 分片**，聚合器收尾合并（§4 调整） |
 | 6 | **落盘后崩溃未记 landed** | 节点已建但 manifest/ledger 仍 pending → redrive 再建重复 | 落盘前「查 children 命中即跳过」兜底（§3.5 规则5） |
 | 7 | **孤立子进程** | 主进程 Ctrl-C/OOM → ASR 子进程变孤儿继续烧 GPU | 子进程纳入进程组，atexit/signal 统一 kill |
 | 8 | **B站 429** | B站 worker 内并行抓视频触发限流 | B站抓取保持串行+节奏(`BILI_GAP`)，ASR 池与抓取解耦 |
-| 9 | **token 过期+代理 5xx 死锁** | 公众号需扫码但 weread 5xx 弹不出码 → 该轮卡等 | `WECHAT_RELOGIN_WAIT=0` + worker 优雅退出记 `auth_failed`，不阻塞；且 token 检测经代理（见 §1），代理不通时不触发弹窗（见 #10） |
+| 9 | **真 token 过期(401) 无人值守** | 弹窗傻等 180s → 阻塞 | 真 token 过期(401) 且 `WECHAT_RELOGIN_WAIT=0` → worker 优雅退出记 `auth_failed` 跳过，不阻塞；代理 5xx 按 #10 判 `source_error` 跳过（**非 token，不弹窗**） |
 | 10 | **代理 5xx 误判 token 过期**（审计原稿漏掉的真 bug） | `is_token_valid` 重试耗尽（全 500/断网）后 `return False` → 被当 token 过期**误弹二维码**；且 docstring 声称"保守返回 True"实际返 False（文档行为不一致） | `is_token_valid` 按 HTTP 状态码**分类**：`401`=真过期→弹窗；`5xx`/网络断=代理异常→标记 `source_error`、跳过公众号、**不弹窗**；弹窗前先 `WECHAT_PROXY_OK` 探活代理 |
 
 ## 8. 验证
@@ -145,7 +147,7 @@ orchestrator (monitors/run_parallel.py)
 | D1 | 落盘逻辑改不改 | **改**：单篇落盘也加 `list_children` 查重（series 级 drain 锁 + 单篇幂等） | 审计 #1/#2/#6：原 §5"不改"与 §7.5 矛盾，单篇无幂等会引入重复节点 |
 | D2 | ASR 队列落点 | `monitors/asr_queue.jsonl`（待转写），与 `failures.jsonl`（跨运行失败）职责分离 | 断点5：避免"进行中"被当失败误重抓 |
 | D3 | ASR 池并发数 | `ASR_MAX_CONCURRENCY` env，默认按资源推导（无 CUDA=1、有 CUDA=2） | 审计 #9：原"1~2"是魔数 |
-| D4 | redrive 是否含转写中崩溃 | **含**：过滤 `pending/timeout/failed` + 陈旧 `transcribing` 看门狗自动复位 | 审计 #4：否则转写中崩溃永久丢失 |
+| D4 | redrive 是否含转写中崩溃 | **含**：过滤 `pending/timeout/failed/transcribe_failed` + 陈旧 `transcribing` 看门狗自动复位 | 审计 #4：否则转写中/转写失败永久丢失 |
 | D5 | 公众号 auth 跳过是否标 seen | **不标 seen**：token 恢复后下轮自然补回，防永久漏抓 | 审计 #7 |
 | D6 | 是否保留旧 `run.py` 串行路径 | **保留** `--parallel` 开关切分，零风险回退 | 用户要求 |
 | D7 | ledger 存储 | JSONL append-only（latest 汇总 + failures 跨运行） | 用户：主要给模型查，非人翻文件 |
@@ -157,4 +159,4 @@ orchestrator (monitors/run_parallel.py)
 - 有独显（如 6G+ 显存跑 faster-whisper）→ 可设 `2~3` 提速。
 → 新会话先用默认值 1 实现，你后续按机器调 env 即可。
 
-**结论**：方案现已自洽、无悬空引用、覆盖全部已讨论问题（级联根因 / 误读澄清 / 代理 500 诊断 / 三源并行 / ASR 重抓 / 边界竞态 / 状态 ledger / 决策记录）。新会话按 P0→P3 顺序实施即可。
+**结论**：方案经两轮第一性原理审计，已闭合全部硬矛盾（落盘改不改、§6 与 D8 阶段边界、§5 缺 draft-only 关键改动、redrive 漏 `transcribe_failed`、`weread 5xx` 误记 token、#2 竞态前提、#9/#10 重叠、.run.lock 作用域）并补队列契约/归档等边界，现已自洽、无悬空引用、覆盖全部讨论问题。新会话按 P0→P3 顺序实施即可。
