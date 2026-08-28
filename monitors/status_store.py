@@ -1,11 +1,13 @@
-"""monitors/status_store.py — 监控流水线状态 Ledger（模型可查询 / 可重驱）
+"""monitors/status_store.py — 监控流水线状态 Ledger（模型可查询）
 
 设计（PLAN-20260828-parallel-monitor.md §4 / §3.5）：
 - 每一条任务写入 append-only JSONL，**按 run_id + shard（默认 source）分片**，
   不同 worker 子进程各写各的分片，无 read-modify-write 竞争；聚合器收尾合并。
 - 字段扁平、固定，模型可用脚本或直接读 JSON 过滤（"取 last run 全部 status=timeout 的 bili 项"）。
-- 失败项跨运行追加到 failures.jsonl（按 item_id 去重），供 redrive 重抓。
-- 落点：`monitors/run_status/<run_id>.<shard>.tasks.jsonl` + `latest.json` + `failures.jsonl`。
+- 落点：`monitors/run_status/<run_id>.<shard>.tasks.jsonl` + `latest.json`。
+
+跨运行重抓（失败项不丢）由 apply_summaries 内的 pending_refetch.json 负责（与公众号同源：
+持久化到磁盘、下轮自动重载、3 次上限后显式 drop 上报），本模块不重复实现该能力。
 
 本模块不依赖任何项目内部模块，可单测、可独立 import。
 """
@@ -19,12 +21,7 @@ from typing import Optional, Dict, Any, List
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RUN_STATUS_DIR = os.path.join(BASE_DIR, "run_status")
-FAILURES_PATH = os.path.join(RUN_STATUS_DIR, "failures.jsonl")
 LATEST_PATH = os.path.join(RUN_STATUS_DIR, "latest.json")
-
-# P3 重驱投递目标队列（与 run.py 定义保持一致）
-PENDING_SUMMARY_PATH = os.path.join(BASE_DIR, "pending_summaries.json")
-SCYS_PENDING_PATH = os.path.join(os.path.dirname(BASE_DIR), "notes", "_scraped", "scys", "pending_summaries.json")
 
 # 同一进程内多 ASR 子线程向同一分片追加时的轻量互斥（跨进程靠分片隔离，无需文件锁）
 _local_lock = threading.Lock()
@@ -134,128 +131,6 @@ def read_run_tasks(run_id: str) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# 失败项（跨运行追加，按 item_id 去重）
-# ---------------------------------------------------------------------------
-
-def add_failure(
-    run_id: str,
-    source: str,
-    item_id: str,
-    stage: str,
-    status: str,
-    *,
-    url: str = "",
-    title: str = "",
-    error: str = "",
-    attempts: int = 0,
-) -> None:
-    """追加一条失败项到 failures.jsonl（跨运行）。同一 item_id 只保留最新一次。"""
-    os.makedirs(RUN_STATUS_DIR, exist_ok=True)
-    failures = _load_failures()
-    new_rec = {
-        "run_id": run_id,
-        "source": source,
-        "item_id": item_id,
-        "stage": stage,
-        "status": status,
-        "url": url,
-        "title": title,
-        "error": error,
-        "attempts": attempts,
-        "ts": time.time(),
-    }
-    replaced = False
-    for i, rec in enumerate(failures):
-        if rec.get("item_id") == item_id and rec.get("source") == source:
-            failures[i] = new_rec
-            replaced = True
-            break
-    if not replaced:
-        failures.append(new_rec)
-    with _local_lock:
-        with open(FAILURES_PATH, "w", encoding="utf-8") as f:
-            for rec in failures:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-
-
-def _load_failures() -> List[Dict[str, Any]]:
-    if not os.path.exists(FAILURES_PATH):
-        return []
-    out: List[Dict[str, Any]] = []
-    try:
-        with open(FAILURES_PATH, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    out.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    except FileNotFoundError:
-        return []
-    return out
-
-
-def list_failures(
-    source: Optional[str] = None,
-    status: Optional[str] = None,
-    since: Optional[float] = None,
-) -> List[Dict[str, Any]]:
-    """查询失败项。status 可为逗号分隔多值（OR）。"""
-    failures = _load_failures()
-    statuses = set(s for s in (status or "").split(",") if s)
-    out = []
-    for rec in failures:
-        if source and rec.get("source") != source:
-            continue
-        if statuses and rec.get("status") not in statuses:
-            continue
-        if since is not None and float(rec.get("ts", 0)) < float(since):
-            continue
-        out.append(rec)
-    return out
-
-
-def redrive_items(
-    source: Optional[str] = None,
-    status: Optional[str] = None,
-    max_attempts: int = 3,
-    stale_transcribing_secs: float = 1800.0,
-    now: Optional[float] = None,
-) -> List[Dict[str, Any]]:
-    """选出可重驱的失败项。
-
-    过滤器：status in (failed, timeout, pending, transcribe_failed) 且 attempts<max_attempts；
-    并自动复位「陈旧 transcribing」条目（卡超 stale_transcribing_secs）→ 一并重驱（审计 #4）。
-    status 参数若给定，与默认集合取交集（便于手动 `redrive --status timeout`）。
-    """
-    now = now if now is not None else time.time()
-    default_statuses = {"failed", "timeout", "pending", "transcribe_failed"}
-    if status:
-        wanted = set(s for s in status.split(",") if s)
-        default_statuses &= wanted
-    picked = []
-    for rec in _load_failures():
-        if source and rec.get("source") != source:
-            continue
-        st = rec.get("status")
-        if st == "transcribing":
-            # 陈旧 transcribing → 复位为 pending 重驱
-            age = now - float(rec.get("ts", 0))
-            if age >= stale_transcribing_secs:
-                rec["status"] = "pending"
-                picked.append(rec)
-            continue
-        if st not in default_statuses:
-            continue
-        if int(rec.get("attempts", 0)) >= max_attempts:
-            continue
-        picked.append(rec)
-    return picked
-
-
-# ---------------------------------------------------------------------------
 # 运行级汇总 / finalize
 # ---------------------------------------------------------------------------
 
@@ -321,58 +196,4 @@ def list_runs() -> List[str]:
     return sorted(ids, reverse=True)
 
 
-# ---------------------------------------------------------------------------
-# P3 重驱投递：把 failure 重新投入到对应 pending 队列（供下次 run / 模型派单重试）
-# ---------------------------------------------------------------------------
-
-def _append_json_arr(path: str, items: List[Dict[str, Any]]) -> int:
-    """把 items 追加到 path（JSON 数组文件）；文件不存在或格式损坏则重建为数组。"""
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    arr: List[Dict[str, Any]] = []
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                arr = data
-        except (json.JSONDecodeError, FileNotFoundError):
-            arr = []
-    arr.extend(items)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(arr, f, ensure_ascii=False, indent=2)
-    return len(items)
-
-
-def deliver_redrive(recs: List[Dict[str, Any]]) -> Dict[str, int]:
-    """把 redrive_items 选出的失败项重新投递到对应 pending 队列（P3）。
-
-    - bili/wechat → monitors/pending_summaries.json（单篇队列，下次 run / 模型派单重试）
-    - scys        → notes/_scraped/scys/pending_summaries.json（scys 队列）
-
-    每条构造最小可重试条目（携带 url/title/redrive 标记 / 递增 attempts / 原始错误），
-    供下游重新 fetch+总结。返回投递统计 {"single": n, "scys": m}。
-    """
-    single: List[Dict[str, Any]] = []
-    scys: List[Dict[str, Any]] = []
-    for r in recs:
-        src = (r.get("source") or "").lower()
-        base = {
-            "url": r.get("url", ""),
-            "title": r.get("title", ""),
-            "original_title": r.get("title", ""),
-            "redrive": True,
-            "redrive_error": r.get("error", ""),
-            "attempts": int(r.get("attempts", 0)) + 1,
-        }
-        if src == "scys":
-            base["route"] = "scys"
-            scys.append(base)
-        else:
-            base["route"] = "video" if src == "bili" else "article"
-            single.append(base)
-    stats = {"single": 0, "scys": 0}
-    if single:
-        stats["single"] = _append_json_arr(PENDING_SUMMARY_PATH, single)
-    if scys:
-        stats["scys"] = _append_json_arr(SCYS_PENDING_PATH, scys)
-    return stats
+# (end of module)

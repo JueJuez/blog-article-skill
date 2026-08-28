@@ -71,7 +71,7 @@
 - 完整变量见 `references/config.md`
 
 ## 红线（必须遵守）
-- **输出默认飞书、Obsidian 按需（强制 · 2026-08-08）**：写两遍浪费，**默认只落飞书**；Obsidian 仅在用户明确要求（提前说「写到 obsidian / 双写」）时才写。由 `OutputManager` 代码门禁保证（没显式开启就不写 Obsidian），不靠 AI 记性。`.env` 设 `OBSIDIAN_WRITE=1` 可一键回退双写。本地 `notes/` 仅在飞书不可用且未请求 Obsidian 时兜底。禁止 AI 手动写 `notes/`、禁止只存本地漏飞书。
+- **输出默认飞书、Obsidian 按需（强制 · 2026-08-08）**：写两遍浪费，**默认只落飞书**；Obsidian 仅在用户明确要求（提前说「写到 obsidian / 双写」）时才写。由 `OutputManager` 代码门禁保证（没显式开启就不写 Obsidian），不靠 AI 记性。`.env` 设 `OBSIDIAN_WRITE=1` 可一键回退双写。本地 `notes/` 仅在 lark-cli 实际不可用（FEISHU_WIKI_SPACE 未配或 lark-cli 未认证）且未请求 Obsidian 时兜底。飞书落盘走 lark-cli，与面板 feishu MCP 连接器状态无关，面板连接器是否连接不影响落盘。禁止 AI 手动写 `notes/`、禁止只存本地漏飞书。
 - **复用入口，不手写抓取 / 总结**：一律走 `skill_main` / `summarize_video` / `fetch_transcript` / `monitors/run.py`，
   不要临时写 `_xxx.py` 脚本、不要手搓 URL、不要 diagnose 平台私有接口。
 - **无字幕自动走 ASR 兜底（2026-08-06 授权）**：`fetch_transcript` 返回 None（真无 CC 字幕）时，`videos.main` 自动调 `videos.asr` 下载音频 + 本地 Whisper 转写；成功则继续总结并落盘（默认飞书，带 `obsidian` 时双写），仅 ASR 也失败才回「无可用字幕」文案并停止。环境坑由 `asr.py` 自动处理，勿手敲 export / 勿额外开发兜底。

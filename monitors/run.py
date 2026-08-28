@@ -32,7 +32,10 @@ if BASE_DIR not in sys.path:
 
 # 状态 Ledger（P0, PLAN-20260828-parallel-monitor）：每源结果可查询/重驱；
 # 同目录模块，run.py 作为脚本执行时 monitors/ 已在 sys.path[0]。
-from status_store import new_run_id, record_task, finalize_run  # noqa: E402
+from status_store import (  # noqa: E402
+    new_run_id, record_task, finalize_run,
+    detect_asr_max_concurrency,
+)
 
 def _ledger_record_discover(run_id: str, items: list) -> None:
     """发现阶段：按源聚合记录 discovered 计数（P0 仅每源结果，不逐条）。"""
@@ -162,18 +165,23 @@ def _scys_daily_cmd(project: str, since_days: int) -> list:
             "--no-digested-only"]
 
 
-def run_scys_daily(entries: list, mode: str = "auto") -> None:
+def run_scys_daily(entries: list, mode: str = "auto", session=None) -> None:
     """「跑一下」的 scys 分支：按 subscriptions.json 的 scys 列表逐领域增量抓新帖。
 
     复用 scys_batch_fetch.py 全链路（列表 → 窗口/精华过滤 → 限速抓取 → 入 scys
     待总结队列），去重靠其 state.json；CDP 不可用 / 单领域失败 → 告警跳过，
     不影响公众号与 B站结果。领域必须存在于 scripts/scys_projects.json。
+
+    会话复用：传入 session（SharedCdpSession）时，scys 在同进程内复用该会话
+    （与公众号/重试同一 CDP，Chrome 最多杀一次）；不传则回退子进程（旧行为）。
     """
     try:
         with open(SCYS_CONFIG_PATH, "r", encoding="utf-8") as f:
-            known = json.load(f).get("projects", {})
+            cfg = json.load(f)
+        known = cfg.get("projects", {})
+        defaults = cfg.get("defaults", {})
     except Exception:
-        known = {}
+        known, defaults = {}, {}
     default_days = SCYS_FIRST_WINDOW_DAYS if mode == "first" else SCYS_DAILY_WINDOW_DAYS
     for s in entries:
         project = s.get("project", "")
@@ -183,13 +191,32 @@ def run_scys_daily(entries: list, mode: str = "auto") -> None:
         days = int(s.get("since_days") or default_days)
         print(f"\n[scys] 领域「{project}」增量抓取（近 {days} 天窗口，精华过滤按配置默认）...")
         try:
-            r = subprocess.run(_scys_daily_cmd(project, days), cwd=BASE_DIR)
+            if session is not None:
+                # 同进程复用共享会话：scys / 公众号 / 重试 共用同一 CDP 会话
+                import sys as _sys
+                _scripts_dir = os.path.join(BASE_DIR, "scripts")
+                if _scripts_dir not in _sys.path:
+                    _sys.path.insert(0, _scripts_dir)
+                from scys_batch_fetch import ScysBatchFetcher
+                engagement = {
+                    "min_coin": int(defaults.get("nondigested_min_coin", 30)),
+                    "min_like": int(defaults.get("nondigested_min_like", 80)),
+                    "coin_floor": int(defaults.get("nondigested_coin_floor", 10)),
+                }
+                fetcher = ScysBatchFetcher(
+                    project, known[project], 0, SCYS_DAILY_LIST_PAGES,
+                    since_days=days, digested_only=False, min_reading=0,
+                    engagement=engagement,
+                )
+                fetcher.run(session=session)
+            else:
+                r = subprocess.run(_scys_daily_cmd(project, days), cwd=BASE_DIR)
+                if r.returncode != 0:
+                    print(f"[warn] scys {project} 抓取退出码 {r.returncode}"
+                          f"（可能 CDP 不可用 / 已有 scys 抓取进程在跑），跳过该领域", file=sys.stderr)
         except Exception as e:
-            print(f"[warn] scys {project} 启动失败: {e}", file=sys.stderr)
+            print(f"[warn] scys {project} 执行失败: {e}", file=sys.stderr)
             continue
-        if r.returncode != 0:
-            print(f"[warn] scys {project} 抓取退出码 {r.returncode}"
-                  f"（可能 CDP 不可用 / 已有 scys 抓取进程在跑），跳过该领域", file=sys.stderr)
         time.sleep(3)
 
 
@@ -344,10 +371,15 @@ def derive_title_from_body(raw_file: str, list_title: str, max_len: int = 36) ->
 
 
 def _queue_pending_summary(it: dict, res: dict) -> None:
-    """AI 降级时把待总结条目入队（按 url 去重），供外层执行模型接单。"""
+    """AI 降级时把待总结条目入队（按 url 去重），供外层执行模型接单。
+
+    落盘路径可被 env MON_PENDING_SUMMARY_PATH 覆盖：并行模式下各 worker 写各自 staging
+    文件，避免多进程并发读写同一 pending_summaries.json 造成静默丢数据（由父进程合并）。
+    """
     if not isinstance(res, dict) or not res.get("need_continue_summary"):
         return
-    pending = _load_json(PENDING_SUMMARY_PATH, [])
+    _path = os.environ.get("MON_PENDING_SUMMARY_PATH", PENDING_SUMMARY_PATH)
+    pending = _load_json(_path, [])
     url = it.get("url", "")
     if url and any(p.get("url") == url for p in pending):
         return
@@ -372,7 +404,7 @@ def _queue_pending_summary(it: dict, res: dict) -> None:
         "queued_at": int(time.time()),
     }
     pending.append(entry)
-    _save_json(PENDING_SUMMARY_PATH, pending)
+    _save_json(_path, pending)
     print(f"[need-summary] 已入降级队列: {entry_title} -> {entry['raw_file']}")
 
 
@@ -727,8 +759,84 @@ def discover_all(subs: dict, state: dict, mode: str = "auto",
     return all_new
 
 
-def apply_summaries(items: list, obsidian: bool = False) -> None:
-    from articles.fetch import fetch_web_content
+def _summarize_article(it: dict, title: str, content: str, obsidian: bool, stats: dict) -> None:
+    """把已抓到正文的文章送进总结管线（去广告 → 净化 → skill_main → 入队）。
+
+    供「主循环直连成功」与「批量 CDP 兜底成功」两处复用，逻辑单一事实源。
+    """
+    real_title = title or it.get("title", "")
+    if is_fully_ad(real_title, content or ""):
+        print(f"[ad-skip] {real_title}（整篇纯广告，跳过）")
+        stats["ad_skip"] += 1
+        return
+    purified = purify_content(content or "")
+    src_text = f"{purified}\n\n---\n原文链接：{it['url']}"
+    try:
+        from articles.main import skill_main
+        _cat = it.get("category", "")
+        res = skill_main({"content": src_text, "author": it.get("mp_name", ""),
+                          "publish_time": it.get("publish_time", 0),
+                          "original_title": real_title,
+                          "tags": [c for c in [_cat] if c],
+                          "folder": _item_folder(it), "obsidian": obsidian})
+        msg = res.get("message", "") if isinstance(res, dict) else str(res)
+        print(f"[{it['source']}] {it['title']}: {msg}")
+        _queue_pending_summary(it, res if isinstance(res, dict) else {})
+        stats["article"] += 1
+    except Exception as e:
+        print(f"[error] {it['title']}: {e}", file=sys.stderr)
+        stats["error"] += 1
+
+
+def _summarize_video_item(it: dict, obsidian: bool, stats: dict, transcript: str = None) -> None:
+    """把一条 B站视频送进总结管线（供「CC 内联」与「ASR 批量成功」两处复用）。
+
+    transcript 非空时直接喂转写文本走 P1 路径（避免二次下载音频）；为空则走
+    summarize_video 完整路径（含系列课降级 / 字幕探测）。逻辑单一事实源。
+    """
+    _inp = {"url": it["url"], "publish_time": it.get("publish_time", 0),
+            "folder": _item_folder(it), "obsidian": obsidian}
+    if transcript is not None:
+        _inp["transcript"] = transcript
+        _inp["original_title"] = it.get("title", "")
+        _inp["author"] = it.get("author", "")
+        _inp["tags"] = [c for c in [it.get("category", "")] if c]
+    try:
+        from videos import summarize_video
+        res = summarize_video(_inp)
+        msg = res.get("message", "") if isinstance(res, dict) else str(res)
+        print(f"[bilibili] {it['title']}: {msg}")
+        # 系列课降级：把待总结的集字幕登记到系列待总结队列，由 Agent 串行落盘（避免漏接）
+        if isinstance(res, dict) and res.get("degraded_any") and res.get("degraded_raws"):
+            _queue_pending_series(it, res)
+            stats["video"] += 1
+            return
+        _queue_pending_summary(it, res if isinstance(res, dict) else {})
+        stats["video"] += 1
+    except Exception as e:
+        print(f"[error] {it['title']}: {e}", file=sys.stderr)
+        stats["error"] += 1
+
+
+def _acquire_session(holder: dict):
+    """惰性获取共享 CDP 会话：优先复用 holder 中已有的；无则新建并存入 holder。
+
+    用于「撞墙文出现时才建会话」——无撞墙文（或纯 B站/动态）的轮次完全不 kill Chrome。
+    holder 在调用方（串行 apply 块）跨 apply_summaries 与 run_scys_daily 共享，保证 one-kill。
+    """
+    s = holder.get("obj") if isinstance(holder, dict) else None
+    if s is not None:
+        return s
+    from shared.cdp_session import SharedCdpSession
+    s = SharedCdpSession()
+    if isinstance(holder, dict):
+        holder["obj"] = s
+    return s
+
+
+def apply_summaries(items: list, obsidian: bool = False, session=None,
+                    session_holder: dict = None, consume_prev_refetch: bool = True) -> None:
+    from articles.fetch import fetch_web_content, NEEDS_CDP, fetch_wechat_batch
     # 健康度统计：每轮运行结束打印一行，便于一眼看出监控是否健康
     stats = {
         "video": 0, "video_charging_skip": 0,
@@ -736,14 +844,23 @@ def apply_summaries(items: list, obsidian: bool = False) -> None:
         "article": 0, "ad_skip": 0, "short_skip": 0, "error": 0,
         "empty_retry": 0,
     }
-    # 上次运行被限流抓空的文章：优先重抓（发现阶段已 mark seen，不重试就永久漏）
-    refetch_prev = _load_json(PENDING_REFETCH_PATH, [])
-    if refetch_prev:
-        print(f"[refetch] 恢复上次限流未抓到正文的 {len(refetch_prev)} 篇，优先重抓")
-        items = refetch_prev + items
+    # session_holder 由调用方提供时（串行 apply 块 / 并行 worker），会话所有权归调用方；
+    # 未提供（refetch-only / backfill 等单进程模式）则用本地 holder 兜底，函数末尾负责关闭。
+    _holder = session_holder if session_holder is not None else {}
+    # 上次运行被限流抓空的文章：优先重抓（发现阶段已 mark seen，不重试就永久漏）。
+    # 并行模式下该职责上移到父进程（按路由拆分给各 worker），worker 不再自行加载，避免
+    # 多 worker 并发读写同一 pending_refetch.json 造成覆盖丢失。
+    refetch_prev = []
+    if consume_prev_refetch:
+        refetch_prev = _load_json(PENDING_REFETCH_PATH, [])
+        if refetch_prev:
+            print(f"[refetch] 恢复上次限流未抓到正文的 {len(refetch_prev)} 篇，优先重抓")
+            items = refetch_prev + items
     # 按发布时间倒序处理：新的先创建，使飞书 wiki 默认列表呈现「日期近在前，旧在后」
     items.sort(key=lambda x: x.get("publish_time", 0) or 0, reverse=True)
     refetch_next = []  # 本轮仍抓空的，写回队列下次再试
+    cdp_deferred = []  # 直连撞墙、留待本轮末尾「一次 CDP 批量抓取」的微信文
+    asr_deferred = []  # 无 CC 字幕、留待本轮末尾「有界 ASR 池批量转写」的 B站视频
     dropped = []  # 连续多次抓不到（墙文/已删除/持续限流），移出队列待上报
     _first_article = True
     for it in items:
@@ -762,10 +879,15 @@ def apply_summaries(items: list, obsidian: bool = False) -> None:
             content = ""
             for _att in range(WECHAT_MAX_REFETCH + 1):
                 try:
-                    fetched = fetch_web_content(it["url"])
+                    fetched = fetch_web_content(it["url"], cdp_on_fail=False)
                 except Exception as e:
                     fetched = None
                     last_err = e
+                if fetched is NEEDS_CDP:
+                    # 直连撞墙且批量模式：本篇交本轮末尾的「一次 CDP 批量抓取」处理，
+                    # 不在此内联 CDP、也不重复直连重试
+                    cdp_deferred.append(it)
+                    break
                 if isinstance(fetched, tuple):
                     title = fetched[0] or title
                     content = fetched[1] or ""
@@ -776,6 +898,9 @@ def apply_summaries(items: list, obsidian: bool = False) -> None:
                 # 壳/限流空页：退避后重试（一手补抓）
                 if _att < WECHAT_MAX_REFETCH:
                     time.sleep(6 * (_att + 1) + random.uniform(0, 3))
+            # 已交批量 CDP 的篇，跳过本篇后续处理（末尾统一抓取）
+            if fetched is NEEDS_CDP:
+                continue
             # 重试耗尽仍空：走原有跨轮重试/丢弃逻辑（fetch 异常 or 正文过短）
             if fetched is None or len((content or "").strip()) < MIN_CONTENT_LEN:
                 if fetched is None:
@@ -798,50 +923,25 @@ def apply_summaries(items: list, obsidian: bool = False) -> None:
                     print(f"[empty-retry] {it['title']}（正文 {len((content or '').strip())} 字，"
                           f"疑似限流/无正文，已入重试队列 {payload.get('refetch_count')}/{WECHAT_MAX_REFETCH}）")
                 continue
-            real_title = title or it.get("title", "")
-            if is_fully_ad(real_title, content or ""):
-                print(f"[ad-skip] {real_title}（整篇纯广告，跳过）")
-                stats["ad_skip"] += 1
-                continue
-            purified = purify_content(content or "")
-            src_text = f"{purified}\n\n---\n原文链接：{it['url']}"
-            try:
-                from articles.main import skill_main
-                _cat = it.get("category", "")
-                res = skill_main({"content": src_text, "author": it.get("mp_name", ""),
-                                  "publish_time": it.get("publish_time", 0),
-                                  "original_title": real_title,
-                                  "tags": [c for c in [_cat] if c],
-                                  "folder": _item_folder(it), "obsidian": obsidian})
-                msg = res.get("message", "") if isinstance(res, dict) else str(res)
-                print(f"[{it['source']}] {it['title']}: {msg}")
-                _queue_pending_summary(it, res if isinstance(res, dict) else {})
-                stats["article"] += 1
-            except Exception as e:
-                print(f"[error] {it['title']}: {e}", file=sys.stderr)
-                stats["error"] += 1
+            _summarize_article(it, title, content, obsidian, stats)
         elif it["route"] == "video":
             if it.get("is_charging"):
                 badge = it.get("charging_badge") or "充电专属"
                 print(f"[bili-charging-skip] {it['title']}（{badge}，付费内容未抓取正文）")
                 stats["video_charging_skip"] += 1
                 continue
+            # 先探测是否有 CC 字幕：有 → 内联快路径总结；无 → 收集到 asr_deferred，
+            # 本轮末尾统一走「有界 ASR 池」批量转写（避免同步 ASR 阻塞整轮抓取，
+            # 与公众号「撞墙篇收集→一次 CDP 批量」同范式）。
             try:
-                from videos import summarize_video
-                res = summarize_video({"url": it["url"], "publish_time": it.get("publish_time", 0),
-                                       "folder": _item_folder(it), "obsidian": obsidian})
-                msg = res.get("message", "") if isinstance(res, dict) else str(res)
-                print(f"[bilibili] {it['title']}: {msg}")
-                # 系列课降级：把待总结的集字幕登记到系列待总结队列，由 Agent 串行落盘（避免漏接）
-                if isinstance(res, dict) and res.get("degraded_any") and res.get("degraded_raws"):
-                    _queue_pending_series(it, res)
-                    stats["video"] += 1
-                    continue
-                _queue_pending_summary(it, res if isinstance(res, dict) else {})
-                stats["video"] += 1
-            except Exception as e:
-                print(f"[error] {it['title']}: {e}", file=sys.stderr)
-                stats["error"] += 1
+                from videos.fetch import fetch_transcript
+                _cc = fetch_transcript(it["url"])
+            except Exception:
+                _cc = "ERR"
+            if _cc is None or _cc == "ERR":
+                asr_deferred.append(it)
+                continue
+            _summarize_video_item(it, obsidian, stats)
         elif it["route"] == "dynamic":
             # 动态正文直接来自 API（it["content"]），净化后喂总结，不重复抓网
             text = it.get("content", "")
@@ -892,8 +992,71 @@ def apply_summaries(items: list, obsidian: bool = False) -> None:
         else:
             continue
 
-    # 限流/失败的文章写回重试队列（下次运行优先重抓；空队列则清掉文件内容）
-    _save_json(PENDING_REFETCH_PATH, refetch_next)
+    # 微信撞墙篇：本轮统一「一次 CDP 会话」批量抓取（避免逐篇 kill/重启 Chrome）
+    if cdp_deferred:
+        # 惰性建会话：仅当真有撞墙文时才 kill Chrome；worker 已持有共享会话则直接复用
+        if session is None:
+            session = _acquire_session(_holder)
+        print(f"\n🔐 本轮 {len(cdp_deferred)} 篇微信直连撞墙，启动一次批量 CDP 抓取"
+              f"（单次 Chrome 会话访问全部 URL）")
+        _urls = [it["url"] for it in cdp_deferred]
+        try:
+            # session 非空 → 复用 run.py 的单一共享会话（与 scys/重试同一 CDP，Chrome 最多杀一次）；
+            # session 为空（独立调用/refetch_only 且未撞墙）→ 自建一次性会话，行为不变
+            _batch = fetch_wechat_batch(_urls, session=session)
+        except Exception as e:
+            print(f"[batch-cdp-err] 批量 CDP 抓取异常: {e}", file=sys.stderr)
+            _batch = {}
+        for it in cdp_deferred:
+            res = _batch.get(it["url"])
+            if not res or len((res[1] or "").strip()) < MIN_CONTENT_LEN:
+                # CDP 也失败/仍撞墙 → 走原有跨轮重试/丢弃逻辑
+                decision, payload = _decide_retry_or_drop(it, WECHAT_MAX_REFETCH)
+                stats["empty_retry"] += 1
+                if decision == "drop":
+                    dropped.append({
+                        "title": it.get("title", ""),
+                        "mp_name": it.get("mp_name", "") or it.get("sub_name", ""),
+                        "url": it.get("url", ""),
+                        "reason": payload,
+                    })
+                    print(f"[drop-gate] {it['title']}（{payload}）")
+                else:
+                    refetch_next.append(payload)
+                    print(f"[empty-retry] {it['title']}（CDP 批量仍抓空，已入重试队列"
+                          f"{payload.get('refetch_count')}/{WECHAT_MAX_REFETCH}）")
+                continue
+            # CDP 成功 → 走常规总结管线
+            _summarize_article(it, res[0], res[1], obsidian, stats)
+
+    # B站无字幕视频：本轮统一「有界 ASR 池」批量转写（不阻塞公众号 CDP 批次 / 重试 / 其他源）。
+    # ASR 不需要 CDP/Chrome，与微信 CDP 批次互不干扰；失败项入 pending_refetch 状态机重试。
+    if asr_deferred:
+        _asr_max = detect_asr_max_concurrency()
+        print(f"\n🎙️ 本轮 {len(asr_deferred)} 条 B站无字幕，启动有界 ASR 池（并发={_asr_max}）"
+              f"批量转写，完成后统一总结")
+        try:
+            from asr_pool import run_asr_batch
+            _asr_results, _asr_failures = run_asr_batch(asr_deferred, _asr_max)
+        except Exception as e:
+            print(f"[asr-batch-err] ASR 池异常: {e}", file=sys.stderr)
+            _asr_results, _asr_failures = {}, [it["url"] for it in asr_deferred]
+        for it in asr_deferred:
+            _txt = _asr_results.get(it["url"])
+            if not _txt:
+                # ASR 兜底也失败 → 走状态机重试（pending_refetch，与公众号同源），不静默丢弃
+                print(f"[asr-fail] {it['title']}（ASR 兜底失败，入重试队列）")
+                refetch_next.append({k: it[k] for k in it if k != "content"})
+                stats["error"] += 1
+                continue
+            # ASR 成功 → 用转写文本走 P1 路径总结（避免二次下载音频）
+            _summarize_video_item(it, obsidian, stats, transcript=_txt)
+
+    # 限流/失败的文章写回重试队列（下次运行优先重抓；空队列则清掉文件内容）。
+    # 路径可被 env MON_PENDING_REFETCH_PATH 覆盖：并行模式下各 worker 写各自 staging 文件，
+    # 由父进程合并，避免多进程并发读写同一 pending_refetch.json 造成覆盖丢失。
+    _refetch_out = os.environ.get("MON_PENDING_REFETCH_PATH", PENDING_REFETCH_PATH)
+    _save_json(_refetch_out, refetch_next)
     if refetch_next:
         print(f"\n⏳ {len(refetch_next)} 篇正文未抓到（限流/失败），已存重试队列，下次运行自动重抓")
 
@@ -916,11 +1079,12 @@ def apply_summaries(items: list, obsidian: bool = False) -> None:
     )
 
     # Agent 待总结队列提示：由 WorkBuddy 执行模型（主 Agent / 子 Agent）接单处理
-    pending = _load_json(PENDING_SUMMARY_PATH, [])
+    _summary_path = os.environ.get("MON_PENDING_SUMMARY_PATH", PENDING_SUMMARY_PATH)
+    pending = _load_json(_summary_path, [])
     if pending:
         print(
             f"\n🤖 NEED_AGENT_SUMMARY: {len(pending)} 条内容已抓取，等待执行模型（Agent）总结。"
-            f"清单见 {PENDING_SUMMARY_PATH}\n"
+            f"清单见 {_summary_path}\n"
             f"   处理路径：Read 条目 raw_file → 按 note_type 模板"
             f"（prompts.templates.get_note_prompt）总结 → 调 articles.main.save_summary_only("
             f"{{summarized_content, original_url, author, tags, original_title, publish_time, folder}}) "
@@ -949,6 +1113,12 @@ def apply_summaries(items: list, obsidian: bool = False) -> None:
 
     # P0 Ledger：把限流待重试篇数并入 stats，供 main 聚合记录
     stats["refetch_pending"] = len(refetch_next)
+    # 本地 holder 兜底创建的会话（无外部 session_holder 时）在此关闭，避免会话泄漏
+    if session_holder is None and _holder.get("obj") is not None:
+        try:
+            _holder["obj"].close()
+        except Exception:
+            pass
     return stats
 
 
@@ -1055,12 +1225,23 @@ def main():
         started = time.time()
         _ledger_record_discover(run_id, all_new)  # P0 Ledger：发现阶段每源计数
         save_state(state)
-        stats = apply_summaries(all_new, args.obsidian)
-        # scys（生财有术）日常增量：独立子进程复用 scys_batch_fetch.py 全链路，
-        # 抓到的原文进 scys 专属待总结队列（与单篇队列闭环方式相同）
+        # 单一共享 CDP 会话（惰性）：scys / 公众号撞墙文 / 重试 共用一个，Chrome 最多杀一次。
+        # 活 Chrome 带调试端口时本就 0 kill；无端口时只在「确有撞墙文」或「有 scys」才 kill 一次
+        # （profile_clone 路径），纯 B站/动态轮次完全不建会话、0 kill。
+        # 用 holder 跨 apply_summaries 与 run_scys_daily 共享同一会话，确保 one-kill。
+        _session_holder = {"obj": None}
         scys_pending_n = 0
+        stats = apply_summaries(
+            all_new, args.obsidian, session=None, session_holder=_session_holder,
+        )
+        # scys（生财有术）日常增量：复用同一会话，抓到的原文进 scys 专属待总结队列
         if subs.get("scys"):
-            run_scys_daily(subs["scys"], mode=mode)
+            _s = _session_holder["obj"]
+            if _s is None:
+                from shared.cdp_session import SharedCdpSession
+                _s = SharedCdpSession()
+                _session_holder["obj"] = _s
+            run_scys_daily(subs["scys"], mode=mode, session=_s)
             scys_pending = _load_json(SCYS_PENDING_PATH, [])
             scys_pending_n = len(scys_pending)
             if scys_pending:
@@ -1068,6 +1249,8 @@ def main():
                       f"清单见 {SCYS_PENDING_PATH}\n"
                       f"   处理路径：Read 条目 output 指向的 md 原文 → 按模板总结 → "
                       f"save_summary_only 落飞书（folder=生财有术/<领域>）→ 从队列移除该条。")
+        if _session_holder["obj"] is not None:
+            _session_holder["obj"].close()
         _ledger_record_land(run_id, stats, scys_pending_n)  # P0 Ledger：落盘阶段每源计数
         finalize_run(run_id, started_ts=started, summary_counts=_build_summary(stats, scys_pending_n),
                      overall_status="ok")

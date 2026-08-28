@@ -411,20 +411,20 @@ class ScysBatchFetcher:
 
     # ---------- 主循环 ----------
 
-    def run(self, list_only: bool = False) -> int:
+    def run(self, list_only: bool = False, session=None) -> int:
         lock = _acquire_lock()
         try:
-            return self._run_with_retry(list_only)
+            return self._run_with_retry(list_only, session=session)
         finally:
             _release_lock(lock)
 
-    def _run_with_retry(self, list_only: bool) -> int:
+    def _run_with_retry(self, list_only: bool, session=None) -> int:
         # CDP 接管活 Chrome：用户关标签页/浏览器波动会抛 TargetClosedError，
         # state.json 断点续传使重跑幂等，自动重试最多 3 次
         last_err: Exception | None = None
         for attempt in range(3):
             try:
-                return self._run_once(list_only)
+                return self._run_once(list_only, session=session)
             except Exception as e:  # noqa: BLE001
                 last_err = e
                 msg = str(e)
@@ -437,17 +437,23 @@ class ScysBatchFetcher:
                 time.sleep(10)
         raise last_err  # type: ignore[misc]
 
-    def _run_once(self, list_only: bool) -> int:
-        from playwright.sync_api import sync_playwright
-
+    def _run_once(self, list_only: bool, session=None) -> int:
         BASE.mkdir(parents=True, exist_ok=True)
         done_ids: set[str] = set(self.state.get("done", []))
-
-        # 单一共享 CDP 会话：活 Chrome 优先，不可用才回退 profile_clone。
-        # 公众号 / scys 共用同一生命周期（只开关一次浏览器，用户 2026-08-26 决策）。
         fetched = 0
         pending: list[dict] = []
-        with SharedCdpSession() as sess:
+
+        # 共享 CDP 会话：run.py 监控路径会注入同一个 SharedCdpSession（scys / 公众号 / 重试
+        # 共用一个，Chrome 最多杀一次）；未注入时自建（独立 CLI 行为不变）。
+        # ⚠️ 注入的会话【绝不在此关闭】——它还要给公众号/重试用，由 run.py 的 with 统一回收。
+        own_session = session is None
+        sess = None
+        try:
+            if own_session:
+                sess = SharedCdpSession()
+                sess.__enter__()
+            else:
+                sess = session
             page = sess.new_page()
             try:
                 lst = self.collect_list(page)
@@ -502,7 +508,10 @@ class ScysBatchFetcher:
                         print(f"      (下篇间隔 {gap:.0f}s)")
                         time.sleep(gap)
             finally:
-                page.close()  # 浏览器由 SharedCdpSession.__exit__ 统一关闭
+                page.close()  # 注入会话不关；自建会话由 __exit__ 统一关
+        finally:
+            if own_session and sess is not None:
+                sess.__exit__(None, None, None)
 
         # ProfileClone 是持久化的，不删除（下次只同步 cookie 文件）
 

@@ -31,7 +31,7 @@
 | CUDA 运行库 | venv `Lib\site-packages\nvidia/<pkg>/bin`（**CUDA 12.4** 构建，匹配 ctranslate2 4.8.1） | `videos/asr.py:_ensure_cuda_dlls()` 自动把全部 nvidia/*/bin 注入 `PATH` + 句柄持有 |
 | 字幕 cookie | `.env:BILI_COOKIE` | 影响高清/登录态字幕；缺失不影响 ASR |
 | **飞书写入机制** | 底层 `articles/feishu.py:FeishuOutput` → **`lark-cli`（subprocess, shell=False）** | `from articles.feishu import FeishuOutput; FeishuOutput().explain_mechanism()` 自报全部事实 |
-| ⚠️ 面板无关 | **与 WorkBuddy 面板 `feishu` 连接器(disconnected/connected)完全无关**；面板 disconnected 不代表不能落盘 | 可用性判据=`is_available()`=`FEISHU_WIKI_SPACE` 已配 + `lark-cli --version` 可执行（不看面板） |
+| 面板无关 | 飞书落盘走 `lark-cli`，与面板 `feishu` MCP 连接器是两套独立机制，连接器状态不是落盘判据 | 可用性判据=`is_available()`=`FEISHU_WIKI_SPACE` 已配 + `lark-cli --version` 可执行 |
 | 一行自报 | `monitors/apply_pending_series.py --check` | 打印机制 + `is_available()`，落盘前先跑这条确认 |
 
 > ⚠️ **CUDA 12.4 铁律**：ctranslate2 是 CUDA 12.4 构建。`nvidia-*-cu12` wheel 若是 12.9 会**段错误**；
@@ -97,10 +97,9 @@ rescue 的"步骤E"返回的指令，照做即可（不再需要猜调什么）�
    ```bash
    "$PY" -u monitors/apply_pending_series.py --batch 5
    ```
-   > ⚠️ **落盘不受面板干扰**：本项目走 `lark-cli`，**与 WorkBuddy 面板 `feishu` 连接器状态(disconnected/connected)无关**。
-   > 面板显示 `feishu: disconnected` 是连接器会话态，**不影响 lark-cli 已配置认证**——35+ 集已 verified 即铁证。
-   > 落盘前若想确认，跑 `"$PY" -u monitors/apply_pending_series.py --check`，看到 `is_available : True` 即可放心落盘；
-   > **绝不可因面板 disconnected 就断定飞书不可用**（2026-08-14 误判教训）。
+> **落盘走 lark-cli，与面板 feishu MCP 连接器是两套独立机制**：面板连接器状态不是落盘判据。
+> 落盘前若想确认，跑 `"$PY" -u monitors/apply_pending_series.py --check`，看到 `is_available : True` 即可放心落盘；
+> 飞书读写永远先测 `lark-cli` 命令行（用户 token 长期有效），无需关注面板连接器连接状态。
 
 ---
 
@@ -123,7 +122,7 @@ PY="/c/Users/O1830/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
 2. **`nohup &` 被会话清理杀掉**：表现成"加载模型时静默死亡 / segfault"。→ 用 `run_in_background:true`。
 3. **`ASR_WALL_TIMEOUT` 太短**：1h 视频给 3600s → 转写超时。→ 现已**前置自动算**（时长×3+600），无需手设；长视频仍可用环境变量覆盖。
 4. **cublas "not found" 偶发**：只加了 cublas/bin，没加 cuda_runtime/bin（cublas 依赖 cudart64_12.dll）。
-5. **误判"飞书不可用"**：把面板 `feishu: disconnected` 当成落盘判据。→ 项目落盘走 `lark-cli`（`articles/feishu.FeishuOutput`），与面板连接器是两套独立机制；判据只看 `is_available()`（`FEISHU_WIKI_SPACE` 已配 + `lark-cli --version` 可执行）。落盘前跑 `apply_pending_series.py --check` 一行自报，看到 `is_available : True` 就落，别看面板。
+5. **落盘判据只看 lark-cli**：飞书落盘走 `lark-cli`（`articles/feishu.FeishuOutput`），与面板 feishu MCP 连接器是两套独立机制；判据只看 `is_available()`（`FEISHU_WIKI_SPACE` 已配 + `lark-cli --version` 可执行）。落盘前跑 `apply_pending_series.py --check` 一行自报，看到 `is_available : True` 就落，无需关注面板连接器状态。
    → `_ensure_cuda_dlls` 现加入**所有** nvidia/*/bin 目录 + PATH；若仍报，先跑 `--check` 看 CUDA 设备数。
 5. **ugc_season 单 P 集误拼 `?p=N`**：每集是独立 BV，拼 `?p=5` 会让 yt-dlp 报"No video formats found"。
    → `fetch.py` 已修：仅当视频确为多 P 且 page 有效才拼 `?p=N`。

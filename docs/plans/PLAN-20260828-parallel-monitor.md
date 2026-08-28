@@ -44,15 +44,15 @@ orchestrator (monitors/run_parallel.py)
 - 三源各一个 **worker 子进程**（非线程）：隔离故障——公众号 weread 5xx 崩了它的 worker，B站/scys 照跑。
 - B站 worker 内：无字幕视频投递到 **ASR 子进程池**（有界并发，数见 §3.5 铁律2，默认按资源推导，防资源打满）；转写完成回调把 transcript 落文件并触发该条 summarize；worker 继续处理其他视频。
 - **容错**：每个 worker 只写自己的 queue 文件 + ledger 记录，**父进程不依赖 worker 返回值**，只轮询文件。单源崩不影响其他源、不丢账。
-- **三源队列契约（worker 产出 → Landing 消费 的数据接口）**：单篇草稿写入既有 `pending_summaries.json`、系列课写入 `pending_series.json`（Landing 阶段沿用现有消费逻辑）；B站无字幕视频先入 `asr_queue.jsonl` 转写完成后再入 `pending_summaries.json`。Landing 阶段（P2 起）消费上述队列统一落盘。
+- **三源队列契约（worker 产出 → Landing 消费 的数据接口）**：每个 worker 写**各自独立的 staging 文件**（`run_status/pending_summaries.<源>.stage.json`、`run_status/pending_refetch.<源>.stage.json`），**父进程 join 后合并回 canonical**（`pending_summaries.json` 保留旧项+追加去重；`pending_refetch.json` 由 staging 重建，与串行 `_save_json(refetch_next)` 语义一致）。此设计根除「多 worker 并发读写同一 `pending_summaries.json` / `pending_refetch.json` 读-改-写竞态 → 静默覆盖丢失」的隐患（2026-08-29 复审计发现并修复）。系列课仍走独立的 `pending_series.json`（单 worker 写，安全）。
 
 ### 3.5 ASR 重抓统一设计（回答用户 Q1：先统计 vs 遇到即起）
 
 无字幕视频的转写统一为「**持久化队列 + 有界子进程池**」，覆盖两种触发时机：
 - **运行期内 offload**：本轮 B站 worker 遇到无字幕视频，不阻塞，投递到 ASR 池异步转写（其余视频/源照跑）。
-- **跨轮 redrive**：上轮没抓完/崩溃的，下轮或手动 `redrive` 统一补（复用 `pending_refetch.json` 范式）。二者共用队列 + 有界池，区别仅在触发时机。
+- **跨轮 redrive**：上轮没抓完/崩溃的，下轮 `apply_summaries` 自动重载 `pending_refetch.json` 统一补。二者共用队列 + 有界池，区别仅在触发时机。
 
-**队列落点（消除断点5 悬空）**：`monitors/asr_queue.jsonl`（append-only），**与 `failures.jsonl` 职责分离**——`asr_queue` 存"待转写/转写中"，`failures.jsonl` 存"跨运行最终失败待重抓"。生命周期：`pending → transcribing → done`；崩溃卡在 `transcribing` 由陈旧看门狗复位 `pending`；`asr_queue.jsonl` 收尾将 `done` 条目归档至 `.archive/`，避免无限增长。
+**队列落点（消除断点5 悬空）**：跨运行失败重抓统一由 `apply_summaries` 内的 `pending_refetch.json` 负责（持久化到磁盘、下轮自动重载、3 次上限后显式 drop 上报），与 ASR 转写池职责分离。注：原设计的 `failures.jsonl` 重抓链路因无生产者（`add_failure` 从未被调用）且功能与 `pending_refetch.json` 重复，已于 2026-08-29 审计后删除。
 
 **5 条铁律**：
 1. 先写队列、再起子进程——进程崩了内存里待转写列表丢失 → 视频永久漏抓。
@@ -68,12 +68,9 @@ orchestrator (monitors/run_parallel.py)
   - 字段：`run_id`, `source`(bili|wechat|scys), `item_id`, `url`, `title`, `stage`(discover|fetch|transcribe|summarize|land), `status`(ok|skip|error|timeout|retry|**pending|transcribing|transcribe_failed**), `ts`, `error`, `retry_count`, `node_token`(落盘后填)
   - 收尾由聚合器将 jsonl → `latest.json` 汇总（查询时也可直接流式读 jsonl，无需先合并）。
 - `monitors/run_status/latest.json` —— 运行级汇总：起止时间、每源 `discovered/fetched/landed/failed/skipped`、整体状态。
-- `monitors/run_status/failures.jsonl` —— 跨运行**追加**的失败项（按 `item_id` 去重），供重抓。
 - **Schema 原则**：扁平、字段固定、可被模型用脚本或直接读 JSON 过滤（例："取 last run 全部 `status=timeout` 的 bili 项"）。
-- **查询/重抓入口** `monitors/status_cli.py`：
-  - `summary`：打印 latest 汇总
-  - `failures [--source X] [--status timeout] [--since <ts>]`
-  - `redrive [--source X] [--status timeout]`：把失败项重新投递到对应 pending 队列，下次运行或立即重跑。过滤器 `status in (failed, timeout, pending, transcribe_failed)` 且 `attempts<MAX`；并自动复位**陈旧 `transcribing`**（卡超阈值的看门狗）为 `pending` 一并重驱（审计 #4 闭环）。
+- **查询入口** `monitors/status_cli.py`：
+  - `summary`：打印 latest 汇总（原 `failures` / `redrive` 子命令已随 `failures.jsonl` 死链一并移除，跨轮重抓改由 `pending_refetch.json` 自动闭环）。
 
 ## 5. 改动文件
 
@@ -131,6 +128,8 @@ orchestrator (monitors/run_parallel.py)
 | 8 | **B站 429** | B站 worker 内并行抓视频触发限流 | B站抓取保持串行+节奏(`BILI_GAP`)，ASR 池与抓取解耦 |
 | 9 | **真 token 过期(401) 无人值守** | 弹窗傻等 180s → 阻塞 | 真 token 过期(401) 且 `WECHAT_RELOGIN_WAIT=0` → worker 优雅退出记 `auth_failed` 跳过，不阻塞；代理 5xx 按 #10 判 `source_error` 跳过（**非 token，不弹窗**） |
 | 10 | **代理 5xx 误判 token 过期**（审计原稿漏掉的真 bug） | `is_token_valid` 重试耗尽（全 500/断网）后 `return False` → 被当 token 过期**误弹二维码**；且 docstring 声称"保守返回 True"实际返 False（文档行为不一致） | `is_token_valid` 按 HTTP 状态码**分类**：`401`=真过期→弹窗；`5xx`/网络断=代理异常→标记 `source_error`、跳过公众号、**不弹窗**；弹窗前先 `WECHAT_PROXY_OK` 探活代理 |
+| 11 | **多 worker 并发写 pending 队列竞态**（2026-08-29 复审计发现） | `wechat`/`bili` 两 worker 同调 `apply_summaries`，对同一个 `pending_summaries.json` / `pending_refetch.json` 做无锁读-改-写 → 后写覆盖先写、**静默丢订阅内容** | 每 worker 写独立 staging 文件（`run_status/pending_summaries.<源>.stage.json`、`pending_refetch.<源>.stage.json`），父进程 join 后 `_merge_stage_to_json` 合并回 canonical（去重、保留未消费项）；旧 `pending_refetch.json` 由父进程先按路由拆分给对应 worker 重抓，避免并发读写 |
+| 12 | **并行多次 kill Chrome + 克隆目录竞争**（2026-08-29 复审计发现） | 各 worker 自建 `SharedCdpSession` → 各自 kill+clone；回退路径 `ensure_profile_clone` 用**固定 `CLONE_DIR`**，两 worker 并发克隆互相污染 | 父进程建**一次** `SharedCdpSession`（最多 kill 一次），暴露 `cdp_endpoint`；worker 经 `SharedCdpSession.from_endpoint(endpoint)` `connect_over_cdp` 接管**同一浏览器**（0 额外 kill）；回退克隆启动时加 `--remote-debugging-port` 供 worker 复用 |
 
 ## 8. 验证
 
@@ -142,7 +141,7 @@ orchestrator (monitors/run_parallel.py)
 - P0~P3 全部落地：新增 `status_store.py` / `status_cli.py` / `run_lock.py` / `run_parallel.py`；改动 `run.py` / `wechat.py` / `asr.py` / `articles/main.py` / `articles/feishu.py` / `articles/local.py`（含 `local.py` 预存在"本地兜底落盘路径多爬一层"bug 根因修复）。
 - 代码层验证：全模块 `py_compile` + 包导入冒烟 + 关键单元自测（ledger 分片追加/失败去重/finalize/redrive 过滤、`is_token_valid` 状态码分类、`.run.lock` 互斥）均通过。
 - **受控单测 `monitors/test_parallel.py` 已按用户要求删除（不入库）**——它用 `DISABLE_FEISHU_SYNC=1` 只验逻辑层与本地落盘路径，不触达真实飞书/B站，属"假测试"，不能替代真实验收。
-- **真实验收入口（新会话）**：`python monitors/run.py --parallel --mode auto`（保留旧串行路径，不加 `--parallel` 即回退串行）。会触达真实 B站/公众号/scys 抓取 + 落飞书 + ASR 池并发；跑前建议备份 `monitors/state.json`。feishu 连接器需先可用（当前 disconnected），否则落盘回退本地兜底。
+- **真实验收入口（新会话）**：`python monitors/run.py --parallel --mode auto`（保留旧串行路径，不加 `--parallel` 即回退串行）。会触达真实 B站/公众号/scys 抓取 + 落飞书 + ASR 池并发；跑前建议备份 `monitors/state.json`。飞书落盘走 lark-cli（与面板 feishu MCP 连接器状态无关），lark-cli 可用即能落盘，无需关注面板连接器是否连接。
 
 ## 9. 决策记录（已替你拍板，新会话可直接照此实现）
 
@@ -151,7 +150,7 @@ orchestrator (monitors/run_parallel.py)
 | # | 决策点 | 拍板结论 | 依据 |
 |---|---|---|---|
 | D1 | 落盘逻辑改不改 | **改**：单篇落盘也加 `list_children` 查重（series 级 drain 锁 + 单篇幂等） | 审计 #1/#2/#6：原 §5"不改"与 §7.5 矛盾，单篇无幂等会引入重复节点 |
-| D2 | ASR 队列落点 | `monitors/asr_queue.jsonl`（待转写），与 `failures.jsonl`（跨运行失败）职责分离 | 断点5：避免"进行中"被当失败误重抓 |
+| D2 | 跨轮失败重抓落点 | 由 `apply_summaries` 内的 `pending_refetch.json` 统一负责（与 ASR 转写池职责分离）；原计划的 `failures.jsonl` 因无生产者且功能重复已删除 | 断点5：避免"进行中"被当失败误重抓 |
 | D3 | ASR 池并发数 | `ASR_MAX_CONCURRENCY` env，默认按资源推导（无 CUDA=1、有 CUDA=2） | 审计 #9：原"1~2"是魔数 |
 | D4 | redrive 是否含转写中崩溃 | **含**：过滤 `pending/timeout/failed/transcribe_failed` + 陈旧 `transcribing` 看门狗自动复位 | 审计 #4：否则转写中/转写失败永久丢失 |
 | D5 | 公众号 auth 跳过是否标 seen | **不标 seen**：token 恢复后下轮自然补回，防永久漏抓 | 审计 #7 |

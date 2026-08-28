@@ -39,3 +39,5 @@ build/
 # ASR 转写缓存（transcripts/<id>.md）：可经 videos/asr 自动重生成，不提交
 transcripts/
 apply_*.log
+# 并行监控运行态产物（任务 ledger / 状态快照），非源码，不提交
+monitors/run_status/

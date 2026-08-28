@@ -5,9 +5,9 @@
   避免多 worker 并发写 state.json 竞态）。
 - 按 route 拆分 all_new → 3 个 worker 子进程（spawn）：
     - wechat worker：apply_summaries(文章/动态) 落飞书
-    - bili   worker：先按 fetch_transcript 把「无 CC 字幕」视频投递到 ASR 有界子进程池
-                 （ASR_MAX_CONCURRENCY，默认按资源探测：有 CUDA=2 / 无=1）预热缓存，
-                 其余视频/源不被这条阻塞；随后 apply_summaries 统一落盘（无 CC 项命中缓存→快）。
+    - bili   worker：直接调用 apply_summaries（CC 字幕内联总结 + 无 CC 视频末尾统一走 ASR
+                 有界池批量转写，与串行同源）；ASR 在 bili worker 进程内执行，不阻塞 wechat/scys
+                 并发 worker，且每条无字幕视频只转写一次（无预热重复）。
     - scys   worker：run_scys_daily 增量抓 → 入 scys 待总结队列。
 - 故障隔离：单源 worker 崩溃只记 ledger error，不影响其他源（父进程 join 不依赖返回值）。
 - Landing 阶段（串行）：worker 已直接落飞书（P1 Design Y），这里补齐 series drain + 汇总 finalize。
@@ -19,7 +19,6 @@
 """
 
 import os
-import re
 import sys
 import time
 import argparse
@@ -30,116 +29,101 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from monitors.status_store import (  # 包式导入：脚本/包两种调用都安全
-    new_run_id, record_task, add_failure, finalize_run, detect_asr_max_concurrency,
+    new_run_id, record_task, finalize_run, detect_asr_max_concurrency,
 )
 from monitors.run_lock import acquire_run_lock, RunLockBusy
+from monitors.run import (
+    SCYS_PENDING_PATH, _load_json, _save_json,
+    PENDING_SUMMARY_PATH, PENDING_REFETCH_PATH,
+)
 
 
-# ---------------------------------------------------------------------------
-# ASR 有界子进程池（模块级 worker，便于 spawn pickle）
-# ---------------------------------------------------------------------------
-
-def asr_worker(url: str, out_dir: str):
-    """子进程转写单条 url → 写 transcript 文件。返回 (url, ok, detail)。"""
-    import os
-    from videos import asr as asr_mod
-    safe = re.sub(r"\W+", "_", url)[-48:]
-    out = os.path.join(out_dir, f"{safe}.txt")
-    try:
-        r = asr_mod.transcribe_to_file(url, out)
-        return (url, bool(r), str(r) if r else "empty")
-    except Exception as e:  # 单条失败不影响池
-        return (url, False, str(e)[:200])
+# ASR 转写统一在 monitors.run.apply_summaries 末尾的有界池完成（串行/并行同源），
+# 此处不再单独预热，避免同一条无字幕视频被转写两次。
 
 
-def _warm_asr_cache(items, run_id, asr_max):
-    """把无 CC 字幕的 bili 视频投递到 ASR 有界池预热缓存；返回 (ok_ids, failed_items)。"""
-    import tempfile
-    import concurrent.futures as cf
-    out_dir = tempfile.mkdtemp(prefix="asr_parallel_")
-    try:
-        with cf.ProcessPoolExecutor(max_workers=asr_max,
-                                    mp_context=mp.get_context("spawn")) as ex:
-            futs = {ex.submit(asr_worker, it["url"], out_dir): it for it in items}
-            for fut in cf.as_completed(futs):
-                it = futs[fut]
-                iid = it.get("item_id", it["url"])
-                try:
-                    url, ok, detail = fut.result()
-                    record_task(run_id, "bili", iid, "transcribe",
-                                "ok" if ok else "transcribe_failed",
-                                shard="asr", url=url, title=it.get("title", ""),
-                                error="" if ok else str(detail)[:200])
-                    if not ok:
-                        add_failure(run_id, "bili", iid, "transcribe", "transcribe_failed",
-                                    url=url, title=it.get("title", ""),
-                                    error=str(detail)[:200], attempts=1)
-                except Exception as e:
-                    record_task(run_id, "bili", iid, "transcribe", "transcribe_failed",
-                                shard="asr", url=it["url"], title=it.get("title", ""),
-                                error=str(e)[:200])
-                    add_failure(run_id, "bili", iid, "transcribe", "transcribe_failed",
-                                url=it["url"], title=it.get("title", ""),
-                                error=str(e)[:200], attempts=1)
-    except Exception as e:
-        print(f"[warn] ASR 池初始化/执行失败，回退串行 ASR: {e}", file=sys.stderr)
-        return  # 回退：apply_summaries 内部会同步 ASR
-
-
-def run_bili_pipeline(items, mode, obsidian, run_id, asr_max):
-    """B站 worker：无 CC 视频先异步转写预热缓存，再统一 apply（CC 内联 / 无 CC 命中缓存）。"""
+def run_bili_pipeline(items, obsidian):
+    """B站 worker：直接复用 apply_summaries（CC 内联 + 无 CC 项末尾 ASR 有界池批量转写，
+    与串行同源单一事实源）。ASR 在 bili worker 进程内跑，不阻塞 wechat/scys 并发 worker，
+    且每条无字幕视频只转写一次（无预热重复）。"""
     from monitors import run as run_mod
-    from videos.fetch import fetch_transcript
+    run_mod.apply_summaries(items, obsidian, consume_prev_refetch=False)
 
-    asr_items, cc_items = [], []
-    for it in items:
-        if it.get("is_charging"):
-            cc_items.append(it)
-            continue
+
+def _merge_stage_to_json(canonical: str, stages: list, key: str = "url",
+                         keep_existing: bool = True) -> None:
+    """把各 worker 的 staging 文件合并回 canonical（消除并发写同一 JSON 的竞态）。
+
+    - keep_existing=True（pending_summaries）：保留 canonical 中已有条目（外部 Agent 未消费的）
+      + 追加各 staging 新条目，按 key 去重。
+    - keep_existing=False（pending_refetch）：旧队列已被父进程路由给 worker 重抓，canonical
+      应由本轮 staging 的失败项重建（与串行 _save_json(refetch_next) 语义一致），不保留旧项。
+    """
+    existing = _load_json(canonical, []) if (keep_existing and os.path.exists(canonical)) else []
+    seen = {e.get(key) for e in existing if isinstance(e, dict)}
+    merged = list(existing)
+    for st in stages:
+        arr = _load_json(st, []) if os.path.exists(st) else []
+        for e in arr:
+            if not isinstance(e, dict):
+                continue
+            k = e.get(key)
+            if k in seen:
+                continue
+            seen.add(k)
+            merged.append(e)
+    _save_json(canonical, merged)
+    for st in stages:
         try:
-            cc = fetch_transcript(it["url"])
-        except Exception:
-            cc = "ERR"  # 探测异常 → 交给 apply_summaries 自行处理（保守内联）
-        if cc is None:
-            asr_items.append(it)
-        else:
-            cc_items.append(it)
-
-    if asr_items and asr_max > 1:
-        print(f"[bili] {len(asr_items)} 条无字幕，投递 ASR 有界池（并发={asr_max}）预热缓存...",
-              file=sys.stderr)
-        _warm_asr_cache(asr_items, run_id, asr_max)
-    elif asr_items:
-        print(f"[bili] {len(asr_items)} 条无字幕（并发=1，串行 ASR）", file=sys.stderr)
-
-    # 统一落盘：CC 内联；无 CC 项已预热→transcribe_video 命中缓存快速返回，不阻塞其他源
-    run_mod.apply_summaries(items, obsidian)
+            os.remove(st)
+        except FileNotFoundError:
+            pass
 
 
 # ---------------------------------------------------------------------------
 # 单源 worker（spawn 子进程入口，模块级）
 # ---------------------------------------------------------------------------
 
-def run_source(source_name, items, mode, obsidian, run_id, asr_max):
+def run_source(source_name, items, mode, obsidian, run_id, asr_max,
+               endpoint=None, summary_stage=None, refetch_stage=None):
     """单个源 worker：fetch + summarize + 落飞书（故障隔离）。
 
     items 含义：wechat/bili = 该源待处理条目；scys = scys 订阅条目列表。
+
+    并发安全：wechat/bili 各自写独立 staging 文件（summary_stage / refetch_stage），
+    由父进程合并回 canonical，避免多进程并发读写同一 JSON 造成静默覆盖丢失。
+    会话复用：endpoint 非空时经 connect_over_cdp 接管父进程已建的同一浏览器（一次 kill 多 worker 共享）。
     """
     # P2: Worker 只写本地草稿（DRAFT_ONLY=1），不落飞书；Landing 阶段统一串行落盘，
     # 避免多 worker 并发打飞书 API 触发频限 / 重复节点竞态（§7.5 #2/#6）。
     os.environ["DRAFT_ONLY"] = "1"
+    # 各 worker 写独立 staging 文件（仅 wechat/bili 触碰 pending 队列；scys 走自己的队列）
+    if source_name in ("wechat", "bili"):
+        if summary_stage:
+            os.environ["MON_PENDING_SUMMARY_PATH"] = summary_stage
+        if refetch_stage:
+            os.environ["MON_PENDING_REFETCH_PATH"] = refetch_stage
+    session = None
+    if endpoint and source_name in ("wechat", "scys"):
+        try:
+            from shared.cdp_session import SharedCdpSession
+            session = SharedCdpSession.from_endpoint(endpoint)
+        except Exception as e:
+            print(f"[worker:{source_name}] CDP endpoint 复用失败，回退独立会话: {e}",
+                  file=sys.stderr)
+            session = None
     try:
         from monitors import run as run_mod
         if source_name == "scys":
-            run_mod.run_scys_daily(items, mode=mode)
-            from monitors.run import SCYS_PENDING_PATH, _load_json
+            run_mod.run_scys_daily(items, mode=mode, session=session)
             scys_pending = _load_json(SCYS_PENDING_PATH, [])
             record_task(run_id, "scys", "land:scys", "land", "ok",
                         title=f"scys pending {len(scys_pending)}")
         elif source_name == "bili":
-            run_bili_pipeline(items, mode, obsidian, run_id, asr_max)
+            run_bili_pipeline(items, obsidian)
         else:  # wechat
-            run_mod.apply_summaries(items, obsidian)
+            run_mod.apply_summaries(items, obsidian, session=session,
+                                   consume_prev_refetch=False)
             record_task(run_id, "wechat", "land:wechat", "land", "ok",
                         title=f"processed {len(items)}")
         print(f"[worker:{source_name}] done", file=sys.stderr)
@@ -152,6 +136,12 @@ def run_source(source_name, items, mode, obsidian, run_id, asr_max):
                         error=str(e)[:300])
         except Exception:
             pass
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -184,28 +174,83 @@ def run_parallel_main(mode: str = "auto", obsidian: bool = False,
     if not all_new and not subs.get("scys"):
         print("ℹ️ 本轮无新内容、无 scys 源。", file=sys.stderr)
 
-    bili_items = [it for it in all_new if it.get("route") in ("video", "dynamic")]
-    wechat_items = [it for it in all_new if it.get("route") in ("article", "cv")]
+    # 上一轮限流未抓到正文的文章：父进程在此按路由拆分给对应 worker 重抓，
+    # 避免两个 worker 各自读写同一 pending_refetch.json（读-改-写竞态 → 覆盖丢失）。
+    prev_refetch = _load_json(PENDING_REFETCH_PATH, [])
+    wechat_prev = [r for r in prev_refetch if r.get("route") in ("article", "cv")]
+    bili_prev = [r for r in prev_refetch if r.get("route") in ("video", "dynamic")]
+
+    bili_items = [it for it in all_new if it.get("route") in ("video", "dynamic")] + bili_prev
+    wechat_items = [it for it in all_new if it.get("route") in ("article", "cv")] + wechat_prev
     scys_entries = subs.get("scys", [])
+
+    # 单一共享 CDP 会话（父进程创建，最多 kill 一次）：worker 经 endpoint connect_over_cdp 复用，
+    # 不再各自 kill+clone（避免并发 clone 同一 CLONE_DIR 互相污染 + 重复开销）。
+    endpoint = None
+    parent_session = None
+    if wechat_items or scys_entries:
+        try:
+            from shared.cdp_session import SharedCdpSession
+            parent_session = SharedCdpSession()
+            endpoint = parent_session.cdp_endpoint
+        except Exception as e:
+            print(f"[warn] 父进程 CDP 会话创建失败，worker 将各自回退独立会话: {e}",
+                  file=sys.stderr)
+            endpoint = None
+            parent_session = None
+
+    # 每个 worker 写独立 staging 文件，杜绝并发写同一 JSON 的竞态（父进程末尾合并）
+    stage_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_status")
+    os.makedirs(stage_dir, exist_ok=True)
+    wechat_summary_stage = os.path.join(stage_dir, "pending_summaries.wechat.stage.json")
+    bili_summary_stage = os.path.join(stage_dir, "pending_summaries.bili.stage.json")
+    wechat_refetch_stage = os.path.join(stage_dir, "pending_refetch.wechat.stage.json")
+    bili_refetch_stage = os.path.join(stage_dir, "pending_refetch.bili.stage.json")
+    for f in (wechat_summary_stage, bili_summary_stage, wechat_refetch_stage, bili_refetch_stage):
+        try:
+            os.remove(f)
+        except FileNotFoundError:
+            pass
 
     # 2) 启 worker 子进程（故障隔离）
     ctx = mp.get_context("spawn")
     procs = []
     if bili_items:
-        p = ctx.Process(target=run_source, args=("bili", bili_items, mode, obsidian, run_id, asr_max),
-                        name="mon-bili")
+        p = ctx.Process(target=run_source,
+                       args=("bili", bili_items, mode, obsidian, run_id, asr_max,
+                             endpoint, bili_summary_stage, bili_refetch_stage),
+                       name="mon-bili")
         p.start(); procs.append(p)
     if wechat_items:
-        p = ctx.Process(target=run_source, args=("wechat", wechat_items, mode, obsidian, run_id, asr_max),
-                        name="mon-wechat")
+        p = ctx.Process(target=run_source,
+                       args=("wechat", wechat_items, mode, obsidian, run_id, asr_max,
+                             endpoint, wechat_summary_stage, wechat_refetch_stage),
+                       name="mon-wechat")
         p.start(); procs.append(p)
     if scys_entries:
-        p = ctx.Process(target=run_source, args=("scys", scys_entries, mode, obsidian, run_id, asr_max),
-                        name="mon-scys")
+        p = ctx.Process(target=run_source,
+                       args=("scys", scys_entries, mode, obsidian, run_id, asr_max,
+                             endpoint, None, None),
+                       name="mon-scys")
         p.start(); procs.append(p)
 
     for p in procs:
         p.join()  # 不依赖返回值，ledger 已记录
+
+    # 各 worker staging → canonical 合并（消除并发写竞态；与串行语义一致）
+    _merge_stage_to_json(PENDING_SUMMARY_PATH,
+                         [wechat_summary_stage, bili_summary_stage], key="url",
+                         keep_existing=True)
+    _merge_stage_to_json(PENDING_REFETCH_PATH,
+                         [wechat_refetch_stage, bili_refetch_stage], key="url",
+                         keep_existing=False)
+
+    # 释放父进程共享 CDP 会话（关闭驱动连接；活 Chrome 保持打开，克隆浏览器随之退出）
+    if parent_session is not None:
+        try:
+            parent_session.close()
+        except Exception:
+            pass
 
     # 3) Landing 阶段（串行）：worker 已写本地 draft / scys 已入队列；这里统一落飞书
     #    防御：清除 DRAFT_ONLY，确保父进程（Landing）一定落飞书，不被外部环境变量污染。
