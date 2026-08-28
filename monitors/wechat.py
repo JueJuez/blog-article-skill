@@ -60,6 +60,9 @@ class WereadClient:
         self.base = platform_url.rstrip("/")
         self.session = requests.Session()
         self.session.timeout = TIMEOUT
+        # 最近一次 token 校验结论（PLAN #10/D9）：供 discover_all 区分「真过期」
+        # 与「代理 5xx/断网误判」，避免代理抽风误弹二维码。
+        self.last_auth_check = {"valid": True, "reason": "unknown"}
 
     def _headers(self) -> Dict[str, str]:
         h: Dict[str, str] = {}
@@ -142,6 +145,14 @@ class WereadClient:
             got_any = True
             yield from items
 
+    def is_proxy_reachable(self, timeout: float = 5.0) -> bool:
+        """弹窗前探活代理：代理不可达时 expired 判定不可信，降级为代理异常跳过（D9）。"""
+        try:
+            self.session.get(f"{self.base}/", timeout=timeout)
+            return True
+        except Exception:
+            return False
+
     def is_token_valid(self, probe_share_url: str = "", retries: int = 3) -> bool:
         """探针：优先用 resolve_mp（wxs2mp）打一个需鉴权的请求。
 
@@ -149,9 +160,14 @@ class WereadClient:
         在该接口返回 200 空列表（不返回 401），于是探针永远「健康」→ 不弹码 →
         公众号静默全挂。resolve_mp 端点对过期 token 稳定返回 401，才是可靠探针。
 
-        仅当「重试后仍是 401」才判失效；代理冷启动/网络抖动的瞬时 401 会被重试覆盖，
-        避免误判 token 失效、导致整轮跳过公众号源。其他异常保守返回 True（放行）。
+        按 HTTP 状态码分类（PLAN #10/D9）：
+        - 成功           → valid=True,  reason="ok"
+        - 401            → valid=False, reason="expired"（确为 token 过期，触发重登弹码）
+        - 其他 HTTP(5xx)/网络断/代理异常，重试耗尽 → valid=False, reason="proxy_error"
+                         （代理抽风，不弹码、跳过公众号源，B站照常）
+        旧逻辑「代理 500 重试耗尽也 return False」会误当 token 过期而误弹二维码，已修正。
         """
+        self.last_auth_check = {"valid": True, "reason": "unknown"}
         last_status = None
         # 1) 优先用 share_url 探针（force=True 绕过缓存，强制打网络，过期即 401）
         probe_share = probe_share_url
@@ -162,25 +178,29 @@ class WereadClient:
             for attempt in range(retries):
                 try:
                     self.resolve_mp(probe_share, force=True)  # 需 token，401 即失效
+                    self.last_auth_check = {"valid": True, "reason": "ok"}
                     return True
                 except requests.HTTPError as e:
-                    if e.response is not None and e.response.status_code == 401:
+                    code = e.response.status_code if e.response is not None else None
+                    if code == 401:
                         # 401 是「确定过期」的权威信号，立即判失效，绝不被重试掩盖
-                        # （旧逻辑在此退避重试，再叠加代理 500 时会被下方 except 误判为有效）。
+                        self.last_auth_check = {"valid": False, "reason": "expired"}
                         return False
-                    # 其他 HTTP 错误（如代理 500）：无法确认 token 有效。静默放行曾导致
-                    # 「过期+代理500」时不弹码、backfill 静默失败（比误弹码更糟），故记 unknown。
-                    last_status = e.response.status_code if e.response is not None else None
+                    # 其他 HTTP 错误（如代理 500）：代理异常，不弹码
+                    last_status = code
                     time.sleep(2 * (attempt + 1))
                     continue
                 except Exception:
-                    # 网络/代理异常：无法确认 token 有效。偏「失效」触发重登（可恢复），
-                    # 代价仅是代理纯抖动时多弹一次码，远好于静默永久卡死。
+                    # 网络/代理异常：无法确认 token 有效，记代理异常
                     last_status = None
                     time.sleep(2 * (attempt + 1))
                     continue
-            # 重试耗尽仍拿不到干净 200：要么确为过期、要么代理持续异常——统一判「失效」触发重登，
-            # 杜绝「过期+代理500」场景的静默失败。
+            # 重试耗尽仍拿不到干净 200：按最后状态码分类
+            if last_status == 401:
+                self.last_auth_check = {"valid": False, "reason": "expired"}
+            else:
+                # 全是 5xx/网络断 → 代理异常，不弹码
+                self.last_auth_check = {"valid": False, "reason": "proxy_error"}
             return False
         # 2) 无 share_url 探针（首跑且缓存为空）时，退化为 list_articles 探测；
         #    注意：该端点对过期 token 可能返回 200 空，故仅作 best-effort，失效判定以
@@ -188,20 +208,25 @@ class WereadClient:
         cache = _load_mp_cache()
         probe_mp = next((v.get("id") for v in cache.values() if v.get("id")), "")
         if not probe_mp:
+            self.last_auth_check = {"valid": True, "reason": "unknown"}
             return True  # 无任何探针，保守放行（交由 discover 自行处理）
         for attempt in range(retries):
             try:
                 self.list_articles(probe_mp, 1)
+                self.last_auth_check = {"valid": True, "reason": "ok"}
                 return True
             except requests.HTTPError as e:
                 if e.response is not None and e.response.status_code == 401:
-                    last_status = 401
-                    time.sleep(2 * (attempt + 1))
-                    continue
+                    self.last_auth_check = {"valid": False, "reason": "expired"}
+                    return False
+                # 非 401：代理瞬错，保守放行（不弹码），交由 discover 自行处理
+                self.last_auth_check = {"valid": True, "reason": "proxy_error"}
                 return True
             except Exception:
+                self.last_auth_check = {"valid": True, "reason": "proxy_error"}
                 return True
-        return last_status == 401
+        self.last_auth_check = {"valid": True, "reason": "unknown"}
+        return True
 
 
 class WechatSource:

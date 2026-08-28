@@ -1,6 +1,6 @@
 # PLAN-20260828 · 监控流水线并行化 + 状态 Ledger 改造
 
-> 状态：**方案已定稿，新会话按 P0~P3 实施**（已按第一性原理审计修订，消除内部矛盾 + 补代理 500 误弹窗修复）
+> 状态：**✅ 已完成（P0~P3 全落地，2026-08-28）；真环境验收待用户新会话跑 `python monitors/run.py --parallel --mode auto`**（受控单测已按用户要求删除，不入库）
 > 目标消费者：状态 ledger 主要供**前端/模型查询与重抓**，非人肉翻文件 → schema 以"模型可查询、可重驱"为先。
 
 ## 1. 要解决的痛点（来自 2026-08-27~28 诊断）
@@ -138,6 +138,12 @@ orchestrator (monitors/run_parallel.py)
 2. 注入一条无字幕 B站视频，验证其余视频不阻塞、ASR 在子进程完成、ledger 记 `transcribe` 阶段。
 3. 跑完查 `status_cli.py summary` / `failures` 可读性；`redrive` 能把失败项重新入队并成功补抓。
 
+### 实施状态（2026-08-28 收官）
+- P0~P3 全部落地：新增 `status_store.py` / `status_cli.py` / `run_lock.py` / `run_parallel.py`；改动 `run.py` / `wechat.py` / `asr.py` / `articles/main.py` / `articles/feishu.py` / `articles/local.py`（含 `local.py` 预存在"本地兜底落盘路径多爬一层"bug 根因修复）。
+- 代码层验证：全模块 `py_compile` + 包导入冒烟 + 关键单元自测（ledger 分片追加/失败去重/finalize/redrive 过滤、`is_token_valid` 状态码分类、`.run.lock` 互斥）均通过。
+- **受控单测 `monitors/test_parallel.py` 已按用户要求删除（不入库）**——它用 `DISABLE_FEISHU_SYNC=1` 只验逻辑层与本地落盘路径，不触达真实飞书/B站，属"假测试"，不能替代真实验收。
+- **真实验收入口（新会话）**：`python monitors/run.py --parallel --mode auto`（保留旧串行路径，不加 `--parallel` 即回退串行）。会触达真实 B站/公众号/scys 抓取 + 落飞书 + ASR 池并发；跑前建议备份 `monitors/state.json`。feishu 连接器需先可用（当前 disconnected），否则落盘回退本地兜底。
+
 ## 9. 决策记录（已替你拍板，新会话可直接照此实现）
 
 以下为审计后替你拍板的工程决策，均已写入上文对应章节；仅最后一项（D3 细化）需你按机器环境确认，但已有安全默认值、**不阻塞开工**。
@@ -154,9 +160,9 @@ orchestrator (monitors/run_parallel.py)
 | D8 | P-fix 是否独立先上线 | **不独立**，折叠进 P1（B站 ASR 卸载 + 公众号 auth 跳过即 P1 交付，天然含最小止血） | P-obs 才解决可观测，但最小止血已是 P1 子集 |
 | D9 | 代理 500 误弹窗 | **修**：`is_token_valid` 按状态码分类 + 弹窗前代理探活 | 本次核查真 bug（§7.5 #10） |
 
-**唯一需你确认的输入（D3 细化 · 不影响开工）**：你本机 Whisper 跑在什么资源上？
+**唯一需你确认的输入（D3 细化 · 已确认）**：你本机 Whisper 跑在什么资源上？
 - 纯 CPU / 显存紧张 → 默认 `ASR_MAX_CONCURRENCY=1` 即可，无需改动。
 - 有独显（如 6G+ 显存跑 faster-whisper）→ 可设 `2~3` 提速。
-→ 新会话先用默认值 1 实现，你后续按机器调 env 即可。
+→ **已确认**：本机 NVIDIA RTX 4060 Laptop GPU（独显）+ faster-whisper 走 ctranslate2 CUDA → `ASR_MAX_CONCURRENCY` 默认 **2**（`detect_asr_max_concurrency()` 用 `ctranslate2.get_cuda_device_count()`，无 CUDA 回退 1）。无需改 env。
 
 **结论**：方案经两轮第一性原理审计，已闭合全部硬矛盾（落盘改不改、§6 与 D8 阶段边界、§5 缺 draft-only 关键改动、redrive 漏 `transcribe_failed`、`weread 5xx` 误记 token、#2 竞态前提、#9/#10 重叠、.run.lock 作用域）并补队列契约/归档等边界，现已自洽、无悬空引用、覆盖全部讨论问题。新会话按 P0→P3 顺序实施即可。

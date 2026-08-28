@@ -30,6 +30,61 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+# 状态 Ledger（P0, PLAN-20260828-parallel-monitor）：每源结果可查询/重驱；
+# 同目录模块，run.py 作为脚本执行时 monitors/ 已在 sys.path[0]。
+from status_store import new_run_id, record_task, finalize_run  # noqa: E402
+
+def _ledger_record_discover(run_id: str, items: list) -> None:
+    """发现阶段：按源聚合记录 discovered 计数（P0 仅每源结果，不逐条）。"""
+    counts: dict = {}
+    for it in items:
+        src = it.get("source") or it.get("route") or "unknown"
+        key = "wechat" if src == "wechat" else ("bili" if src in ("bili", "bilibili") else src)
+        c = counts.setdefault(key, 0)
+        c += 1
+    for src, n in counts.items():
+        record_task(run_id, src, f"discover:{src}", "discover", "ok", title=f"discovered {n}")
+
+
+def _ledger_record_land(run_id: str, stats: dict, scys_pending_n: int = 0) -> None:
+    """落盘阶段：从 apply_summaries 的 stats 聚合每源 landed/skipped，scys 单独记 pending。"""
+    record_task(run_id, "bili", "land:bili", "land", "ok",
+                title=f"video={stats.get('video',0)} dynamic={stats.get('dynamic_full',0)+stats.get('dynamic_light',0)} "
+                      f"charging_skip={stats.get('video_charging_skip',0)} short_skip={stats.get('short_skip',0)}")
+    record_task(run_id, "wechat", "land:wechat", "land", "ok",
+                title=f"article={stats.get('article',0)} ad_skip={stats.get('ad_skip',0)}")
+    if stats.get("error", 0):
+        record_task(run_id, "pipeline", "land:error", "land", "error",
+                    error=f"{stats['error']} 条处理异常", title=f"errors={stats['error']}")
+    if stats.get("refetch_pending", 0):
+        record_task(run_id, "pipeline", "land:refetch", "land", "retry",
+                    title=f"refetch_pending={stats['refetch_pending']}")
+    if scys_pending_n:
+        record_task(run_id, "scys", "land:scys", "land", "ok",
+                    title=f"scys pending {scys_pending_n}")
+
+
+def _build_summary(stats: dict, scys_pending_n: int) -> dict:
+    """把 apply_summaries 的 stats 折算成 ledger 的 per_source 汇总（P0 每源结果）。"""
+    out = {
+        "bili": {
+            "landed": stats.get("video", 0) + stats.get("dynamic_full", 0) + stats.get("dynamic_light", 0),
+            "skipped": stats.get("video_charging_skip", 0) + stats.get("short_skip", 0),
+        },
+        "wechat": {
+            "landed": stats.get("article", 0),
+            "skipped": stats.get("ad_skip", 0),
+        },
+        "pipeline": {
+            "error": stats.get("error", 0),
+            "refetch_pending": stats.get("refetch_pending", 0),
+        },
+    }
+    if scys_pending_n:
+        out["scys"] = {"pending": scys_pending_n}
+    return out
+
+
 def _load_env():
     """依赖无关地解析项目根 .env 到 os.environ（仅 setdefault，不覆盖已有值）。
 
@@ -563,28 +618,42 @@ def discover_all(subs: dict, state: dict, mode: str = "auto",
         # 选一个真实 share_url 作为探针：resolve_mp(force=True) 对过期 token 稳定 401，
         # 而 list_articles 对过期 token 返回 200 空，无法用于失效检测。
         probe_share = next((w.get("share_url") for w in wechat_subs if w.get("share_url")), "")
-        token_valid = bool(token) and WereadClient(token=token, vid=vid).is_token_valid(probe_share_url=probe_share)
+        client = WereadClient(token=token, vid=vid)
+        token_valid = bool(token) and client.is_token_valid(probe_share_url=probe_share)
         relogin_triggered = False
-        if not token_valid:
-            print("⚠️ [微信读书] 未检测到有效 token，自动触发重新登录并等待扫码...",
-                  file=sys.stderr)
-            qr_path = trigger_relogin()
-            if not qr_path:
-                print("⚠️ 重新登录触发失败，本次跳过公众号源（B站照常）。", file=sys.stderr)
+        reason = client.last_auth_check.get("reason", "unknown")
+        if (not token_valid) and reason == "proxy_error":
+            # 代理 5xx/断网导致探针失败，非 token 过期：跳过公众号源、不弹码，B站照常（#10/D9）
+            print("⚠️ [微信读书] 代理异常（探针失败，非 token 过期），本次跳过公众号源"
+                  "（B站照常）；下次运行自动恢复。", file=sys.stderr)
+            wechat_subs = []
+        elif not token_valid:
+            # 确为 token 过期（reason=expired）：弹码等扫码续期。
+            # 弹窗前先探活代理：代理不可达时过期判定不可信，降级为代理异常跳过（D9）。
+            if reason == "expired" and not client.is_proxy_reachable():
+                print("⚠️ [微信读书] 代理不可达，过期判定不可信，本次跳过公众号源"
+                      "（B站照常）；下次运行自动恢复。", file=sys.stderr)
                 wechat_subs = []
             else:
-                print(f"RELOGIN_QR:{qr_path}", file=sys.stderr)
-                print(f"⏳ 已生成二维码，正在等待扫码（最长 {WECHAT_RELOGIN_WAIT}s）；"
-                      f"扫到即自动继续抓取公众号，无需手动重跑。", file=sys.stderr)
-                new_tok, new_vid = _wait_for_token_refresh(token, WECHAT_RELOGIN_WAIT)
-                if new_tok:
-                    print("✅ 扫码成功，token 已刷新，继续抓取公众号源。", file=sys.stderr)
-                    token, vid = new_tok, new_vid
-                    relogin_triggered = True
-                else:
-                    print(f"⏰ 等待扫码超时（{WECHAT_RELOGIN_WAIT}s），本次跳过公众号源"
-                          f"（B站照常）；下次运行自动恢复。", file=sys.stderr)
+                print("⚠️ [微信读书] 未检测到有效 token，自动触发重新登录并等待扫码...",
+                      file=sys.stderr)
+                qr_path = trigger_relogin()
+                if not qr_path:
+                    print("⚠️ 重新登录触发失败，本次跳过公众号源（B站照常）。", file=sys.stderr)
                     wechat_subs = []
+                else:
+                    print(f"RELOGIN_QR:{qr_path}", file=sys.stderr)
+                    print(f"⏳ 已生成二维码，正在等待扫码（最长 {WECHAT_RELOGIN_WAIT}s）；"
+                          f"扫到即自动继续抓取公众号，无需手动重跑。", file=sys.stderr)
+                    new_tok, new_vid = _wait_for_token_refresh(token, WECHAT_RELOGIN_WAIT)
+                    if new_tok:
+                        print("✅ 扫码成功，token 已刷新，继续抓取公众号源。", file=sys.stderr)
+                        token, vid = new_tok, new_vid
+                        relogin_triggered = True
+                    else:
+                        print(f"⏰ 等待扫码超时（{WECHAT_RELOGIN_WAIT}s），本次跳过公众号源"
+                              f"（B站照常）；下次运行自动恢复。", file=sys.stderr)
+                        wechat_subs = []
 
         # 第一轮 discovery（预检通过或重登成功后）
         total_items = 0
@@ -878,6 +947,10 @@ def apply_summaries(items: list, obsidian: bool = False) -> None:
     except Exception as e:
         print(f"  ⚠️ 系列课自动落地异常（非致命）：{e}")
 
+    # P0 Ledger：把限流待重试篇数并入 stats，供 main 聚合记录
+    stats["refetch_pending"] = len(refetch_next)
+    return stats
+
 
 def main():
     parser = argparse.ArgumentParser(description="订阅监控")
@@ -889,6 +962,9 @@ def main():
                         help="统一抓取重试入口：重抓 pending_refetch 中的限流文章，并把 pending_summaries 里 raw 为空的条目也提升回重试；重抓后自动重总结")
     parser.add_argument("--obsidian", action="store_true",
                         help="同时写入 Obsidian（默认只写飞书）")
+    parser.add_argument("--parallel", action="store_true",
+                        help="并行编排模式（run_parallel.py）：3 源 worker 子进程 + ASR 有界池，"
+                             "故障隔离；保留旧串行路径（不加此开关即串行）回退")
     parser.add_argument("--all-videos", action="store_true",
                         help="事后强制全量重抓：无视首跑/seen 门禁，翻全部分页抓所有 B站视频。"
                              "仅用于『seen 已填充、想补历史』的显式场景；"
@@ -924,6 +1000,12 @@ def main():
     args = parser.parse_args()
     mode = "first" if args.first_run else args.mode
 
+    # 并行编排模式：转发到 run_parallel（保留旧串行路径回退）
+    if args.parallel:
+        from monitors.run_parallel import run_parallel_main
+        run_parallel_main(mode=mode, obsidian=args.obsidian, all_videos=args.all_videos)
+        return
+
     subs = load_subscriptions()
     state = load_state()
 
@@ -944,7 +1026,12 @@ def main():
         n = _promote_empty_summaries()
         if n:
             print(f"[refetch] 将 {n} 条 raw 为空的总结队列条目提升回正文重试队列")
-        apply_summaries([], args.obsidian)  # apply 内部自动合并 pending_refetch 队列并重抓+重总结
+        run_id = new_run_id()
+        started = time.time()
+        stats = apply_summaries([], args.obsidian)  # apply 内部自动合并 pending_refetch 队列并重抓+重总结
+        _ledger_record_land(run_id, stats)
+        finalize_run(run_id, started_ts=started, summary_counts=_build_summary(stats, 0),
+                     overall_status="ok", notes="refetch_only")
         return
 
     if args.backfill:
@@ -964,18 +1051,28 @@ def main():
         # 仅在实际抓取时落盘 state（标记已发现条目），避免「仅预览」就把待抓条目标记为
         # 已处理，导致后续 --apply 永远抓不到它们（首跑已踩此坑：发现模式把中金点睛 3 篇
         # 标记为 seen，后续 --apply 直接去重成 0）。
+        run_id = new_run_id()
+        started = time.time()
+        _ledger_record_discover(run_id, all_new)  # P0 Ledger：发现阶段每源计数
         save_state(state)
-        apply_summaries(all_new, args.obsidian)
+        stats = apply_summaries(all_new, args.obsidian)
         # scys（生财有术）日常增量：独立子进程复用 scys_batch_fetch.py 全链路，
         # 抓到的原文进 scys 专属待总结队列（与单篇队列闭环方式相同）
+        scys_pending_n = 0
         if subs.get("scys"):
             run_scys_daily(subs["scys"], mode=mode)
             scys_pending = _load_json(SCYS_PENDING_PATH, [])
+            scys_pending_n = len(scys_pending)
             if scys_pending:
                 print(f"\n🤖 NEED_AGENT_SCYS_SUMMARY: scys {len(scys_pending)} 篇待总结。"
                       f"清单见 {SCYS_PENDING_PATH}\n"
                       f"   处理路径：Read 条目 output 指向的 md 原文 → 按模板总结 → "
                       f"save_summary_only 落飞书（folder=生财有术/<领域>）→ 从队列移除该条。")
+        _ledger_record_land(run_id, stats, scys_pending_n)  # P0 Ledger：落盘阶段每源计数
+        finalize_run(run_id, started_ts=started, summary_counts=_build_summary(stats, scys_pending_n),
+                     overall_status="ok")
+        print(f"\n📋 Ledger 已写入：monitors/run_status/{run_id}.*.tasks.jsonl"
+              f"（查询：python monitors/status_cli.py summary）")
     else:
         print(json.dumps(all_new, ensure_ascii=False, indent=2))
 

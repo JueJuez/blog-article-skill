@@ -579,6 +579,30 @@ def transcribe_url(url: str, model_size: str = "medium",
     return (r[0], r[1])
 
 
+def transcribe_to_file(url: str, out_path: str, lang: str = "zh",
+                       model_size: str = "medium",
+                       wall_timeout: Optional[float] = None) -> Optional[str]:
+    """投递式转写（P1, PLAN §3.5）：url → 把 transcript 文本写到 out_path，返回 out_path。
+
+    供 run_parallel 的 ASR 子进程池调用——「不阻塞调用方」由子进程池实现，
+    本函数本身只负责跑完转写并落盘。复用 transcribe_video 全链路
+    （下载 / 缓存 / 硬超时看门狗 / CUDA 缺失 CPU 回退）。
+    """
+    res = transcribe_video(url, lang=lang, model_size=model_size, wall_timeout=wall_timeout)
+    if not res:
+        return None
+    _, text, _ = res
+    try:
+        parent = os.path.dirname(os.path.abspath(out_path))
+        os.makedirs(parent, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(text or "")
+        return out_path
+    except Exception as e:
+        print(f"   ❌ 转写结果写盘失败: {e}")
+        return None
+
+
 def _cleanup(tmpdir: str) -> None:
     try:
         import shutil

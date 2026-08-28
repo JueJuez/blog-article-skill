@@ -592,60 +592,61 @@ class FeishuOutput(BaseOutput):
         # 节点标题优先用真实标题（original_title），避免标题退化成「中金研究-20260723」这类文件名
         title = _sanitize_title(title or os.path.splitext(filename)[0])
 
-        # upsert：父节点下已存在同名子文档则「删旧 + 新建」，避免重复节点。
+        # upsert（加并发锁，D1/#2/#6）：父节点下已存在同名子文档则「删旧 + 新建」，避免并发重复节点。
         # 注意：feishu 的 docs +update --command overwrite 会把文档标题也改写成正文首行，
         # 既破坏可读性又会让下次按标题去重失效（进而产生重复节点），故不用 overwrite，
-        # 改用「先删旧节点、再走下方新建」——无论集节点（唯一标题）还是系列总览
-        # （固定标题重生成）都幂等，永不产生重复节点。
-        existing = self._find_child_node(parent_token, title)
-        if existing:
+        # 改用「先删旧节点、再走下方新建」——无论集节点（唯一标题）还是系列总览都幂等。
+        # 并发安全：同一 (parent, title) 用文件锁串行化查-建，杜绝两个进程同时判 None 而双建。
+        with self._node_creation_lock(parent_token or self.wiki_parent_node, title):
+            existing = self._find_child_node(parent_token, title)
+            if existing:
+                try:
+                    self.delete_node(existing.get("node_token"))
+                    time.sleep(0.5)  # 给飞书一点最终一致时间，降低紧跟其后的新建竞态
+                except Exception as e:
+                    print(f"  ⚠️ 删旧节点失败（非致命，继续新建）：{e}")
+
             try:
-                self.delete_node(existing.get("node_token"))
-                time.sleep(0.5)  # 给飞书一点最终一致时间，降低紧跟其后的新建竞态
+                args = [
+                    "docs", "+create",
+                    "--title", title,
+                    "--content", "-",
+                    "--doc-format", "markdown",
+                    "--as", "user"
+                ]
+
+                args.extend(self._resolve_parent(parent_token))
+
+                # 内容经 stdin 传入（CLI 的 --content - 读取标准输入），避免临时文件与路径限制
+                result = self._run_cli_command(args, input_text=content)
+
+                if result and (result.get("ok") or result.get("code") == 0):
+                    _d = result.get("data", {}) or {}
+                    _doc = _d.get("document", {}) or {}
+                    # 修复：真实返回结构是 data.document.url / data.document.document_id，
+                    # 旧的 data.doc_url / data.node_token 恒为 None（导致从未拿到链接）。
+                    doc_url = _doc.get("url") or _d.get("doc_url") or ""
+                    node_token = _doc.get("document_id") or _d.get("node_token") or ""
+                    # 记录本次创建结果，供总览索引使用
+                    self._last_created = {
+                        "title": title, "url": doc_url,
+                        "node_token": node_token, "parent_token": parent_token or "",
+                    }
+
+                    print(f"✓ 文档创建成功")
+                    if doc_url:
+                        print(f"✓ 文档链接: {doc_url}")
+                    elif node_token:
+                        print(f"✓ 节点Token: {node_token}")
+                    self._verify_node_present(parent_token, title)  # 飞书落盘自检（非阻塞）
+                    return True
+                else:
+                    error_msg = result.get("error", {}).get("message", "未知错误") if result else "命令执行失败"
+                    print(f"✗ 创建文档失败: {error_msg}")
+                    return False
             except Exception as e:
-                print(f"  ⚠️ 删旧节点失败（非致命，继续新建）：{e}")
-
-        try:
-            args = [
-                "docs", "+create",
-                "--title", title,
-                "--content", "-",
-                "--doc-format", "markdown",
-                "--as", "user"
-            ]
-
-            args.extend(self._resolve_parent(parent_token))
-
-            # 内容经 stdin 传入（CLI 的 --content - 读取标准输入），避免临时文件与路径限制
-            result = self._run_cli_command(args, input_text=content)
-
-            if result and (result.get("ok") or result.get("code") == 0):
-                _d = result.get("data", {}) or {}
-                _doc = _d.get("document", {}) or {}
-                # 修复：真实返回结构是 data.document.url / data.document.document_id，
-                # 旧的 data.doc_url / data.node_token 恒为 None（导致从未拿到链接）。
-                doc_url = _doc.get("url") or _d.get("doc_url") or ""
-                node_token = _doc.get("document_id") or _d.get("node_token") or ""
-                # 记录本次创建结果，供总览索引使用
-                self._last_created = {
-                    "title": title, "url": doc_url,
-                    "node_token": node_token, "parent_token": parent_token or "",
-                }
-
-                print(f"✓ 文档创建成功")
-                if doc_url:
-                    print(f"✓ 文档链接: {doc_url}")
-                elif node_token:
-                    print(f"✓ 节点Token: {node_token}")
-                self._verify_node_present(parent_token, title)  # 飞书落盘自检（非阻塞）
-                return True
-            else:
-                error_msg = result.get("error", {}).get("message", "未知错误") if result else "命令执行失败"
-                print(f"✗ 创建文档失败: {error_msg}")
+                print(f"✗ 创建文档失败: {str(e)}")
                 return False
-        except Exception as e:
-            print(f"✗ 创建文档失败: {str(e)}")
-            return False
 
     async def save_async(self, content: str, filename: str, parent_token: str = None, title: str = "") -> bool:
         if not self.is_available():

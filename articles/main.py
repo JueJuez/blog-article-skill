@@ -20,6 +20,62 @@ def _ensure_notes_dir() -> str:
 
 
 # ---------------------------------------------------------------------------
+# P2 Draft-only 模式（并行流水线落盘解耦）：worker 只写本地草稿，Landing 阶段统一落飞书
+# ---------------------------------------------------------------------------
+DRAFT_DIR = os.path.join(NOTES_DIR, "_drafts")
+
+
+def _get_draft_dir() -> str:
+    os.makedirs(DRAFT_DIR, exist_ok=True)
+    return DRAFT_DIR
+
+
+def land_drafts(obsidian: bool = False) -> int:
+    """Landing 阶段（P2 Parallel）：串行消费 notes/_drafts/* 草稿，统一落飞书。
+
+    设计：并行 worker 写草稿时设 DRAFT_ONLY=1（不碰飞书）；父进程 Landing 关闭该 env 后
+    调本函数，串行落盘避免并发飞书限流 / 重复节点竞态（D1/#2/#6）。落盘成功即删草稿。
+    返回实际落盘条数。
+
+    落盘沿用 FeishuOutput.save 的 upsert + 节点锁（幂等、无重复节点）。obsidian 尊重草稿 meta。
+    """
+    import json as _json
+    import glob as _glob
+    draft_dir = _get_draft_dir()
+    # 递归：draft 文件名含 folder 层级（如「测试分类/账号/xxx.md」），会落在子目录下
+    metas = sorted(_glob.glob(os.path.join(draft_dir, "**", "*.meta.json"), recursive=True))
+    if not metas:
+        return 0
+    count = 0
+    for meta_path in metas:
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta = _json.load(f)
+            draft_path = meta.get("draft_path") or (meta_path[:-len(".meta.json")] + ".md")
+            if not os.path.exists(draft_path):
+                try:
+                    os.remove(meta_path)
+                except OSError:
+                    pass
+                continue
+            with open(draft_path, encoding="utf-8") as f:
+                content = f.read()
+            mgr = OutputManager(obsidian=bool(obsidian or meta.get("obsidian", False)))
+            mgr.save_all(content, meta["filename"], title=meta.get("title", ""))
+            # 落盘成功 → 清理草稿（飞书可用时不会双写本地笔记，无需保留草稿）
+            try:
+                os.remove(draft_path)
+                os.remove(meta_path)
+            except OSError:
+                pass
+            count += 1
+            print(f"  📥 Landed draft: {meta.get('title', '')[:40]}")
+        except Exception as e:
+            print(f"  ⚠️ land_draft 失败（保留草稿下次重试）：{e}")
+    return count
+
+
+# ---------------------------------------------------------------------------
 # 统一 AI 调用（A6 + A4）：external → WB 内置 AI → 降级
 # ---------------------------------------------------------------------------
 
@@ -217,7 +273,7 @@ def _sanitize_folder(folder: str) -> str:
     return "/".join(parts)
 
 
-def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False):
+def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False):
     """保存已总结的文章内容到所有可用目标。
 
     Args:
@@ -297,6 +353,31 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
         fm["generated_at"] = datetime.now().isoformat(timespec="seconds")
     if fm:
         formatted_note = _yaml_frontmatter(fm) + formatted_note
+
+    # ── P2 Draft-only 模式（并行 worker 用，避免并发落飞书；Landing 阶段统一落盘）──
+    # 控制来源：显式参数优先；否则读环境变量 DRAFT_ONLY（worker 子进程启动时设置）。
+    # 含 folder 的 filename（如「投资交易/舟亦横/x.md」）在 _drafts 下保留层级，Landing 按原 filename 落盘。
+    _draft_on = draft_only if draft_only else (
+        os.getenv("DRAFT_ONLY", "").lower() in ("1", "true", "yes", "on"))
+    if _draft_on:
+        import json as _json
+        dd = _get_draft_dir()
+        dp = os.path.join(dd, filename)
+        os.makedirs(os.path.dirname(dp), exist_ok=True)
+        with open(dp, "w", encoding="utf-8") as f:
+            f.write(formatted_note)
+        meta_path = os.path.join(dd, filename + ".meta.json")
+        with open(meta_path, "w", encoding="utf-8") as f:
+            _json.dump({
+                "filename": filename, "title": title, "original_url": original_url,
+                "folder": folder, "obsidian": obsidian, "author": author, "tags": tags,
+                "draft_path": dp,
+            }, f, ensure_ascii=False)
+        # 仍标记 dedup，避免重复入队（落盘在 Landing 阶段，不改 dedup 语义）
+        if original_url:
+            dedup.mark_summarized(url=original_url, title=original_title, filename=filename)
+        print(f"📝 [draft-only] 已写本地草稿（不落飞书）：{dp}")
+        return formatted_note, dp
 
     manager.save_all(formatted_note, filename, title=title)
 

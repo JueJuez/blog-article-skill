@@ -8,8 +8,11 @@ class LocalOutput(BaseOutput):
         self.base_path = self._get_base_path()
 
     def _get_base_path(self) -> str:
+        # 与 articles/main.py 的 NOTES_DIR 保持单一事实源一致：
+        # articles/ 的上一级即项目根，再加 notes = <项目根>/notes。
+        # 旧实现多爬了一层（.., .., notes）→ 落到项目外的 <祖父>/notes，已修正。
         default_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "notes")
+            os.path.dirname(__file__), "..", "notes")
         return os.path.abspath(default_path)
 
     def save(self, content: str, filename: str, title: str = "") -> bool:
