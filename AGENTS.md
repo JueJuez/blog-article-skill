@@ -37,6 +37,7 @@
 - **运行**
   - 首跑（回填最近 30 天）：`python monitors/run.py --mode first --apply`
   - 每日增量：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「跑一次 / 跑一下」等关键词即触发，详见 `RULES.md` §3C）——**含 scys 四领域新帖增量**（2026-08-20 接入：`--apply` 收尾逐领域子进程跑 `scripts/scys_batch_fetch.py`；2026-08-21 起 35 天窗口+精华直通+非精华互动门槛（锚≥30，或 赞≥80且锚≥10 防官方帖污染）+done 去重+`.lock` 互斥，CDP 不可用则自动回退 profile_clone 不影响其他源）
+  - **并行模式（可选，2026-08-29 起）**：`python monitors/run.py --parallel --mode auto` 走三源并行 worker（B站/微信/scys 各一 worker，各自写独立 staging 文件 → 父进程合并，消除并发写 `pending_summaries`/`pending_refetch` 队列的竞态；父进程建一次 CDP 会话、各 worker 经 `from_endpoint` 复用，仅一次 kill Chrome）。串行 `--mode auto --apply` 仍是**默认且推荐的日常路径**（惰性 CDP：纯 B站/动态轮次 0 kill）。并行路径代码层 + 单测已通过，真环境端到端验收待跑（边界与验证见 `docs/plans/PLAN-20260828-parallel-monitor.md` §边界矩阵 #11/#12）。
   - **新会话执行步骤（照做即一帆风顺）**：
     1. 直接运行 `python monitors/run.py --mode auto --apply`。
     2. 公众号 token 失效 → 自动弹二维码（`RELOGIN_QR:` 路径），**本机会话扫码后续期，本次运行即继续抓取公众号**（刷新 token 后重试整轮）；headless/无人看码则本次跳过公众号、B站照跑不受影响。
