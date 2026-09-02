@@ -140,7 +140,7 @@ orchestrator (monitors/run_parallel.py)
 ### 实施状态（2026-08-28 收官）
 - P0~P3 全部落地：新增 `status_store.py` / `status_cli.py` / `run_lock.py` / `run_parallel.py`；改动 `run.py` / `wechat.py` / `asr.py` / `articles/main.py` / `articles/feishu.py` / `articles/local.py`（含 `local.py` 预存在"本地兜底落盘路径多爬一层"bug 根因修复）。
 - 代码层验证：全模块 `py_compile` + 包导入冒烟 + 关键单元自测（ledger 分片追加/失败去重/finalize/redrive 过滤、`is_token_valid` 状态码分类、`.run.lock` 互斥）均通过。
-- **受控单测 `monitors/test_parallel.py` 已按用户要求删除（不入库）**——它用 `DISABLE_FEISHU_SYNC=1` 只验逻辑层与本地落盘路径，不触达真实飞书/B站，属"假测试"，不能替代真实验收。
+- **受控单测 `test_parallel.py`（原拟放 monitors/ 下）已按用户要求删除**——从未入库，仅会话内临时文件；它用 `DISABLE_FEISHU_SYNC=1` 只验逻辑层与本地落盘路径，不触达真实飞书/B站，属"假测试"，不能替代真实验收。**并行路径现存的真测试只有 `tests/test_parallel_merge.py`（86 行，覆盖 staging 合并无丢失/无覆盖/去重）**，其余并行行为无自动化覆盖。
 - **真实验收入口（新会话）**：`python monitors/run.py --parallel --mode auto`（保留旧串行路径，不加 `--parallel` 即回退串行）。会触达真实 B站/公众号/scys 抓取 + 落飞书 + ASR 池并发；跑前建议备份 `monitors/state.json`。飞书落盘走 lark-cli（与面板 feishu MCP 连接器状态无关），lark-cli 可用即能落盘，无需关注面板连接器是否连接。
 
 ## 9. 决策记录（已替你拍板，新会话可直接照此实现）

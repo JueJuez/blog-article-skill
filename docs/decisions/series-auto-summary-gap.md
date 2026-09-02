@@ -1,12 +1,12 @@
 # 决策记录：系列课（B站多P）为何没被自动总结
 
-> 日期：2026-08-12 | 关联：`monitors/run.py` + `videos/main.py` + `apply_pending.py`
+> 日期：2026-08-12 | 关联：`monitors/run.py` + `videos/main.py` + `apply_pending_series.py`
 > 现象：订阅的 UP 主发了 75 集《中国好公司》系列课，被抓成 raw 暂存 `notes/中国好公司/`，
 > 但**没有进入自动总结闭环**，75 篇一直以 `*_raw.md` 躺平，直到人工介入才发现。
 
 ## 结论（一句话）
 系列课走的是「降级 raw → 等外层 Agent 总结」的另一条链路，但**降级返回里漏了 `need_continue_summary` 信号**，
-导致 monitors 的落盘闭环（`apply_pending.py`）完全不知道「还有 75 集待总结」——这是主断点。
+导致 monitors 的落盘闭环（`apply_pending_series.py`）完全不知道「还有 75 集待总结」——这是主断点。
 叠加两处质量缺陷，使半自动兜底也失效。
 
 ## 链路断点拆解（3 个）
@@ -14,7 +14,7 @@
 ### 断点 1（主）：`_handle_bilibili_series` 降级返回缺 `need_continue_summary`
 - `videos/main.py` 的系列处理函数，在无外部 AI（FORCE_AGENT_MODE=1）时把每集字幕写成
   `notes/<系列名>/*_raw.md`，并期望由 monitors 的外层 Agent 来总结。
-- 但它返回的 dict **没有 `need_continue_summary=True` 字段**，而 `monitors/apply_pending.py`
+- 但它返回的 dict **没有 `need_continue_summary=True` 字段**，而 `monitors/apply_pending_series.py`
   的闭环逻辑只认单篇 `pending_summaries.json` 里的 `_raw_*.md`（顶层文件），
   **根本不扫 `notes/<系列名>/` 子目录**。
 - 结果：75 个 raw 既没进 `pending_summaries.json` 队列，闭合信号也为空 → 静默孤儿化。

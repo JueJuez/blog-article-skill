@@ -2,7 +2,7 @@
 
 策略（绝不删除、绝不重写 Obsidian）：
 - 遍历 REGEN_ITEMS（16 条已落盘成品的元数据）。
-- 标题取子 Agent _summary_ 首个 H1（与 apply_pending 一致），用同一 generate_filename 推导文件名。
+- 标题取子 Agent _summary_ 首个 H1（与 apply_pending_series 一致），用同一 generate_filename 推导文件名。
 - 直接读 Obsidian 成品（VAULT + filename）作为权威 markdown（已含 frontmatter + #标签 + 作者行），保证飞书与 Obsidian 完全一致。
 - 先查飞书对应容器下是否已存在同名节点；存在则跳过，不存在才 create。
 - create 走 FeishuOutput.save（已内置频限指数退避重试）。

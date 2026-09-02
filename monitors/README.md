@@ -1,7 +1,7 @@
 # 订阅监控（monitors/）
 
 持续订阅 **B站UP主**、**公众号** 与 **scys（生财有术）项目标签**，发现新内容 → AI 总结 → 默认落飞书（需 Obsidian 时加 `--obsidian` 双写，见 `RULES.md` §3.0）。
-本文件是监控模块的操作文档 + 注意事项；决策背景见 `docs/decisions/DECISION-20260720-sub-monitor.md`。
+本文件是监控模块的操作文档 + 注意事项；决策背景见 `../_archive/decisions/DECISION-20260720-sub-monitor.md`（已取代，仅供历史追溯）。
 
 ## 架构
 

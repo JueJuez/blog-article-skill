@@ -247,7 +247,7 @@ NOTE_GATE_THRESHOLD=85
 | `BILI_GAP` | 30 | 跨源退避秒数（`run.py` 额外加 ±5s 随机抖动，避免被识别成脚本） |
 | `BILI_INTRA_GAP` | 2 | 同源「视频→动态」之间退避秒数 |
 | `BILI_BACKOFF` | 5 | 重试退避基数（动态接口偶发 `-352`/`4101129` 列入退避重试） |
-| `BILI_FIRST_WINDOW_DAYS` | 7 | 首跑时间窗口（天）：只处理 N 天内发布的视频/动态 |
+| `BILI_FIRST_WINDOW_DAYS` | 30 | 首跑时间窗口（天）：只处理 N 天内发布的视频/动态（默认值见 `monitors/bilibili.py` 的 `_BILI_FIRST_WINDOW_DAYS`） |
 | `BILI_DAILY_WINDOW_DAYS` | 1 | 每日增量**基础**时间窗口（天）；`auto` 非首次运行时按「距上次成功运行天数 + 1」自动拉长补齐 |
 | `BILI_MAX_WINDOW_DAYS` | 30 | 每日增量窗口**封顶**（天）；断跑超过此天数只补到此处（更长历史用 `--mode first`） |
 | `WECHAT_WINDOW_DAYS` | 2 | 公众号每日增量基础窗口（天）；同样支持自动补齐，封顶 `WECHAT_MAX_WINDOW_DAYS` |
@@ -259,7 +259,7 @@ NOTE_GATE_THRESHOLD=85
 
 ### 公众号认证（非 `.env`）
 
-公众号经 `weread.111965.xyz` 转发发现新文，认证 token 落在 `monitors/.wechat_auth.json`（已 gitignore），是转发服务器自签 JWT，**数小时即失效**。`run.py` 检测到失效时**本次跳过公众号源、保 B站照跑**；交互式（Windows 本机）会话会弹二维码供用户扫码续期，**下次运行**恢复公众号抓取，headless/自动化下无人看码等价于跳过。无「稳 + 免费 + 免维护」方案，详见 `monitors/README.md` 注意事项。
+公众号经 `weread.111965.xyz` 转发发现新文，认证 token 落在 `monitors/.wechat_auth.json`（已 gitignore），是转发服务器自签 JWT，**数小时即失效**。`run.py` 检测到失效会弹二维码（`RELOGIN_QR:`）并阻塞等待扫码：交互式（Windows 本机）会话**扫到即刷新 token、本次自动继续抓取公众号源**（无需手动重跑）；若 `WECHAT_RELOGIN_WAIT`（默认 180s）内未扫码，则**本次跳过公众号源、保 B站照跑、下次运行恢复**；headless/自动化（`WECHAT_RELOGIN_WAIT=0`）下无人看码等价于跳过。无「稳 + 免费 + 免维护」方案，详见 `monitors/README.md` 注意事项。
 
 续期排查：扫码后仍未恢复公众号，先看 `monitors/.poll_daemon.log` 是否出现 `[poll-success]`（说明 daemon 抓到 token）；若只有 `[poll-error#n]` 或一直 `status=pending`，说明 weread proxy 当前不稳定（超时/5xx）或二维码 UUID 已过期（被微信扫码后服务端会很快销毁旧 UUID），重新触发一次 `run.py` 生成新二维码再扫即可。
 

@@ -15,12 +15,10 @@
 用户给**文章链接、原文、或视频（YouTube / Bilibili）链接 / 字幕** → 总结成笔记。
 - **入口（任选）**
   - **统一入口（推荐）**：`python articles/run.py "https://..."` 或 `from articles import skill_main; skill_main({"content": url_or_text})` —— `fetch_web_content` 检测到 `scys.com` 链接自动分流 CDP 登录态抓取，普通博客走 requests。**用户给单篇或多篇混合链接（普通博客 + scys）都逐条自动分流，前端无感。**（回归测试 `tests/test_scys_routing.py`）
-  - **需登录态文章的底层路径**（诊断 / 显式抓取时用）：经由 `shared/cdp_session.py` 的 `SharedCdpSession` **唯一路径**完成——先确保用户 Chrome 完全关闭（释放 cookie 独占锁）→ 复制真实 profile 到非默认 `ProfileClone` 目录 → 用该目录以调试端口启动 Chrome → `connect_over_cdp` 接管；登录态由复制的 cookie 继承。**scys（生财有术）付费文章专用照做 SOP 见 `references/scys-fetch-sop.md`（含前提 / 判别墙·真文 / 故障，新会话直接照做）。**
-  - ⚠️ **Chrome 151+ 已废弃 junction 方案**（2026-08-24 实测，永久禁用）：旧方案用 junction（`DebugUDD` → `User Data`）绕过远程调试限制，但 Chrome 151 能检测 junction 指向同一物理目录，触发安全清理：清空 `extensions.settings` → `extension_garbage_collector` 删扩展文件（实测 22 个扩展被删）→ 清 Google 账号关联。**当前方案不再用 junction / 不再改 Chrome 快捷方式 / 不再需要 `--remote-debugging-port`，改由 `SharedCdpSession` 复制 profile 到非默认 `ProfileClone` 目录 + 调试端口接管。** 详见 `references/login-required-cdp-workflow.md` §1.1。
-  - 📌 **实际抓取入口**：监控流水线 `monitors/run.py`（公众号/B站/scys）与 `scripts/scys_batch_fetch.py` 内部已用 `SharedCdpSession`，无需手动调 `login_cdp_fetch.py`（`login_cdp_fetch.py` 仅作端口探测诊断）。
+  - **需登录态（scys 付费文 / 监控）底层路径**：统一走 `shared/cdp_session.py` 的 `SharedCdpSession` 单一入口——复制 profile 到非默认 `ProfileClone` 目录 + 调试端口接管（用户零操作）。Chrome 151+ 已废弃 junction / 活 Chrome 调试端口方案（会触发扩展被删）。监控 `monitors/run.py` 与 `scripts/scys_batch_fetch.py` 内部已用，无需手动调 `login_cdp_fetch.py`（仅端口探测诊断）。scys 付费文 SOP 见 `references/scys-fetch-sop.md`；CDP 机制见 `references/login-required-cdp-workflow.md` §1.1。
   - **scys 按领域批量抓取**：`python scripts/scys_batch_fetch.py --project <领域>`（领域 / menuId / 时间窗在 `scripts/scys_projects.json` 配置，换领域每半年重抓只改 JSON 不改代码）。**触发词：用户说「补齐scys / 补齐生财有术」即自动启动全流程（默认=精华+高互动非精华，2026-08-21 起），后缀自然语言改参数（领域/时间/仅精华），语义见 `references/scys-fetch-sop.md` §9。**
   - 视频：`python videos/run.py --url "https://..."` 或 `from videos import summarize_video; summarize_video({"url": url})`（含 ASR 兜底）
-- 自动按内容类型选模板（`structured` / `key_points` / `interview` / `roundup` / `reading` / `case` / `opinion` / `dissection` 创作解剖——爆款拆解/带货/涨粉/账号运营复盘额外提炼可复用结构模具）；**默认写飞书**，用户说「写到 obsidian / 双写」时才追加 Obsidian（传 `obsidian=True` 或 `--obsidian`，详见 `RULES.md` §3.0）。
+- 自动按内容类型选模板（`structured` / `key_points` / `interview` / `roundup` / `reading` / `case` / `opinion` / `dissection` 创作解剖——爆款拆解/带货/涨粉/账号运营复盘额外提炼可复用结构模具）；**默认写飞书**，Obsidian 按需（用户显式开启）。
 - **降级**：无外部 AI 时 `skill_main` 返回 `need_continue_summary` + 原文 + 模板 prompt；外层模型总结后调 `save_summary_only` 存档。
 
 ### 能力 2 · 订阅监控（关注 B站UP主 / 公众号 / scys 领域）
@@ -35,7 +33,7 @@
     - 不要手搓抓取代码。
 - **运行**
   - 首跑（回填最近 30 天）：`python monitors/run.py --mode first --apply`
-  - 每日增量：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「跑一次 / 跑一下」等关键词即触发，详见 `RULES.md` §3C）——**含 scys 四领域新帖增量**（2026-08-20 接入：`--apply` 收尾逐领域子进程跑 `scripts/scys_batch_fetch.py`；2026-08-21 起 35 天窗口+精华直通+非精华互动门槛（锚≥30，或 赞≥80且锚≥10 防官方帖污染）+done 去重+`.lock` 互斥，CDP 不可用则自动回退 profile_clone 不影响其他源）
+  - 每日增量：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「跑一次 / 跑一下」等关键词即触发）——**含 scys 四领域新帖增量**（窗口/门槛以 `scripts/scys_projects.json` 为准，详见 `monitors/README.md`「scys 新帖监控」）
   - **并行模式（可选，2026-08-29 起）**：`python monitors/run.py --parallel --mode auto` 走三源并行 worker（B站/微信/scys 各一 worker，各自写独立 staging 文件 → 父进程合并，消除并发写 `pending_summaries`/`pending_refetch` 队列的竞态；父进程建一次 CDP 会话、各 worker 经 `from_endpoint` 复用，仅一次 kill Chrome）。串行 `--mode auto --apply` 仍是**默认且推荐的日常路径**（惰性 CDP：纯 B站/动态轮次 0 kill）。并行路径代码层 + 单测已通过，真环境端到端验收待跑（边界与验证见 `docs/plans/PLAN-20260828-parallel-monitor.md` §边界矩阵 #11/#12）。
   - **新会话执行步骤（照做即一帆风顺）**：
     1. 直接运行 `python monitors/run.py --mode auto --apply`。
@@ -43,7 +41,7 @@
     3. 发现 → 抓正文 → 进 `pending_summaries.json` 队列（FORCE_AGENT_MODE 下不自动总结）；系列课降级进 `pending_series.json` 队列；scys 新帖进 `notes/_scraped/scys/pending_summaries.json` 队列。
     4. 运行结束后，本会话（执行模型）**必须**在本次会议内闭环两类待总结队列（全自动，无需用户手动命令）：
        - **派单前先跑 `python scripts/filter_pending.py`**（机械清洗两队列：URL 命中 dedup 索引的已总结条目自动出队、scys 队列清 `summarized:true`——多 Agent 接力时已总结内容不再浪费 AI token、不重复落飞书）。
-       - **单篇**：读 `pending_summaries.json`，派**子 Agent** 按模板总结并 `save_summary_only` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，详见 `RULES.md` §3.0）。
+       - **单篇**：读 `pending_summaries.json`，派**子 Agent** 按模板总结并 `save_summary_only` 落盘（默认飞书，Obsidian 按需追加）。
        - **scys**：读 `notes/_scraped/scys/pending_summaries.json`，派**子 Agent** 按 `references/scys-fetch-sop.md` §9 语义总结并落飞书（folder=生财有术/<领域>）-> 出队。⚠️ 子 Agent **消费队列中已算好的 prompt**：`articles/main.py` 已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 把 prompt 算好塞进队列条目（`pending_summaries.json` / `notes/_scraped/scys/pending_summaries.json`），子 Agent 直接按该 prompt 总结并 `save_summary_only` 落盘，**无需自调任何 CLI**。**不要全部用 structured 模板**（2026-08-22 分类修复，详见 `docs/decisions/DECISION-20260821-scys-classification-fix.md`）。
        - **系列课**：读 `pending_series.json`，对每个系列按 `notes/<系列名>/*_raw.md` 分片派**子 Agent** 总结成 `.body.md`，再跑 `python monitors/apply_pending_series.py` 落地（run.py 末尾已自动触发一次落地，body 存在时直接落；此处是为「刚总结出的新 body」补一遍落地）。系列课**只落飞书**，除非用户明确要双写/只写 Obsidian。
        - ⚠️ 系列课增量语义：每日重跑时，`videos.main` 已按 `monitors/series_state.json` 去重，**只把未总结的集**写入 raw 并排队；UP 更新后自动只抓新增集，已总结的旧集不会重复总结/落盘。
@@ -67,7 +65,7 @@
 - `OBSIDIAN_VAULT_PATH` —— Obsidian 库路径（按需端；仅 `obsidian=True`/`OBSIDIAN_WRITE=1` 时写入）
 - `FEISHU_WIKI_SPACE` + `FEISHU_WIKI_PARENT_NODE` —— 飞书知识库（默认落盘端）
 - `BILI_COOKIE` —— B站登录态 Cookie（订阅监控动态接口必需）
-- 监控可调参：`BILI_GAP`(30) / `BILI_FIRST_WINDOW_DAYS`(7) / `BILI_DAILY_WINDOW_DAYS`(1) / `BILI_PAGE_SIZE`(50) / `STATE_KEEP`(1000) / `BILI_SHORT_DYNAMIC_MAX`(80)
+- 监控可调参：`BILI_GAP`(30) / `BILI_FIRST_WINDOW_DAYS`(30) / `BILI_DAILY_WINDOW_DAYS`(1) / `BILI_PAGE_SIZE`(50) / `STATE_KEEP`(1000) / `BILI_SHORT_DYNAMIC_MAX`(80)
 - 完整变量见 `references/config.md`
 
 ## 红线（必须遵守）

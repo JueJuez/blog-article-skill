@@ -2,12 +2,23 @@
 
 一款通用的博客文章结构化总结与多渠道归档工具。支持将任意博客链接或文章原文，通过 AI 自动生成结构化笔记，并保存到本地、Obsidian 或飞书知识库。
 
+## 项目背景
+
+- **解决什么**：长期订阅大量 B站UP主 / 微信公众号 / 生财有术领域标签，手工读+整理成本高。本工具把「发现新内容 → 抓取正文/字幕 → AI 结构化总结 → 归档知识库」做成自动化流水线，产出统一风格的笔记。
+- **核心约束（必读）**：
+  - **默认只写飞书**，Obsidian 仅用户显式要求时才写（代码门禁保证，不靠 AI 记性）。详见 `RULES.md` §3.0。
+  - **复用入口，不手搓抓取/总结**：一律走 `skill_main` / `summarize_video` / `monitors/run.py` 等入口函数，不临时写脚本、不手搓平台私有接口。
+  - **无外部 AI 时由执行模型（主/子 Agent）总结**（`FORCE_AGENT_MODE=1` 默认）；旧 `AI_PROVIDER` 外部调用已废弃。
+- **能力边界**：覆盖三类输入 —— ① 一次性总结（文章/视频链接、原文、字幕）；② 订阅监控（B站UP主 / 公众号 / scys 领域，增量发现新内容并总结）；③ 系列课（UP 系列视频按集拆解归档）。不涉及通用爬虫，不取代人工筛选。
+- **登录态抓取**：公众号 / B站动态 / scys 付费文需登录态，统一经 `shared/cdp_session.py` 的 `SharedCdpSession` 自动克隆浏览器 profile + 调试端口接管（详见 `references/login-required-cdp-workflow.md`）。
+- **术语与概念**：新 Agent 上手遇到的不自解释概念（系列课 / 系列容器 / 三 pending 队列 / scys / SharedCdpSession / 状态 Ledger 等）见 `references/glossary.md`。
+
 ## 功能特性
 
 ### 文章模块（articles）
 - **增强抓取（A1）**：trafilatura（主力）+ readability-lxml（次选）+ 原 bs4 兜底三层提取，自动剥离导航/广告，保留 sina/baijiahao/og:title 标题特例
 - **增量去重（A2）**：按规范化 URL（或正文 hash）持久化索引，重复链接/原文自动跳过，避免重复消耗 token
-- **自适应总结**：内置 `prompts` 模板注册表，支持 **7 种笔记形态**：结构化复盘(structured) / 要点提炼(key_points) / 案例拆解(case) / 观点卡(opinion) / 访谈笔记(interview) / 盘点横评(roundup) / 读书笔记(reading)，未指定时按标题+正文自动分类
+- **自适应总结**：内置 `prompts` 模板注册表，支持 **9 种笔记形态**（完整清单与说明以 `prompts/templates.py` 的 `NOTE_TEMPLATES` 为准）：structured / key_points / case / opinion / interview / roundup / reading / dissection / general，未指定时按标题+正文自动分类
 - **标签建议（A5）**：未指定 tags 时由笔记类型 + 内容关键词自动生成默认标签
 - **Provider 健壮性（A4）**：限流/瞬错自动重试 + 指数退避；总结返回 token 用量并写入笔记 frontmatter
 - **批量目录（A3）**：`--batch <dir>` 对目录下所有 `.md/.txt` 原文逐篇总结
@@ -55,32 +66,7 @@ cp .env.example .env
 
 **当前默认运行模式**：`FORCE_AGENT_MODE=1`（由 `.env.example` 默认开启），总结由当前执行模型（主/子 Agent）完成，**不再默认调用外部 AI Provider**。外部 Provider 仅作为可选备用。
 
-可选的外部 AI Provider（不配也行，会自动降级由当前对话模型总结）：
-
-```env
-# 强制由当前 Agent 总结（默认开启；关闭则尝试外部 Provider）
-FORCE_AGENT_MODE=1
-
-# 外部 Provider 仅在 FORCE_AGENT_MODE=0 或显式指定时生效
-# AI_PROVIDER=openai
-# OPENAI_API_KEY=sk-xxxx
-
-# AI_PROVIDER=anthropic
-# ANTHROPIC_API_KEY=sk-ant-xxxx
-
-# AI_PROVIDER=google
-# GOOGLE_API_KEY=xxxx
-
-# AI_PROVIDER=local
-# LOCAL_API_BASE=http://localhost:11434/v1
-
-# 视频字幕抓取代理（可选）：仅本机裸跑且需代理时设置，脚本自动映射到 HTTP(S)_PROXY
-# YT_PROXY=http://127.0.0.1:7890
-
-# 质量闸门（可选 · 默认关闭）：总结后由 AI 二次把关，低于阈值重试一次；省一轮调用故默认关
-# NOTE_QUALITY_GATE=1
-# NOTE_GATE_THRESHOLD=85
-```
+可选的外部 AI Provider（不配也行，会自动降级由当前对话模型总结）。所有可配置变量（`FORCE_AGENT_MODE` / `AI_PROVIDER` / `YT_PROXY` / `NOTE_QUALITY_GATE` / `OBSIDIAN_WRITE` / `BILI_*` 等）的定义、默认值与用途见 **`references/config.md`**；直接复制 `.env.example` 即含全部模板，按需取消注释即可。
 
 ### 使用示例
 
@@ -403,8 +389,7 @@ blog-article-skill/
 │   ├── ad_filter.py          # 广告过滤（整篇纯广告 skip / 干货夹广告净化）
 │   ├── run.py                # CLI + 调度入口（--apply 直接调总结管线）
 │   ├── subscriptions.example.json  # 订阅配置模板
-│   ├── save_series_batch.py  # 系列课批量落盘编排（默认飞书，--obsidian 双写；写后自动跑 audit_sync）
-│   ├── apply_pending.py      # 把子 Agent 产出的 _summary_*.md 落盘（默认飞书，--obsidian 双写）
+│   ├── apply_pending_series.py  # 系列课待总结队列 drainer（落盘到飞书，--regenerate/--batch/--cleanup）
 │   └── README.md             # 监控运营文档 + 已知坑
 ├── audit_sync.py             # Obsidian ↔ 飞书 一致性审计 + 幂等补传（仅双写时启用，AUDIT_SYNC=0 可关）
 ├── tests/                    # 回归测试（可直接 `python tests/test_xxx.py` 跑，无需 pytest）
@@ -419,7 +404,6 @@ blog-article-skill/
 ├── notes/                    # 原始/中间笔记（被 gitignore）
 ├── references/
 │   ├── config.md             # 配置详细说明
-│   ├── PRD.md                # 产品需求文档
 │   ├── youtube-cdp-workflow.md  # YouTube 字幕 CDP 全自动抓取流程（本机无出口必读）
 │   └── testing_rules.md      # TDD 流程规范（grill_rules 动手时遵循）
 ├── .env.example              # 环境变量模板

@@ -26,7 +26,7 @@
 | **RULES.md（本文件）** | 规则 + 地图索引（规则唯一来源） | ❌ 只放条目与指针 |
 | `SKILL.md` | 技能触发条件 + 调用入口 + 对话输出规范（面向「怎么用」） | 少量用法，规则指向 RULES.md |
 | `AGENTS.md` | **平台无关真源入口**（跨 WorkBuddy / Cursor / Claude / Codex / Copilot / 裸 API 通用） | 能力清单 + 接口速查 + 配置引导 + 各平台加载方式，指向本文件 |
-| `references/` | 专项详细文档（`config.md` 配置、`youtube-cdp-workflow.md` 抓取流程、`PRD.md` 需求、`testing_rules.md` TDD 流程） | ✅ 放深入细节 |
+| `references/` | 专项详细文档（`config.md` 配置、`youtube-cdp-workflow.md` 抓取流程、`testing_rules.md` TDD 流程、`glossary.md` 术语表；`PRD.md` / `scys-cdp-lessons-learned.md` 已归档至 `_archive/`） | ✅ 放深入细节 |
 | `docs/decisions/` | grill_rules 的「产出 A：决策清单」存放地（`DECISION-YYYYMMDD-{slug}.md`，≤15 行） | ✅ 极轻量 |
 | `articles/` `videos/` `prompts/` `shared/` | 实现细节的唯一真相 | ✅ 代码即文档 |
 | `.workbuddy/memory/MEMORY.md` | 长期要点 + 「规则摘要」（会话开始注入） | ❌ 只摘要点 |
@@ -37,7 +37,7 @@
 
 ## 2. 项目定位与适用场景
 
-- **一句话定位**：把「文章/视频链接、原文、字幕」自动转成结构化/要点笔记，并归档到 Obsidian / 飞书（本地 `notes/` 仅在两者都未配置时兜底，详见 §3.0）。
+- **一句话定位**：把「文章/视频链接、原文、字幕」自动转成结构化/要点笔记，并归档到飞书（默认）/ Obsidian（按需）。
 - **触发场景（同时满足）**：① 用户说「总结/提炼/整理/归档/保存笔记」类词；② 给了素材（文章链接、原文粘贴、视频/字幕）。
 - **不触发**：只聊概念没给素材、或纯答疑。
 - **默认行为**：不在对话框输出完整笔记正文，只给 1~3 句核心结论 + 成品路径。
@@ -46,84 +46,29 @@
 
 ## 3. 两条业务路线（怎么跑）
 
-> 两条路线都复用 `prompts/`（笔记模板）与 `articles` 的保存能力（`OutputManager`），**入口函数即真相**，勿手写抓取/总结。
+> 两条路线都复用 `prompts/`（笔记模板）与 `articles` 的保存能力（`OutputManager`），**入口函数即真相**，勿手写抓取/总结。详细运行流程与已知坑见 **`monitors/README.md`**（监控运营）与各模块 `run.py --help`。
 
-### 3.0 默认飞书、Obsidian 按需（强制 · 2026-08-08 改为单写优先）
+### 3.0 默认飞书、Obsidian 按需（强制 · 2026-08-08 单写优先）
 
-> **用户规则（2026-08-08）**：写两遍浪费，**默认只写飞书**，Obsidian 仅在用户明确要求时才写（用户会提前说"写到 obsidian / 双写"等）。**代码门禁已落地，不靠 AI 记性**——默认行为由 `OutputManager` 决定，没显式开启就不会写 Obsidian。
+> **用户规则（2026-08-08）**：写两遍浪费，**默认只写飞书**，Obsidian 仅在用户明确要求时才写。代码门禁已落地（`OutputManager` 默认只写飞书），不靠 AI 记性。
+> - 用户说"写到 obsidian / 双写"时，在对应入口加 `--obsidian`（文章/视频/监控均支持）；`.env` 设 `OBSIDIAN_WRITE=1` 可一键回退双写。
+> - 飞书不可用（`DISABLE_FEISHU_SYNC=1`）且未请求 Obsidian 时回退本地 `notes/`，避免丢数据。
 
-- **默认行为由代码决定，不是靠记忆**：
-  - `articles.manager.OutputManager` 是所有落盘的唯一闸门。`OutputManager()` 默认**只写飞书**（`get_available_outputs()` 不含 Obsidian）。
-  - 需写 Obsidian 时显式开启：`OutputManager(obsidian=True)`，或在任何入口传 `obsidian=True`（见下）。
-  - 持久开关：`.env` 设 `OBSIDIAN_WRITE=1` 时默认也双写（逃生舱，给用户一键回退双写；默认不开启）。
-  - 飞书不可用（或 `DISABLE_FEISHU_SYNC=1`）且未请求 Obsidian 时，回退本地 `notes/`，避免丢数据。
-- **文章路线**：`save_summarized_article` → `OutputManager.save_all()`，按上述闸门写入（默认飞书；`obsidian=True` 时追加 Obsidian）。
-- **视频系列课**：`_save_series_note` 与 `_generate_series_overview` 同样经 `OutputManager(obsidian=...)` 写入。
-- **飞书已配好，新会话直接生效**（无需再配）：`.env` 里 `FEISHU_WIKI_SPACE` + `FEISHU_WIKI_PARENT_NODE`（指向「AI 总结笔记」节点）已就绪；user 身份已授权。只要 `lark-cli auth status` 显示 user ready，跑总结就会自动落飞书。
-- **飞书系列课容器逻辑**：飞书下会**先建一个以系列名命名的 wiki 节点**（如「千刀千法」），各集笔记与 `00_系列总览.md` 都挂在这个容器节点下（启用 Obsidian 时与之对称）。容器建重已做查重 + 进程内缓存，不会重复建。
-- **AI 执行后必须自检落盘结果**（防止「以为存了其实没落」）：
-  - [ ] 飞书知识库「AI 总结笔记」下出现对应节点（系列课则在「系列名」容器内）？
-  - [ ] 本次是否带了 `obsidian`？带了 → Obsidian vault 对应路径也应有文件；没带 → Obsidian **不应**有新文件（这是预期，不是失败）。
-  - [ ] 本地 `notes/`：**预期为空**（有飞书即不落本地）；仅当飞书不可用（且未请求 Obsidian）走本地兜底时才应有文件。
-  - 飞书缺失 → 检查 `is_available()`（空间/授权），补配置后重跑 `save_*` 即可；**不要手动写 `notes/`、也不要改总结内容**。
-- **单端失败不影响其他端**：每个输出写入都是独立 try（非致命），某端暂时不可用（如飞书 CLI 掉线）只告警、不中断其他端；恢复后重跑保存即可补齐。
+### 3.1 【待归类】收件箱约定（强制）
 
-#### 入口怎么开 Obsidian（用户说"写到 obsidian / 双写"时）
+新总结先统一进「【待归类】」，用户后续手动拖到分类（启用 Obsidian 时与之对称，默认只写飞书）。单篇默认落「【待归类】」；系列课自带 `系列名/` 子目录，不进【待归类】。飞书分类节点与 Obsidian 分类文件夹一一对应（逻辑在 `articles/feishu.py` / `articles/obsidian.py`）。
 
-- 文章：`articles/run.py --obsidian` 或 `skill_main({"content": ..., "obsidian": True})`
-- 视频：`videos/run.py --obsidian` 或 `summarize_video({"url": ..., "obsidian": True})`
-- 订阅监控：发现+直接落盘段 `monitors/run.py --mode auto --apply --obsidian`；drain 队列 `monitors/apply_pending.py --obsidian`；`_save_pending_item.py`、`save_series_batch.py` 同带 `--obsidian`。
-  - ⚠️ 监控要双写需**两处都带 `--obsidian`**（发现阶段与 drain 阶段是分开跑的两步）。
+### 3.2 监控账号归档：日更 + 系列自动归类 + 总览排序（2026-08-25）
 
-### 3.1 【待归类】收件箱约定（强制 · 新笔记落点）
+- 非系列内容落 `日更` 节点（`【监控】/<平台>/<账号>/日更/`，纯名无【】）；系列课按 `subscriptions.json` 的 `series_patterns` 归入对应系列容器。
+- 排序不靠飞书导航（wiki 无 sort_order），靠每个账号容器下的「总览文档」做唯一有序索引（自动按发布时间倒序、幂等去重）。存量重建见 `scripts/rebuild_overviews.py` / `promote_existing.py`。
+- scys 新帖监控窗口以 `scripts/scys_projects.json` 的 `defaults.since_days` / `subscriptions.json` 的 scys 条目覆盖为准（不写死）。
 
-> **用户偏好**：新总结先统一进「【待归类】」，用户后续手动拖到分类，避免长列表一眼看不到、难管理。启用 Obsidian 时与之对称（默认只写飞书）。
+### 路线入口速查
 
-- **单篇新笔记（文件名不含 `/`）默认落「【待归类】」**：
-  - **Obsidian**：`articles/obsidian.py` 把无子目录的 filename 落 `<vault>/【待归类】/<filename>`（`OBSIDIAN_INBOX = "【待归类】"`），`get_output_path` 同步（去重检测不错位）。
-  - **飞书**：`articles/feishu.py` 的 `ensure_inbox_node()` 在父节点下确保存在「【待归类】」容器节点；单篇 `save` / `save_async` 无显式 `parent_token` 时默认落此节点。
-  - **系列课例外**：自带 `系列名/` 子目录（Obsidian）或走 `save_series` 显式传父节点（飞书），**不进【待归类】**，保持系列容器结构。
-- **Obsidian 分类文件夹 ↔ 飞书分类节点一一对应**（用户在「AI 总结笔记」下手动维护）：`【待归类】` + `01_独立开发` / `02_流量变现` / `03_AI提效` / `04_流量获取` / `05_投资交易` / `06_认知成长` / `07_内容创作`，外加 `千刀千法` 系列容器。
-- **历史补平（保持双端对称）**：当 Obsidian 有而飞书缺的笔记，按其在 Obsidian 所属分类**直接补到飞书对应分类节点（不是【待归类】，因为已分类）**；补前先查重避免重复节点，**串行**保存避免飞书并发重复。
-
-### 3.2 监控账号归档：日更节点 + 系列自动归类 + 总览排序（规则 · 2026-08-25）
-
-> **用户决策（2026-08-25）**：飞书 Wiki 节点没有 sort_order，左侧导航顺序不可控（尤其补历史数据时创建时间与发布时间错乱）。排序**不靠飞书导航**，而是靠每个账号容器下的「总览文档」做唯一有序索引。
-
-- **非系列内容统一落 `日更` 节点（纯名、无【】括号）**：监控发现的单视频 / 动态 / 公众号文章，路由到 `【监控】/<平台>/<账号>/日更/`。用纯「日更」对齐飞书里既有的同名存量节点（多账号共用），避免新建重复节点。
-- **系列课自动归类（`series_patterns`）**：在 `monitors/subscriptions.json` 给某账号加 `series_patterns: [{"pattern": "关键词", "series": "系列容器名"}]`，发现时标题**命中关键词即归入该系列**（路由到 `【监控】/<平台>/<账号>/<系列名>/`）。当前已配置：哥飞→`SEO`(哥飞SEO教程)、Mark__Huang/笨笨的韭菜/舟亦横→`直播回放`。未配置账号一律走 `日更`。
-  - 判定只看**标题**（用户指定「标题模式」）；存量历史内容补归档可走 `scripts/promote_existing.py --body`（追加正文匹配，详见该脚本）。
-  - 账号名对齐：bilibili 展示名可能带空格（`Mark Huang`）而订阅规范名带下划线（`Mark__Huang`），`shared/routing._match_account` 已做空格/下划线归一化，两者互认，确保匹配在活路径上真实触发。
-- **总览文档（唯一有序索引）**：每次落盘新内容时，`shared/feishu_overview` 自动在其归属节点（`日更` 或 `<系列名>`）下维护一份 `📋 总览-<账号>` / `📋 总览-<系列>` 文档，**按发布时间倒序、内部按月份分组**，幂等去重。看顺序直接看总览，不依赖飞书导航乱序。
-  - 系列排序：自带「第N集」序号的按序号升序；无序号（直播回放/SEO教程等）按发布时间排。
-  - 存量重建：`python scripts/rebuild_overviews.py --folder "【监控】/B站/Mark__Huang/直播回放"` 或 `--all`。
-  - 存量重归档（按标题/正文关键词把已有节点移入系列或日更）：`python scripts/promote_existing.py --account <账号> [--body] [--dry-run]`。
-
-### 路线 A：文章总结（`articles/`）
-- **入口**：`articles/run.py --url/--content/--batch`；或直接 `from articles import skill_main; skill_main({...})`。
-- **流程**：抓取 `articles.fetch.fetch_web_content`（**scys.com 链接自动分流 CDP 登录态抓取，普通博客走 requests，单篇/混合多篇均无感**；批量按领域抓 scys 走 `scripts/scys_batch_fetch.py`，配置见 `scripts/scys_projects.json`）→ 去重 `articles.dedup` → 自动分类 `prompts.classify.classify_note_type` → AI 总结 `articles.main.summarize_content` → 保存 `articles.manager.OutputManager.save_all`（**默认只写飞书；带 `obsidian` 时追加 Obsidian；本地 `notes/` 仅飞书不可用且未请求 Obsidian 时兜底，详见 §3.0**）。
-- **降级**：无外部 AI 时 `skill_main` 返回 `need_continue_summary` + `prompt` + 原文 + `raw_file` + `folder`，写入 `pending_summaries.json` 队列，**交外层派子 Agent 执行**（勿在主会话总结，污染上下文、降质量）；子 Agent 读 raw → 按模板总结 → 调 `save_summary_only` 存档。详见 `monitors/README.md`「降级闭环与子 Agent 委派」。
-- **细节**：见 `SKILL.md`「执行流程」与 `README.md`。
-
-### 路线 B：视频总结（`videos/`）
-- **入口**：`videos/run.py --url/--file/--content`；或 `from videos import summarize_video; summarize_video({...})`。
-- **输入优先级**：YouTube/Bilibili 单视频 → 自动抓 CC 字幕；playlist/合集/系列课 → 逐条总结 + **必生成系列总览大纲**；本地文件 → ASR；直接给字幕文本 → 直接总结。
-- **流程**：获取字幕 `videos.fetch.fetch_transcript`（**自动 API→CDP 回退**）→ 分块两段式 `videos.main` + `shared.chunking`（防超长爆上下文）→ AI 总结 → 复用 `articles` 保存。
-- **YouTube 在本机无出口时**：走 CDP 全自动（驱动带代理插件的 Chrome 副本）→ 详见 **`references/youtube-cdp-workflow.md`**（换会话照此执行，AI 只需跑 `videos/run.py --url <youtube>`）。
-- **公共机制**：笔记类型 `prompts/templates.py` 的 `NOTE_TEMPLATES`（8 种：structured 结构化复盘 / key_points 要点提炼 / case 案例拆解 / opinion 观点卡 / interview 访谈 / roundup 盘点横评 / reading 读书书摘 / dissection 创作解剖）；新增类型只改这一处。分类详见 `prompts/classify.py`，优先级：教学超信号(structured) > 访谈(interview) > 要点(key_points) > 盘点(roundup) > 读书(reading) > 观点(opinion) > 创作解剖(dissection) > 案例(case) > structured 兜底。关键分类规则：① 教学/教程类视频（手把手/保姆/实操/从零/教程/课程）经「教学超信号」优先判 `structured`；② 访谈（访谈/对谈/专访/Q&A）已从要点词移出独立成类；③ **内容级访谈兜底**：标题无 cue 时（如「95后女老板Judy」式创业对谈），用正文前 2500 字做「主持人向特定嘉宾的人生/状态探针（你当时/你后来/你是怎么/你创业…）且观众独白口吻不占主导」判别，避免被误判为口播要点；④ **读书** 额外认书名号《》强信号、**盘点** 额外认「榜/榜单/红黑榜/种草/闭眼入/抄作业/排行」；⑤ **`视频` 已从要点词移除**——URL 本身即说明载体，不该当类型信号（否则字幕里一句「这个视频」就把盘点/访谈抢成口播要点）；⑥ **dissection（2026-08-26 新增）**：爆款拆解/带货/涨粉/账号运营复盘走「创作解剖」（额外提炼可复用结构模具：标题公式/钩子/节奏/CTA，占位符化，移植自 ppt-master 的 note_dissection_sop）；版权边界=**不侵权而非不借鉴**（微创新鼓励、大众/公开素材人人可用，仅禁整段照搬原创文案与搬运独家素材，引用原句做证据不受限）；关键词只收创作域专有词（带货/涨粉/起号/账号运营等，「引流/变现/粉丝」过泛不收），且「评论区」先剔除再匹配 opinion（防「评论区运营」被「评论」误抢）。**思维模型透镜（提质·按需）**：全部 8 模板共用 `UNIVERSAL_RULES` 第九节（structured 内联第十四节），6 模型按序 LIST（第一性原理→5-Why冰山→二阶思维→脉络还原→奥卡姆剃刀→类比迁移）逐条过、不适用跳过，直接服务「质量高、上下文清晰」且不破去水分红线。总结默认由执行模型（主/子 Agent）完成（FORCE_AGENT_MODE=1，不再调外部 Provider）。
-- **系列课必生成总览大纲（规则，非开关）**：B站 `ugc_season` 系列课 / 多P 视频处理完成后，`videos.main._generate_series_overview` 自动扫描系列文件夹，抽取每集标题 + `一句话核心结论`，并用 AI 生成「学习路径」段（建议顺序 + 先修说明），生成 `00_系列总览.md`（按 §3.0 输出闸门：默认只写飞书，带 `obsidian` 时追加 Obsidian，本地仅兜底），含「各集导航」表（集号 / 标题 / 一句话核心结论 / 笔记相对链接）与「学习路径」段。无需 `--overview` 开关即生效；该总览在每集总结后刷新，待总结的 raw 集在表中标「（待总结）」。飞书下总览与各集都挂在「系列名」容器节点内，与 Obsidian 的 `系列名/` 文件夹一一对齐。
-
-### 路线 C：订阅监控（`monitors/`）
-> 关注 B站UP主 / 公众号，按时间窗口发现新内容 → AI 总结 → 默认写飞书（需 Obsidian 时双写，见 §3.0）。运营细节与已知坑见 **`monitors/README.md`**；跨平台入口见 **`AGENTS.md`「能力 2」**。
-
-- **入口**：`monitors/run.py --mode first|auto --apply`；订阅配置 `monitors/subscriptions.json`（参考 `monitors/subscriptions.example.json`）。
-- **B站**：`{"uid": "数字UP主ID"}`，需 `BILI_COOKIE`（动态接口硬性要求）；**公众号**：`{"mp_id": "..."}` 或 `{"share_url": "公众号分享链接"}`。
-- **公众号 token 不稳定（无稳+免费+免维护方案）**：`weread.111965.xyz` 转发 JWT 数小时即失效。检测到失效时 `run.py` **自动弹二维码**（`RELOGIN_QR:` 路径），交互式（Windows 本机）会话用户扫码续期后**本次运行即继续抓取**公众号（刷新 token 后重试整轮）；headless/自动化下无人看码等价于本次跳过公众号、保 B站照跑。详见 `monitors/README.md` 注意事项。
-  - **2026-07-28 修复（过期不再静默丢源）**：`is_token_valid` 探针由 `list_articles`（过期返回 200 空、失明）改为 `resolve_mp(force=True)`（过期稳定 401），过期 token 不再被误判有效而静默跳过；`discover_all` 新增「全源零结果 + 持续 401」兜底自动重登。回归测试 `tests/test_wechat_relogin_fallback.py`。
-- **用户口头「关注 XXX」时，走机械命令** `monitors/run.py --subscribe --uid <id> --name <名> --category <类> [--sub-all | --sub-window <天>]`（先查重、已在名单则回「已在监控名单内」不添加）；公众号/scys 仍改 `subscriptions.json`。不要手搓抓取代码、不要手搓 B站条目 JSON。
-- **规则要点（暂定）**：首跑 30 天 / 每日 1 天时间窗口（断跑自动拉长、封顶 30 天）；无干货动态屏蔽；短动态轻量化；新鲜度标签；state 按源裁剪防膨胀。本文件不堆细节。
-- **触发方式（已移除自动调度 · 2026-07-24）**：不再挂每日 10:00/17:00 自动化。改为**用户主动触发**——用户说「跑一次 / 跑一下」等关键词时，运行 `python monitors/run.py --mode auto --apply`（按 `subscriptions.json` 抓公众号 + B站UP + scys 四领域新帖，正文入队后由执行模型/子 Agent 总结，默认写飞书、需 Obsidian 时双写，见 §3.0）。公众号 token 失效时按上条跳过公众号、保 B站。**scys 新帖监控（2026-08-20 接入）**：`subscriptions.json` 的 `scys` 列表（领域→menuId 映射在 `scripts/scys_projects.json`），`--apply` 收尾逐领域子进程跑 `scripts/scys_batch_fetch.py`（默认 7 天窗口 + 精华过滤 + done 去重 + `.lock` 互斥），原文进 `notes/_scraped/scys/pending_summaries.json` 由执行模型闭环总结；CDP 不可用则跳过 scys、其他源不受影响。细节见 `monitors/README.md`「scys 新帖监控」。
-- **禁止**：手写抓取脚本、手搓 B站 / 微信私有 API——一律走 `monitors/run.py` 入口。
+- **文章总结**：`articles/run.py --url/--content/--batch` 或 `skill_main({...})`；无外部 AI 时入 `pending_summaries.json` 交子 Agent（见 `monitors/README.md`「降级闭环」）。
+- **视频总结**：`videos/run.py --url/--file/--content` 或 `summarize_video({...})`；YouTube 本机无出口走 CDP（见 `references/youtube-cdp-workflow.md`）。模板种类与分类优先级见 `prompts/templates.py` / `prompts/classify.py`。
+- **订阅监控**：`monitors/run.py --mode first|auto --apply`；关注某账号走机械命令 `--subscribe`（详见 `monitors/README.md`）。
 
 ---
 
@@ -136,7 +81,7 @@
 - **复用入口，不重复造轮子**：统一走 `fetch_transcript` / `skill_main` / `summarize_video` / `OutputManager` 等既有入口，禁止在多处复制抓取/保存逻辑。
 - **已总结内容机械拦截（三层前置 · 2026-08-25）**：AI 只交总结，「要不要总结 / 写不写」由代码决定——①入队：`run.py` 查 dedup 索引，已总结 URL 不入队；②派单前：`python scripts/filter_pending.py` 清洗 monitors + scys 两队列（已总结条目出队，不浪费总结 token）；③落盘：`save_summary_only` / `_save_summary.py` 查索引，命中返回 `skipped` 并按成功出队（`force` / `--force` 强制重写）。多 Agent 接力（前一个积分耗尽/中断）不重复总结、不重复落飞书。决策见 `docs/decisions/DECISION-20260825-dedup-frontload-and-lock-release.md`。
 - **长内容必走两段式分块**：超过单模型上下文的内容，先经 `shared.chunking` 分块再总结，禁止整篇直接喂模型。
-- **大批量 → 子 Agent 隔离主线程（防上下文胀爆）**：当待处理内容达到批量阈值（如 >3 条笔记/视频，或单批原文大到会撑爆主会话上下文）时，**必须**用 Agent 工具派发子 Agent 并行处理，勿把全部原文/中间稿堆在主线程。注意：① 子 Agent 上下文是空白的，派发 prompt 必须**自包含**（嵌入输出契约：默认只写飞书、带 `obsidian` 时追加 Obsidian、不写本地；入口函数 `videos/run.py --url` 或 `skill_main`、`note_type`、YouTube/无字幕规则按需）；② **飞书并发重复坑**：多子 Agent 同时 `save_series` 写飞书会因集级无查重建重复节点（见 §3.0 系列课运维坑）；**安全模式**＝子 Agent 只**返回成品 Markdown 文本＋元数据**（标题/作者/url/tags/note_type），由编排方**串行**调保存入口（`_save_series_note` / `save_all`）落盘，绝不让多子 Agent 并发各自调 `save_series`。
+- **大批量 → 子 Agent 隔离主线程（防上下文胀爆）**：当待处理内容达到批量阈值（如 >3 条笔记/视频，或单批原文大到会撑爆主会话上下文）时，**必须**用 Agent 工具派发子 Agent 并行处理，勿把全部原文/中间稿堆在主线程。注意：① 子 Agent 上下文是空白的，派发 prompt 必须**自包含**（嵌入输出契约：落盘闸门＝默认飞书、obsidian=True 时追加；入口函数 `videos/run.py --url` 或 `skill_main`、`note_type`、YouTube/无字幕规则按需）；② **飞书并发重复坑**：多子 Agent 同时 `save_series` 写飞书会因集级无查重建重复节点（见 §4.7）；**安全模式**＝子 Agent 只**返回成品 Markdown 文本＋元数据**（标题/作者/url/tags/note_type），由编排方**串行**调保存入口（`_save_series_note` / `save_all`）落盘，绝不让多子 Agent 并发各自调 `save_series`。
 
 ### 4.2 工程纪律
 - **个人信息保护**：`.env`（含 `OBSIDIAN_VAULT_PATH`、`FEISHU_WIKI_SPACE` 等）与 `notes/` 已被 gitignore，**禁止**手动 `git add` 提交。
@@ -186,7 +131,7 @@
 
 - **A. 质量闸门（second-pass verifier）**：总结后再调一次 AI 按 6 红线打 0–100 分，低于阈值带反馈重试一次。**默认关闭**（省一轮 AI 调用）；开关见下方「去哪里开关」。无外部 AI 的降级路径走 `QUALITY_GATE_SELFCHECK` 自检段（模板 prompt 内嵌 6 红线，外层模型自核对）。
 - **B. 字幕清洗层**：`shared/subtitle_clean.py` 纯函数（`preprocess_segments`/`preprocess_text`），已在 `videos/fetch.py` 三路径（B站原生 / YouTube API+CDP / yt-dlp 兜底）自动接入；只清洗口误填充词（删独立语气词 嗯/啊/呃）、合并相邻近重、≥8 字长句去重——**不激进折叠**（保留"然后/那个"等自然语流）。
-- **C. 强制证据红线（思维模型透镜）**：全部 7 模板共用 `UNIVERSAL_RULES` 第九节（structured 内联第十四节），6 模型按序 LIST（第一性原理→5-Why冰山→二阶思维→脉络还原→奥卡姆剃刀→类比迁移）逐条过、不适用跳过；**每条适用模型须给「洞察（不同视角）+ 原文证据句（「」括起原话，禁改写）」**，禁只写"用了X 模型"；全不适用须逐条列 6 模型理由。与去水分红线兼容，不硬凑固定章节。
+- **C. 强制证据红线（思维模型透镜）**：全部 9 模板共用 `UNIVERSAL_RULES` 第九节（structured 内联第十四节），6 模型按序 LIST（第一性原理→5-Why冰山→二阶思维→脉络还原→奥卡姆剃刀→类比迁移）逐条过、不适用跳过；**每条适用模型须给「洞察（不同视角）+ 原文证据句（「」括起原话，禁改写）」**，禁只写"用了X 模型"；全不适用须逐条列 6 模型理由。与去水分红线兼容，不硬凑固定章节。
 - **D. 元数据归一**：`UNIVERSAL_RULES` 强制 `#标签1 #标签2` 井号格式；`normalize_note_metadata()` 把 `**标签**：xxx` 转井号，`format_note_with_prompt` 自动应用。
 - **E. 读书争议维度**：`reading` 模板含「争议与不同声音」段（作者回避点 / 学界不同声音 / 与已知冲突，标笔记者补充存疑）——**推荐、非强制**，非争议类书评不硬凑。
 
@@ -224,7 +169,7 @@ NOTE_GATE_THRESHOLD=85     # 评分阈值，默认 85；低于此分触发重试
 - [ ] 会话开始：先读 **RULES.md（本文件）** + `SKILL.md`，确认两条路线入口与降级逻辑。
 - [ ] 收到「总结/整理」+ 素材 → 调 `skill_main` / `summarize_video`，**不要手写抓取或手写总结**。
 - [ ] 触发降级（`need_continue_summary`）→ **派子 Agent** 用返回的 `prompt` + `raw_file` 做总结，再调 `save_summary_only` 存档（主会话只做编排，不直写总结，保上下文干净）。
-- [ ] **存档后自检落盘（§3.0）**：确认**飞书**知识库「AI 总结笔记」下出现对应节点；本次带了 `obsidian` 才检查 Obsidian vault 对应文件（没带则 Obsidian 不应有新文件，是预期不是失败）；本地 `notes/` **预期为空**（有飞书即不落本地），**不要因本地为空而误判失败**；飞书 user 身份须 `lark-cli auth status` ready，否则只告警不落飞书。
+- [ ] **存档后自检落盘**：确认**飞书**知识库「AI 总结笔记」下出现对应节点；本次带了 `obsidian` 才检查 Obsidian vault 对应文件（没带则 Obsidian 不应有新文件，是预期不是失败）；本地 `notes/` **预期为空**（有飞书即不落本地），**不要因本地为空而误判失败**；飞书 user 身份须 `lark-cli auth status` ready，否则只告警不落飞书。
 - [ ] 本文件（RULES.md）变更 → 同步进 `MEMORY.md`「规则摘要」并视作平台规则。
 - [ ] 遇到网络/代理问题 → 先查 `references/youtube-cdp-workflow.md`，不要绕去挖代理配置。
 - [ ] YouTube 字幕抓取返回 None 且页面已加载、`captionTracks` 为空 → `videos/main` 自动走 ASR 兜底；ASR 也失败才回终态文案「【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】」并停止（§4.4）。
@@ -303,3 +248,14 @@ NOTE_GATE_THRESHOLD=85     # 评分阈值，默认 85；低于此分触发重试
 - 本规则管「动手前」，`references/testing_rules.md` 管「动手时」的 TDD 流程。
 - 本规则产出的测试草稿，遵循 `references/testing_rules.md` 的 fixture 与断言规范。
 - 本规则产出的决策清单，是对 `docs/bug_library.md`（未来改为 issue 管理）的补充——决策记录「为什么这么定」，issue 记录「出了什么问题」。
+
+### 6.5 文档同步纪律（防漂移）
+
+> 历史教训：模板数曾同时写 7/8/9，scys 窗口曾写 7/35/182/548，BILI 首跑窗口曾写 7/30——都是"易变事实在多处文档各自写死"导致的漂移。本小节是唯一硬纪律。
+
+- **易变数字一律指向代码真源，不硬编码**：模板种类数、各抓取窗口天数、脚本名、环境变量默认值等"会随代码变"的事实，文档只写"以 `<文件>:<符号>` 为准（当前由代码动态决定）"，禁止在多处文档各自写死同一数字。
+- **改代码后必须同步改文档**：
+  - 新增笔记模板 → 同步改 `prompts/templates.py`(NOTE_TEMPLATES) + `prompts/classify.py`(分类优先级) + 本文档模板清单引用。
+  - 改 CLI 参数/命令 → 同步改 AGENTS.md 用法段 + README 对应段落。
+  - 改窗口/阈值常量 → 同步改 references/config.md 变量表 + AGENTS.md 调参行。
+- **废弃方案/过期文档即时归档**：已否决的方案（如 Chrome junction 直连、自动定时调度）或过期文档（pre-监控时期的 PRD、已 SUPERSEDED 的 lessons）移入 `_archive/`，原处留一行指针，禁止在现役文档树里继续当"现行做法"描述。

@@ -6,13 +6,9 @@
 > - junction 方案永久废弃（会触发扩展垃圾回收，实测删 22 个扩展）。
 > - 活 Chrome 接管（默认 profile 开调试端口）在 Chrome 151+ 不可用（端口写了但不监听）。
 > - `login_cdp_fetch.py` 现为**端口探测诊断工具**，不再自动回退抓取；需登录态抓取走监控流水线 `monitors/run.py`。
-> 仍有效：§2（为何不手搓 cookie）、§10（文档沉淀纪律）。§1.1/§3/§5.1/§12/§13 的 junction / 路径 A-B 描述仅作历史参考，**勿照做**。
+> 仍有效：§1.1（当前 `SharedCdpSession` 自动方案）、§2（为何不手搓 cookie）、§10（文档沉淀纪律）。§3/§5.1/§12/§13 的 junction / 路径 A-B 描述仅作历史参考，**勿照做**。
 
-> ⚠️ **2026-08-24 重大更新：Chrome 151+ 废弃 junction 方案**（历史记录）
-> 旧方案用 junction（DebugUDD→User Data）+ 焊快捷方式 flags 绕过 Chrome 151+ 远程调试限制。
-> Chrome 151 能检测 junction 指向同一物理目录，触发 `extension_garbage_collector` 删扩展 + 清账号。
-> **新方案（即上）：`SharedCdpSession` 复制 profile 到非默认 `ProfileClone` 目录以调试端口启动，不再用 junction、不再改快捷方式。**
-> 详见 `.workbuddy/memory/_archive/decisions/DECISION-20260824-chrome151-junction-deprecation.md`（已归档）。
+> 📜 **历史**：junction 方案的完整兴衰记录在 `.workbuddy/memory/_archive/decisions/DECISION-20260824-chrome151-junction-deprecation.md`（已归档，仅溯源，勿照做）。
 
 > **本文件是「需登录态才能访问」的网站的通用抓取工作流。**
 > 与 `references/youtube-cdp-workflow.md`（独立 Chrome-CDP 副本，仅代理）的关系见 §7。
@@ -46,11 +42,10 @@ python scripts/login_cdp_fetch.py "<需登录的URL>" [out.md]
 
 ---
 
-## 1. 一次性的 Chrome 启动：用户必须做什么
+## 1. Chrome 启动前提（当前：用户零操作）
 
-> **关键前提**：用户的 Chrome 必须**已经**以 `--remote-debugging-port=XXXX` 启动。
-> 不这么做 → 我方任何代码都连不上 Chrome。
-> 不需要重启 Chrome —— 一次性加 flag 即可（保留所有标签 + cookies + 登录态）。
+> **关键前提（2026-09-02 更新）**：用户**无需手动启动调试端口**。当前方案由 `SharedCdpSession` 自动完成：先关闭用户 Chrome（释放 cookie 独占锁）→ 复制 profile 到非默认 `ProfileClone` 目录 → 用该目录以调试端口启动 Chrome → `connect_over_cdp` 接管（详见 §1.1）。`login_cdp_fetch.py` 仅作端口探测诊断。
+> ⚠️ 旧前提「用户 Chrome 必须已以 `--remote-debugging-port` 启动」已废弃（Chrome 151+ 默认目录开调试端口不可用；junction 方案会触发扩展垃圾回收）。
 
 ### 1.1 用户侧前置（当前无需任何操作）
 
@@ -226,7 +221,7 @@ with sync_playwright() as p:
 
 | 现象 | 真因 | 处理 |
 |---|---|---|
-| TCP 端口在 listen 但 HTTP `/json/version` 返 **404** / Playwright 直连 ws 根返 **403** | 三种可能：① 端口被非 DevTools 进程占用；② Chrome 曾带 flag 启动但之后被重启/自动更新，只剩 stale 的 `DevToolsActivePort` 文件（文件在、服务不在）；③ Chrome 151+ 用旧命令启动，端口占位但调试服务未真正起来 | 脚本已能精准区分「文件过期/非调试实例」与「端口真没开」并分别报错。修复：`login_cdp_fetch.py` 会自动回退到 profile_clone_fetch，无需手动操作 |
+| TCP 端口在 listen 但 HTTP `/json/version` 返 **404** / Playwright 直连 ws 根返 **403** | 三种可能：① 端口被非 DevTools 进程占用；② Chrome 曾带 flag 启动但之后被重启/自动更新，只剩 stale 的 `DevToolsActivePort` 文件（文件在、服务不在）；③ Chrome 151+ 用旧命令启动，端口占位但调试服务未真正起来 | 脚本已能精准区分「文件过期/非调试实例」与「端口真没开」并分别报错。修复：改用监控流水线走 `SharedCdpSession` 单路径（补跑用 `monitors/run_source.py --source scys`）；`login_cdp_fetch.py` 现仅作**端口探测诊断**，已无 profile_clone 自动回退 |
 | `connect_over_cdp` 永远卡死、无任何输出 | ws 握手被 Chrome 拒绝；或用了过期的 ws uuid 连到 404 | 脚本已改为永远从 `/json/version` 实时取 ws 路径，不信磁盘文件 uuid。Chrome 151+ 废弃 junction 后此场景罕见 |
 | 抓到的是「请登录 / 扫码登录 / 订阅解锁」之类内容 | Cookie 未发送 = 用户实际在该域名未登录 | 让用户在浏览器手工登录一次，再让 AI 抓 |
 | 页面空白 / 长白雪 | SPA 还在 render | `page.wait_for_timeout` 增加；或显式等某 selector：`page.wait_for_selector(".article-body", timeout=15000)` |
@@ -279,7 +274,7 @@ Playwright `connect_over_cdp` **可以**创建多个 `page` 并发在同一 cont
 3. 跑 `python scripts/login_cdp_fetch.py <URL>`。
 4. 若输出 `chrome debug not ready`：
    - 把错误原样贴回用户
-   - 让用户按 §1 给 Chrome 加 `--remote-debugging-port=5494` 后再跑（一次性）
+   - **无需用户手动启调试端口**：当前需登录态抓取统一走 `monitors/run.py`（公众号/B站）或 `scripts/scys_batch_fetch.py`（scys），由 `SharedCdpSession` 自动克隆非默认 `ProfileClone` 目录 + 调试端口接管（见 §1.1）；`login_cdp_fetch.py` 仅作端口探测诊断、不再回退抓取
 5. 若脚本成功输出文件 → 读取正文（或读取 `out.md`），按 `articles/skill_main` 的模板（`structured` / `key_points` 等）总结，然后调 `OutputManager.save_all` 写入飞书。
 
 ---
@@ -288,8 +283,8 @@ Playwright `connect_over_cdp` **可以**创建多个 `page` 并发在同一 cont
 
 | 现象 | 根因定位 | 修法 |
 |---|---|---|
-| `[FAIL] port 5494 不是 Chrome DevTools` | 用户 chrome 没启 debug，或端口被占用 | 让用户按 §1 启 Chrome（一次性加 flag） |
-| `connect_over_cdp` 卡死无输出 | ws 协议被 Chrome 拒 | 确认 Chrome 启动命令行里有 `--remote-debugging-port` |
+| `[FAIL] port 5494 不是 Chrome DevTools` | 用户 chrome 没启 debug，或端口被占用 | **无需用户操作**：走 `monitors/run.py`，由 `SharedCdpSession` 自动克隆 `ProfileClone` 目录 + 调试端口接管（见 §1.1）；`login_cdp_fetch.py` 仅作端口探测诊断 |
+| `connect_over_cdp` 卡死无输出 | ws 协议被 Chrome 拒 | 确认由 `SharedCdpSession` 用**非默认 `ProfileClone` 目录**启动（`--user-data-dir` 指向克隆目录），而非默认 `User Data`（Chrome 151+ 默认目录开调试端口会被拒） |
 | 抓到「登录后查看」字样 | Cookie 未发送 = 用户在那个站其实没登录 | 让用户到浏览器手工登录一次再抓 |
 | HTML 取到但正文是空白 | SPA 没渲染完 | `page.wait_for_timeout(8000)` 改 `15000` 或按 selector 等 |
 | Playwright import 报 ModuleNotFoundError | 缺包 | `python -m pip install playwright`；browser 我们不下载，连现有 Chrome 用就够了 |

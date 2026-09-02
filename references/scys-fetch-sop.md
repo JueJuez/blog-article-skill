@@ -88,7 +88,7 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 - **机制**：L3（设计如此，通用文档 §3 描述）。
 - **scys 案例**：
   - 2026-08-19 21:18 会话用本流程跑通 —— 落盘 `scys_article.md`（49 226 字节 / 正文 **21 264 字** / 无登录墙）。
-- **2026-08-24 最新验证**（L1）：Chrome 151+ junction 废弃 → profile_clone_fetch 持久化 ProfileClone → scys 抓取 **21265 字无登录墙**。首次全量复制 ~16GB，后续只同步 9 个 cookie 文件（18.9 秒含 Chrome 启动+抓取）。详见 `../.workbuddy/memory/_archive/decisions/DECISION-20260824-chrome151-junction-deprecation.md`。
+  - **2026-09-02 最新验证**（L1，现行机制）：走 `shared/cdp_session.py` 的 `SharedCdpSession` **单路径**——关 Chrome → 复制 profile 到非默认 `ProfileClone` → 该目录开调试端口启动 → `connect_over_cdp` 接管（登录态 + CDP 控制）→ 实测「出海」域捕获 30 篇（精华 25）无登录墙。机制细节与故障表见 `references/login-required-cdp-workflow.md`，本文档不重复叙述。
 
 ---
 
@@ -105,7 +105,7 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 
 **入口**：`python scripts/scys_batch_fetch.py --project <项目名> [--limit M]`
 
-- **可抓领域 / menuId 在 `scripts/scys_projects.json` 配置**（不在代码里）：projects（领域名→menuId）+ defaults（since_days=548 一年半 / digested_only=false 含非精华 / batch_limit=30 / min_reading）。**换领域、每半年调整时间窗、改批量大小都只改这个 JSON，脚本零改动。**
+- **可抓领域 / menuId 在 `scripts/scys_projects.json` 配置**（不在代码里）：projects（领域名→menuId）+ defaults（since_days 默认见该 JSON，当前约 182 天 / digested_only=false 含非精华 / batch_limit=30 / min_reading）。**换领域、每半年调整时间窗、改批量大小都只改这个 JSON，脚本零改动。**
 - 新领域 menuId 捕获方法：tags 页真实点击该标签 → DevTools Network 里 `searchTopic` 请求的 `menuId` 参数（或 `--list-projects` 查看已配置项）
 - 命令行参数可临时覆盖配置：`--since-days` / `--digested-only`（反向：仅精华）/ `--min-reading` / `--limit`
 - 机制：tags 页真实点击翻页捕获 `searchTopic` 响应（不手搓 API 请求）→ 按 `isDigested`+阅读数排序 → 逐篇 goto 正文页 DOM 抓取
