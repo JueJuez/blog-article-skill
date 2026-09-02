@@ -250,6 +250,8 @@ def _bili_get_video_info(bvid: str) -> Optional[Dict]:
                 "aid": d["aid"],
                 "cid": d["cid"],
                 "title": d.get("title", ""),
+                # 视频简介/描述（project_import 用它优先找仓库链接）
+                "desc": d.get("desc", ""),
                 # UP主名（view API 的 owner.name），上层据此填充笔记作者
                 "author": d.get("owner", {}).get("name", ""),
                 "pages": pages or [{"cid": d["cid"], "page": 1, "part": ""}],

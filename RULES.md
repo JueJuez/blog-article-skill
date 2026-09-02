@@ -61,7 +61,12 @@
 ### 3.2 监控账号归档：日更 + 系列自动归类 + 总览排序（2026-08-25）
 
 - 非系列内容落 `日更` 节点（`【监控】/<平台>/<账号>/日更/`，纯名无【】）；系列课按 `subscriptions.json` 的 `series_patterns` 归入对应系列容器。
-- 排序不靠飞书导航（wiki 无 sort_order），靠每个账号容器下的「总览文档」做唯一有序索引（自动按发布时间倒序、幂等去重）。存量重建见 `scripts/rebuild_overviews.py` / `promote_existing.py`。
+
+### 3.3 开源项目抽取归档（tools/project_import）
+
+- 第三类路线：把 GitHub/Gitee 项目存入**本地 Obsidian 项目库**（每个项目一个 `.md` + YAML frontmatter，目录默认 `PROJECT_LIBRARY_DIR`，回退 `OBSIDIAN_VAULT_PATH/开源项目`）。选本地而非飞书，是因为别的项目的 agent 能零鉴权直接检索；飞书多维表格仅 `PROJECT_STORAGE=feishu` 时回退（变量 `FEISHU_BASE_TOKEN`，与笔记 `FEISHU_WIKI_SPACE` 不冲突）。
+- 入口即真相：`tools/project_import/assets/main.py`（支持 `--from-article` / `--from-video` / 直接文本）。视频场景**描述优先于字幕**找仓库链接（用户 2026-09-02 确认）。
+- 细节与触发规则以 `tools/project_import/SKILL.md` 为准；本路线**不**走 `OutputManager`（不写 wiki 笔记、不碰 Obsidian 笔记）。
 - scys 新帖监控窗口以 `scripts/scys_projects.json` 的 `defaults.since_days` / `subscriptions.json` 的 scys 条目覆盖为准（不写死）。
 
 ### 路线入口速查

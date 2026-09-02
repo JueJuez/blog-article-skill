@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "project-import"
+version = "1.0.0"
+description = "从文章/视频/直接链接中提取提到的开源项目，调研分类后归档到本地 Obsidian 项目库（飞书多维表格可选回退）。"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.28",
+]
+
+[project.scripts]
+project-import = "assets.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]

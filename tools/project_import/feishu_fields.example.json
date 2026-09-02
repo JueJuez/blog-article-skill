@@ -1,0 +1,18 @@
+{
+  "_说明": "字段映射模板（逻辑字段名 -> 飞书字段键 field id）。复制本文件为 feishu_fields.json 并改成你自己的列 id 即可。feishu_fields.json 已被 .gitignore 忽略，不会提交到仓库；本文件是给其他人看的示例占位。",
+  "project_name": "fld项目名列id",
+  "summary": "fld项目描述列id",
+  "tags": "fld能力标签列id",
+  "git_url": "fldGit地址列id",
+  "project_type": "fld项目类型列id",
+  "run_form": "fld运行形式列id",
+  "target_user": "fld给谁用列id",
+  "domain": "fld功能领域列id",
+  "highlights": "fld核心亮点列id",
+  "community_score": "fld社区评分列id",
+  "doc_score": "fld文档评分列id",
+  "func_score": "fld功能评分列id",
+  "total_score": "fld综合评分列id",
+  "eval_date": "fld评估日期列id",
+  "status": "fld状态列id"
+}

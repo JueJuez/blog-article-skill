@@ -57,6 +57,20 @@
 - 说「关注 / 订阅 / 监控 XXX」 → 走**能力 2**（改 `subscriptions.json` + 跑一次首跑）。
 - 不确定走哪条 → 先读本文件 + `RULES.md`，不要凭空造流程。
 
+### 能力 4 · 开源项目抽取归档（`tools/project_import`）
+
+把「GitHub / Gitee 开源项目」调研分类后存入**本地 Obsidian 项目库**（每个项目一个 `.md` + YAML frontmatter）。选本地而非飞书，是因为别的项目的 agent 能零鉴权直接检索，便于「哪些项目能用上」的发现；飞书多维表格仅作可选回退。
+
+- **两类入口（直接给链接 + 从内容里抽，都满足）**：
+  - **直接给仓库链接**：`python tools/project_import/assets/main.py "https://github.com/owner/repo ..."` → 采集 README+Stars → LLM 分类打分 → 写本地项目库。
+  - **从文章/视频里抽项目**（enrichment，**不总结原文**）：给文章/视频链接，自动从内容抠出提到的仓库并归档：
+    - 文章：`python tools/project_import/assets/main.py --from-article "<文章URL>"`
+    - 视频：`python tools/project_import/assets/main.py --from-video "<视频URL"`（**优先扫视频描述/简介找仓库链接**，字幕只作补充；字幕里只提仓库名没给地址的暂不解析）
+- **关键边界**：能力 4 只做「抽项目 → 入本地项目库」，**不触发文章/视频的笔记总结**（那是能力 1）。两者是独立动作，不要混为一谈。
+- **触发词**：「评估/归档/入库这些项目」「提取这篇文章/视频里提到的开源项目」「批量导入 GitHub」。
+- **配置**：默认 `PROJECT_LIBRARY_DIR`（建议 Obsidian vault 根下的 `开源项目/`）；不设则回退 `OBSIDIAN_VAULT_PATH/开源项目`。设 `PROJECT_STORAGE=feishu` 时回退写飞书多维表格（需 `FEISHU_BASE_TOKEN`）。字段映射见 `tools/project_import/feishu_fields.example.json`。
+- **真源**：`tools/project_import/SKILL.md`（激活条件 + 完整流程 + 子代理工作流）。
+
 ---
 
 ## 配置（`.env`）

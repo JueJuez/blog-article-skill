@@ -1,0 +1,10 @@
+# 本地私有 / 运行产物（不进版本库）
+.env
+feishu_fields.json
+pending_results.json
+imported.txt
+debug.log
+__pycache__/
+*.pyc
+collected_data.json
+analysis_*.json
