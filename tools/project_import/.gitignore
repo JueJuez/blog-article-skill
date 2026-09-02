@@ -3,6 +3,7 @@
 feishu_fields.json
 pending_results.json
 imported.txt
+pending_review.json
 debug.log
 __pycache__/
 *.pyc

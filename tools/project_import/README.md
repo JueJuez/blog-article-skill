@@ -24,7 +24,9 @@
 
 ## Features
 
-- **多入口抽取** — 直接文本含仓库链接 / 文章 URL（从正文抠项目）/ 视频 URL（描述优先、字幕兜底）
+- **多入口抽取** — 直接文本含仓库链接 / 文章 URL（从正文抠项目）/ 视频 URL（描述优先、字幕兜底）/ 小黑盒帖子（无头浏览器渲染正文）
+- **小黑盒抓取** — `xiaoheihe.cn` 分享链接是 App 深链，通用爬虫拿不到正文；用 Node Playwright + 系统 Chrome 渲染后再抠仓库链接
+- **按项目名搜索收录** — 只有项目名、没有确切地址时，调 GitHub 搜索 API 命中后收录（`--from-name`）
 - **三层智能去重** — 批次内去重 + `imported.txt`（已入库）+ `pending_results.json`（待上传）联合去重
 - **自动数据采集** — 获取 README 内容（raw / API 兜底）和 Stars 数量（GitHub / Gitee API）
 - **LLM 分类评分** — 一次 Prompt 完成项目分类、功能领域、能力标签、核心亮点、文档/功能评分
@@ -33,6 +35,7 @@
 - **一次性迁移** — 从已有飞书 Bitable 迁到本地（`migrate_feishu_to_local.py`）
 - **并发采集+分析** — 多个仓库的「采集+分析」并行执行（线程池，受 `BATCH_MAX_WORKERS` 控制）
 - **汇总报告** — 处理完成后输出格式化统计报告（成功率/类型分布/失败明细）
+- **收录质量门禁（默认开）** — 低星（< `QUALITY_GATE_MIN_STARS`，默认 100）或文档/功能评分双低（`doc_score` 与 `func_score` 均 < `QUALITY_GATE_MIN_DOC`/`QUALITY_GATE_MIN_FUNC`，默认 5）的项目**不自动入库**，先转入 `pending_review.json` 待复核队列，由人工确认后再决定；对已入库项目不回滚
 
 ## Quick Start
 
@@ -69,6 +72,13 @@ PROJECT_STORAGE="local"
 
 # 仅 feishu 模式需要：飞书 Base Token（裸 token 或 Wiki/文档链接，自动辨别解析）
 FEISHU_BASE_TOKEN="https://xxx.feishu.cn/wiki/xxxx?table=tblXXXX&view=vewXXXX"
+
+# 收录质量门禁（默认开启）：低质项目不自动入库，转入 pending_review.json 待复核
+# QUALITY_GATE_ENABLED="1"        # 置 "0" 可整体关闭门禁
+# QUALITY_GATE_MIN_STARS="100"    # stars 低于此值判低质
+# QUALITY_GATE_MIN_DOC="5"        # doc_score 阈值
+# QUALITY_GATE_MIN_FUNC="5"       # func_score 阈值
+# 判定低质（任一成立即拦截）：stars < MIN_STARS  OR  (doc_score < MIN_DOC AND func_score < MIN_FUNC)
 ```
 
 > 未配置本地库（`PROJECT_LIBRARY_DIR` 与 `OBSIDIAN_VAULT_PATH` 皆空）也未设 feishu 时，
@@ -95,6 +105,29 @@ python assets/main.py --from-video "https://www.bilibili.com/video/BVxxxx"
 ```
 
 > 视频场景**描述（简介）优先于字幕**找仓库链接：字幕常只提仓库名、地址在简介里。
+> ⚠️ 视频只处理**简介 + 字幕**两种来源；不抓评论区、不做画面 OCR/截图识别。项目只出现在画面里时请用 `--from-name`。
+
+### 从小黑盒帖子抽项目（渲染正文抠链接 / 抠项目名）
+
+```bash
+python assets/main.py --from-article "https://www.xiaoheihe.cn/bbs/post_share?link_id=xxxx"
+```
+
+小黑盒分享链接是 App 深链，通用爬虫只能拿到占位文本。工具用无头浏览器渲染正文后，会按三种情况处理：
+
+1. **正文直接给了仓库链接** → 直接抽取。
+2. **只给了项目名、没给地址** → 自动从标题/正文中提取项目名，调 GitHub Search API 反查仓库地址并收录。
+3. **一个帖子介绍了多个项目** → 同时处理多个链接 / 项目名。
+
+> ⚠️ GitHub 搜索 API 未认证时限 10 次/分钟；单篇小黑盒项目较多时可能触发限流，稍等再跑即可。只有项目名且不想走自动搜索时，可改用显式 `--from-name "项目名"`。
+
+### 按项目名搜索收录（无确切地址时）
+
+```bash
+python assets/main.py --from-name "ToolKnit"
+```
+
+> 调 GitHub 搜索 API 取 stars 最高的匹配并收录；未认证约 10 次/分钟（设 `GITHUB_TOKEN` 升到 5000/h）。`source_kind` 记为 `name-search`。
 
 ### 从已有飞书 Bitable 迁移到本地
 
@@ -149,7 +182,7 @@ status: 已入库
 ```
 
 - `community_score` 由 Stars 换算（`stars_to_score`），`total_score = community_score + doc_score + func_score`。
-- `source_kind`：`direct`（直接链接）/ `body`（文章正文）/ `description`（视频描述）/ `subtitle`（字幕）/ `feishu-migration`（迁移所得）。
+- `source_kind`：`direct`（直接链接）/ `body`（文章正文）/ `description`（视频描述）/ `subtitle`（字幕）/ `xiaoheihe`（小黑盒渲染正文）/ `name-search`（按项目名搜索）/ `feishu-migration`（迁移所得）。
 - 飞书回退模式的字段映射见 `feishu_fields.example.json`。
 
 ## Configuration
@@ -247,7 +280,11 @@ project-import/
 输入路由（content_source.resolve）
     ├─ 直接文本含仓库链接 → direct
     ├─ 文章 URL → 抓正文，从 body 抠仓库链接
-    └─ 视频 URL → 描述（简介）优先，字幕兜底
+    ├─ 小黑盒链接 → 无头浏览器渲染正文
+    │   ├─ 抠到仓库链接 → body
+    │   └─ 无链接但有项目名 → GitHub 搜索 API 反查 → name-search
+    ├─ 视频 URL → 描述（简介）优先，字幕兜底
+    └─ 项目名（--from-name） → GitHub 搜索 API 命中后收录
     │
     ▼
 阶段一：三层去重

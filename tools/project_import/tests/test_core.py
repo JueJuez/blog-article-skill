@@ -1,7 +1,9 @@
+import json
 import os
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 import pathlib
 
@@ -10,7 +12,7 @@ if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
 from assets import extractor, collector, analyzer, tracker, storage
-from assets import content_source, project_finder, feishu_writer, local_writer
+from assets import content_source, project_finder, feishu_writer, local_writer, name_resolver, ingest_repo, quality_gate, main as main_mod
 
 
 class ExtractorTest(unittest.TestCase):
@@ -331,6 +333,358 @@ class LocalWriterTest(unittest.TestCase):
                 os.environ["PROJECT_LIBRARY_DIR"] = saved
             if saved_vault is not None:
                 os.environ["OBSIDIAN_VAULT_PATH"] = saved_vault
+
+
+class XiaoheiheTest(unittest.TestCase):
+    """小黑盒(xiaoheihe.cn)：无头浏览器渲染正文后抠仓库链接。"""
+
+    def test_fetch_xiaoheihe_returns_rendered_body(self):
+        fake_stdout = "GitHub 最全的古诗词数据库 https://github.com/chinese-poetry/chinese-poetry"
+        with mock.patch.object(content_source.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout=fake_stdout, stderr="")
+            out = content_source.fetch_xiaoheihe(
+                "https://www.xiaoheihe.cn/bbs/post_share?link_id=x")
+        self.assertIn("https://github.com/chinese-poetry/chinese-poetry", out)
+
+    def test_fetch_xiaoheihe_empty_on_failure(self):
+        with mock.patch.object(content_source.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=1, stdout="", stderr="err")
+            self.assertEqual(
+                content_source.fetch_xiaoheihe("https://www.xiaoheihe.cn/x"), "")
+
+    def test_resolve_xiaoheihe_routes_to_body(self):
+        body = "介绍 https://github.com/chinese-poetry/chinese-poetry 这个项目"
+        with mock.patch.object(content_source, "fetch_xiaoheihe", return_value=body):
+            sources, plat = content_source.resolve(
+                "https://www.xiaoheihe.cn/bbs/post_share?link_id=x")
+        self.assertEqual(plat, "xiaoheihe")
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0].kind, "body")
+        self.assertIn("https://github.com/chinese-poetry/chinese-poetry", sources[0].text)
+
+    def test_xiaoheihe_name_fallback_to_search(self):
+        # 正文无 URL，但标题给出项目名；应触发 name-search 兜底
+        body = "[1] ChinaTextbook: 把教材开源\n[2] ebook2audiobook: 有声书"
+        fake_hits = {
+            "ChinaTextbook": {
+                "url": "https://github.com/xx/ChinaTextbook",
+                "owner_repo": "xx/ChinaTextbook",
+                "stars": 100,
+                "desc": "教材",
+            },
+            "ebook2audiobook": {
+                "url": "https://github.com/yy/ebook2audiobook",
+                "owner_repo": "yy/ebook2audiobook",
+                "stars": 200,
+                "desc": "有声书",
+            },
+        }
+        with mock.patch.object(content_source, "fetch_xiaoheihe", return_value=body), \
+             mock.patch.object(
+                 project_finder, "search_github_by_name",
+                 side_effect=lambda n: fake_hits.get(n)):
+            cands, _ = project_finder.find(
+                "https://www.xiaoheihe.cn/bbs/post_share?link_id=x", dedup=False)
+        urls = {c.url for c in cands}
+        self.assertEqual(
+            urls,
+            {"https://github.com/xx/ChinaTextbook",
+             "https://github.com/yy/ebook2audiobook"})
+        for c in cands:
+            self.assertEqual(c.source_kind, "name-search")
+            self.assertEqual(c.platform, "xiaoheihe")
+
+
+class NameSearchTest(unittest.TestCase):
+    """按项目名搜索收录（GitHub 搜索 API，未配 LLM 时的兜底收录入口）。"""
+
+    def _fake_response(self, payload):
+        fake = mock.Mock()
+        fake.__enter__ = lambda s: s
+        fake.__exit__ = lambda s, *a: False
+        fake.read = lambda: __import__("json").dumps(payload).encode()
+        return fake
+
+    def test_extract_project_name_candidates_heading(self):
+        text = "[1] ChinaTextbook: 开源教材\n[2] ebook2audiobook: 有声书"
+        names = name_resolver.extract_project_name_candidates(text, platform="xiaoheihe")
+        self.assertEqual(names, ["ChinaTextbook", "ebook2audiobook"])
+
+    def test_extract_project_name_candidates_fallback(self):
+        # 无标题时，含上下文关键字的行里的 CamelCase 项目名会被提取
+        text = "这个项目叫 DeepTutor，在 GitHub 上开源。"
+        names = name_resolver.extract_project_name_candidates(text, platform="xiaoheihe")
+        self.assertEqual(names, ["DeepTutor"])
+
+    def test_search_exact_match_preferred(self):
+        payload = {"items": [
+            {
+                "html_url": "https://github.com/other/NotToolKnit",
+                "full_name": "other/NotToolKnit",
+                "name": "NotToolKnit",
+                "stargazers_count": 9999,
+                "description": "更高星但不是目标",
+            },
+            {
+                "html_url": "https://github.com/ZihangDong/toolknit-desktop",
+                "full_name": "ZihangDong/toolknit-desktop",
+                "name": "toolknit-desktop",
+                "stargazers_count": 876,
+                "description": "多功能工具箱",
+            },
+        ]}
+        with mock.patch.object(
+                name_resolver.urllib.request, "urlopen",
+                return_value=self._fake_response(payload)):
+            res = name_resolver.search_github_by_name("toolknit-desktop")
+        # 即便第一项星更高，优先精确匹配 name
+        self.assertEqual(res["owner_repo"], "ZihangDong/toolknit-desktop")
+        self.assertEqual(res["stars"], 876)
+
+    def test_search_no_match_returns_none(self):
+        payload = {"items": []}
+        with mock.patch.object(
+                name_resolver.urllib.request, "urlopen",
+                return_value=self._fake_response(payload)):
+            res = name_resolver.search_github_by_name("zzznotexist")
+        self.assertIsNone(res)
+
+
+class NameResolverWebFallbackTest(unittest.TestCase):
+    """GitHub 网页搜索兜底：当搜索 API 被限流/无结果时，解析 github.com/search HTML。"""
+
+    def _fake_html(self, owner: str, repo: str) -> bytes:
+        html = (
+            f'<div class="search-title">'
+            f'<a data-component="Link" href="/{owner}/{repo}">{owner}/{repo}</a>'
+            f'</div>'
+        )
+        return html.encode("utf-8")
+
+    def _fake_response(self, body: bytes):
+        fake = mock.Mock()
+        fake.__enter__ = lambda s: s
+        fake.__exit__ = lambda s, *a: False
+        fake.read = lambda: body
+        return fake
+
+    def test_fallback_used_when_api_rate_limited(self):
+        api_err = urllib.error.HTTPError(
+            "https://api.github.com/search/repositories", 403,
+            "rate limited", {}, None)
+        html = self._fake_html("tapxworld", "chinatextbook")
+        with mock.patch.object(
+                name_resolver.urllib.request, "urlopen",
+                side_effect=[api_err, self._fake_response(html)]) as m:
+            res = name_resolver.search_github_by_name("ChinaTextbook")
+        self.assertIsNotNone(res)
+        self.assertEqual(res["owner_repo"], "tapxworld/chinatextbook")
+        self.assertIn(
+            "github.com/search?q=ChinaTextbook",
+            m.call_args_list[1][0][0].full_url)
+
+    def test_fallback_disabled_returns_none(self):
+        payload = {"items": []}
+        with mock.patch.object(
+                name_resolver.urllib.request, "urlopen",
+                return_value=self._fake_response(json.dumps(payload).encode())):
+            res = name_resolver.search_github_by_name(
+                "zzz", use_web_fallback=False)
+        self.assertIsNone(res)
+
+
+class IngestRepoTest(unittest.TestCase):
+    """ingest_repo.py：agent 产出的分析 JSON -> 直接写入本地库。"""
+
+    def test_ingest_writes_and_appends_imported(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["PROJECT_LIBRARY_DIR"] = d
+            try:
+                analysis_path = os.path.join(d, "analysis.json")
+                with open(analysis_path, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "summary": "test project summary",
+                        "project_type": "项目",
+                        "run_form": "不适用",
+                        "target_user": "本地运行",
+                        "domain": "通用工具",
+                        "tags": ["test"],
+                        "highlights": "highlight",
+                        "doc_score": 5,
+                        "func_score": 5,
+                    }, f)
+                with mock.patch.object(
+                        ingest_repo, "collect_project_data",
+                        return_value=("readme", 100, None)):
+                    with mock.patch.object(
+                            ingest_repo, "append_to_imported_list") as mock_append:
+                        ret = ingest_repo.main([
+                            "foo/bar", analysis_path,
+                            "--source-kind", "name-search"])
+                self.assertEqual(ret, 0)
+                path = os.path.join(d, "foo__bar.md")
+                self.assertTrue(os.path.exists(path))
+                with open(path, encoding="utf-8") as f:
+                    content = f.read()
+                self.assertIn("owner_repo: foo/bar", content)
+                self.assertIn("source_kind: name-search", content)
+                self.assertIn("community_score: 2", content)
+                self.assertIn("total_score: 12", content)
+                mock_append.assert_called_once_with("foo/bar")
+            finally:
+                os.environ.pop("PROJECT_LIBRARY_DIR", None)
+
+    def test_ingest_skips_existing(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["PROJECT_LIBRARY_DIR"] = d
+            # 隔离门禁：本测试只验证「已存在则跳过」语义（doc/func 双双低于阈值
+            # 会触发门禁，干扰 skip 判定），临时关闭门禁。
+            saved_enabled = os.environ.get("QUALITY_GATE_ENABLED")
+            os.environ["QUALITY_GATE_ENABLED"] = "0"
+            try:
+                open(os.path.join(d, "foo__bar.md"), "w", encoding="utf-8").close()
+                analysis_path = os.path.join(d, "analysis.json")
+                with open(analysis_path, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "summary": "x", "project_type": "项目",
+                        "run_form": "不适用", "target_user": "本地运行",
+                        "domain": "通用工具", "tags": [],
+                        "highlights": "x", "doc_score": 1, "func_score": 1,
+                    }, f)
+                with mock.patch.object(
+                        ingest_repo, "collect_project_data",
+                        return_value=("readme", 100, None)):
+                    ret = ingest_repo.main(["foo/bar", analysis_path])
+                self.assertEqual(ret, 0)
+            finally:
+                os.environ.pop("PROJECT_LIBRARY_DIR", None)
+                if saved_enabled is None:
+                    os.environ.pop("QUALITY_GATE_ENABLED", None)
+                else:
+                    os.environ["QUALITY_GATE_ENABLED"] = saved_enabled
+
+    def test_ingest_low_quality_routes_to_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["PROJECT_LIBRARY_DIR"] = d
+            gate_file = os.path.join(d, "pending_review.json")
+            saved_gate = quality_gate.GATE_FILE
+            quality_gate.GATE_FILE = pathlib.Path(gate_file)
+            try:
+                analysis_path = os.path.join(d, "analysis.json")
+                with open(analysis_path, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "summary": "junk", "project_type": "项目",
+                        "run_form": "不适用", "target_user": "本地运行",
+                        "domain": "通用工具", "tags": [],
+                        "highlights": "x", "doc_score": 1, "func_score": 1,
+                    }, f)
+                # stars=5 < 阈值 100 -> 门禁触发
+                with mock.patch.object(
+                        ingest_repo, "collect_project_data",
+                        return_value=("readme", 5, None)):
+                    with mock.patch.object(
+                            ingest_repo, "append_to_imported_list") as mock_append:
+                        ret = ingest_repo.main([
+                            "junk/repo", analysis_path,
+                            "--source-kind", "name-search"])
+                self.assertEqual(ret, 0)
+                # 不应写入本地库
+                self.assertFalse(os.path.exists(os.path.join(d, "junk__repo.md")))
+                # 不应记入 imported.txt
+                mock_append.assert_not_called()
+                # 应进入待复核队列
+                with open(gate_file, encoding="utf-8") as f:
+                    items = json.load(f)
+                self.assertEqual(len(items), 1)
+                self.assertEqual(items[0]["owner_repo"], "junk/repo")
+                self.assertEqual(items[0]["reason"], "stars=5 < 阈值 100")
+            finally:
+                os.environ.pop("PROJECT_LIBRARY_DIR", None)
+                quality_gate.GATE_FILE = saved_gate
+
+
+class QualityGateTest(unittest.TestCase):
+    """quality_gate：阈值判定 + 待复核队列幂等。"""
+
+    def test_low_stars_flagged(self):
+        self.assertTrue(quality_gate.is_low_quality(8, 7, 8))    # stars<100
+        self.assertTrue(quality_gate.is_low_quality(3, 3, 10))   # stars<100
+
+    def test_high_stars_pass(self):
+        self.assertFalse(quality_gate.is_low_quality(7, 8, 5000))
+
+    def test_both_scores_low_with_high_stars(self):
+        # stars 高但 doc/func 双双低于阈值 -> 判低质
+        self.assertTrue(quality_gate.is_low_quality(3, 4, 5000))
+
+    def test_one_score_ok_with_high_stars(self):
+        # 仅一个低于阈值 -> 不判低质
+        self.assertFalse(quality_gate.is_low_quality(7, 4, 5000))
+
+    def test_disabled_env(self):
+        saved = os.environ.get("QUALITY_GATE_ENABLED")
+        os.environ["QUALITY_GATE_ENABLED"] = "0"
+        try:
+            self.assertFalse(quality_gate.is_low_quality(3, 3, 5))
+        finally:
+            if saved is None:
+                os.environ.pop("QUALITY_GATE_ENABLED", None)
+            else:
+                os.environ["QUALITY_GATE_ENABLED"] = saved
+
+    def test_route_to_review_idempotent(self):
+        with tempfile.TemporaryDirectory() as d:
+            gate_file = os.path.join(d, "pending_review.json")
+            saved_gate = quality_gate.GATE_FILE
+            quality_gate.GATE_FILE = pathlib.Path(gate_file)
+            try:
+                res = analyzer.AnalysisResult(doc_score=3, func_score=4)
+                r1 = quality_gate.route_to_review(
+                    "foo/bar", "https://github.com/foo/bar", 8,
+                    res, "name-search", "stars=8 < 阈值 100")
+                r2 = quality_gate.route_to_review(
+                    "Foo/Bar", "https://github.com/foo/bar", 8,
+                    res, "name-search", "stars=8 < 阈值 100")
+                self.assertEqual(r1, "reviewed")
+                self.assertEqual(r2, "reviewed")
+                with open(gate_file, encoding="utf-8") as f:
+                    items = json.load(f)
+                self.assertEqual(len(items), 1)  # 幂等：仅 1 条
+                self.assertEqual(items[0]["owner_repo"], "foo/bar")
+            finally:
+                quality_gate.GATE_FILE = saved_gate
+
+
+class Phase4QualityGateTest(unittest.TestCase):
+    """main.phase4_store：本地入库路径下，低质量项目转入复核而非写入。"""
+
+    def test_phase4_routes_low_quality_to_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["PROJECT_LIBRARY_DIR"] = d
+            gate_file = os.path.join(d, "pending_review.json")
+            saved_gate = quality_gate.GATE_FILE
+            quality_gate.GATE_FILE = pathlib.Path(gate_file)
+            try:
+                completed = [(
+                    "https://github.com/junk/repo", "junk/repo", 8,
+                    analyzer.AnalysisResult(
+                        summary="x", project_type="项目", run_form="不适用",
+                        target_user="本地运行", domain="通用工具",
+                        doc_score=1, func_score=1),
+                )]
+                report = main_mod.phase4_store(completed, [], source_kind="name-search")
+                # 不应写入本地库
+                self.assertFalse(os.path.exists(os.path.join(d, "junk__repo.md")))
+                # 待复核队列应有 1 条
+                with open(gate_file, encoding="utf-8") as f:
+                    items = json.load(f)
+                self.assertEqual(len(items), 1)
+                self.assertEqual(items[0]["owner_repo"], "junk/repo")
+                # 报告项应标记为 reviewed
+                self.assertEqual(report["items"][0].status, "reviewed")
+            finally:
+                os.environ.pop("PROJECT_LIBRARY_DIR", None)
+                quality_gate.GATE_FILE = saved_gate
 
 
 if __name__ == "__main__":

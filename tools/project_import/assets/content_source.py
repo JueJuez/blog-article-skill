@@ -9,6 +9,10 @@ Three input kinds:
                           (B站 via _bili_get_video_info + fetch_bilibili_transcript;
                            YouTube via watch-page shortDescription + fetch_youtube_transcript)
 
+Plus xiaoheihe.cn posts: App share links are JS-rendered deep links; a generic
+crawler only returns a placeholder, so we render them with a headless browser
+(Node Playwright + system Chrome) and scan the rendered body text for repo URLs.
+
 Per product decision: for videos, scan the **description first** — subtitles often
 only mention a repo *name* without a URL, while the actual link lives in the
 description. URL-only extraction (phase 1) means name-only mentions are ignored
@@ -17,6 +21,7 @@ for now; name→URL resolution is a later phase.
 import os
 import re
 import sys
+import subprocess
 
 # Make the parent project importable so `import videos.fetch` / `import articles.fetch`
 # works whether this module is run as a script, imported by tests, or invoked by the agent.
@@ -30,7 +35,15 @@ from assets.extractor import extract_repo_urls  # noqa: E402
 
 _BILI_RE = re.compile(r"(bilibili\.com/video|b23\.tv)", re.I)
 _YT_RE = re.compile(r"(youtube\.com/watch|youtu\.be)", re.I)
+_XIAOHEIHE_RE = re.compile(r"xiaoheihe\.cn", re.I)
 _REPO_HOST_RE = re.compile(r"github\.com|gitee\.com", re.I)
+
+# Node Playwright + system Chrome used to render xiaoheihe.cn deep links.
+_NODE_EXE = os.environ.get(
+    "NODE_EXE",
+    r"C:\Users\O1830\.workbuddy\binaries\node\versions\22.22.2\node.exe",
+)
+_XIAOHEIHE_FETCH = os.path.join(_HERE, "xiaoheihe_fetch.cjs")
 
 
 class SourceText:
@@ -93,6 +106,32 @@ def _yt_subtitle(url: str) -> str:
     return body or ""
 
 
+def fetch_xiaoheihe(url: str) -> str:
+    """Render a xiaoheihe.cn post via headless Chrome and return body innerText.
+
+    Returns "" on any failure (missing node, render timeout, blocked page). The
+    caller falls back to an empty source so the pipeline reports "no repos found"
+    instead of crashing.
+    """
+    if not os.path.exists(_XIAOHEIHE_FETCH):
+        return ""
+    try:
+        res = subprocess.run(
+            [_NODE_EXE, _XIAOHEIHE_FETCH, url],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception:
+        return ""
+    if res.returncode != 0:
+        return ""
+    text = (res.stdout or "").strip()
+    # xiaoheihe sometimes returns the "download app" landing page instead of
+    # the actual post (anti-bot / session expired). Treat it as a failed fetch.
+    if not text or ("立即下载小黑盒APP" in text and len(text) < 800):
+        return ""
+    return text
+
+
 def resolve(input_spec: str):
     """Resolve an input into (list[SourceText], platform).
 
@@ -125,6 +164,13 @@ def resolve(input_spec: str):
         if sub.strip():
             sources.append(SourceText("subtitle", sub, platform))
         return (sources, platform) if sources else ([], platform)
+
+    # xiaoheihe.cn posts: render with a headless browser (deep-link / JS-rendered).
+    if _XIAOHEIHE_RE.search(text):
+        body = fetch_xiaoheihe(text)
+        if body:
+            return [SourceText("body", body, "xiaoheihe")], "xiaoheihe"
+        return [], "xiaoheihe"
 
     # Otherwise treat as an article URL.
     from articles.fetch import fetch_web_content

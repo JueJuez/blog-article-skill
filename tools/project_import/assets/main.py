@@ -26,6 +26,8 @@ from assets.tracker import append_to_imported_list
 from assets.reporter import ReportItem, build_report
 from assets.project_finder import find as finder_find
 from assets.local_writer import is_local_configured, get_library_dir, write_from_analysis
+from assets.name_resolver import search_github_by_name
+from assets.quality_gate import is_low_quality, gate_reason, route_to_review
 
 
 def _detect_storage():
@@ -109,6 +111,13 @@ def _store_feishu(completed, failed):
                                         error_reason="Feishu write failed"))
     # 2) 上传本次新结果
     for url, owner_repo, stars, result in completed:
+        # 收录质量门禁：低质量不写飞书，转入待复核队列
+        if is_low_quality(result.doc_score, result.func_score, stars):
+            reason = gate_reason(result.doc_score, result.func_score, stars)
+            route_to_review(owner_repo, url, stars, result, "feishu", reason)
+            items.append(ReportItem(url, owner_repo, "reviewed",
+                                    error_reason=f"质量门禁未过：{reason}"))
+            continue
         fields = result.to_feishu_fields(owner_repo.split("/")[-1], url, stars)
         if write_record_with_retry(fields):
             append_to_imported_list(owner_repo)
@@ -135,6 +144,13 @@ def phase4_store(completed, failed, source_kind: str = "direct"):
         os.makedirs(lib, exist_ok=True)
         print(f"\n📥 阶段四：写入本地项目库 {lib}")
         for url, owner_repo, stars, result in completed:
+            # 收录质量门禁：低质量不写本地库，转入待复核队列
+            if is_low_quality(result.doc_score, result.func_score, stars):
+                reason = gate_reason(result.doc_score, result.func_score, stars)
+                route_to_review(owner_repo, url, stars, result, source_kind, reason)
+                items.append(ReportItem(url, owner_repo, "reviewed",
+                                        error_reason=f"质量门禁未过：{reason}"))
+                continue
             status = write_from_analysis(owner_repo, url, stars, result, source_kind=source_kind)
             if status == "written":
                 append_to_imported_list(owner_repo)
@@ -192,6 +208,7 @@ def main():
     feishu_table = None
     from_article = False
     from_video = False
+    from_name = False
     text_parts = []
     i = 0
     while i < len(args):
@@ -227,6 +244,10 @@ def main():
             from_video = True
             i += 1
             continue
+        elif args[i] in ("--from-name",):
+            from_name = True
+            i += 1
+            continue
         else:
             text_parts.append(args[i])
             i += 1
@@ -238,9 +259,13 @@ def main():
         os.environ["FEISHU_TABLE_ID"] = feishu_table
 
     if not text_parts:
-        print('用法: python assets/main.py "https://github.com/owner/repo ..." '
-              '[--analysis-file path] [--feishu <wiki链接或token>] [--table <id>]')
-        print('示例: python assets/main.py "我找到一个好用的PPT MCP https://github.com/A/B"')
+        print('用法: python assets/main.py "<输入>" [--analysis-file path] '
+              '[--from-article] [--from-video] [--from-name]')
+        print('示例:')
+        print('  python assets/main.py "我找到一个好用的PPT MCP https://github.com/A/B"')
+        print('  python assets/main.py --from-article "https://blog.xxx/..."')
+        print('  python assets/main.py --from-video "https://www.bilibili.com/video/BV..."')
+        print('  python assets/main.py --from-name "ToolKnit"   # 只有项目名、无确切地址时搜索收录')
         return 1
 
     input_text = " ".join(text_parts)
@@ -261,6 +286,23 @@ def main():
             print(f"    ✓ {c.owner_repo}  (来源: {c.source_kind})")
         for u in skipped:
             print(f"    ⏭ 已处理/待上传 {u}")
+    elif from_name:
+        hits = []
+        for part in text_parts:
+            nm = part.strip()
+            if not nm:
+                continue
+            h = search_github_by_name(nm)
+            if h:
+                hits.append(h)
+        if not hits:
+            print("\n未搜到任何项目（或无网络 / GitHub 搜索限流）。")
+            return 0
+        input_text = " ".join(h["url"] for h in hits)
+        print(f"\n🔍 阶段一：按项目名搜索，命中 {len(hits)} 个")
+        for h in hits:
+            print(f"   ✓ {h['owner_repo']}  ⭐{h['stars']}  {h['url']}")
+        new_urls, imported_skipped, pending_skipped = phase1_extract(input_text)
     else:
         new_urls, imported_skipped, pending_skipped = phase1_extract(input_text)
 
@@ -300,6 +342,8 @@ def main():
         source_kind = "article"
     elif from_video:
         source_kind = "video"
+    elif from_name:
+        source_kind = "name-search"
     report_data = phase4_store(completed, failed, source_kind=source_kind)
     phase5_report(report_data)
     return 0

@@ -13,6 +13,12 @@ from assets.extractor import (
     filter_pending,
 )
 from assets.content_source import resolve
+from assets.name_resolver import (
+    extract_project_name_candidates,
+    search_github_by_name,
+)
+import os
+import time
 
 
 class Candidate:
@@ -35,11 +41,25 @@ def find(input_spec: str, dedup: bool = True):
     """
     sources, _platform = resolve(input_spec)
 
-    # 1) collect (url, source_kind) pairs from every source chunk
+    # 1) collect (url, source_kind) pairs from every source chunk.
+    #    For xiaoheihe: if a body contains no repo URLs, fall back to
+    #    extracting project names and searching GitHub.
     pairs = []  # (url, source_kind)
     for s in sources:
-        for u in extract_repo_urls(s.text):
-            pairs.append((normalize_url(u), s.kind))
+        urls = extract_repo_urls(s.text)
+        if urls:
+            for u in urls:
+                pairs.append((normalize_url(u), s.kind))
+            continue
+        if s.platform == "xiaoheihe":
+            names = extract_project_name_candidates(s.text, platform="xiaoheihe")
+            name_delay = float(os.environ.get("NAME_SEARCH_DELAY", "1.2"))
+            for idx, name in enumerate(names):
+                if idx > 0 and name_delay > 0:
+                    time.sleep(name_delay)
+                hit = search_github_by_name(name)
+                if hit:
+                    pairs.append((normalize_url(hit["url"]), "name-search"))
 
     # 2) dedup within input by owner/repo key (keep first occurrence / its source)
     seen = set()

@@ -67,6 +67,10 @@ cp .env.example .env   # 然后编辑 .env 填入你自己的 FEISHU_BASE_TOKEN 
 | `BATCH_LLM_ANALYSIS_FILE` | 可选，离线分析 JSON 文件，跳过真实 API |
 | `GITHUB_TOKEN` / `GITEE_TOKEN` | 可选，提升 API 限流 60→5000 次/小时 |
 | `BATCH_MAX_WORKERS` | 并发采集分析的线程数，默认 5，上限为待处理仓库数 |
+| `QUALITY_GATE_ENABLED` | 收录质量门禁开关，默认 `1`（开启）；置 `0` 关闭，所有项目直接入库 |
+| `QUALITY_GATE_MIN_STARS` | 低星阈值，默认 `100`；stars 低于此值判低质，不自动入库 |
+| `QUALITY_GATE_MIN_DOC` / `QUALITY_GATE_MIN_FUNC` | doc/func 评分阈值，默认 `5`；两者**同时**低于阈值也判低质 |
+| `NAME_SEARCH_DELAY` | 按项目名批量搜索时，每次搜索的间隔秒数，默认 `1.2`，用于绕过 GitHub 搜索 API 限流 |
 
 > 注意：`.gitignore` 已忽略 `.env`、`pending_results.json`、`debug.log`、`imported.txt`、`__pycache__`，私有数据不会误提交。
 
@@ -105,6 +109,9 @@ python tools/project_import/assets/main.py --from-article "<文章URL>"
 # 从视频里抽项目（不总结原文，描述优先）
 python tools/project_import/assets/main.py --from-video "<视频URL>"
 
+# 按项目名搜索收录（只知道项目名、没有确切地址时）
+python tools/project_import/assets/main.py --from-name "ToolKnit"
+
 # 可选：子代理产出的分析文件 / 飞书目标覆盖
 #   [--analysis-file path] [--feishu <wiki链接或token>] [--table <id>]
 ```
@@ -121,12 +128,29 @@ python tools/project_import/assets/main.py --from-video "<视频URL>"
   1. `content_source.resolve()` 把输入路由成若干 `SourceText`：
      - 文本本身含仓库链接 → 按 `direct` 扫描（**先于**「以 http 开头」判断，否则含多链接的句子会被误当文章 URL 真实联网）。
      - 视频 URL → **先取描述/简介**（`SourceText("description")`），再取字幕/转录（`SourceText("subtitle")`）。
+     - **小黑盒链接**（`xiaoheihe.cn`）→ 分享链接是 App 深链，通用爬虫只回占位；用 **无头浏览器（Node Playwright + 系统 Chrome）** 渲染正文，再从渲染后的 `SourceText("body")` 抠仓库链接。支持三种情况：①正文直接含 URL → 直接抽取；②只给项目名、没给地址 → 自动从标题/正文中提取项目名，调 GitHub Search API 反查仓库地址并收录；③一篇帖子含多个项目 → 同时处理多个链接/项目名。GitHub 搜索未认证约 10 次/分钟，项目较多可能触发限流。
      - 文章 URL → 取正文（`SourceText("body")`）。
   2. 每个 source 跑 `extract_repo_urls` → 按 owner/repo 批次内去重 → `filter_imported` + `filter_pending` 三层去重。
   3. 返回带 `source_kind`（description / subtitle / body / direct）标记的候选列表，供用户看到「项目是从哪抠出来的」。
 - **直接文本/链接** → 走原 `phase1_extract`（阶段一）。
 
-> **视频场景铁律（用户 2026-09-02 确认）**：优先扫**视频描述/简介**找仓库链接；字幕只作补充。原因：字幕常只提仓库名、地址其实在简介里。阶段一只解析**显式 URL**，字幕里「只提仓库名没给地址」的情况暂不解析（name→URL 解析留待后续阶段）。
+> **视频场景铁律（用户 2026-09-02 确认）**：优先扫**视频描述/简介**找仓库链接；字幕只作补充。原因：字幕常只提仓库名、地址其实在简介里。阶段一只解析**显式 URL**，字幕里「只提仓库名没给地址」的情况暂不解析。
+>
+> ⚠️ **视频来源范围封口（用户 2026-09-03 确认）**：视频只处理**简介 + 字幕**两种来源；**明确不做**①评论区抓取（置顶评论等）②画面 OCR / 截图识别（项目只出现在视频画面里）。对后者，走下方「按项目名搜索收录」——由你告诉项目名，工具去 GitHub 搜索并收录。
+
+### 按项目名搜索收录（--from-name）
+
+当你**只知道项目名、没有确切仓库地址**时（例如视频画面里出现、字幕/简介都只提名字），用这个入口：
+
+```bash
+python tools/project_import/assets/main.py --from-name "ToolKnit"
+```
+
+- 调 GitHub 公开搜索 API（`q=<name> in:name&sort=stars`），取 stars 最高的匹配。
+- 命中后打印 `owner/repo ⭐stars url`，自动进入正常「采集 → 分析 → 入库」流程。
+- 未命中（或限流 403）会提示，不入库。
+- 未认证搜索约 10 次/分钟；大量使用建议设 `GITHUB_TOKEN`（限流升到 5000/h，但仍走搜索接口）。
+- `source_kind` 记为 `name-search`，便于回溯「这个项目是怎么进库的」。
 
 阶段一产出候选后，后续阶段二~五与旧行为完全一致（采集 → 分析 → 入库 → 报告）。
 
@@ -217,6 +241,7 @@ LLM 返回的枚举字段会经 `analyzer.coerce_choice` 校验与纠偏：精�
   1. `build_frontmatter(...)` 组装 frontmatter（含 `owner_repo / url / platform / summary / project_type / run_form / target_user / domain / tags / highlights / doc_score / func_score / community_score / total_score / source_kind / imported_at / status`）。
   2. 文件已存在则跳过（幂等，不覆盖）。
   3. 写入成功后把 `owner/repo` 追加到 `imported.txt`（去重账本，供后续阶段一前置过滤）。
+  4. **收录质量门禁**：在写入前检查（默认开启）；低星（< `QUALITY_GATE_MIN_STARS`）或 doc/func 双低的项目**不写入**，改为记入 `pending_review.json` 待复核队列（报告项中标记为 `reviewed`）。`pending_review.json` 与 `imported.txt` 同理是去重账本——已入队项目不会重复入队。门禁不回滚已入库项目。
 
 #### 回退（feishu）→ 上传飞书多维表格
 
