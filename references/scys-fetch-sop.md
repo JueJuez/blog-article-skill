@@ -20,20 +20,14 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 ## 1. 前提（用户侧一次性，其余全自动）
 
 1. **用户已在浏览器登录 scys.com**（用户唯一被允许做的事）。
-2. **脚本自动选择抓取方式**（无需用户手动启 debug）：
-   - **优先**：探测到 Chrome DevTools 端口 → `connect_over_cdp` 接管活 Chrome（不关浏览器）。
-   - **回退**（Chrome 151+ 默认）：没有 debug 端口 → 自动回退到 `profile_clone_fetch`（复制真实 profile 到临时目录，用临时 dir 启 headless Chrome，非默认 dir → Chrome 151+ 放行）→ 需要先关闭 Chrome（脚本自动 kill 释放 cookie 锁），复制 ~16GB 需 ~1 分钟，抓完后用户重新打开 Chrome 即可。
+2. **脚本自动处理登录态浏览器**（无需用户手动启 debug，无需 junction）：
+   - 监控流水线（`monitors/run.py`）与 scys 批量抓取经 `shared/cdp_session.py` 的 `SharedCdpSession` 在需要登录态时，**自动走唯一路径**：先确保用户 Chrome 完全关闭（释放 cookie 独占锁）→ 复制真实 profile 到**非默认** `ProfileClone` 目录 → 用该目录以调试端口启动 Chrome → `connect_over_cdp` 接管。
+   - 非默认目录 + 调试端口 = Chrome 151+ 放行调试；复制的 profile 含 cookie → 登录态继承。
+   - 代价：每次该路径会**短暂关闭用户的 Chrome** 再重启一个带登录态的克隆浏览器；抓取完成后克隆浏览器退出，用户重开原 Chrome 即可。
 
-> ⚠️ **Chrome 151+ 已废弃 junction 方案**（2026-08-24 实测）：
-> 旧方案用 junction（`DebugUDD` → `User Data`）绕过 Chrome 151+「远程调试不能用默认 user-data-dir」的限制。
-> 但 Chrome 151 能检测 junction 指向同一物理目录，触发安全清理：
-> 1. 清空 `extensions.settings`（扩展注册表）
-> 2. 调 `extension_garbage_collector` 删除扩展文件（实测 22 个扩展被删）
-> 3. 清 Google 账号关联（`gaia_id` 变空）
->
-> **新方案**：不再用 junction / 不再改 Chrome 快捷方式 / 不再需要 `--remote-debugging-port`。
-> `login_cdp_fetch.py` 探测不到 debug 端口时自动回退到 `profile_clone_fetch.py`（持久化 ProfileClone 目录，
-> 非默认 dir → Chrome 151+ 放行，不会删扩展）。首次全量复制 ~16GB，后续只同步 9 个 cookie 文件（秒级）。
+> ⚠️ **Chrome 151+ 禁止默认 user-data-dir 开调试端口**（实测）：junction 方案（`DebugUDD` → `User Data`）会被 Chrome 检测并触发 `extension_garbage_collector` 删除扩展（实测 22 个扩展被删）、清 Google 账号关联 —— **永久禁用 junction**。
+> 活 Chrome 接管（默认 profile 开 `--remote-debugging-port`）在 151+ 也不可用（端口文件写了但不监听）。
+> **当前唯一路径**：`SharedCdpSession` 复制真实 profile 到**非默认** `ProfileClone` 目录 → 该目录以调试端口启动（151+ 放行）→ `connect_over_cdp` 接管。登录态由复制的 cookie 文件继承，不会触发扩展清理。
 
 > ⚠️ **登录态所在的浏览器是用户的 Chrome，不是 Edge** —— Edge 里没有 scys 登录态。2026-08-19 实测确认。
 
@@ -60,7 +54,7 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 
 **退出码**：`0` = 成功且登录态生效；`2` = Chrome 没启 debug；`3` = 撞登录墙（见 §4）。
 
-> 机制：脚本读 `%LOCALAPPDATA%\Google\Chrome\User Data\DevToolsActivePort` → 端口探活 + `GET /json/version` 验真 → Playwright `connect_over_cdp(ws)` 接管活 Chrome → 新标签 → `page.goto` → 等 SPA 渲染 → 取正文（selector 链取最长段，兜底 `body.innerText`）→ 落盘。**不关用户 Chrome、不重启、登录态继承。**
+> 机制（`SharedCdpSession` 唯一路径）：确保用户 Chrome 已关 → 复制 profile 到非默认 `ProfileClone` 目录 → 该目录以调试端口启动 Chrome → `connect_over_cdp(ws)` 接管 → 新标签 → `page.goto` → 等 SPA 渲染 → 取正文（selector 链取最长段，兜底 `body.innerText`）→ 落盘。登录态由复制的 cookie 继承；抓取结束克隆浏览器退出，用户重开原 Chrome 即可。
 
 ---
 
@@ -80,8 +74,8 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 
 | 现象 | 根因 | 修法 |
 |---|---|---|
-| `[FAIL] 本机没找到任何 Chrome DevTools 监听端口…` | Chrome 151+ 废弃了 junction 方案，不再有 debug 端口 | **正常现象**——`login_cdp_fetch.py` 会自动回退到 `profile_clone_fetch`。若未自动回退，手动跑：<br>`python scripts/profile_clone_fetch.py "<URL>"` |
-| `[fallback] CDP 不可用，回退到 profile_clone_fetch` | 正常行为 | 脚本自动 kill Chrome → 同步 cookie 到 ProfileClone（首次全量复制，后续秒级）→ 启 headless Chrome → 抓取 → 用户重开 Chrome |
+| `SharedCdpSession` 克隆路径启动时失败 | Chrome 复制/调试端口启动异常 | 查看 stderr；脚本会先自动 kill 用户 Chrome 释放 cookie 锁再重试；仍失败则让用户先手动关闭所有 Chrome 再重跑 |
+| 抓取后命中登录墙（无登录态） | 复制时 Chrome 仍在跑，cookie 独占锁未释放 | 确保抓取前用户 Chrome 已完全关闭（脚本会主动 kill）；或让用户在该站重新登录后重跑 |
 | `[FAIL] Chrome 还在跑，user-data-dir 被锁` | Chrome 没完全退出 | 脚本会自动 kill Chrome；如手动跑 profile_clone_fetch 则先 taskkill |
 | `[3/3] body_chars 很小 + login_wall 命中` | 用户在 scys 没登录，或登录态过期 | 确认 Chrome 已登录 scys（打开 scys 看页面是否已登录），然后重跑 |
 | 页面空白 / 长白雪 | SPA 还没渲染完 | 脚本默认等 8s；在 `fetch()` 调 `wait_ms=` 调大（如 15000） |
@@ -121,7 +115,7 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 - 产物：原文 `notes/_scraped/scys/<topicId>.md`；队列 `pending_summaries.json`（总结后标 `summarized:true` 防重复落飞书）
 - 总结落盘：子 Agent 读原文 -> **消费队列中已算好的 prompt**（`articles/main.py` 已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好随 `pending_summaries.json` 投递，无需自调 CLI）-> 按该 prompt 总结 -> `python articles/_save_summary.py <md> --url ... --tags "生财有术,<项目>" --title ...`（默认飞书；**已内置机械去重闸门**：URL 已总结过自动跳过，强制重写加 `--force`）。⚠️ **不要全部用 structured 模板**：分类器会按内容自动选 structured/interview/opinion/case/roundup/key_points/reading/dissection 八种模板（2026-08-26 起含 dissection 创作解剖：爆款拆解/带货/涨粉/账号运营类 scys 文章会走它，额外提炼可复用结构模具）。
 - 已知限制：飞书 **PDF 预览型**文档文字在 canvas 里抓不到（落盘文件头有页码碎片），此类需下载 PDF 另行处理；文字型 wiki 滚动方案有效
-- python 环境：用 `D:\App\anaconda3\python.exe`（系统 python 无 playwright）
+- python 环境：用 managed venv `C:\Users\O1830\.workbuddy\binaries\python\versions\3.13.12\python`（已带 playwright）；anaconda python 未必有
 
 ## 8. 与其他入口的关系（2026-08-20 更新：单篇 scys 已无感打通）
 

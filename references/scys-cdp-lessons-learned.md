@@ -1,10 +1,9 @@
 # scys CDP 抓取 · 问题沉淀与新会话畅通指南
 
-> ⚠️ **2026-08-24 重大更新：junction 方案已废弃**
-> 本文档中所有关于 junction、DebugUDD、焊快捷方式 flags 的内容**已全部作废**。
-> Chrome 151+ 能检测 junction 指向同一物理目录，触发 `extension_garbage_collector` 删扩展。
-> 新方案：`profile_clone_fetch.py` 持久化 ProfileClone 目录（非默认 dir），`ensure_profile_clone()` 首次全量复制后后续只同步 cookie 文件。
-> 详见 `.workbuddy/memory/_archive/decisions/DECISION-20260824-chrome151-junction-deprecation.md`（已归档）。
+> 🔴 **2026-09-02 整体 SUPERSEDED · 勿照做**
+> 本文档是 2026-08-20 的「junction 解法」问题沉淀。但 **junction 方案已于 2026-08-24 被 Chrome 151+ 判定为会删扩展、清账号，永久废弃**；本文档正文（P1–P4）把 junction 当"已固化解决方案"的描述**已作废**。
+> 当前唯一路径（见 `shared/cdp_session.py` 的 `SharedCdpSession`）：关 Chrome → 复制 profile 到非默认 `ProfileClone` 目录 → 该目录调试端口启动 → `connect_over_cdp` 接管；登录态由复制的 cookie 继承。
+> 本文档仅保留**历史价值**：记录 2026-08-20 当天的症状现象（端口失效、cookies 锁、登录墙判别），根因仍成立，但"解决方案"列请勿采用。新做法见 `login-required-cdp-workflow.md` §1.1 与 `scys-fetch-sop.md` §1。
 
 > **用途**：新会话 / 新前端模型接手 scys（或任何需登录态站点）抓取任务时，**先读本文档**。
 > 汇总 2026-08-20 全天排查的所有问题、根因、解决状态，以及**下次是否还会踩坑**的预判。

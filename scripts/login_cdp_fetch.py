@@ -48,16 +48,13 @@ PORT_FILE_CANDIDATES = [
 COMMON_DEVTOOLS_PORTS = {9222, 5494}
 EXTRA_SCAN_RANGE = range(0)
 
-# 兜底方案：CDP 探测失败时，自动回退到 profile_clone_fetch（复制 profile 到临时目录）。
-# ⚠️ Chrome 151+ 已强制：远程调试只能用「非默认 user-data-dir」。
-# 旧方案用 junction（DebugUDD → User Data）绕过此限制，但 Chrome 151+ 能检测 junction
-# 指向同一物理目录，会触发安全清理：清空 extensions.settings + 调 extension_garbage_collector
-# 删除扩展文件 + 清 Google 账号关联。实测 2026-08-24 造成 22 个扩展被删。
-# login_persistent_fetch.py 也不行：它用 launch_persistent_context(user_data_dir=真实目录)，
-# Playwright 内部加 --remote-debugging-pipe，Chrome 151+ 同样拒绝在默认目录上开。
-# 新方案：profile_clone_fetch.py 复制真实 profile 到临时目录（非默认 dir），Chrome 151+ 放行。
-# 需先 kill Chrome 释放 FILE_SHARE_NONE cookie 锁，复制完启 headless Chrome 抓取。
-FALLBACK_SCRIPT = "python scripts/profile_clone_fetch.py"
+# Chrome 151+ 限制：远程调试只能用「非默认 user-data-dir」。
+# 旧方案 junction（DebugUDD → User Data）会被检测并触发安全清理（删 22 扩展，2026-08-24 实测）；
+# login_persistent_fetch.py（launch_persistent_context 真实目录 + pipe）同样被 151+ 拒绝。
+# 现行方案：shared/cdp_session.py 的 SharedCdpSession 关 Chrome → 复制 profile 到非默认
+# ProfileClone → 该 dir 开调试端口启动 → connect_over_cdp 接管（登录态+扩展保留）。
+# 本文件只提供 CDP 探测原语（discover_chrome_devtools / probe_chrome_devtools），
+# 不再内嵌抓取兜底；可靠抓取统一走监控流水线 monitors/run.py。
 
 
 def find_devtools_port_file() -> Path | None:
@@ -150,7 +147,7 @@ def discover_chrome_devtools() -> tuple[int, str]:
                 ws_path = f"/devtools/browser/{p}"
             return p, ws_path
 
-    # 路径 3 都失败 → 抛错（区分两种根因）
+    # 探测失败 → 抛错（区分两种根因）；可靠抓取改走监控流水线
     if stale_hint:
         raise RuntimeError(
             "本机找到 DevToolsActivePort 文件（声称端口已开），但该端口响应不是 Chrome DevTools"
@@ -159,19 +156,16 @@ def discover_chrome_devtools() -> tuple[int, str]:
             "新进程没带 --remote-debugging-port）；或 ② 该端口被非调试进程占用。\n"
             "    ⚠️ Chrome 151+ 已禁止在默认 user-data-dir 上开远程调试，旧的 junction 方案已废弃"
             "（会触发扩展垃圾回收删除全部扩展）。\n"
-            "    新方案：本脚本会自动回退到 profile_clone_fetch（复制 profile 到临时目录）。"
-            "如未自动回退，手动执行：\n"
-            f"        {FALLBACK_SCRIPT} \"<URL>\"\n"
+            "    可靠抓取请走监控流水线：monitors/run.py（SharedCdpSession 会自动关 Chrome → "
+            "克隆 profile 到非默认 dir → 该 dir 开调试端口启动带登录态的 Chrome）。\n"
             "    详细：references/login-required-cdp-workflow.md §11。"
         )
     raise RuntimeError(
         "本机没找到任何 Chrome DevTools 监听端口（已检查 DevToolsActivePort 文件 + 9222 + 5494）。\n"
         "    ⚠️ Chrome 151+ 已禁止在默认 user-data-dir 上开远程调试，旧的 junction 方案已废弃"
         "（会触发扩展垃圾回收删除全部扩展）。\n"
-        "    新方案：本脚本会自动回退到 profile_clone_fetch（复制 profile 到临时目录）。"
-        "如未自动回退，手动执行：\n"
-        f"        {FALLBACK_SCRIPT} \"<URL>\"\n"
-        "    需先关闭 Chrome（脚本会自动 kill），抓完后重新打开 Chrome 即可。\n"
+        "    可靠抓取请走监控流水线：monitors/run.py（SharedCdpSession 会自动关 Chrome → "
+        "克隆 profile 到非默认 dir → 该 dir 开调试端口启动带登录态的 Chrome）。\n"
         "    详细：references/login-required-cdp-workflow.md §11。"
     )
 
@@ -311,32 +305,10 @@ def main(argv: list[str]) -> int:
     try:
         info = fetch(url, out)
     except RuntimeError as e:
-        if "没找到任何 Chrome DevTools" in str(e) or "DevToolsActivePort" in str(e):
-            print(f"[fallback] CDP 不可用，回退到 profile_clone_fetch（复制 profile 到临时目录）")
-            from profile_clone_fetch import (
-                fetch_via_profile_clone,
-                DEFAULT_SRC_DIR,
-            )
-            # Kill Chrome to release FILE_SHARE_NONE locks on cookies
-            try:
-                import subprocess as _sp
-                _sp.run(["taskkill", "/F", "/IM", "chrome.exe", "/T"],
-                        capture_output=True, text=True, timeout=10)
-                print(f"[fallback] killed chrome.exe (release cookie locks)")
-                time.sleep(2)
-            except Exception:
-                pass
-            try:
-                info = fetch_via_profile_clone(url, out)
-            except Exception as e2:
-                print(f"\n[FAIL] profile_clone_fetch 也失败: {e2}")
-                print(f"        请手动跑：python scripts/profile_clone_fetch.py \"{url}\"")
-                return 2
-        else:
-            print(f"\n[FAIL] {e}")
-            return 2
-    except Exception as e:
-        raise
+        print(f"\n[FAIL] CDP 不可用（{e}）")
+        print("        本机 Chrome 151+ 默认 profile 无调试端口；可靠抓取请走监控流水线"
+              "（monitors/run.py → SharedCdpSession 会自动克隆 profile 到非默认 dir 启动带登录的 Chrome）。")
+        return 2
 
     # 若撞登录墙，告警但仍落盘（用户可手动登录后重抓）
     if info["login_wall_hit"]:

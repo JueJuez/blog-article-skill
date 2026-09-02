@@ -62,7 +62,7 @@
 - **机制**：`run.py --apply` 收尾阶段逐领域子进程调 `scripts/scys_batch_fetch.py --project <领域> --since-days <窗口> --pages 2`——复用补齐批量全链路（列表捕获 → 时间/精华过滤 → 限速抓正文含外链跟进 → 入 `notes/_scraped/scys/pending_summaries.json` 待总结队列），由执行模型按 §9 语义闭环总结（folder=生财有术/<领域>）。
 - **去重**：与批量补齐共用 `notes/_scraped/scys/state.json` 的 done 列表；已在补齐里抓过的帖不会重复抓/总结。
 - **窗口默认 7 天**（大于日窗）：新帖常在发布数日后才被标精华，窗口太窄会永久漏「晚精华」帖；窗口放大只多翻列表页（便宜），done 去重兜底不会重复抓正文。已知局限：发布超 7 天才标精华的帖会漏，靠半年一次的「补齐scys」兜底。
-- **前提**：用户已在 Chrome 登录 scys.com。CDP 可用时走 CDP 接管活 Chrome；不可用时自动回退 profile_clone（kill Chrome → 同步 cookie 到 ProfileClone → headless 抓取），不影响公众号/B站。
+- **前提**：用户已在 Chrome 登录 scys.com。登录态抓取由 `scripts/scys_batch_fetch.py` 经 `SharedCdpSession` 自动完成（唯一路径：关 Chrome → 复制 profile 到非默认 `ProfileClone` 目录 → 该目录调试端口启动 → `connect_over_cdp` 接管；登录态由复制的 cookie 继承），不影响公众号/B站。
 - **互斥**：`notes/_scraped/scys/.lock` 进程锁——「跑一下」的 scys 增量与「补齐scys」批量不会并发写坏 state/pending；**2026-08-25 起残留自动释放**（锁内记录 PID：持有进程已死 → 自动接管；PID 读不出/无 psutil → 锁龄超 6 小时接管），无需再手动删锁。
 - **临时停用**：把 `subscriptions.json` 的 `scys` 列表清空即可，其他源照跑。
 

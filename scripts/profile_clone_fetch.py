@@ -1,28 +1,24 @@
 # -*- coding: utf-8 -*-
-"""profile_clone_fetch.py — 复制用户 Chrome profile 到持久化 ProfileClone 目录，启新 Chromium 实例带登录态访问。
+"""profile_clone_fetch.py — Chrome profile 克隆原语（SharedCdpSession 路径2 的唯一依赖）。
 
-设计（用户 0 操作 · 模型全自动）：
-    用户的 Chrome 没启 debug → login_cdp_fetch.py 自动回退到本模块。
+本模块只提供「复制用户 profile 到非默认 ProfileClone 目录」的能力；启动浏览器 + CDP 接管
+由 shared/cdp_session.py 的 _launch_cloned_logged_in_browser 负责。两层拆开，避免多路径混淆。
+
+设计：
     持久化 ProfileClone 目录（%LOCALAPPDATA%\\Google\\Chrome\\ProfileClone）：
     - 首次：全量复制 user-data-dir（~16GB，robocopy + ctypes 兜底锁文件）
     - 后续：只同步 9 个 cookie/login 文件（秒级，ensure_profile_clone()）
-    用 Playwright launch_persistent_context 指定 user-data-dir=ProfileClone（非默认 dir → Chrome 151+ 放行）
-    → 访问 URL → 取正文 → 关闭实例（ProfileClone 保留供下次复用）。
     同 Windows 用户 + DPAPI ⇒ 复制后的 cookie db 自动可解 ⇒ 登录态自动生效。
 
-⚠️ Chrome 151+ 限制：
+⚠️ Chrome 151+ 限制（为何必须是非默认 dir）：
     - --remote-debugging-port 在默认 user-data-dir 上被拒（Chrome 136+ 起）
-    - --remote-debugging-pipe（Playwright 内部用的）在默认 user-data-dir 上也被拒（Chrome 151+ 起）
+    - --remote-debugging-pipe 在默认 user-data-dir 上也被拒（Chrome 151+ 起）
     - junction 指向默认目录会被检测，触发 extension_garbage_collector 删扩展（2026-08-24 实测）
     → ProfileClone 是非默认目录的真实副本，Chrome 151+ 放行调试，不触发安全清理
 
 依赖：
     pip install playwright
     playwright install chromium
-
-用法：
-    python scripts/profile_clone_fetch.py "<URL>" [out.md]
-    python scripts/profile_clone_fetch.py smoke        # 自检：用公开 URL 验证整条机制能跑通
 
 详见 references/login-required-cdp-workflow.md §1.2。
 """
@@ -234,78 +230,8 @@ def copy_user_data_dir(src: Path, dst: Path) -> dict:
     }
 
 
-def fetch_via_profile_clone(url: str, out_path: Path, *,
-                            src_dir: Path | None = None,
-                            headless: bool = True,
-                            wait_ms: int = 8000,
-                            selector: str | None = None) -> dict:
-    """主流程：复制 profile → 启 headless Chromium → 访问 URL → 抓正文 → 写文件 → 清理。"""
-    from playwright.sync_api import sync_playwright  # type: ignore
-
-    src = src_dir or pick_source_user_data_dir()
-
-    # 持久化 ProfileClone：首次全量复制，后续只同步 cookie 文件
-    tmpdir = ensure_profile_clone(src)
-    copied = sum(f.stat().st_size for f in tmpdir.rglob("*") if f.is_file())
-
-    with sync_playwright() as p:
-        browser_ctx = p.chromium.launch_persistent_context(
-            user_data_dir=str(tmpdir),
-            headless=headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-            ],
-            viewport={"width": 1280, "height": 800},
-            ignore_https_errors=True,
-        )
-        try:
-            print(f"[4/6] new page + goto {url}")
-            page = browser_ctx.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            if wait_ms:
-                page.wait_for_timeout(wait_ms)
-            title = page.title()
-            body = ""
-            if selector:
-                try:
-                    page.wait_for_selector(selector, timeout=10_000)
-                except Exception:
-                    pass
-            for sel in [
-                selector,
-                ".article-content", ".article-detail", "#articleContent",
-                ".topic-content", ".post-content", ".markdown-body",
-                "article", "main", "body",
-            ]:
-                if not sel: continue
-                try:
-                    el = page.query_selector(sel)
-                    if el:
-                        t = el.inner_text().strip()
-                        if len(t) > len(body):
-                            body = t
-                except Exception:
-                    continue
-            if not body:
-                body = page.evaluate("() => document.body.innerText")
-            page.close()
-        finally:
-            browser_ctx.close()
-
-    login_markers = ["立即登录", "登录后查看", "请登录", "扫码登录",
-                     "您还未登录", "成为会员", "开通会员", "订阅后"]
-    hit = [m for m in login_markers if m in body]
-    print(f"[6/6] title = {title!r}  body_chars = {len(body)}  login_wall = {hit or '无'}")
-    write_output(out_path, url, title, body)
-    print(f"        saved → {out_path}")
-    return {
-        "title": title, "url": url, "chars": len(body),
-        "login_wall_hit": hit, "output": str(out_path),
-        "src_dir": str(src), "clone_dir": str(tmpdir),
-        "copied_mb": round(copied/1024/1024, 1),
-    }
+# [2026-09-02 删除] fetch_via_profile_clone（headless 克隆抓取 = 旧路径3，会静默撞登录墙）已移除；
+# 可靠抓取统一走 shared/cdp_session.py 的 SharedCdpSession（关Chrome→克隆→非默认dir启动+CDP接管）。
 
 
 def write_output(out_path: Path, url: str, title: str, body: str) -> None:
@@ -328,39 +254,6 @@ def slugify(s: str) -> str:
     return s[:80] or "scraped"
 
 
-def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] in ("-h", "--help"):
-        print(__doc__)
-        return 0
-    cmd = argv[1]
-    project_root = Path(__file__).resolve().parent.parent
-    if cmd == "smoke":
-        url = "https://example.com"
-        out = project_root / "notes" / "_scraped" / "_smoke_profile_clone.md"
-        try:
-            info = fetch_via_profile_clone(url, out)
-            print(f"\n[OK] smoke 跑通 → {info['output']}")
-            return 0
-        except Exception as e:
-            print(f"\n[FAIL] smoke: {e}")
-            return 2
-    url = cmd
-    if len(argv) >= 3:
-        out = Path(argv[2])
-    else:
-        out = project_root / "notes" / "_scraped" / f"{slugify(url)}.md"
-    try:
-        info = fetch_via_profile_clone(url, out)
-        if info["login_wall_hit"]:
-            print(f"\n[!] 命中登录墙标记 {info['login_wall_hit']}")
-            print("    profile 复制完整 / cookie 同步了，但当前用户在该域名仍无登录态（已过期或未登录）")
-            print("    让用户先在该站登录一次再重跑。文件已落，重抓可覆盖。")
-            return 3
-        return 0
-    except Exception as e:
-        print(f"\n[FAIL] {type(e).__name__}: {e}")
-        return 2
+# [2026-09-02 删除] main() / CLI（原 standalone headless 克隆抓取入口 = 旧路径3）已移除；
+# 可靠抓取统一走监控流水线（monitors/run.py → SharedCdpSession）。
 
-
-if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))

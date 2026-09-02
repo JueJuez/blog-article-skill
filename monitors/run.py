@@ -818,17 +818,35 @@ def _summarize_video_item(it: dict, obsidian: bool, stats: dict, transcript: str
         stats["error"] += 1
 
 
-def _acquire_session(holder: dict):
+def _acquire_session(holder: dict, max_attempts: int = 2):
     """惰性获取共享 CDP 会话：优先复用 holder 中已有的；无则新建并存入 holder。
 
     用于「撞墙文出现时才建会话」——无撞墙文（或纯 B站/动态）的轮次完全不 kill Chrome。
     holder 在调用方（串行 apply 块）跨 apply_summaries 与 run_scys_daily 共享，保证 one-kill。
+
+    2026-09-02 修复：playwright 驱动初始化偶发故障（sync_playwright().start() 瞬时失败）曾
+    直接冒泡使整轮 run.py 进程崩溃，连带 B站/scys 已入队内容本轮没落盘。此处改为防御式——
+    失败重试 max_attempts 次，仍不可用则返回 None，由调用方降级（跳过微信批量抓取、撞墙文
+    退回 pending_refetch），不再崩整轮。
     """
     s = holder.get("obj") if isinstance(holder, dict) else None
     if s is not None:
         return s
     from shared.cdp_session import SharedCdpSession
-    s = SharedCdpSession()
+    last_err = None
+    for _att in range(max_attempts):
+        try:
+            s = SharedCdpSession()
+            break
+        except Exception as e:  # playwright 驱动初始化等瞬时故障
+            last_err = e
+            print(f"[warn] SharedCdpSession 初始化失败（第 {_att + 1}/{max_attempts} 次）: {e}",
+                  file=sys.stderr)
+            time.sleep(1.0)
+    if s is None:
+        print(f"[warn] CDP 会话不可用，跳过微信批量抓取与 scys（本轮不崩）：{last_err}",
+              file=sys.stderr)
+        return None
     if isinstance(holder, dict):
         holder["obj"] = s
     return s
@@ -997,37 +1015,43 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
         # 惰性建会话：仅当真有撞墙文时才 kill Chrome；worker 已持有共享会话则直接复用
         if session is None:
             session = _acquire_session(_holder)
-        print(f"\n🔐 本轮 {len(cdp_deferred)} 篇微信直连撞墙，启动一次批量 CDP 抓取"
-              f"（单次 Chrome 会话访问全部 URL）")
-        _urls = [it["url"] for it in cdp_deferred]
-        try:
-            # session 非空 → 复用 run.py 的单一共享会话（与 scys/重试同一 CDP，Chrome 最多杀一次）；
-            # session 为空（独立调用/refetch_only 且未撞墙）→ 自建一次性会话，行为不变
-            _batch = fetch_wechat_batch(_urls, session=session)
-        except Exception as e:
-            print(f"[batch-cdp-err] 批量 CDP 抓取异常: {e}", file=sys.stderr)
-            _batch = {}
-        for it in cdp_deferred:
-            res = _batch.get(it["url"])
-            if not res or len((res[1] or "").strip()) < MIN_CONTENT_LEN:
-                # CDP 也失败/仍撞墙 → 走原有跨轮重试/丢弃逻辑
-                decision, payload = _decide_retry_or_drop(it, WECHAT_MAX_REFETCH)
-                stats["empty_retry"] += 1
-                if decision == "drop":
-                    dropped.append({
-                        "title": it.get("title", ""),
-                        "mp_name": it.get("mp_name", "") or it.get("sub_name", ""),
-                        "url": it.get("url", ""),
-                        "reason": payload,
-                    })
-                    print(f"[drop-gate] {it['title']}（{payload}）")
-                else:
-                    refetch_next.append(payload)
-                    print(f"[empty-retry] {it['title']}（CDP 批量仍抓空，已入重试队列"
-                          f"{payload.get('refetch_count')}/{WECHAT_MAX_REFETCH}）")
-                continue
-            # CDP 成功 → 走常规总结管线
-            _summarize_article(it, res[0], res[1], obsidian, stats)
+        if session is None:
+            # 2026-09-02 修复：CDP 会话不可用（playwright 偶发故障）时不再冒泡崩整轮——
+            # 撞墙文退回 pending_refetch 下轮再试，本轮继续落 B站/scys，不连带放弃。
+            print(f"[warn] CDP 会话不可用，{len(cdp_deferred)} 篇微信撞墙文退回 pending_refetch 下轮再试")
+            refetch_next.extend(cdp_deferred)
+        else:
+            print(f"\n🔐 本轮 {len(cdp_deferred)} 篇微信直连撞墙，启动一次批量 CDP 抓取"
+                  f"（单次 Chrome 会话访问全部 URL）")
+            _urls = [it["url"] for it in cdp_deferred]
+            try:
+                # session 非空 → 复用 run.py 的单一共享会话（与 scys/重试同一 CDP，Chrome 最多杀一次）；
+                # session 为空（独立调用/refetch_only 且未撞墙）→ 自建一次性会话，行为不变
+                _batch = fetch_wechat_batch(_urls, session=session)
+            except Exception as e:
+                print(f"[batch-cdp-err] 批量 CDP 抓取异常: {e}", file=sys.stderr)
+                _batch = {}
+            for it in cdp_deferred:
+                res = _batch.get(it["url"])
+                if not res or len((res[1] or "").strip()) < MIN_CONTENT_LEN:
+                    # CDP 也失败/仍撞墙 → 走原有跨轮重试/丢弃逻辑
+                    decision, payload = _decide_retry_or_drop(it, WECHAT_MAX_REFETCH)
+                    stats["empty_retry"] += 1
+                    if decision == "drop":
+                        dropped.append({
+                            "title": it.get("title", ""),
+                            "mp_name": it.get("mp_name", "") or it.get("sub_name", ""),
+                            "url": it.get("url", ""),
+                            "reason": payload,
+                        })
+                        print(f"[drop-gate] {it['title']}（{payload}）")
+                    else:
+                        refetch_next.append(payload)
+                        print(f"[empty-retry] {it['title']}（CDP 批量仍抓空，已入重试队列"
+                              f"{payload.get('refetch_count')}/{WECHAT_MAX_REFETCH}）")
+                    continue
+                # CDP 成功 → 走常规总结管线
+                _summarize_article(it, res[0], res[1], obsidian, stats)
 
     # B站无字幕视频：本轮统一「有界 ASR 池」批量转写（不阻塞公众号 CDP 批次 / 重试 / 其他源）。
     # ASR 不需要 CDP/Chrome，与微信 CDP 批次互不干扰；失败项入 pending_refetch 状态机重试。

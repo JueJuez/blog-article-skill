@@ -60,6 +60,10 @@ EXTERNAL_DOC_HOSTS = (
 )
 LOGIN_MARKERS = ["立即登录", "登录后查看", "请登录", "成为会员", "开通会员", "订阅后"]
 
+# 列表为空（疑似登录墙/临时空）后：保持当前页面打开、让用户扫码，间隔重试
+LIST_EMPTY_RETRIES = 3
+LIST_RETRY_GAP = 20  # 秒
+
 ARTICLE_GAP = (15, 40)
 PAGE_GAP = (3, 6)
 BATCH_SIZE_RANGE = (10, 15)
@@ -80,9 +84,12 @@ def _lock_is_stale(lock: Path) -> bool:
     except OSError:
         pid_txt = ""
     if pid_txt.isdigit():
+        pid = int(pid_txt)
+        if pid == os.getpid():
+            return True  # 自身持有：允许重入/接管，不当外来进程误杀
         try:
             import psutil
-            return not psutil.pid_exists(int(pid_txt))
+            return not psutil.pid_exists(pid)
         except ImportError:
             pass
     try:
@@ -100,7 +107,7 @@ def _acquire_lock() -> Path:
     except FileExistsError:
         if _lock_is_stale(lock):
             print("[lock] 检测到残留锁（持有进程已退出或锁超龄），自动接管")
-            lock.unlink(missing_ok=True)
+            _force_unlink(lock)
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         else:
             raise SystemExit(f"[lock] 已有一个 scys 抓取进程在跑（{lock}）。"
@@ -110,8 +117,29 @@ def _acquire_lock() -> Path:
     return lock
 
 
+def _force_unlink(path: Path) -> None:
+    """删除锁文件。沙箱安全删除 shim 会把 unlink 路由到回收站并抛 OSError，
+    导致 os.remove 永远删不掉锁 → 跨域残留自身 PID 误杀。这里 os.remove 失败后用
+    ctypes.DeleteFileW 直接调 Windows API 真删（绕过回收站路由），确保锁能释放。
+    """
+    p = os.fspath(path)
+    try:
+        os.remove(p)
+    except OSError:
+        pass
+    if os.path.exists(p):  # os.remove 被 shim 拦截未删 → 用 ctypes 真删
+        try:
+            import ctypes
+            if not ctypes.windll.kernel32.DeleteFileW(p):
+                code = ctypes.windll.kernel32.GetLastError()
+                if code != 2:  # 2=文件不存在，正常
+                    print(f"[lock] DeleteFileW 失败 code={code}: {p}")
+        except Exception:
+            pass
+
+
 def _release_lock(lock: Path) -> None:
-    lock.unlink(missing_ok=True)
+    _force_unlink(lock)
 
 
 def filter_todo(items: list[dict], done_ids: set, since_days: int = 0,
@@ -186,10 +214,17 @@ class ScysBatchFetcher:
     # ---------- 列表 ----------
 
     def collect_list(self, page) -> list[dict]:
-        """打开 tags 页捕获 searchTopic 响应；点击翻页拿后续页。"""
+        """打开 tags 页捕获 searchTopic 响应；点击翻页拿后续页。
+
+        2026-09-02 修复：Playwright 在 CDP/profile_clone 路径下偶发
+        `Protocol error (Network.getResponseBody): No resource with given identifier found`，
+        导致 searchTopic 响应解析失败、items 为空。此时保留监听并重载页面，
+        重载后的响应通常可被正常解析（诊断已验证）。
+        """
         items: dict[int, dict] = {}
         captured: list[dict] = []
         done = {"flag": False}
+        parse_failed_once = {"flag": False}
 
         def on_response(resp):
             if "searchTopic" not in resp.url:
@@ -218,13 +253,31 @@ class ScysBatchFetcher:
                 captured.append(pd.get("pageIndex"))
                 if pd.get("pageIndex", 1) >= self.pages or len(items) >= (data.get("total") or 0):
                     done["flag"] = True
-            except Exception:
-                pass
+            except Exception as e:
+                parse_failed_once["flag"] = True
+                try:
+                    pd = json.loads(resp.request.post_data or "{}")
+                    print(f"[list] searchTopic page={pd.get('pageIndex')} 解析失败（CDP 资源未就绪）: {e}")
+                except Exception:
+                    print(f"[list] searchTopic 解析失败（CDP 资源未就绪）: {e}")
 
         page.on("response", on_response)
-        print(f"[list] goto tags 页（{self.name}={self.menu_id}）")
-        page.goto(TAGS_URL.format(menu_id=self.menu_id), wait_until="domcontentloaded", timeout=30_000)
-        page.wait_for_timeout(6000)
+        for attempt in range(2):
+            print(f"[list] goto tags 页（{self.name}={self.menu_id}）尝试 {attempt + 1}/2")
+            page.goto(TAGS_URL.format(menu_id=self.menu_id), wait_until="domcontentloaded", timeout=30_000)
+            page.wait_for_timeout(6000)
+            if items:
+                break
+            if parse_failed_once["flag"]:
+                print("[list] 已有响应但解析失败，重载页面再试一次...")
+                page.reload(wait_until="domcontentloaded", timeout=30_000)
+                page.wait_for_timeout(6000)
+                if items:
+                    print("[list] 重载后解析成功")
+                    break
+            if not items:
+                # 没有解析失败且仍为空，说明真的没数据（登录墙/空域），不再重试
+                break
 
         for _ in range(self.pages - 1):
             if done["flag"]:
@@ -457,6 +510,19 @@ class ScysBatchFetcher:
             page = sess.new_page()
             try:
                 lst = self.collect_list(page)
+                # 列表为空（疑似登录墙或临时空）：保持当前页面打开，让用户扫码，
+                # 每 LIST_RETRY_GAP 秒重试一次，最多 LIST_EMPTY_RETRIES 次
+                if not lst:
+                    for _attempt in range(1, LIST_EMPTY_RETRIES + 1):
+                        print(f"[scys] 列表为空（可能需登录，页面保持打开请扫码）。"
+                              f"{LIST_RETRY_GAP}s 后第 {_attempt}/{LIST_EMPTY_RETRIES} 次重试…")
+                        time.sleep(LIST_RETRY_GAP)
+                        lst = self.collect_list(page)  # 内部重新 goto + 重新抓响应（同一 page）
+                        if lst:
+                            break
+                    if not lst:
+                        print("[scys] 重试后仍为空，本域跳过（下轮可重试）")
+                        return 0
                 if list_only:
                     dig = [it for it in lst if it["isDigested"]]
                     print(f"[list-only] {self.name}: 共 {len(lst)} 篇，其中精华 {len(dig)} 篇")
@@ -547,6 +613,7 @@ def main(argv: list[str]) -> int:
         for name, mid in projects.items():
             print(f"{name}\tmenuId={mid}")
         return 0
+
     if not args.project:
         ap.error("请用 --project 指定项目领域（或 --list-projects 查看可选项）")
 

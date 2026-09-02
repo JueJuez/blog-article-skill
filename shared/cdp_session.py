@@ -1,13 +1,19 @@
-"""shared/cdp_session.py — 单一共享 CDP / 登录态浏览器会话。
+"""shared/cdp_session.py — 单一共享 CDP / 登录态浏览器会话（只走一条路径）。
 
 用户 2026-08-26 明确：公众号 与 scys 共用一套 CDP 逻辑，应「只开关一次浏览器」。
-本模块把「开 / 关浏览器」从各自脚本里抽出来，提升为**单一生命周期**：
 
-  - 优先 connect_over_cdp 接管用户【活 Chrome】（继承登录态，浏览器保持打开，不 kill、不克隆）；
-  - CDP 不可用（活 Chrome 没开调试端口）→ 回退 kill chrome → profile_clone → launch_persistent_context
-    （与 scripts/scys_batch_fetch.py 原 _run_once 同款回退，仅此路径才会短暂关闭你的 Chrome）。
+唯一路径（2026-09-02 塌缩，删除路径1/路径3）：
+  关掉用户的 Chrome（释放 Network/Cookies 独占锁）
+  → 复制真实 profile 到非默认 ProfileClone 目录（ensure_profile_clone）
+  → 以该目录 + --remote-debugging-port 启动系统 Chrome（Chrome 151+ 仅在非默认 dir 放行调试）
+  → connect_over_cdp 接管（导航/DOM/请求可读，登录态+扩展天然保留）。
 
-两种用法：
+为什么要删另两条：
+  - 路径1（接管活 Chrome）：Chrome 151+ 在默认 profile 上写了调试端口却不监听，本机不可行 → 删。
+  - 路径3（headless 克隆无登录兜底）：会静默撞登录墙产出空壳 → 删。
+ProfileClone 是非默认目录的真实副本，Chrome 151+ 放行调试且不触发扩展垃圾回收。
+
+用法：
   A. 单次取标题（公众号）：
         with SharedCdpSession() as s:
             t = s.get_title("https://mp.weixin.qq.com/s/xxx")
@@ -16,10 +22,8 @@
             page = s.new_page()
             page.goto(url); ...  # scys 自己的 collect_list / fetch_article 逻辑
             html = s.get_html(url)
-
-活 Chrome 路径下，多次独立运行（先 scys、后 gzh）都只是「连接」同一个已开浏览器，
-天然零重开；回退路径因每次是新进程才重开，属极少数情况。
 """
+import os
 import sys
 import time
 import random
@@ -57,54 +61,113 @@ def _probe_endpoint(port: int, retries: int = 20, delay: float = 0.25) -> str:
     return f"ws://127.0.0.1:{port}"
 
 
+def _find_system_chrome() -> str | None:
+    """定位系统 Chrome 可执行文件（用于以真实 profile 启动带调试的浏览器）。"""
+    candidates = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    import shutil
+    return shutil.which("chrome") or shutil.which("google-chrome")
+
+
+def _chrome_running() -> bool:
+    """本机是否有 chrome.exe 进程在跑。"""
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq chrome.exe"],
+                             capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=10)
+        return "chrome.exe" in out.stdout
+    except Exception:
+        return False
+
+
+def _ensure_chrome_closed() -> None:
+    """确保用户的 Chrome 完全退出，从而释放 Network/Cookies 的独占锁。
+
+    登录态复制的前提：源 profile 的 cookie db 未被占用。Chrome 136+ 对
+    Default/Network/Cookies 用 FILE_SHARE_NONE 独占锁，运行期复制必失败（见
+    references/login-required-cdp-workflow.md §13）。因此 fallback 必须先关 Chrome。
+    先优雅结束（taskkill 不带 /F，给 Chrome 跑清理），超时再强杀。
+    """
+    if not _chrome_running():
+        return
+    subprocess.run(["taskkill", "/IM", "chrome.exe"],
+                   capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=10)
+    for _ in range(10):
+        if not _chrome_running():
+            return
+        time.sleep(1)
+    # 优雅结束超时 → 强杀兜底
+    subprocess.run(["taskkill", "/F", "/IM", "chrome.exe", "/T"],
+                   capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=10)
+    for _ in range(10):
+        if not _chrome_running():
+            return
+        time.sleep(1)
+
+
+def _launch_cloned_logged_in_browser(p) -> tuple:
+    """可靠兜底（带登录态）：关 Chrome → 复制真实 profile 到非默认 ProfileClone 目录 → 该目录开调试端口启动。
+
+    为什么这条能同时保住「登录态 + CDP 控制」：
+      - Chrome 151+ 在【默认 user-data-dir】上禁调试端口（实测 DevToolsActivePort 写了但不监听）；
+        在【非默认目录】上放行（实测 5599 正常响应 /json/version）。
+      - 故启动用 ProfileClone（非默认 dir）→ CDP 控得住。
+      - 登录态靠复制真实 profile 的 cookie；但运行期 cookie 被独占锁，必须先关 Chrome 再复制
+        （ensure_profile_clone 增量同步才能把 Network/Cookies 拷过去）。
+    启动方式是「直接拉起系统 Chrome + --remote-debugging-port」再 connect_over_cdp，
+    规避 Playwright 在默认 dir 上对 pipe 的限制；非默认 dir 下该方式已实测可用。
+
+    Returns:
+        (context, cdp_endpoint, proc) —— proc 为拉起的 Chrome 进程，close() 时杀掉进程树。
+    """
+    from profile_clone_fetch import ensure_profile_clone, CLONE_DIR
+    _ensure_chrome_closed()                 # 先释放 cookie 锁
+    clone_dir = ensure_profile_clone()       # 关了 Chrome 后，cookie 增量同步可成功
+    chrome_exe = _find_system_chrome()
+    if not chrome_exe:
+        raise RuntimeError("找不到系统 Chrome 可执行文件")
+    dbg_port = _free_port()
+    # 直接拉起系统 Chrome（真实 profile 副本 + 非默认 dir + 调试端口）
+    subprocess.Popen(
+        [chrome_exe,
+         f"--user-data-dir={clone_dir}",
+         f"--remote-debugging-port={dbg_port}",
+         "--no-first-run", "--no-default-browser-check",
+         "--disable-blink-features=AutomationControlled"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    ws = _probe_endpoint(dbg_port)           # 等 DevTools 就绪，拿 webSocketDebuggerUrl
+    browser = p.chromium.connect_over_cdp(ws)
+    ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+    return ctx, ws, proc
+
+
+
 class SharedCdpSession:
-    def __init__(self, headless=True, live_cdp_preferred=True):
-        from login_cdp_fetch import discover_chrome_devtools
+    def __init__(self, headless=True):
         from playwright.sync_api import sync_playwright
 
         self._p = sync_playwright().start()
         self._use_cdp = True
-        self._live = False          # 是否接管了用户的活 Chrome
+        self._live = True            # 路径2 由我们启动带登录的 Chrome，视作"活会话"
+        self._own_browser = True     # 浏览器由我们启动（关Chrome→克隆→启动），退出时关闭
         self._ctx = None
         self._page = None
-        self._headless = headless
-        self.cdp_endpoint = None     # 供并行 worker 经 connect_over_cdp 复用的 ws 端点
+        self._browser = None
+        self._headless = headless    # 路径2 始终可见（scys 登录墙需可见页）；此参数仅保留签名兼容
+        self._proc = None            # 拉起的 Chrome 进程（close() 杀掉进程树）
+        self.cdp_endpoint = None     # 供并行 worker 经 from_endpoint 复用的 ws 端点
 
-        try:
-            if not live_cdp_preferred:
-                raise RuntimeError("fallback forced")
-            port, ws_path = discover_chrome_devtools()
-            browser = self._p.chromium.connect_over_cdp(f"ws://127.0.0.1:{port}{ws_path}")
-            self._browser = browser
-            self._ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-            self._live = True
-            self.cdp_endpoint = f"ws://127.0.0.1:{port}{ws_path}"
-            print(f"[CDP] 接管活 Chrome: ws://127.0.0.1:{port}{ws_path}（浏览器保持打开）")
-        except RuntimeError:
-            self._use_cdp = False
-            self._live = False
-            print("[fallback] CDP 不可用 → kill chrome + profile_clone（会短暂关闭你的 Chrome）")
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "chrome.exe", "/T"],
-                capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=10,
-            )
-            time.sleep(2)
-            from profile_clone_fetch import ensure_profile_clone
-            tmpdir = ensure_profile_clone()
-            self._tmpdir = tmpdir
-            # 回退克隆浏览器暴露调试端口：并行 worker 经 connect_over_cdp 复用同一浏览器，
-            # 从而「父进程 kill 一次、多 worker 共享」，避免各自 kill+clone 的并发污染与重复开销。
-            _dbg_port = _free_port()
-            self._ctx = self._p.chromium.launch_persistent_context(
-                user_data_dir=str(tmpdir),
-                headless=headless,
-                args=["--disable-blink-features=AutomationControlled",
-                      "--no-sandbox", "--disable-dev-shm-usage",
-                      f"--remote-debugging-port={_dbg_port}"],
-                viewport={"width": 1280, "height": 800},
-                ignore_https_errors=True,
-            )
-            self.cdp_endpoint = _probe_endpoint(_dbg_port)
+        # 唯一路径（2026-09-02 塌缩，删路径1/路径3）：
+        # 关 Chrome → 复制真实 profile 到非默认 ProfileClone → 该 dir 开调试端口启动
+        # → connect_over_cdp 接管（CDP 控得住 + 登录态/扩展保留；Chrome 151+ 仅非默认 dir 放行调试）。
+        self._ctx, self.cdp_endpoint, self._proc = _launch_cloned_logged_in_browser(self._p)
+        print(f"[CDP] 关 Chrome→克隆 profile→非默认 dir 开调试端口启动（登录态+CDP 控制）")
 
         # 复用同一 page 取标题，避免泄漏
         self._page = self._ctx.pages[0] if getattr(self._ctx, "pages", None) else self._ctx.new_page()
@@ -124,7 +187,8 @@ class SharedCdpSession:
         self._use_cdp = True
         self._live = True
         self._headless = True
-        self._tmpdir = None
+        self._own_browser = False   # worker 不拥有共享浏览器，close() 不杀进程
+        self._proc = None
         self.cdp_endpoint = endpoint
         self._browser = self._p.chromium.connect_over_cdp(endpoint)
         self._ctx = self._browser.contexts[0] if self._browser.contexts else self._browser.new_context()
@@ -237,13 +301,23 @@ class SharedCdpSession:
                 self._page.close()
         except Exception:
             pass
-        # 活 Chrome：只断开 playwright，绝不关闭用户浏览器 / 上下文
-        if not self._live and not self._use_cdp:
+        # 仅当我们自己启动了浏览器（路径2：克隆+非默认 dir 启动）才关闭；
+        # 复用共享浏览器（_own_browser=False）只断开 playwright，绝不关闭共享浏览器。
+        if getattr(self, "_own_browser", False):
             try:
                 if self._ctx:
                     self._ctx.close()
             except Exception:
                 pass
+            # 杀掉我们拉起的 Chrome 进程树（connect_over_cdp 的 ctx.close() 不终止外部进程）
+            proc = getattr(self, "_proc", None)
+            if proc is not None and proc.poll() is None:
+                try:
+                    subprocess.run(["taskkill", "/T", "/PID", str(proc.pid)],
+                                   capture_output=True, text=True,
+                                   encoding="utf-8", errors="ignore", timeout=10)
+                except Exception:
+                    pass
         try:
             self._p.stop()
         except Exception:

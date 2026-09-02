@@ -1,11 +1,18 @@
 # 需登录站点抓取 · 「接管用户主 Chrome」CDP 方案
 
-> ⚠️ **2026-08-24 重大更新：Chrome 151+ 废弃 junction 方案**
+> 🔴 **2026-09-02 架构收敛 · 本文档机制部分已过时**
+> 原「路径 A（junction 接管活 Chrome）/ 路径 B（headless 克隆）」双路径框架**已删除**，代码现只有一条路径（见 `shared/cdp_session.py` 的 `SharedCdpSession`）：
+> **关掉用户 Chrome → 复制 profile 到非默认 `ProfileClone` 目录 → 该目录以调试端口启动 Chrome → `connect_over_cdp` 接管**。
+> - junction 方案永久废弃（会触发扩展垃圾回收，实测删 22 个扩展）。
+> - 活 Chrome 接管（默认 profile 开调试端口）在 Chrome 151+ 不可用（端口写了但不监听）。
+> - `login_cdp_fetch.py` 现为**端口探测诊断工具**，不再自动回退抓取；需登录态抓取走监控流水线 `monitors/run.py`。
+> 仍有效：§2（为何不手搓 cookie）、§10（文档沉淀纪律）。§1.1/§3/§5.1/§12/§13 的 junction / 路径 A-B 描述仅作历史参考，**勿照做**。
+
+> ⚠️ **2026-08-24 重大更新：Chrome 151+ 废弃 junction 方案**（历史记录）
 > 旧方案用 junction（DebugUDD→User Data）+ 焊快捷方式 flags 绕过 Chrome 151+ 远程调试限制。
 > Chrome 151 能检测 junction 指向同一物理目录，触发 `extension_garbage_collector` 删扩展 + 清账号。
-> **新方案**：`login_cdp_fetch.py` CDP 不可用时自动回退到 `profile_clone_fetch.py`（持久化 ProfileClone 目录，
-> 非默认 dir → Chrome 151+ 放行）。详见 `.workbuddy/memory/_archive/decisions/DECISION-20260824-chrome151-junction-deprecation.md`（已归档）。
-> 本文件 §1.1~§1.2 已更新为新方案；§2 及之后的历史记录保留但 **junction 相关内容已作废**。
+> **新方案（即上）：`SharedCdpSession` 复制 profile 到非默认 `ProfileClone` 目录以调试端口启动，不再用 junction、不再改快捷方式。**
+> 详见 `.workbuddy/memory/_archive/decisions/DECISION-20260824-chrome151-junction-deprecation.md`（已归档）。
 
 > **本文件是「需登录态才能访问」的网站的通用抓取工作流。**
 > 与 `references/youtube-cdp-workflow.md`（独立 Chrome-CDP 副本，仅代理）的关系见 §7。
@@ -30,14 +37,12 @@ python scripts/login_cdp_fetch.py "<需登录的URL>" [out.md]
 
 > ⚠️ 不要把「PW」理解成"密码 / Password / 微信公众平台"等；本项目语境下 **PW ≡ Playwright**。其它解释都会让模型走错路（去手搓 cookie、找密码、抓登录 API 等）。
 
-脚本会自动：
-1. 读 `%LOCALAPPDATA%\Google\Chrome\User Data\DevToolsActivePort`（若不存在则找 `Default\DevToolsActivePort` 兼容路径）。
-2. TCP 连端口 + HTTP `GET /json/version`，**确认是 Chrome DevTools 服务**（不是被占着的随机服务）。
-3. 用 Playwright `chromium.connect_over_cdp(ws_endpoint)` 接管。
-4. 新开标签 → `page.goto(URL)` → 等待 SPA 渲染 → 读取正文 → 写入 `out.md`。
-5. 抓完**不关**用户 Chrome，**不重启**浏览器，登录态保留。
+`login_cdp_fetch.py` **现在仅作端口探测诊断**（不再抓取、不再自动回退）：
+1. 读 `%LOCALAPPDATA%\Google\Chrome\User Data\DevToolsActivePort`（兼容 `Default\DevToolsActivePort`）。
+2. TCP 连端口 + HTTP `GET /json/version`，确认是 Chrome DevTools 服务。
+3. `smoke` 成功 → 报「端口可用」；失败 → 报「无调试端口」并提示走 `monitors/run.py`（它会经 `SharedCdpSession` 自动克隆非默认目录 + 调试端口接管抓取）。
 
-若步骤 1/2 失败（端口被占 / Chrome 没在 debug mode）→ **清晰报错**「请先以 debug 模式启动 Chrome（详见 §1）」并停止；**不会**自作主张启新 Chrome。
+> ⚠️ **实际抓取不再经本脚本**：需登录态的真实抓取（scys / 公众号）由监控流水线 `monitors/run.py` 与 `scripts/scys_batch_fetch.py` 内部的 `SharedCdpSession` 完成（自动克隆非默认 `ProfileClone` 目录 + 调试端口 + `connect_over_cdp` 接管）。
 
 ---
 
@@ -47,32 +52,24 @@ python scripts/login_cdp_fetch.py "<需登录的URL>" [out.md]
 > 不这么做 → 我方任何代码都连不上 Chrome。
 > 不需要重启 Chrome —— 一次性加 flag 即可（保留所有标签 + cookies + 登录态）。
 
-### 1.1 Windows：快捷方式改属性（已废弃 · Chrome 151+ 破坏扩展）
+### 1.1 用户侧前置（当前无需任何操作）
 
-> ⚠️ **2026-08-24 更新：junction 方案已废弃！**
-> 旧方案把 `--user-data-dir=DebugUDD --remote-debugging-port=5494` 焊进 Chrome 快捷方式，
-> 其中 `DebugUDD` 是指向真实 `User Data` 的 junction。
-> Chrome 151+ 能检测 junction 指向同一物理目录，触发安全清理：
-> 清空 `extensions.settings` → `extension_garbage_collector` 删扩展文件 → 清 Google 账号关联。
-> 实测 2026-08-24 造成 22 个扩展被删、Google 账号被登出。
->
-> **新方案**：Chrome 快捷方式**不加任何参数**（已恢复干净）。
-> `login_cdp_fetch.py` 探测不到 debug 端口时自动回退到 `profile_clone_fetch.py`
-> （复制真实 profile 到临时目录，非默认 dir → Chrome 151+ 放行）。
-> 代价：抓取时需短暂关闭 Chrome（脚本自动 kill 释放 cookie 锁），复制 ~16GB profile 需 ~1 分钟，抓完后用户重开即可。
+> **当前方案由 `SharedCdpSession`（代码）自动完成，用户零操作**：
+> 需要登录态抓取时，代码自动：先确保用户 Chrome 完全关闭（释放 cookie 独占锁）→ 复制真实 profile 到**非默认** `ProfileClone` 目录 → 用该目录以调试端口启动 Chrome → `connect_over_cdp` 接管。
+> 非默认目录 + 调试端口 = Chrome 151+ 放行调试；复制的 profile 含 cookie → 登录态继承。
+> 代价：每次会**短暂关闭用户的 Chrome** 再重启带登录态的克隆浏览器。
 
-### 1.2 命令行启动（新方案 · 复制 profile 到临时目录）
+> 🚫 **junction 方案永久废弃**（2026-08-24 实测教训，勿复活）：把 `--user-data-dir=DebugUDD --remote-debugging-port=5494` 焊进快捷方式、`DebugUDD` 指向 `User Data` 的 junction，会被 Chrome 151+ 检测并触发 `extension_garbage_collector` 删除 22 个扩展 + 清 Google 账号关联。
 
-> **新方案（Chrome 151+）**：不需要 `--remote-debugging-port`，不需要 junction。
-> 用 `profile_clone_fetch.py`，它复制真实 profile 到临时目录，用临时 dir 启 headless Chrome，
-> 非默认 dir → Chrome 151+ 放行，自动继承登录态。
+### 1.2 命令行启动（由 `SharedCdpSession` 自动完成 · 用户无需手敲）
+
+> 需登录态抓取统一走监控流水线 `monitors/run.py`（公众号/B站）或 `scripts/scys_batch_fetch.py`（scys 批量）；二者内部都用 `SharedCdpSession` 自动克隆非默认目录 + 调试端口接管。
+> 单篇诊断可用 `login_cdp_fetch.py smoke` 探端口（**仅探测，不再自动回退抓取**）：
 >
 > ```bash
-> # 统一入口（自动回退到 profile_clone_fetch）
-> python scripts/login_cdp_fetch.py "<URL>" [out.md]
->
-> # 或直接调 profile_clone_fetch
-> python scripts/profile_clone_fetch.py "<URL>" [out.md]
+> # 端口探测诊断（不抓取）
+> python scripts/login_cdp_fetch.py smoke
+> # 需登录 URL 抓取 → 走监控流水线，不要直接调 profile_clone_fetch（已无 standalone 抓取入口）
 > ```
 >
 > <details><summary>旧 junction 方案（已废弃 · 勿用）</summary>
@@ -144,31 +141,28 @@ python scripts/login_cdp_fetch.py "<任意URL>" smoke.md
 
 ---
 
-## 3. 架构
+## 3. 架构（2026-09-02 收敛为单路径）
 
 ```
 用户给「需登录 URL」
       │
       ▼
-scripts/login_cdp_fetch.py <URL>
+监控流水线 / scys_batch_fetch.py  →  SharedCdpSession（唯一路径）
       │
-      ├─ ① 读 DevToolsActivePort → 拿端口 + ws path
+      ├─ ① 确保用户 Chrome 完全关闭（taskkill，释放 cookie 独占锁）
       │
-      ├─ ② 端口探活 + GET /json/version
-      │     ├─ 失败 → 报「请按 §1 启动 Chrome」
-      │     └─ 通过 → 继续
+      ├─ ② 复制真实 profile → 非默认 ProfileClone 目录
+      │     · 复制时 Chrome 已关 → cookie 锁释放 → 登录态文件完整拷入
       │
-      ├─ ③ Playwright.chromium.connect_over_cdp(ws)
-      │     · ws 连接时 suppress_origin=True（Chrome 安全防）
-      │     · 不创建新 context，直接接管首 context，登录态继承
+      ├─ ③ 用 ProfileClone 目录以调试端口启动 Chrome（非默认 dir → 151+ 放行）
       │
-      ├─ ④ ctx.new_page() → page.goto(URL, wait_until='domcontentloaded')
-      │     · SPA 等待 5–10s（按页面可能更长）
-      │     · 取 title / 取正文（按 selector 链或直接 page.evaluate body.innerText）
+      ├─ ④ Playwright.chromium.connect_over_cdp(ws_endpoint)
+      │     · 接管克隆浏览器首 context，复制来的 cookie → 登录态继承
       │
-      └─ ⑤ 写到 out.md（标准 frontmatter + 正文）
-            · 不动用户 Chrome（不关 browser 不关 page）
-            · 退出 Playwright context（但不杀浏览器实例）
+      ├─ ⑤ ctx.new_page() → page.goto(URL, wait_until='domcontentloaded')
+      │     · SPA 等待 5–10s；取 title / 正文（selector 链或 body.innerText）
+      │
+      └─ ⑥ 抓取完成 → 退出克隆浏览器（用户重开原 Chrome 即可）
 ```
 
 ---
@@ -244,10 +238,8 @@ Chrome 自 132 起对 ws 上 DevTools 加了若干保护：
 
 - **ws 必须带正确的 `Host` 与 `Connection: Upgrade`**：用 Playwright 默认即可，**切勿手搓**。
 - **`Origin` 头**：Playwright 默认不发，不用 `suppress_origin` 也行；用 raw `websocket-client` 要 `suppress_origin=True`。
-- **默认 user-data-dir + debug port 在 Chrome 151+ 会被拒**（实测 2026-08-20，`Chrome/151.0.7922.138`）：报错 `DevTools remote debugging requires a non-default data directory`。与 `youtube-cdp-workflow.md §1.3.1` 中「起独立 CDP 副本不能用默认 user-data-dir」**现在本方案也必须用非默认目录**，差异只剩：
-  - 独立副本 → 非默认 user-data-dir 且是**全新空目录**（无登录态，仅用于字幕抓取）
-  - 本方案 → 非默认 user-data-dir 但用**指向真实 profile 的 junction**（继承登录态）
-  - 👉 具体起法见 §1.2（junction 命令），旧「直接默认目录 + 端口」命令已失效。
+- **默认 user-data-dir + debug port 在 Chrome 151+ 会被拒**（实测）：报错 `DevTools remote debugging requires a non-default data directory`。**当前方案用非默认 `ProfileClone` 目录（复制真实 profile）规避**，登录态靠复制的 cookie 继承，不用 junction。**
+- 细节同 `youtube-cdp-workflow.md §1.3.1`（独立 CDP 副本也用非默认目录）。
 
 ### 5.2 多个并发抓取
 
@@ -405,7 +397,7 @@ Playwright `connect_over_cdp` **可以**创建多个 `page` 并发在同一 cont
 
 ---
 
-## 12. 路径 B · profile-clone 抓取（用户主 Chrome 未启 debug 时自动 fallback）
+## 12. 路径 B · profile-clone 抓取（历史记录 · 已被单路径取代）
 
 > **机制**：用户主 Chrome 没启 debug（最常见情况）→ 无法接管活浏览器。但仍可「**复制 Chrome 的 user-data-dir 到临时目录 → 启一个独立的新 Chromium headless 实例指到那份副本 → 访问 URL → 取正文**」。同 Windows 用户 + DPAPI ⇒ 新 Chromium 自动解密 cookie ⇒ **登录态继承**。
 >
@@ -445,7 +437,7 @@ Playwright `connect_over_cdp` **可以**创建多个 `page` 并发在同一 cont
 
 ---
 
-## 13. 结构性约束 · Chrome 136+ 锁 cookie（**实测**）
+## 13. 结构性约束 · Chrome 136+ 锁 cookie（历史记录 · 仅解释为何要先关 Chrome）
 
 > 这是**结构性**事实（Chrome 安全加固，不是 bug 也不是我没努力）：Chrome 136+ 的 cookie 数据库 `Default\Network\Cookies` 用 `FILE_SHARE_NONE` 独占锁，**任何别的进程包括 ctypes 全共享读、sqlite3、robocopy、`vssadmin`**都不能读它（2026-08-19 23:5x 实测）。
 
@@ -550,11 +542,12 @@ URL 是否需登录？
 │   └─ 抓到后：按 articles/skill_main 模板总结 → OutputManager.save_all 落飞书
 └─ 拿不准 → 默认走 articles/skill_main，非登录墙报错再升级
 
-关键事实（2026-08-20 实测固化）：
-  • Chrome 151+ 禁止默认目录开调试 → 必须用 junction（§1.2）
-  • ws 路径永远以 /json/version 实时返回为准，不信磁盘文件 uuid
-  • 快捷方式已焊好 flags → 新会话正常 smoke 即可，不需让用户手动敲命令
-  • b.close() 会杀浏览器 → 接管用户浏览器时绝不能调 browser.close()
+关键事实（2026-09-02 收敛后）：
+  • Chrome 151+ 禁止默认目录开调试 → 复制 profile 到非默认 `ProfileClone` 目录 + 调试端口（§1.1）
+  • 登录态 = 复制的 cookie 文件；复制前必须先关 Chrome 释放 cookie 独占锁
+  • 单路径：关 Chrome → 克隆 → 调试端口启动 → `connect_over_cdp` 接管（见 `shared/cdp_session.py`）
+  • `login_cdp_fetch.py` 仅端口探测诊断，不再自动回退；抓取走 `monitors/run.py`
+  • junction 永久废弃（会删扩展）
 ```
 
 > **2026-08-12 前的旧结论已作废**：「用户主 Chrome 当前没启 debug = 路径 A 用不了」「本次会话做不到访问 scys.com」——这些在 2026-08-20 已全部解决（Chrome 151 根因定位 + junction 解法 + 快捷方式永久化）。
