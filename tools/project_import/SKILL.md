@@ -67,7 +67,7 @@ cp .env.example .env   # 然后编辑 .env 填入你自己的 FEISHU_BASE_TOKEN 
 | `BATCH_LLM_ANALYSIS_FILE` | 可选，离线分析 JSON 文件，跳过真实 API |
 | `GITHUB_TOKEN` / `GITEE_TOKEN` | 可选，提升 API 限流 60→5000 次/小时 |
 | `BATCH_MAX_WORKERS` | 并发采集分析的线程数，默认 5，上限为待处理仓库数 |
-| `QUALITY_GATE_ENABLED` | 收录质量门禁开关，默认 `1`（开启）；置 `0` 关闭，所有项目直接入库 |
+| `QUALITY_GATE_ENABLED` | 收录质量门禁开关，默认 `0`（关闭，所有项目直接入库）；置 `1` 开启，低质项目转 `pending_review.json` 待复核 |
 | `QUALITY_GATE_MIN_STARS` | 低星阈值，默认 `100`；stars 低于此值判低质，不自动入库 |
 | `QUALITY_GATE_MIN_DOC` / `QUALITY_GATE_MIN_FUNC` | doc/func 评分阈值，默认 `5`；两者**同时**低于阈值也判低质 |
 | `NAME_SEARCH_DELAY` | 按项目名批量搜索时，每次搜索的间隔秒数，默认 `1.2`，用于绕过 GitHub 搜索 API 限流 |
@@ -241,7 +241,7 @@ LLM 返回的枚举字段会经 `analyzer.coerce_choice` 校验与纠偏：精�
   1. `build_frontmatter(...)` 组装 frontmatter（含 `owner_repo / url / platform / summary / project_type / run_form / target_user / domain / tags / highlights / doc_score / func_score / community_score / total_score / source_kind / imported_at / status`）。
   2. 文件已存在则跳过（幂等，不覆盖）。
   3. 写入成功后把 `owner/repo` 追加到 `imported.txt`（去重账本，供后续阶段一前置过滤）。
-  4. **收录质量门禁**：在写入前检查（默认开启）；低星（< `QUALITY_GATE_MIN_STARS`）或 doc/func 双低的项目**不写入**，改为记入 `pending_review.json` 待复核队列（报告项中标记为 `reviewed`）。`pending_review.json` 与 `imported.txt` 同理是去重账本——已入队项目不会重复入队。门禁不回滚已入库项目。
+  4. **收录质量门禁**：在写入前检查（**默认关闭，需设 `QUALITY_GATE_ENABLED=1` 才生效**）；开启后，低星（< `QUALITY_GATE_MIN_STARS`）或 doc/func 双低的项目**不写入**，改为记入 `pending_review.json` 待复核队列（报告项中标记为 `reviewed`）。`pending_review.json` 与 `imported.txt` 同理是去重账本——已入队项目不会重复入队。门禁不回滚已入库项目。
 
 #### 回退（feishu）→ 上传飞书多维表格
 

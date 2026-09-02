@@ -1,13 +1,15 @@
 """收录质量门禁（quality gate）。
 
-默认开启：低星或低文档/功能评分的项目**不自动入库**，而是转入
+默认关闭（opt-in）：门禁需要显式开启才生效（``QUALITY_GATE_ENABLED=1``）。
+开启后，低星或低文档/功能评分的项目**不自动入库**，而是转入
 ``pending_review.json`` 待复核队列，由人工确认后再决定是否入库。这样
 "抽到的全部入库"的问题被关掉——垃圾项目（如 8★ 的空壳仓库）会先进入
-待复核队列，不会污染本地项目库 / 飞书 Bitable。
+待复核队列，不会污染本地项目库 / 飞书 Bitable。不设或置 "0" 时门禁不生效，
+所有项目直接入库（与无门禁时行为一致）。
 
-可通过环境变量关闭或调阈值：
+可通过环境变量开启或调阈值：
 
-- ``QUALITY_GATE_ENABLED``  (默认 "1"，置 "0" 关闭整个门禁)
+- ``QUALITY_GATE_ENABLED``  (默认 "0"，置 "1" 开启整个门禁)
 - ``QUALITY_GATE_MIN_STARS``(默认 100，stars 低于此值判低质)
 - ``QUALITY_GATE_MIN_DOC``  (默认 5)
 - ``QUALITY_GATE_MIN_FUNC`` (默认 5)
@@ -29,7 +31,7 @@ GATE_FILE = Path(__file__).resolve().parent.parent / "pending_review.json"
 
 
 def is_enabled() -> bool:
-    return os.environ.get("QUALITY_GATE_ENABLED", "1") != "0"
+    return os.environ.get("QUALITY_GATE_ENABLED", "0") == "1"
 
 
 def thresholds() -> dict:

@@ -569,6 +569,8 @@ class IngestRepoTest(unittest.TestCase):
             gate_file = os.path.join(d, "pending_review.json")
             saved_gate = quality_gate.GATE_FILE
             quality_gate.GATE_FILE = pathlib.Path(gate_file)
+            saved_enabled = os.environ.get("QUALITY_GATE_ENABLED")
+            os.environ["QUALITY_GATE_ENABLED"] = "1"  # 显式开启以验证路由
             try:
                 analysis_path = os.path.join(d, "analysis.json")
                 with open(analysis_path, "w", encoding="utf-8") as f:
@@ -601,10 +603,27 @@ class IngestRepoTest(unittest.TestCase):
             finally:
                 os.environ.pop("PROJECT_LIBRARY_DIR", None)
                 quality_gate.GATE_FILE = saved_gate
+                if saved_enabled is None:
+                    os.environ.pop("QUALITY_GATE_ENABLED", None)
+                else:
+                    os.environ["QUALITY_GATE_ENABLED"] = saved_enabled
 
 
 class QualityGateTest(unittest.TestCase):
-    """quality_gate：阈值判定 + 待复核队列幂等。"""
+    """quality_gate：阈值判定 + 待复核队列幂等。
+
+    门禁默认关闭（opt-in），本组测试显式开启以验证「开启」行为。
+    """
+
+    def setUp(self):
+        self._saved = os.environ.get("QUALITY_GATE_ENABLED")
+        os.environ["QUALITY_GATE_ENABLED"] = "1"
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop("QUALITY_GATE_ENABLED", None)
+        else:
+            os.environ["QUALITY_GATE_ENABLED"] = self._saved
 
     def test_low_stars_flagged(self):
         self.assertTrue(quality_gate.is_low_quality(8, 7, 8))    # stars<100
@@ -664,6 +683,8 @@ class Phase4QualityGateTest(unittest.TestCase):
             gate_file = os.path.join(d, "pending_review.json")
             saved_gate = quality_gate.GATE_FILE
             quality_gate.GATE_FILE = pathlib.Path(gate_file)
+            saved_enabled = os.environ.get("QUALITY_GATE_ENABLED")
+            os.environ["QUALITY_GATE_ENABLED"] = "1"  # 显式开启以验证路由
             try:
                 completed = [(
                     "https://github.com/junk/repo", "junk/repo", 8,
@@ -685,6 +706,10 @@ class Phase4QualityGateTest(unittest.TestCase):
             finally:
                 os.environ.pop("PROJECT_LIBRARY_DIR", None)
                 quality_gate.GATE_FILE = saved_gate
+                if saved_enabled is None:
+                    os.environ.pop("QUALITY_GATE_ENABLED", None)
+                else:
+                    os.environ["QUALITY_GATE_ENABLED"] = saved_enabled
 
 
 if __name__ == "__main__":

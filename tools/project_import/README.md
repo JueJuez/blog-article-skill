@@ -35,7 +35,7 @@
 - **一次性迁移** — 从已有飞书 Bitable 迁到本地（`migrate_feishu_to_local.py`）
 - **并发采集+分析** — 多个仓库的「采集+分析」并行执行（线程池，受 `BATCH_MAX_WORKERS` 控制）
 - **汇总报告** — 处理完成后输出格式化统计报告（成功率/类型分布/失败明细）
-- **收录质量门禁（默认开）** — 低星（< `QUALITY_GATE_MIN_STARS`，默认 100）或文档/功能评分双低（`doc_score` 与 `func_score` 均 < `QUALITY_GATE_MIN_DOC`/`QUALITY_GATE_MIN_FUNC`，默认 5）的项目**不自动入库**，先转入 `pending_review.json` 待复核队列，由人工确认后再决定；对已入库项目不回滚
+- **收录质量门禁（默认关，opt-in）** — 需设 `QUALITY_GATE_ENABLED=1` 才生效；开启后，低星（< `QUALITY_GATE_MIN_STARS`，默认 100）或文档/功能评分双低（`doc_score` 与 `func_score` 均 < `QUALITY_GATE_MIN_DOC`/`QUALITY_GATE_MIN_FUNC`，默认 5）的项目**不自动入库**，先转入 `pending_review.json` 待复核队列，由人工确认后再决定；不设或置 0 时所有项目直接入库
 
 ## Quick Start
 
@@ -73,8 +73,9 @@ PROJECT_STORAGE="local"
 # 仅 feishu 模式需要：飞书 Base Token（裸 token 或 Wiki/文档链接，自动辨别解析）
 FEISHU_BASE_TOKEN="https://xxx.feishu.cn/wiki/xxxx?table=tblXXXX&view=vewXXXX"
 
-# 收录质量门禁（默认开启）：低质项目不自动入库，转入 pending_review.json 待复核
-# QUALITY_GATE_ENABLED="1"        # 置 "0" 可整体关闭门禁
+# 收录质量门禁（默认关闭，opt-in）：不设或置 0 则所有项目直接入库；
+# 置 "1" 开启后，低质项目不自动入库，转入 pending_review.json 待复核
+# QUALITY_GATE_ENABLED="1"        # 置 "1" 开启门禁；默认 "0"（关闭）直接入库
 # QUALITY_GATE_MIN_STARS="100"    # stars 低于此值判低质
 # QUALITY_GATE_MIN_DOC="5"        # doc_score 阈值
 # QUALITY_GATE_MIN_FUNC="5"       # func_score 阈值
