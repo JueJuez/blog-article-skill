@@ -213,13 +213,29 @@ class ScysBatchFetcher:
 
     # ---------- 列表 ----------
 
+    # CDP 路径下 searchTopic 响应体偶发 'No resource with given identifier found'：
+    # CDP 上报 response 事件早于 body 缓冲完成。对 resp.body() 做短延迟重试（取代整页
+    # reload 的 band-aid），body 通常毫秒级就绪，重试即成功。仅重试「body 读取」，
+    # JSON 解析失败不重试（body 已到手，重试无意义）。
+    @staticmethod
+    def _read_response_body(resp, retries: int = 6, delay: float = 0.25) -> bytes:
+        last_err = None
+        for _ in range(retries):
+            try:
+                return resp.body()
+            except Exception as e:  # Playwright 抛错多为 CDP 资源未就绪
+                last_err = e
+                time.sleep(delay)
+        raise last_err
+
     def collect_list(self, page) -> list[dict]:
         """打开 tags 页捕获 searchTopic 响应；点击翻页拿后续页。
 
-        2026-09-02 修复：Playwright 在 CDP/profile_clone 路径下偶发
-        `Protocol error (Network.getResponseBody): No resource with given identifier found`，
-        导致 searchTopic 响应解析失败、items 为空。此时保留监听并重载页面，
-        重载后的响应通常可被正常解析（诊断已验证）。
+        2026-09-02 修复（reload band-aid → body 重试）：Playwright 在 CDP/profile_clone
+        路径下偶发 `Protocol error (Network.getResponseBody): No resource with given identifier
+        found`——CDP 上报 response 事件早于 body 缓冲完成，导致 searchTopic 解析失败、items 空。
+        原兜底用整页 reload（重代价且常无效）；改为在 on_response 内对 resp.body() 做短延迟重试，
+        body 通常毫秒级就绪，重试即成功，无需 reload。
         """
         items: dict[int, dict] = {}
         captured: list[dict] = []
@@ -229,8 +245,16 @@ class ScysBatchFetcher:
         def on_response(resp):
             if "searchTopic" not in resp.url:
                 return
+            # CDP 路径下 resp.body() 偶发 'No resource with given identifier found'：
+            # 短延迟重试读 body（取代整页 reload 的 band-aid）。
             try:
-                body = resp.json()
+                raw = self._read_response_body(resp)
+            except Exception as e:
+                parse_failed_once["flag"] = True
+                print(f"[list] searchTopic body 读取失败（CDP 资源未就绪，已重试）: {e}")
+                return
+            try:
+                body = json.loads(raw)
                 data = body.get("data") or {}
                 for it in data.get("items") or []:
                     t = it.get("topicDTO") or {}
@@ -249,35 +273,27 @@ class ScysBatchFetcher:
                             "aiSummary": t.get("aiSummaryContent") or "",
                             "articlePreview": t.get("articleContent") or "",
                         }
-                pd = json.loads(resp.request.post_data or "{}")
-                captured.append(pd.get("pageIndex"))
-                if pd.get("pageIndex", 1) >= self.pages or len(items) >= (data.get("total") or 0):
-                    done["flag"] = True
-            except Exception as e:
-                parse_failed_once["flag"] = True
                 try:
                     pd = json.loads(resp.request.post_data or "{}")
-                    print(f"[list] searchTopic page={pd.get('pageIndex')} 解析失败（CDP 资源未就绪）: {e}")
+                    captured.append(pd.get("pageIndex"))
+                    if pd.get("pageIndex", 1) >= self.pages or len(items) >= (data.get("total") or 0):
+                        done["flag"] = True
                 except Exception:
-                    print(f"[list] searchTopic 解析失败（CDP 资源未就绪）: {e}")
+                    pass
+            except Exception as e:
+                parse_failed_once["flag"] = True
+                print(f"[list] searchTopic 解析失败: {e}")
 
         page.on("response", on_response)
-        for attempt in range(2):
-            print(f"[list] goto tags 页（{self.name}={self.menu_id}）尝试 {attempt + 1}/2")
-            page.goto(TAGS_URL.format(menu_id=self.menu_id), wait_until="domcontentloaded", timeout=30_000)
-            page.wait_for_timeout(6000)
-            if items:
+        page.goto(TAGS_URL.format(menu_id=self.menu_id), wait_until="domcontentloaded", timeout=30_000)
+        # 等列表响应到达（而非固定 sleep）；最多 ~12s
+        for _ in range(24):
+            page.wait_for_timeout(500)
+            if items or done["flag"]:
                 break
-            if parse_failed_once["flag"]:
-                print("[list] 已有响应但解析失败，重载页面再试一次...")
-                page.reload(wait_until="domcontentloaded", timeout=30_000)
-                page.wait_for_timeout(6000)
-                if items:
-                    print("[list] 重载后解析成功")
-                    break
-            if not items:
-                # 没有解析失败且仍为空，说明真的没数据（登录墙/空域），不再重试
-                break
+        if not items and parse_failed_once["flag"]:
+            # body 重试仍失败（极罕见）：记录但不整页 reload（reload 是重代价且通常无效）
+            print(f"[list] {self.name} 响应体重试后仍失败，跳过本域（不再 reload）")
 
         for _ in range(self.pages - 1):
             if done["flag"]:

@@ -133,7 +133,7 @@ def _launch_cloned_logged_in_browser(p) -> tuple:
         raise RuntimeError("找不到系统 Chrome 可执行文件")
     dbg_port = _free_port()
     # 直接拉起系统 Chrome（真实 profile 副本 + 非默认 dir + 调试端口）
-    subprocess.Popen(
+    proc = subprocess.Popen(
         [chrome_exe,
          f"--user-data-dir={clone_dir}",
          f"--remote-debugging-port={dbg_port}",
