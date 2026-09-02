@@ -232,7 +232,7 @@ class FeishuOutput(BaseOutput):
                 "wiki", "+node-list",
                 "--parent-node-token", parent,
                 "--space-id", space,
-                "--as", "user", "--json", "--page-all"
+                "--as", "user",  "--page-all"
             ])
             if listing and listing.get("ok"):
                 for item in listing.get("data", {}).get("nodes", []):
@@ -251,7 +251,7 @@ class FeishuOutput(BaseOutput):
                 "--obj-type", "docx",
                 "--parent-node-token", parent,
                 "--space-id", space,
-                "--as", "user", "--json"
+                "--as", "user"
             ])
             if result and result.get("ok"):
                 node = result.get("data", {})
@@ -273,7 +273,7 @@ class FeishuOutput(BaseOutput):
                 "wiki", "+node-list",
                 "--parent-node-token", parent_token,
                 "--space-id", self.wiki_space,
-                "--as", "user", "--json", "--page-all"
+                "--as", "user",  "--page-all"
             ])
             if listing and listing.get("ok"):
                 return listing.get("data", {}).get("nodes", [])
@@ -288,7 +288,7 @@ class FeishuOutput(BaseOutput):
         try:
             args = ["wiki", "+node-delete", "--node-token", node_token,
                      "--obj-type", obj_type,
-                     "--space-id", self.wiki_space, "--as", "user", "--json"]
+                     "--space-id", self.wiki_space, "--as", "user"]
             if yes:
                 args += ["--yes"]
             result = self._run_cli_command(args)
@@ -316,7 +316,7 @@ class FeishuOutput(BaseOutput):
                 "wiki", "+move",
                 "--node-token", node_token,
                 "--target-parent-token", target_parent_token,
-                "--as", "user", "--json",
+                "--as", "user", 
             ])
             if result and result.get("ok"):
                 return True
@@ -395,7 +395,7 @@ class FeishuOutput(BaseOutput):
                     "--obj-type", "docx",
                     "--parent-node-token", parent,
                     "--space-id", space,
-                    "--as", "user", "--json"
+                    "--as", "user"
                 ])
                 if result and result.get("ok"):
                     node = result.get("data", {})
@@ -504,7 +504,7 @@ class FeishuOutput(BaseOutput):
                     "--obj-type", "docx",
                     "--parent-node-token", parent_token,
                     "--space-id", self.wiki_space,
-                    "--as", "user", "--json"
+                    "--as", "user"
                 ])
                 if result and result.get("ok"):
                     node = result.get("data", {})

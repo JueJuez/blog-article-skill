@@ -46,8 +46,9 @@
    - 公众号：`weread` 代理拿列表（仅元数据）→ 时间窗口 + 去重 + 广告过滤；token 失效才弹码等扫码（≤180s），**token 有效时空轮会自动退避重试**，不会卡。
    - B站：官方 API 一步拿视频 + 动态，号间 30±5s 退避；某号异常只跳过该号、其他号照跑。
 3. **抓取 + 总结（apply_summaries）**：
-   - 公众号文章：`fetch_web_content` **直连微信**抽正文（`WECHAT_GAP=6s`+抖动防限流），异常/空页进 `pending_refetch` 下次重抓。
-   - B站视频/动态：视频 `summarize_video`；动态 API 正文内联，短动态存「速览」、完整动态走重模板。
+   - 公众号文章：`fetch_web_content` **直连微信**抽正文（`WECHAT_GAP=6s`+抖动防限流），异常/空页进 `pending_refetch` 下次重抓；直连撞墙的批次自动合并走一次 CDP 批量会话抓正文。
+   - **跨来源去重（2026-09-03）**：生财有术公众号文章送总结前与 `notes/_scraped/scys/` 归档做标题/正文前缀相似比对（`articles/dedup.py: find_cross_duplicate`），同一篇双渠道帖子只总结一次；命中日志 `[cross-dedup]`、健康度计 `scys重复`。URL 去重挡不住跨渠道同帖（两边 URL 天然不同），此比对补上该盲区。
+   - B站视频/动态：视频 `summarize_video`；动态 API 正文内联，短动态存「速览」、完整动态走重模板。B站无字幕自动进 ASR 兜底（需本机装 `yt_dlp faster_whisper ctranslate2 imageio_ffmpeg`，2026-09-03 已装）。
    - FORCE_AGENT_MODE=1：**不自动总结**，全部进 `pending_summaries.json` 队列。
 4. **scys 增量（`subscriptions.json` 配了 `scys` 列表才跑）**：逐领域子进程跑 `scripts/scys_batch_fetch.py`（默认近 7 天窗口、精华过滤按 `scys_projects.json` 默认、翻 2 页列表），抓到的原文进 `notes/_scraped/scys/pending_summaries.json` 队列（与批量补齐共用，`.lock` 互斥防并发写坏 state）。CDP 不可用时自动回退到 `profile_clone_fetch`（持久化 ProfileClone，Chrome 151+ 默认走这条），不影响公众号/B站。
 5. **Agent 总结闭环**：本会话（执行模型）读队列 → 派**子 Agent** 按 `note_type` 模板总结 → `save_summary_only` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，见 `RULES.md` §3.0）→ 出队。**原子化**：成功才出队，中断可安全重跑。scys 队列同理（folder=生财有术/<领域>，语义见 `references/scys-fetch-sop.md` §9）。
@@ -100,7 +101,7 @@
 3. **自建 wewe-rss 救不了公众号稳定性**：其 `PLATFORM_URL` 默认仍指向同一转发服务器，脏活没变。
 4. **B站 `-352` 真因**：缺 `dm_img_*` WebGL 指纹 + 无登录态 + `web_location` 写错；已带 `BILI_COOKIE` + 指纹修复。付费 / 粉丝可见内容 `code=-404/-403` 直接跳过不重试。
 5. **`state.json` 膨胀**：`mark_seen` 按源裁剪到 `STATE_KEEP`（默认 1000，首跑单源约 100 ID，留 10× 余量）。上限取决于"窗口内 ID 数"，与"运行次数"无关——每日跑两遍不会撑爆。
-6. **健康度可观测**：`run.py --apply` 末尾打印统计行（视频/动态/速览/广告跳过/错误），监控异常一眼可见。
+6. **健康度可观测**：`run.py --apply` 末尾打印统计行（视频/动态/速览/广告跳过/scys重复/限流待重试/错误），监控异常一眼可见。
 
 ## 降级闭环与子 Agent 委派
 

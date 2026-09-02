@@ -288,7 +288,7 @@ def _read_series_from_feishu(series_title: str, parent_token: str = None) -> lis
         return []
     res = f._run_cli_command(["wiki", "+node-list", "--parent-node-token", ctok,
                                 "--space-id", f.wiki_space, "--as", "user",
-                                "--json", "--page-all"])
+                                 "--page-all"])
     kids = (res.get("data", {}).get("nodes", [])) if res else []
     rows = []
     for k in kids:
@@ -308,7 +308,7 @@ def _read_series_from_feishu(series_title: str, parent_token: str = None) -> lis
             try:
                 r = f._run_cli_command(["docs", "+fetch", "--doc", obj,
                                          "--doc-format", "markdown", "--scope", "full",
-                                         "--as", "user", "--json"])
+                                         "--as", "user"])
                 content = (r.get("data", {}).get("document", {}).get("content", "")
                              if isinstance(r, dict) else "")
                 # 优先真实单集标题，模型 H1 仅作兜底（且须非段标题）

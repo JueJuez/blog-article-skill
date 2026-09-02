@@ -106,3 +106,90 @@ def mark_summarized(url: str = "", content: str = "", title: str = "", filename:
         "ts": int(time.time()),
     }
     _save_index(index)
+
+
+# ---------------- 跨来源标题/内容去重（公众号 ↔ scys） ----------------
+# 背景：生财有术同时订阅公众号与 scys 站内，同一篇帖子两边 URL 不同，
+# 按 URL 的 is_summarized 挡不住；这里以 notes/_scraped/scys/ 原文归档为基准，
+# 做标题高度相似 + 正文前缀相似判断（DECISION 2026-09-03，公众号侧拦截）。
+
+import re as _re
+from difflib import SequenceMatcher as _SeqMatcher
+
+_PUNCT_RE = _re.compile(
+    r"[\s，。！？、：；“”‘’（）《》【】·…—\-_|,.!?:;'\"()\[\]（）]+")
+_SCYS_DIR = os.path.join(_ROOT, "notes", "_scraped", "scys")
+_SIM_THRESHOLD = 0.85
+_CONTENT_PREFIX_LEN = 300
+
+_scys_archive_cache = None
+
+
+def normalize_title(title: str) -> str:
+    """标题规范化：去空白/标点、小写——公众号与 scys 同步帖标题常有一字之差或截断。"""
+    return _PUNCT_RE.sub("", (title or "")).lower()
+
+
+def _load_scys_archive():
+    """惰性加载 scys 原文归档的 (规范化标题, 规范化正文前缀) 列表，进程内缓存。"""
+    global _scys_archive_cache
+    if _scys_archive_cache is not None:
+        return _scys_archive_cache
+    archive = []
+    if os.path.isdir(_SCYS_DIR):
+        for fn in os.listdir(_SCYS_DIR):
+            if not fn.endswith(".md"):
+                continue
+            path = os.path.join(_SCYS_DIR, fn)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    text = f.read(4000)
+            except Exception:
+                continue
+            title = ""
+            for line in text.splitlines():
+                if line.startswith("#"):
+                    title = line.lstrip("#").strip()
+                    break
+            body = text.split("---", 1)[-1]
+            archive.append((
+                normalize_title(title),
+                normalize_title(body)[:_CONTENT_PREFIX_LEN],
+                title or fn,
+            ))
+    _scys_archive_cache = archive
+    return archive
+
+
+def _similar(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    # 互为前缀/包含（公众号标题常被截断到 64 字内）
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if len(shorter) >= 10 and shorter in longer:
+        return 1.0
+    return _SeqMatcher(None, a, b).ratio()
+
+
+def find_cross_duplicate(title: str = "", content: str = "",
+                         threshold: float = _SIM_THRESHOLD) -> dict:
+    """判断一篇公众号文章是否与 scys 已归档内容高度相似。
+
+    标题相似 ≥ threshold，或正文前缀 _CONTENT_PREFIX_LEN 字相似 ≥ threshold，
+    即视为同一篇帖子在两个来源重复。返回命中的 {"title", "sim", "via"}，未命中 {}。
+    """
+    norm_title = normalize_title(title)
+    norm_content = normalize_title(content)[:_CONTENT_PREFIX_LEN]
+    if len(norm_title) < 8 and len(norm_content) < 50:
+        return {}
+    best = {}
+    for a_title, a_body, raw_title in _load_scys_archive():
+        sim_t = _similar(norm_title, a_title) if norm_title and a_title else 0.0
+        sim_c = _similar(norm_content, a_body) if norm_content and a_body else 0.0
+        sim = max(sim_t, sim_c)
+        if sim >= threshold and sim > best.get("sim", 0):
+            best = {"title": raw_title, "sim": round(sim, 3),
+                    "via": "title" if sim_t >= sim_c else "content"}
+    return best

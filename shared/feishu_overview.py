@@ -446,7 +446,7 @@ def _fetch_body(f: "FeishuOutput", obj_token: str) -> str:
     try:
         res = f._run_cli_command([
             "docs", "+fetch", "--doc", obj_token, "--doc-format", "markdown",
-            "--as", "user", "--json",
+            "--as", "user", 
         ], timeout=30)
         return (((res or {}).get("data", {}) or {}).get("document", {}) or {}).get("content", "") or ""
     except Exception:

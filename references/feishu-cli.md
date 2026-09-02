@@ -8,8 +8,10 @@
 lark-cli wiki +space-list                              # 空间列表（含空间ID / space-id）
 lark-cli wiki +node-list --space-id <空间ID> \       # 节点列表（含父节点 Token）
         --parent-node-token <父节点Token> \
-        --as user --json --page-all
+        --as user --page-all
 ```
+
+⚠️ **坑⓪（2026-09-03）**：lark-cli ≥1.0.32 **移除了 `--json` 旗标**（输出默认就是 JSON），旧调用传 `--json` 会直接报 `Error: unknown flag: --json`——症状是文档能创建但查询/建容器节点全失败。等价写法是 `--format json`（默认值），一般无需显式传。
 
 ⚠️ **坑①**：`+node-list` 返回结构是 `data.nodes`，**不是** `data.items`。遍历：
 
@@ -30,7 +32,7 @@ lark-cli wiki +node-create \
     --obj-type docx \          # ⚠️ 坑③：容器用 docx
     --parent-node-token <父节点Token> \
     --space-id <空间ID> \
-    --as user --json
+    --as user
 ```
 
 ⚠️ **并发安全（2026-08-26 起）**：`_ensure_child_node` / `ensure_series_node` 的查-建已加**跨进程原子锁**（`_node_creation_lock`，原子 `O_EXCL` 锁文件）+ 建失败重查复用兜底。多会话并发新建同一容器节点（如两进程同时建 `【监控】/B站/土斯`）时，仅一个进程真正建出，另一进程建失败后重查到对方节点直接复用——**绝不重复建、不落空**。作者文件夹已存在时建步骤退化为只读复用，竞态本就关闭。详见 `docs/decisions/DECISION-20260826-feishu-node-creation-lock.md`。
@@ -58,6 +60,8 @@ lark-cli wiki +node-delete \
 | 现象 | 原因 | 修 |
 |------|------|----|
 | 遍历 node-list 拿到空 | 用了 `data.items` | 改用 `data.nodes` |
+| `Error: unknown flag: --json` | lark-cli ≥1.0.32 移除了 `--json`（默认输出 JSON） | 删掉 `--json`，需要时用 `--format json` |
+| 文档建成功但容器节点建失败/回读全挂 | 同上（旧代码带 `--json`，查询路径全灭） | 升级后同上；历史被错误兜底落错目录的文档用 `wiki +move` 归位 |
 | 删节点报类型错 | 用了 `--obj-type docx` | 改用 `--obj-type wiki` |
 | 重生成总览出现 2 个 | 没先删旧节点 | 先 `wiki +node-delete --obj-type wiki` 再生成 |
 | 两个同名 `土斯` 文件夹 | 两进程同秒抢建作者文件夹（TOCTOU） | 已加原子锁根治：建失败重查复用，不再重复建 |

@@ -17,7 +17,7 @@
 
 ### 文章模块（articles）
 - **增强抓取（A1）**：trafilatura（主力）+ readability-lxml（次选）+ 原 bs4 兜底三层提取，自动剥离导航/广告，保留 sina/baijiahao/og:title 标题特例
-- **增量去重（A2）**：按规范化 URL（或正文 hash）持久化索引，重复链接/原文自动跳过，避免重复消耗 token
+- **增量去重（A2）**：按规范化 URL（或正文 hash）持久化索引，重复链接/原文自动跳过，避免重复消耗 token；**跨来源去重（2026-09-03）**：生财有术公众号 ↔ scys 站内同一篇帖子 URL 不同，公众号抓取侧按标题/正文前缀相似比对拦截（`dedup.find_cross_duplicate`）
 - **自适应总结**：内置 `prompts` 模板注册表，支持 **9 种笔记形态**（完整清单与说明以 `prompts/templates.py` 的 `NOTE_TEMPLATES` 为准）：structured / key_points / case / opinion / interview / roundup / reading / dissection / general，未指定时按标题+正文自动分类
 - **标签建议（A5）**：未指定 tags 时由笔记类型 + 内容关键词自动生成默认标签
 - **Provider 健壮性（A4）**：限流/瞬错自动重试 + 指数退避；总结返回 token 用量并写入笔记 frontmatter

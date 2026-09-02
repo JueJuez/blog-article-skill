@@ -770,6 +770,20 @@ def _summarize_article(it: dict, title: str, content: str, obsidian: bool, stats
         stats["ad_skip"] += 1
         return
     purified = purify_content(content or "")
+    # 跨来源去重（公众号 ↔ scys）：同一篇帖子两边 URL 不同，URL 去重挡不住；
+    # 生财有术双渠道订阅，公众号文章与 scys 站内归档按标题/正文前缀相似拦截。
+    if it.get("mp_name") == "生财有术":
+        try:
+            from articles import dedup as _dedup
+            dup = _dedup.find_cross_duplicate(title=real_title, content=purified)
+        except Exception as _e:
+            print(f"[cross-dedup-err] {_e}", file=sys.stderr)
+            dup = {}
+        if dup:
+            print(f"[cross-dedup] {real_title}（与 scys 已归档《{dup['title']}》"
+                  f"相似度 {dup['sim']}，经 {dup['via']} 命中，跳过）")
+            stats["cross_dup_skip"] = stats.get("cross_dup_skip", 0) + 1
+            return
     src_text = f"{purified}\n\n---\n原文链接：{it['url']}"
     try:
         from articles.main import skill_main
@@ -1099,6 +1113,7 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
         f"（速览 {stats['dynamic_light']} · 完整 {stats['dynamic_full']}）"
         f" / 文章 {stats['article']}"
         f" | 广告跳过 {stats['ad_skip']} · 过短跳过 {stats['short_skip']}"
+        f" · scys重复 {stats.get('cross_dup_skip', 0)}"
         f" · 限流待重试 {len(refetch_next)} · 墙文移除 {len(dropped)} · 错误 {stats['error']}"
     )
 

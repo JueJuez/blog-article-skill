@@ -41,6 +41,7 @@
     3. 发现 → 抓正文 → 进 `pending_summaries.json` 队列（FORCE_AGENT_MODE 下不自动总结）；系列课降级进 `pending_series.json` 队列；scys 新帖进 `notes/_scraped/scys/pending_summaries.json` 队列。
     4. 运行结束后，本会话（执行模型）**必须**在本次会议内闭环两类待总结队列（全自动，无需用户手动命令）：
        - **派单前先跑 `python scripts/filter_pending.py`**（机械清洗两队列：URL 命中 dedup 索引的已总结条目自动出队、scys 队列清 `summarized:true`——多 Agent 接力时已总结内容不再浪费 AI token、不重复落飞书）。
+       - **跨来源去重（2026-09-03，代码自动）**：生财有术公众号文章在总结管线前会与 scys 归档做标题/正文前缀相似比对，命中直接跳过（日志 `[cross-dedup]`、健康度 `scys重复 N`），无需人工干预（详见 `docs/decisions/DECISION-20260903-cross-source-dedup.md`）。
        - **单篇**：读 `pending_summaries.json`，派**子 Agent** 按模板总结并 `save_summary_only` 落盘（默认飞书，Obsidian 按需追加）。
        - **scys**：读 `notes/_scraped/scys/pending_summaries.json`，派**子 Agent** 按 `references/scys-fetch-sop.md` §9 语义总结并落飞书（folder=生财有术/<领域>）-> 出队。⚠️ 子 Agent **消费队列中已算好的 prompt**：`articles/main.py` 已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 把 prompt 算好塞进队列条目（`pending_summaries.json` / `notes/_scraped/scys/pending_summaries.json`），子 Agent 直接按该 prompt 总结并 `save_summary_only` 落盘，**无需自调任何 CLI**。**不要全部用 structured 模板**（2026-08-22 分类修复，详见 `docs/decisions/DECISION-20260821-scys-classification-fix.md`）。
        - **系列课**：读 `pending_series.json`，对每个系列按 `notes/<系列名>/*_raw.md` 分片派**子 Agent** 总结成 `.body.md`，再跑 `python monitors/apply_pending_series.py` 落地（run.py 末尾已自动触发一次落地，body 存在时直接落；此处是为「刚总结出的新 body」补一遍落地）。系列课**只落飞书**，除非用户明确要双写/只写 Obsidian。
