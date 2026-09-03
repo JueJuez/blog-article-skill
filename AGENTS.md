@@ -9,7 +9,7 @@
 
 ---
 
-## 三个核心能力
+## 四个核心能力
 
 ### 能力 1 · 一次性总结（文章 / 视频）
 用户给**文章链接、原文、或视频（YouTube / Bilibili）链接 / 字幕** → 总结成笔记。
@@ -67,7 +67,8 @@
   - **直接给仓库链接**：`python tools/project_import/assets/main.py "https://github.com/owner/repo ..."` → 采集 README+Stars → LLM 分类打分 → 写本地项目库。
   - **从文章/视频里抽项目**（enrichment，**不总结原文**）：给文章/视频链接，自动从内容抠出提到的仓库并归档：
     - 文章：`python tools/project_import/assets/main.py --from-article "<文章URL>"`
-    - 视频：`python tools/project_import/assets/main.py --from-video "<视频URL"`（**优先扫视频描述/简介找仓库链接**，字幕只作补充；字幕里只提仓库名没给地址的暂不解析）
+    - 视频：`python tools/project_import/assets/main.py --from-video "<视频URL>"`（**优先扫视频描述/简介找仓库链接**，字幕只作补充；字幕里只提仓库名没给地址的暂不解析）
+  - **只有项目名、没给地址**：`python tools/project_import/assets/main.py --from-name "<项目名>"` —— 调 GitHub Search API 反查并收录（`source_kind=name-search`）。未认证限流 10 次/分钟，设 `GITHUB_TOKEN` 可升到 5000 次/小时。
 - **关键边界**：能力 4 只做「抽项目 → 入本地项目库」，**不触发文章/视频的笔记总结**（那是能力 1）。两者是独立动作，不要混为一谈。
 - **触发词**：「评估/归档/入库这些项目」「提取这篇文章/视频里提到的开源项目」「批量导入 GitHub」。
 - **配置**：默认 `PROJECT_LIBRARY_DIR`（建议 Obsidian vault 根下的 `开源项目/`）；不设则回退 `OBSIDIAN_VAULT_PATH/开源项目`。设 `PROJECT_STORAGE=feishu` 时回退写飞书多维表格（需 `FEISHU_BASE_TOKEN`）。字段映射见 `tools/project_import/feishu_fields.example.json`。
@@ -105,7 +106,7 @@
 
 ## 自举指针（不确定时读这些，按序）
 1. `RULES.md` —— 规则唯一来源（地图 + 强制规则，最权威）
-2. `SKILL.md` —— WorkBuddy 触发层 + 对话输出规范
+2. `SKILL.md` —— WorkBuddy 触发层 + 对话输出规范（位于 `.workbuddy/skills/blog-article-skill/SKILL.md`，该目录已 gitignore，不进仓库）
 3. `monitors/README.md` —— 订阅监控运营细节与已知坑
 4. `references/config.md` —— 全部环境变量说明
 5. `docs/decisions/` —— 关键架构决策记录（≤15 行 / 篇）

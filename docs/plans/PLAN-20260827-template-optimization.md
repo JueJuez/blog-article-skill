@@ -1,9 +1,12 @@
 # PLAN-20260827 · 总结 Prompt 模板体系优化方案
 
 > **本文档自包含**：新会话不依赖历史对话即可执行。产生于 2026-08-27 对 8 模板体系的全链审计
-> （模板目的 → 要求 → prompt 达成度逐个核对 + 系统维度审查）。执行前先读 `RULES.md` §3B
-> 「公共机制」段（模板/分类现状）与 `docs/decisions/DECISION-20260821-scys-classification-fix.md`
-> （词表纪律的历史教训）。
+> （模板目的 → 要求 → prompt 达成度逐个核对 + 系统维度审查）。执行前先读 `RULES.md` §4.6
+> 「质量保障三件套」（模板公共机制现状）与 `docs/decisions/DECISION-20260821-scys-classification-fix.md`
+> （词表纪律的历史教训）。模板清单与分类逻辑的真源是 `prompts/templates.py`（`NOTE_TEMPLATES`）+
+> `prompts/classify.py`（分类优先级）。
+>
+> ⚠️ 本文件曾引用 `RULES.md` §3B，该章节并不存在（RULES 只有 §3.0/3.1/3.2/3.3），2026-09-03 已修正指向 §4.6。
 
 ---
 

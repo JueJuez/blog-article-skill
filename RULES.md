@@ -24,11 +24,17 @@
 | 文件 | 角色 | 是否放细节 |
 |------|------|-----------|
 | **RULES.md（本文件）** | 规则 + 地图索引（规则唯一来源） | ❌ 只放条目与指针 |
-| `SKILL.md` | 技能触发条件 + 调用入口 + 对话输出规范（面向「怎么用」） | 少量用法，规则指向 RULES.md |
+| `SKILL.md` | 技能触发条件 + 调用入口 + 对话输出规范（面向「怎么用」）。**实际位置** `.workbuddy/skills/blog-article-skill/SKILL.md`（该目录已 gitignore，不进仓库） | 少量用法，规则指向 RULES.md |
 | `AGENTS.md` | **平台无关真源入口**（跨 WorkBuddy / Cursor / Claude / Codex / Copilot / 裸 API 通用） | 能力清单 + 接口速查 + 配置引导 + 各平台加载方式，指向本文件 |
-| `references/` | 专项详细文档（`config.md` 配置、`youtube-cdp-workflow.md` 抓取流程、`testing_rules.md` TDD 流程、`glossary.md` 术语表；`PRD.md` / `scys-cdp-lessons-learned.md` 已归档至 `_archive/`） | ✅ 放深入细节 |
+| `references/` | 专项详细文档。现行 7 篇：`config.md`（全部环境变量）/ `login-required-cdp-workflow.md`（需登录态抓取唯一路径 + 故障表）/ `scys-fetch-sop.md`（scys 抓取 SOP）/ `youtube-cdp-workflow.md`（YouTube CDP 抓取）/ `feishu-cli.md`（飞书 CLI 4 坑）/ `glossary.md`（术语表，新 Agent 先读）/ `testing_rules.md`（TDD 流程） | ✅ 放深入细节 |
+| `references/PRD.md`、`references/scys-cdp-lessons-learned.md` | **已归档桩文件**：原处仅留「已归档 + 指向 `_archive/`」的 5 行指针，正文在 `_archive/PRD.md` / `_archive/scys-cdp-lessons-learned.md`。**勿照做**（PRD 是 pre-监控时期；lessons 已 SUPERSEDED） | — |
+| `monitors/README.md` | 订阅监控的运营文档 + 已知坑（三源机制 / 双队列 / 系列课闭环 / 公众号回溯） | ✅ 放运营细节 |
+| `monitors/PROXY_NOTES.md` | weread 代理的坑（乱序分片 / 空窗 / publishTime 伪造）——做公众号回溯前必读 | ✅ 放细节 |
+| `tools/project_import/SKILL.md` | **能力 4（开源项目归档）的真源**：激活条件 + 完整流程 + 子代理工作流 | ✅ 放细节 |
 | `docs/decisions/` | grill_rules 的「产出 A：决策清单」存放地（`DECISION-YYYYMMDD-{slug}.md`，≤15 行） | ✅ 极轻量 |
-| `articles/` `videos/` `prompts/` `shared/` | 实现细节的唯一真相 | ✅ 代码即文档 |
+| `docs/plans/`、`docs/*.md` | 执行计划与运维手册（并行监控 runbook、系列课抢救 RUNBOOK 等） | ✅ 放细节 |
+| `_archive/` | 已归档的过期文档与废弃脚本。**只进不出**——新文档不要在现役目录重复它们的内容 | — |
+| `articles/` `videos/` `prompts/` `shared/` `monitors/` `scripts/` `tools/` | 实现细节的唯一真相 | ✅ 代码即文档 |
 | `.workbuddy/memory/MEMORY.md` | 长期要点 + 「规则摘要」（会话开始注入） | ❌ 只摘要点 |
 | `.workbuddy/memory/YYYY-MM-DD.md` | 每日工作日志（做了什么、踩了什么坑） | 过程记录 |
 | `notes/` | 产出与原始内容（gitignore，不进仓库） | — |
@@ -56,7 +62,9 @@
 
 ### 3.1 【待归类】收件箱约定（强制）
 
-新总结先统一进「【待归类】」，用户后续手动拖到分类（启用 Obsidian 时与之对称，默认只写飞书）。单篇默认落「【待归类】」；系列课自带 `系列名/` 子目录，不进【待归类】。飞书分类节点与 Obsidian 分类文件夹一一对应（逻辑在 `articles/feishu.py` / `articles/obsidian.py`）。
+> **L8（2026-09-03）**：`save_summary_only` folder 为空时自动走统一路由器（`resolve_folder`）——author/url 可识别的直接落作者节点/监控节点，**只有无法识别归属的才落【待归类】**（见 `docs/decisions/DECISION-20260903-save-folder-autoroute.md`）。
+
+无法识别作者与分类的新总结进「【待归类】」，用户后续手动拖到分类（启用 Obsidian 时与之对称，默认只写飞书）。系列课自带 `系列名/` 子目录，不进【待归类】。飞书分类节点与 Obsidian 分类文件夹一一对应（逻辑在 `articles/feishu.py` / `articles/obsidian.py`）。
 
 ### 3.2 监控账号归档：日更 + 系列自动归类 + 总览排序（2026-08-25）
 
@@ -166,6 +174,9 @@ NOTE_GATE_THRESHOLD=85     # 评分阈值，默认 85；低于此分触发重试
   1. **集级无查重 → 并发写同集会建重复节点**：多子 Agent 同时 `save_series` 写飞书会因集级没查重建重复节点；安全模式＝子 Agent 只返文本＋元数据，编排方**串行**调保存入口落盘（详见 §4.1）。
   2. **重生成总览先删旧节点**：飞书 `save_series` 是「新建」非「更新」，若不先删旧 `00_系列总览` 节点，重生成会再建第 2 个总览。
   3. **全集写完后务必调一次 `_generate_series_overview` 刷新**：否则总览停留旧状态、各集「（待总结）」标记过期。
+- **文档归档 2 坑（2026-09-03 实踩）**：
+  1. **归档 ≠ 把桩文件复制到 `_archive/`**：正确顺序是「先把**完整正文**写入 `_archive/xxx.md`」→「再把 `references/xxx.md` 改成指向 `_archive/` 的指针桩」。反了会导致两处都变成桩、正文彻底丢失（只能从 git 历史 `git show <rev>:<path>` 抢救）。**归档后必须 `wc -c` 校验 `_archive/` 里的文件不是几百字节的桩。**
+  2. **归档前先 grep 被引用点**：删/改任何文档前 `grep -rn "<文件名>" --include="*.md" .`，把指向它的引用一并改掉，否则留下坏链（2026-08-27 已踩过一次）。
 
 ---
 
@@ -252,7 +263,7 @@ NOTE_GATE_THRESHOLD=85     # 评分阈值，默认 85；低于此分触发重试
 ### 6.4 与其他规则的关系
 - 本规则管「动手前」，`references/testing_rules.md` 管「动手时」的 TDD 流程。
 - 本规则产出的测试草稿，遵循 `references/testing_rules.md` 的 fixture 与断言规范。
-- 本规则产出的决策清单，是对 `docs/bug_library.md`（未来改为 issue 管理）的补充——决策记录「为什么这么定」，issue 记录「出了什么问题」。
+- 本规则产出的决策清单记录「为什么这么定」。⚠️ 配套的问题台账 `docs/bug_library.md` **尚未建立**（历史文档中曾提及但未创建）——需要记录「出了什么问题」时，直接在本目录新建 `ISSUE-YYYYMMDD-{slug}.md`，不要引用不存在的文件。
 
 ### 6.5 文档同步纪律（防漂移）
 

@@ -9,7 +9,7 @@
   - **默认只写飞书**，Obsidian 仅用户显式要求时才写（代码门禁保证，不靠 AI 记性）。详见 `RULES.md` §3.0。
   - **复用入口，不手搓抓取/总结**：一律走 `skill_main` / `summarize_video` / `monitors/run.py` 等入口函数，不临时写脚本、不手搓平台私有接口。
   - **无外部 AI 时由执行模型（主/子 Agent）总结**（`FORCE_AGENT_MODE=1` 默认）；旧 `AI_PROVIDER` 外部调用已废弃。
-- **能力边界**：覆盖三类输入 —— ① 一次性总结（文章/视频链接、原文、字幕）；② 订阅监控（B站UP主 / 公众号 / scys 领域，增量发现新内容并总结）；③ 系列课（UP 系列视频按集拆解归档）。不涉及通用爬虫，不取代人工筛选。
+- **能力边界**：覆盖四类输入 —— ① 一次性总结（文章/视频链接、原文、字幕）；② 订阅监控（B站UP主 / 公众号 / scys 领域，增量发现新内容并总结）；③ 系列课（UP 系列视频按集拆解归档）；④ 开源项目抽取归档（`tools/project_import`，只入本地项目库、**不总结原文**）。不涉及通用爬虫，不取代人工筛选。完整能力清单见 `AGENTS.md`。
 - **登录态抓取**：公众号 / B站动态 / scys 付费文需登录态，统一经 `shared/cdp_session.py` 的 `SharedCdpSession` 自动克隆浏览器 profile + 调试端口接管（详见 `references/login-required-cdp-workflow.md`）。
 - **术语与概念**：新 Agent 上手遇到的不自解释概念（系列课 / 系列容器 / 三 pending 队列 / scys / SharedCdpSession / 状态 Ledger 等）见 `references/glossary.md`。
 
@@ -262,9 +262,11 @@ python articles/run.py notes/_summary.md --author "作者" --tags "AI,技术"
 
 ## 输出目标配置
 
-### 本地文件（默认，无需配置）
+### 本地文件（兜底，非默认）
 
-无配置时自动保存到项目 `notes/` 目录。
+> ⚠️ 与项目红线一致（`RULES.md` §3.0）：**默认输出端是飞书**，本地 `notes/` **不是默认端**。
+> 仅当飞书实际不可用（未配 `FEISHU_WIKI_SPACE` 或 lark-cli 未认证）且未请求 Obsidian 时，才回退保存到项目 `notes/` 目录，避免丢数据。
+> 配好飞书后本地应为空——**不要因本地为空而误判失败**。
 
 ### Obsidian 知识库
 
@@ -372,52 +374,99 @@ blog-article-skill/
 │   ├── cdp_capture.py        # 经 CDP 拦截 YouTube 字幕响应体（本机无 YouTube 出口时的终极解法）
 │   ├── asr.py                # 本地语音识别（P3：faster-whisper，无字幕自动兜底 + 环境自动处理 + 转写缓存）
 │   ├── multimodal.py         # 多模态理解（P4：Gemini）
+│   ├── yt_bridge.py          # YouTube 抓取桥接
+│   ├── rescue_episode.py     # 单集抢救（系列课某集字幕抓取失败时补抓）
+│   ├── set_cookie.py         # 写入 B 站 Cookie（BILI_COOKIE 辅助）
+│   ├── build_bookmarklet_html.py  # 生成字幕抓取书签小工具（诊断用）
 │   ├── main.py               # 视频总结主流程（分块两段式 P2.2/P3 兜底/P2.3）
 │   └── run.py                # 命令行入口
-├── shared/                   # 跨模块共享（C1/C2）
-│   ├── __init__.py
+├── shared/                   # 跨模块共享（C1/C2 + 路由/命名/状态/清洗等公共机制）
 │   ├── chunking.py           # 文本/字幕分块与两段式总结
-│   └── wb_ai.py              # WorkBuddy 内置 AI 适配器
+│   ├── wb_ai.py              # WorkBuddy 内置 AI 适配器
+│   ├── routing.py            # 统一落盘路由（resolve_folder：作者/监控/系列 → 飞书节点路径）
+│   ├── cdp_session.py        # SharedCdpSession：需登录态抓取的唯一路径（profile 克隆 + 调试端口接管）
+│   ├── title_norm.py         # 标题归一化（ASCII 元字符→全角，飞书读回比对的必备前置）
+│   ├── subtitle_clean.py     # 字幕清洗（填充词/近重合并/长句去重）
+│   ├── series_state.py       # 系列课增量去重状态
+│   ├── series_manifest.py    # 系列课 manifest 读写（状态字段为 state：raw_ready/landed/verified）
+│   ├── series_naming.py      # 系列课集名规范化
+│   ├── feishu_overview.py    # 系列总览生成
+│   ├── fetch_title.py        # 标题抓取
+│   └── __init__.py
 ├── prompts/                  # 共享笔记模板注册表
 │   ├── __init__.py
 │   ├── templates.py          # NOTE_TEMPLATES + classify_note_type
 │   └── classify.py           # 笔记类型分类
-├── monitors/                 # 订阅监控（B站UP主 / 公众号）：发现新内容→AI总结→默认写飞书（需 Obsidian 时双写）
+├── monitors/                 # 订阅监控（B站UP主 / 公众号 / scys 领域）：发现新内容→AI总结→默认写飞书
 │   ├── bilibili.py           # B站源（官方 API + WBI 签名，带登录 Cookie）
 │   ├── wechat.py             # 公众号源（经 weread 代理发现新文）；token 数小时失效，交互式弹码续期、headless 跳过
+│   ├── run.py                # CLI + 调度入口（--apply 直接调总结管线）
+│   ├── run_source.py         # 单源补跑（bili/wechat/scys 各自独立消费 pending_refetch）
+│   ├── run_parallel.py       # 三源并行 worker（可选路径，串行 --mode auto 仍是日常默认）
+│   ├── backfill.py           # 公众号历史回溯（续批）
 │   ├── state.py              # 每源去重状态 + 防膨胀裁剪
 │   ├── ad_filter.py          # 广告过滤（整篇纯广告 skip / 干货夹广告净化）
-│   ├── run.py                # CLI + 调度入口（--apply 直接调总结管线）
-│   ├── subscriptions.example.json  # 订阅配置模板
-│   ├── apply_pending_series.py  # 系列课待总结队列 drainer（落盘到飞书，--regenerate/--batch/--cleanup）
+│   ├── apply_pending_series.py  # 系列课待总结队列 drainer（落盘到飞书，--regenerate/--batch）
+│   ├── subscriptions.example.json  # 订阅配置模板（subscriptions.json 本体已 gitignore）
+│   ├── PROXY_NOTES.md        # weread 代理的坑（乱序分片/空窗/publishTime 伪造）——回溯前必读
 │   └── README.md             # 监控运营文档 + 已知坑
+├── scripts/                  # 运维脚本（抓取/落地/去重/修复，清单以目录为准）
+│   ├── scys_batch_fetch.py   # scys 按领域批量抓取（补齐/增量共用）
+│   ├── fetch_up_range.py     # UP 主视频批量抓字幕并入队（限速 + 412 熔断）
+│   ├── list_up_videos.py     # 拉 UP 全量视频列表
+│   ├── filter_pending.py     # 派单前机械清洗两队列（已总结自动出队）
+│   ├── land_scys_batch.py    # scys 批量单线程落地
+│   ├── persist_summary.py    # 子 Agent 总结后落盘 + 出队
+│   ├── series_maintenance.py # 系列课飞书侧运维（verify/regen-overview/reland/forget）
+│   └── ...                   # 其余见目录
+├── tools/project_import/     # 能力 4：开源项目抽取归档（本地 Obsidian 项目库）
+│   ├── SKILL.md              # 能力 4 真源（激活条件 + 流程 + 子代理工作流）
+│   ├── assets/main.py        # 入口（直接给链接 / --from-article / --from-video / --from-name）
+│   └── assets/              # collector/analyzer/storage/local_writer/name_resolver 等
+├── docs/
+│   ├── decisions/            # grill_rules 产出 A：决策清单（≤15 行/篇）
+│   ├── plans/                # 执行计划
+│   ├── parallel-monitor-runbook.md  # 并行监控运维手册
+│   └── RUNBOOK-series-rescue.md     # 系列课抢救手册
+├── _archive/                 # 已归档的过期文档与废弃脚本（PRD.md / scys-cdp-lessons-learned.md / decisions）
 ├── audit_sync.py             # Obsidian ↔ 飞书 一致性审计 + 幂等补传（仅双写时启用，AUDIT_SYNC=0 可关）
 ├── tests/                    # 回归测试（可直接 `python tests/test_xxx.py` 跑，无需 pytest）
-│   ├── test_prd.py
-│   ├── test_templates.py
-│   ├── test_sub_monitor.py
-│   ├── test_note_quality.py
-│   ├── test_scys_classification.py  # scys boilerplate 污染修复回归（2026-08-22）
-│   ├── test_wechat_relogin_fallback.py
-│   └── test_asr_fallback.py  # ASR 兜底：环境自动处理 / 转写缓存 / 防御性删除（无需联网/模型）
+│   ├── （当前 22 个用例文件，完整清单以目录为准；关键几个如下）
+│   ├── test_cross_source_dedup.py      # 公众号↔scys 跨来源去重
+│   ├── test_save_folder_autoroute.py   # folder 为空自动走统一路由器
+│   ├── test_scys_routing.py            # scys 链接自动分流 CDP
+│   ├── test_asr_fallback.py            # ASR 兜底（无需联网/模型）
+│   └── test_wechat_relogin_fallback.py # 公众号 token 失效弹码降级
 ├── transcripts/             # ASR 转写缓存（<id>.md，可重生成，被 gitignore）
 ├── notes/                    # 原始/中间笔记（被 gitignore）
 ├── references/
-│   ├── config.md             # 配置详细说明
-│   ├── youtube-cdp-workflow.md  # YouTube 字幕 CDP 全自动抓取流程（本机无出口必读）
-│   └── testing_rules.md      # TDD 流程规范（grill_rules 动手时遵循）
+│   ├── config.md                      # 配置详细说明（全部环境变量）
+│   ├── login-required-cdp-workflow.md # 需登录态抓取的唯一路径与故障表
+│   ├── scys-fetch-sop.md              # scys 抓取 SOP
+│   ├── youtube-cdp-workflow.md        # YouTube 字幕 CDP 抓取流程（本机无出口必读）
+│   ├── feishu-cli.md                  # 飞书 CLI 4 坑与命令速查
+│   ├── glossary.md                    # 术语表（新 Agent 上手先读）
+│   ├── testing_rules.md               # TDD 流程规范（grill_rules 动手时遵循）
+│   ├── PRD.md                         # ⚠️ 已归档桩：仅历史追溯，完整版在 _archive/PRD.md
+│   └── scys-cdp-lessons-learned.md    # ⚠️ 已归档桩：SUPERSEDED 勿照做，完整版在 _archive/
+├── .github/copilot-instructions.md    # GitHub Copilot 平台入口
+├── .trae/rules/blog-article-skill.md  # Trae 平台入口（alwaysApply 薄指针）
 ├── .env.example              # 环境变量模板
 ├── pyproject.toml            # 项目依赖
-├── SKILL.md                  # AI 技能规则（供 AI 模型读取）
+├── AGENTS.md                 # 平台无关真源入口
+├── RULES.md                  # 规则唯一来源
 └── README.md                 # 本文件
 ```
+
+> **清单易腐烂**：上面 `scripts/` `tests/` `monitors/` 只列核心文件，完整清单以目录为准。
+> WorkBuddy 触发层 `SKILL.md` 位于 `.workbuddy/skills/blog-article-skill/SKILL.md`（该目录已 gitignore，属平台本地配置，不进仓库）。
 
 ## 跨平台加载（换会话 / 换 AI 平台也能用）
 
 本项目的流程、功能、配置集中在根目录 **`AGENTS.md`**（平台无关真源入口）。换用其他 AI 平台时，
 把 `AGENTS.md`（或 `RULES.md`）加载进模型上下文即可接上全部能力，无需 WorkBuddy 专属机制：
 
-- **WorkBuddy**：激活 `blog-article-skill` skill；`SKILL.md` 为触发层
+- **WorkBuddy**：激活 `blog-article-skill` skill；`SKILL.md` 为触发层（位于 `.workbuddy/skills/blog-article-skill/SKILL.md`）
 - **Cursor**：`.cursorrules` 或 `.cursor/rules/*.mdc`
 - **Trae**：原生认 `AGENTS.md`（Settings → Import Settings 开「Include AGENTS.md in the context」）；也放 `.trae/rules/blog-article-skill.md`（`alwaysApply: true` 薄指针，确保必加载）
 - **Claude Code / Desktop**：`CLAUDE.md`（可 `cp AGENTS.md CLAUDE.md`）

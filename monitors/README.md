@@ -62,7 +62,10 @@
 
 - **机制**：`run.py --apply` 收尾阶段逐领域子进程调 `scripts/scys_batch_fetch.py --project <领域> --since-days <窗口> --pages 2`——复用补齐批量全链路（列表捕获 → 时间/精华过滤 → 限速抓正文含外链跟进 → 入 `notes/_scraped/scys/pending_summaries.json` 待总结队列），由执行模型按 §9 语义闭环总结（folder=生财有术/<领域>）。
 - **去重**：与批量补齐共用 `notes/_scraped/scys/state.json` 的 done 列表；已在补齐里抓过的帖不会重复抓/总结。
-- **窗口默认 7 天**（大于日窗）：新帖常在发布数日后才被标精华，窗口太窄会永久漏「晚精华」帖；窗口放大只多翻列表页（便宜），done 去重兜底不会重复抓正文。已知局限：发布超 7 天才标精华的帖会漏，靠半年一次的「补齐scys」兜底。
+- **窗口取值链（勿硬记数字，以代码为准）**：`subscriptions.json` 各 scys 条目的 `since_days` **优先** → 无则回退环境变量 `SCYS_DAILY_WINDOW_DAYS`（默认 7，`monitors/run.py:156`）/ 首跑用 `SCYS_FIRST_WINDOW_DAYS`（默认 7）。**当前 4 个领域条目均配 `since_days: 35`，故日常实际生效窗口 = 35 天。**
+  - 为什么放大：新帖常在发布数日后才被标精华，窗口太窄会永久漏「晚精华」帖；窗口放大只多翻列表页（便宜），done 去重兜底不会重复抓正文。
+  - 已知局限：发布超过当前窗口（35 天）才标精华的帖会漏，靠半年一次的「补齐scys」兜底。
+  - ⚠️ 另有一个**不同路径**的默认值 182：`scripts/scys_projects.json` 的 `defaults.since_days`，那是「补齐scys」批量抓取用的，与日常增量无关，别混为一谈。
 - **前提**：用户已在 Chrome 登录 scys.com。登录态抓取由 `scripts/scys_batch_fetch.py` 经 `SharedCdpSession` 自动完成（唯一路径：关 Chrome → 复制 profile 到非默认 `ProfileClone` 目录 → 该目录调试端口启动 → `connect_over_cdp` 接管；登录态由复制的 cookie 继承），不影响公众号/B站。
 - **互斥**：`notes/_scraped/scys/.lock` 进程锁——「跑一下」的 scys 增量与「补齐scys」批量不会并发写坏 state/pending；**2026-08-25 起残留自动释放**（锁内记录 PID：持有进程已死 → 自动接管；PID 读不出/无 psutil → 锁龄超 6 小时接管），无需再手动删锁。
 - **临时停用**：把 `subscriptions.json` 的 `scys` 列表清空即可，其他源照跑。
@@ -84,8 +87,9 @@
 | `BILI_SHORT_DYNAMIC_MAX` | 80 | 短动态轻量化阈值（字） |
 | `FIRST_RUN_LIMIT` | 50 | 首跑每类型安全上限（同时影响视频/动态，实际受 `BILI_SAFETY_CAP` 夹取） |
 | `STATE_KEEP` | 1000 | 每源 `seen` 保留的最大 ID 数（防 `state.json` 膨胀） |
-| `SCYS_DAILY_WINDOW_DAYS` | 7 | scys 日常增量发布时间窗口（天）；**实际被 `subscriptions.json` 各 scys 条目的 `since_days`（当前=35）覆盖** |
-| `SCYS_FIRST_WINDOW_DAYS` | 7 | scys 首跑（`--mode first`）窗口（天）；同样可被 `subscriptions.json` 条目 `since_days` 覆盖 |
+| `SCYS_DAILY_WINDOW_DAYS` | 7 | scys 日常增量窗口（天）**回退值**；`subscriptions.json` 条目有 `since_days` 时以其为准（当前 4 领域均=35，故实际生效 35） |
+| `SCYS_FIRST_WINDOW_DAYS` | 7 | scys 首跑（`--mode first`）窗口（天）**回退值**；同样可被条目 `since_days` 覆盖 |
+| `subscriptions.json` scys 条目 `since_days` | 35 | **日常增量的实际生效值**（优先级最高），改这里即改窗口，无需动代码 |
 | `SCYS_DAILY_LIST_PAGES` | 2 | scys 日常增量每次翻的列表页数（每页 30 条） |
 
 ## 注意事项 / 已知坑
@@ -169,8 +173,9 @@ python monitors/run.py --mode first --apply
 
 把某公众号**最近稳定窗口内**漏抓的文章补回来。weread 免费代理可稳定返回约 **最近 30~35 天**的文章（哥飞 23 篇 raw 全落在 2026-07-24~08-19，即 27 天内）；超过此边界代理乱序分片 + `publishTime` 伪造，极不可靠，**不再补**。如需深挖请显式 `--since`，但预期会漏段（详见 `PROXY_NOTES.md`）。
 
-核心机制
-- **稳定边界**：默认 `since = 今天 - 35 天`（`WECHAT_BACKFILL_DAYS` 可调）。这是根据磁盘证据定下的稳定窗口——哥飞 23 篇 raw 全落在 2026-07-24~08-19（27 天内），更老历史代理不可靠。
+### 核心机制
+
+- **稳定边界**：默认 `since = 今天 - 35 天`（`WECHAT_BACKFILL_DAYS` 可调，真源 `monitors/backfill.py:32`）。这是根据磁盘证据定下的稳定窗口——哥飞 23 篇 raw 全落在 2026-07-24~08-19（27 天内），更老历史代理不可靠。
 - 游标 = `state.json` 的 `seen`（与日常监控同一套去重）；`discover` 的 backfill 分支**只 mark 本批 `new` 为 seen**。
 - **不再写 `backfill_done`**：`wechat.py` 的 discover 内已彻底移除 `reached_since`/`proxy_depth` 完成判定，因为 `publishTime` 元数据伪造会导致假完成。队列 job 跑一次即标记 done（不追求 exhaustive 抓全）。
 - **短退避重试**：代理偶发空窗，回溯入口对 `discover_all` 加最多 **5 次、8→30s** 递增退避；空窗持续则跳过本次。

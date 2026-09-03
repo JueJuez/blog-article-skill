@@ -16,7 +16,7 @@
 | 项 | 规范 |
 |----|------|
 | 目录 | `tests/` |
-| 文件 | `test_{feature}.py`（如 `test_youtube_cdp.py`、`test_chunking.py`） |
+| 文件 | `test_{feature}.py`（现役示例：`test_asr_fallback.py`、`test_scys_routing.py`、`test_cross_source_dedup.py`） |
 | 函数 | `test_<行为>_<场景>`（如 `test_fetch_transcript_youtube_cdp_fallback`） |
 | 类 | 需要共享 fixture / 分组时用 `class TestXxx:` |
 
