@@ -589,6 +589,19 @@ def save_summary_only(input_data: dict) -> dict:
             return {'success': True, 'skipped': True,
                     'message': f"ALREADY_EXISTS:{rec.get('filename', '')}",
                     'filename': rec.get('filename', '')}
+    # L8 修复（2026-09-03）：自带总结的保存路径 folder 为空时自动走统一路由器，
+    # 与 skill_main 的 L7 手贴 URL 路径对齐——「落哪」由代码决定，不靠调用方记性。
+    # 背景：批量总结曾有 78 篇因调用方漏传 folder 全部落进【待归类】。
+    if not folder:
+        from shared.routing import resolve_folder, extract_author
+        _author = (author or "").strip() or extract_author((original_url or "").strip())
+        folder = resolve_folder({
+            "author": _author, "url": original_url or "",
+            "title": original_title, "source": "user_link",
+        })
+        if _author and _author not in (tags or []):
+            tags = list(tags or []) + [_author]
+        print(f"   📁 folder 未传，自动路由到: {folder}")
     try:
         formatted_note, filename = save_summarized_article(
             summarized_content, original_url=original_url, author=author,
