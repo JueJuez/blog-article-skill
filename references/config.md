@@ -280,14 +280,20 @@ NOTE_GATE_THRESHOLD=85
 
 ### UP 视频批量字幕抓取（scripts/fetch_up_range.py）
 
-对「UP 主全量视频」批量抓字幕（FORCE_AGENT_MODE 下只抓不总结，供执行模型派子 Agent 总结归档；趋势浪子全量归档即此路径）。两步：
+对「UP 主全量视频」批量抓字幕并**入待总结队列**（与 `scys_batch_fetch.py` 同构：抓取 → 入 `monitors/pending_summaries.json`，prompt/folder 预计算，子 Agent 消费，不再依赖会话手搓）。三步：
 
 ```bash
 # 1) 拉 UP 全量视频列表 → notes/_scraped/bili_<uid>_videos.json
 python scripts/list_up_videos.py --uid <数字UID>
-# 2) 按 idx 切片逐条抓字幕（结果落 notes/_scraped/趋势浪子_fetch_results.json，UP 名当前内置趋势浪子）
-python scripts/fetch_up_range.py 1 242
+# 2) 抓字幕 + 抓到即入队（结果日志落 notes/_scraped/<author>_fetch_results.json）
+python scripts/fetch_up_range.py 1 242 --uid <UID> --author <UP名>
+# 3) 清洗队列（dedup 已总结自动出队）后派子 Agent 消费（条目已带预计算 prompt/folder）
+python scripts/filter_pending.py
 ```
+
+- 入队条目：url/title/author/note_type（分类器）/tags/publish_time/folder（统一路由器预计算）/raw_file/prompt（`get_note_prompt + QUALITY_GATE_SELFCHECK`）/queued_at；
+- 已在队列或已总结过（dedup 闸门）→ 自动跳过；`--no-enqueue` 可退回纯抓取；
+- 队列路径可被 `MON_PENDING_SUMMARY_PATH` 覆盖（与 monitors 并行模式约定一致）。
 
 **限速与风控防护（2026-09-03 新增）**——教训：零间隔连续抓 2 小时+ 会触发 B站 412 风控，且失败重试 + yt-dlp/ASR 兜底会让每条失败视频反而发出更多请求，越抓越拦：
 

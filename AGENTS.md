@@ -51,6 +51,7 @@
     - 内置重试（无需手动）：token 失效弹码等扫码(≤180s) / 401 瞬错 ×3 / 代理空轮退避重试 / 正文限流进 `pending_refetch` 下次重抓。
 - **抓取规则**：按时间窗口（首跑 30 天 / 每日 1 天，断跑自动拉长封顶 30 天）+ 无干货动态屏蔽 + 短动态轻量化 + 新鲜度标签。细节见 `monitors/README.md`。
 - **历史回溯（续批）**：把某公众号 N 年内历史文章分批抓全（例：哥飞可到 2025 年中、生财有术代理深度仅 2026-06，更早文章代理侧不可达、代码无解）。入口 `python monitors/run.py --backfill --names <逗号名> --since <YYYY-MM-DD> --batch 15`（入队 + 跑一批）；`--drain` 从 `monitors/backfill_targets.json` 取第一个未完成 job 自动续批（适合 recurring 自动化）。范围门禁只动目标号；游标复用 `state.json` 的 `seen` + `state["backfill"][name]`，不重置即可续批。完整机制见 `monitors/README.md`「公众号历史回溯（续批）」+ `references/config.md` backfill 段。
+- **UP 主全量补齐（B站，2026-09-03 收编管线）**：把某 UP 主历史视频全部抓字幕+总结归档，与 scys 补齐同构（抓完入 `pending_summaries` 队列，prompt/folder 预计算，子 Agent 消费），**不依赖会话手搓**。触发词：「补齐 <UP名> 的视频 / 把某 UP 主视频归档」。机械三步：`list_up_videos.py --uid <UID>` → `fetch_up_range.py 1 N --uid <UID> --author <UP名>`（限速+412熔断+抓到即入队）→ `filter_pending.py` 清洗后派子 Agent 消费队列。落盘路由：名单外 UP → `【我的总结】/作者/<名>`（加监控名单走 `--subscribe`，两者独立）。完整说明见 `references/config.md`「UP 视频批量字幕抓取」。
 - B站需要登录态：`BILI_COOKIE` 环境变量（动态接口硬性要求）。
 
 ### 能力 3 · 用户侧怎么用（给链接 / 怎么关注）
