@@ -278,6 +278,32 @@ NOTE_GATE_THRESHOLD=85
 
 > ⚠️ 代理按「条数」而非「时间」截断历史：发文稀疏的号（如哥飞）同样约 100 条上限即可铺到 2025 年中；发文极密的号（如生财有术）同样上限只够到 2026-06，更早文章在代理侧不可达，代码无解。
 
+### UP 视频批量字幕抓取（scripts/fetch_up_range.py）
+
+对「UP 主全量视频」批量抓字幕（FORCE_AGENT_MODE 下只抓不总结，供执行模型派子 Agent 总结归档；趋势浪子全量归档即此路径）。两步：
+
+```bash
+# 1) 拉 UP 全量视频列表 → notes/_scraped/bili_<uid>_videos.json
+python scripts/list_up_videos.py --uid <数字UID>
+# 2) 按 idx 切片逐条抓字幕（结果落 notes/_scraped/趋势浪子_fetch_results.json，UP 名当前内置趋势浪子）
+python scripts/fetch_up_range.py 1 242
+```
+
+**限速与风控防护（2026-09-03 新增）**——教训：零间隔连续抓 2 小时+ 会触发 B站 412 风控，且失败重试 + yt-dlp/ASR 兜底会让每条失败视频反而发出更多请求，越抓越拦：
+
+- 条间随机延迟 **15~30s**（`--delay-min/--delay-max`），消除机器脉冲节奏；
+- 每小时 **100 条**滑动窗口预算（`--max-per-hour`），满额自动睡眠；
+- 命中 **412 / Precondition Failed 立即熔断整批**（exit 87；`--no-stop-on-risk` 可关闭）；失败条目留在结果文件，**冷却 30~60 分钟后重跑同一命令幂等续抓**；
+- 「真成功」判定 = rc==0 且 stdout 含字幕内容（旧版超时条目会误记上一条 rc，重跑即自动修复）；只跳过真成功条目，失败/缺失自动重抓；
+- 每小时预算与延迟对 HTTP 请求层面的换算：单视频约 3~5 个请求（信息接口 + 字幕列表 + 字幕下载；无 CC 时 yt-dlp/ASR 兜底更多），故 100 条/小时 ≈ 300~500 请求/小时，属安全频率。
+
+批量模式自动注入的子进程环境变量（日常单视频调用不受影响）：
+
+| 变量 | 默认 | 作用 |
+|------|------|------|
+| `BILI_SUB_RETRIES` | 3 | 字幕列表接口（dm/view）重试次数；批量脚本自动设 1（失败不当场重试，留给下一轮） |
+| `BILI_FAILFAST_412` | 空 | 置 `1` 后命中 HTTP 412 立即终止该视频请求链（跳过 yt-dlp/ASR 兜底）并输出 `RISK_CONTROL_412_STOP` 标记；批量脚本自动设 1 |
+
 ### 调度
 
 **已移除自动调度（2026-07-24）**：不再由 WorkBuddy automation 每日 10:00/17:00 驱动。改为**用户主动触发**——用户说「跑一次 / 跑一下」等关键词即运行 `python monitors/run.py --mode auto --apply`（详见 `RULES.md` §3C / `monitors/README.md`）。
