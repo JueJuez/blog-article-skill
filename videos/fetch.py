@@ -366,6 +366,38 @@ def _bili_cache_path() -> str:
     return os.path.join(_bili_cache_dir(), "bilibili_cookies.txt")
 
 
+def _bili_ydl_cookiefile() -> Optional[str]:
+    """返回可用的 Netscape 格式 cookie 文件路径（无 cookie 时返回 None）。
+
+    优先用现成缓存文件；否则把 BILI_COOKIE（header 字符串）转 Netscape 格式
+    写入 .cache/bili_cookies_netscape.txt 供 yt-dlp 过 B站 412 风控。
+    """
+    netscape = os.path.join(_bili_cache_dir(), "bili_cookies_netscape.txt")
+    if os.path.exists(netscape) and os.path.getsize(netscape) > 50:
+        return netscape
+    raw = (os.environ.get("BILI_COOKIE") or "").strip()
+    if not raw:
+        cached = _bili_load_cached_cookies()
+        raw = (cached or "").split("\n")[0].strip()
+    if not raw:
+        return None
+    lines = ["# Netscape HTTP Cookie File"]
+    for pair in raw.split(";"):
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            k, v = k.strip(), v.strip()
+            if k and k != "#":
+                lines.append(f".bilibili.com\tTRUE\t/\tFALSE\t0\t{k}\t{v}")
+    if len(lines) < 3:
+        return None
+    try:
+        with open(netscape, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return netscape
+    except Exception:
+        return None
+
+
 def _bili_load_cached_cookies() -> Optional[str]:
     try:
         p = _bili_cache_path()
@@ -627,6 +659,12 @@ def fetch_subtitle_only(url: str, lang: str = "zh", page: int = None) -> Optiona
             "noprogress": True,
             "socket_timeout": 15,
         }
+        # B站风控 412（Precondition Failed）：游客态 yt-dlp 抓页面会被拦，
+        # 带 cookiefile（Netscape 格式）即可通过。cookie 来源：BILI_COOKIE 环境变量
+        # （header 字符串，自动转 Netscape 写入 .cache/）或已存在的缓存文件。
+        cookie_file = _bili_ydl_cookiefile()
+        if cookie_file:
+            ydl_opts["cookiefile"] = cookie_file
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 vinfo = ydl.extract_info(page_url, download=False)
