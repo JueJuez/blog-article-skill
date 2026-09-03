@@ -22,6 +22,27 @@ BILI_RE = re.compile(r"(?:bilibili\.com/video/|b23\.tv/)([BV][A-Za-z0-9]+)")
 # B：字幕轻量清洗（保守、不伤实义），统一在获取层出口应用
 from shared.subtitle_clean import preprocess_segments, preprocess_text
 
+# B站风控（HTTP 412）探测：请求函数命中 412 时置位，供上层「兜底短路」判断。
+# 标记行 RISK_CONTROL_412_STOP 同时输出到 stdout，批量编排脚本据此熔断整批。
+RISK_412_MARKER = "RISK_CONTROL_412_STOP"
+_risk_412_hit = False
+
+
+def _mark_risk_412() -> None:
+    global _risk_412_hit
+    _risk_412_hit = True
+    print(f"   {RISK_412_MARKER} 命中B站风控(HTTP 412)，本次请求链提前终止")
+
+
+def _risk_412_failfast() -> bool:
+    """风控命中且调用方要求快速失败（批量场景）→ 跳过一切兜底请求。"""
+    return _risk_412_hit and os.environ.get("BILI_FAILFAST_412") == "1"
+
+
+def _is_http_412(e: Exception) -> bool:
+    from urllib.error import HTTPError
+    return isinstance(e, HTTPError) and getattr(e, "code", None) == 412
+
 
 def is_youtube(url: str) -> bool:
     return bool(YT_RE.search(url or ""))
@@ -258,8 +279,9 @@ def _bili_get_video_info(bvid: str) -> Optional[Dict]:
                 # 系列课（UP主聚合的多个独立视频）：含 sections[].episodes[]
                 "ugc_season": d.get("ugc_season"),
             }
-    except Exception:
-        pass
+    except Exception as e:
+        if _is_http_412(e):
+            _mark_risk_412()
     return None
 
 
@@ -276,13 +298,17 @@ def get_bilibili_pages(url: str) -> Optional[List[Dict]]:
     return info.get("pages") if info else None
 
 
-def _bili_get_subtitle_list(aid: int, cid: int, retries: int = 3) -> Optional[List[Dict]]:
+def _bili_get_subtitle_list(aid: int, cid: int, retries: int = None) -> Optional[List[Dict]]:
     """获取分P字幕列表（dm/view API）。
 
     B站 dm/view 接口偶发限流（code=-429）或瞬时返回空字幕列表，故加带退避的
     重试，避免把"瞬时限流"误判为"视频无字幕"。
+    retries 默认取环境变量 BILI_SUB_RETRIES（默认 3）；命中 HTTP 412 风控时立即
+    放弃重试并置位风控标记（重试只会加深风控，不会成功）。
     """
     import json as _j, urllib.request as _req, time as _t
+    if retries is None:
+        retries = max(1, int(os.environ.get("BILI_SUB_RETRIES", "3")))
     url = f"https://api.bilibili.com/x/v2/dm/view?aid={aid}&oid={cid}&type=1"
     for attempt in range(retries):
         r = _req.Request(url, headers={
@@ -305,7 +331,10 @@ def _bili_get_subtitle_list(aid: int, cid: int, retries: int = 3) -> Optional[Li
             if attempt < retries - 1:
                 _t.sleep(1.5 * (attempt + 1))
                 continue
-        except Exception:
+        except Exception as e:
+            if _is_http_412(e):
+                _mark_risk_412()
+                return None
             if attempt < retries - 1:
                 _t.sleep(1.5 * (attempt + 1))
                 continue
@@ -631,6 +660,12 @@ def fetch_subtitle_only(url: str, lang: str = "zh", page: int = None) -> Optiona
         print(f"   OK Bilibili 字幕获取成功（{len(segs)} 条，API 原生链路）")
         return (title, segs, info.get("author", ""))
 
+    # 风控熔断（批量场景 BILI_FAILFAST_412=1）：API 链路已命中 412 时，
+    # yt-dlp 兜底只会再吃一次 412 并加重风控，直接放弃本条。
+    if _risk_412_failfast():
+        print("   STOP 风控412命中，跳过 yt-dlp 兜底")
+        return None
+
     # 链路2：yt-dlp 自动字幕兜底（仍属「字幕」范畴，非 ASR）
     print("   WARN 该分P无 AI 字幕，尝试 yt-dlp 兜底抓自动字幕")
     try:
@@ -706,6 +741,10 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
     sub = fetch_subtitle_only(url, lang=lang, page=page)
     if sub:
         return sub
+    # 风控熔断（批量场景 BILI_FAILFAST_412=1）：412 命中后不再下载音频做 ASR
+    if _risk_412_failfast():
+        print("   STOP 风控412命中，跳过 ASR 兜底")
+        return None
     # 字幕完全缺失 → ASR 兜底（保留旧行为，供非显式编排的调用方使用）
     try:
         from videos.asr import transcribe_video, check_asr_deps
