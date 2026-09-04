@@ -5,7 +5,7 @@
 > WorkBuddy 专属的 `SKILL.md` 只是「薄触发层」，所有真规则以本文件 + `RULES.md` 为准，避免平台切换时流程丢失。
 
 ## 一句话定位
-把「文章 / 视频链接、原文、字幕、订阅的 B站UP主 / 公众号」自动转成结构化笔记，归档到 **飞书（默认）；Obsidian 仅在明确要求时追加写入**。
+把「文章 / 视频链接、原文、字幕、订阅的 B站UP主 / 公众号」自动转成结构化笔记，归档到 **本地 Obsidian（默认，2026-09-04 起）；飞书不再默认写入**。
 
 ---
 
@@ -18,7 +18,7 @@
   - **需登录态（scys 付费文 / 监控）底层路径**：统一走 `shared/cdp_session.py` 的 `SharedCdpSession` 单一入口——先关 Chrome 释放锁，再**一次性全量复制**真实 profile 到非默认目录 `CdpAutomationProfile\Chrome` + 调试端口接管（用户零操作；可用 `CDP_PROFILE_DIR` 覆盖，旧 `ProfileClone` 目录已弃用）。2026-09-04 已验证：全量复制能完整保留书签、cookies、扩展、Google 登录态；增量同步部分文件会破坏 Secure Preferences 导致扩展/登录态丢失，已废弃。Chrome 151+ 已废弃 junction / 活 Chrome 调试端口方案（会触发扩展被删）。监控 `monitors/run.py` 与 `scripts/scys_batch_fetch.py` 内部已用，无需手动调 `login_cdp_fetch.py`（仅端口探测诊断）。scys 付费文 SOP 见 `references/scys-fetch-sop.md`；CDP 机制见 `references/login-required-cdp-workflow.md` §1.1。**profile 复制/间隔计时/实例清理的统一实现在用户级 SKILL `cdp-automation-profile`（`~/.workbuddy/skills/cdp-automation-profile/`）——它是跨项目单一真源，新会话/新项目需 CDP profile 时应直接委托它（`ensure_cdp_clone` 已委托），不要重造复制逻辑。**
   - **scys 按领域批量抓取**：`python scripts/scys_batch_fetch.py --project <领域>`（领域 / menuId / 时间窗在 `scripts/scys_projects.json` 配置，换领域每半年重抓只改 JSON 不改代码）。**触发词：用户说「补齐scys / 补齐生财有术」即自动启动全流程（默认=精华+高互动非精华，2026-08-21 起），后缀自然语言改参数（领域/时间/仅精华），语义见 `references/scys-fetch-sop.md` §9。**
   - 视频：`python videos/run.py --url "https://..."` 或 `from videos import summarize_video; summarize_video({"url": url})`（含 ASR 兜底）
-- 自动按内容类型选模板（`structured` / `key_points` / `interview` / `roundup` / `reading` / `case` / `opinion` / `dissection` 创作解剖——爆款拆解/带货/涨粉/账号运营复盘额外提炼可复用结构模具）；**默认写飞书**，Obsidian 按需（用户显式开启）。
+- 自动按内容类型选模板（`structured` / `key_points` / `interview` / `roundup` / `reading` / `case` / `opinion` / `dissection` 创作解剖——爆款拆解/带货/涨粉/账号运营复盘额外提炼可复用结构模具）；**默认写本地 Obsidian（2026-09-04 起），不写飞书**。
 - **降级**：无外部 AI 时 `skill_main` 返回 `need_continue_summary` + 原文 + 模板 prompt；外层模型总结后调 `save_summary_only` 存档。
 
 ### 能力 2 · 订阅监控（关注 B站UP主 / 公众号 / scys 领域）

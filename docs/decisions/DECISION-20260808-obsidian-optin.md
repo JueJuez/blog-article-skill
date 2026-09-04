@@ -1,5 +1,7 @@
 # DECISION-20260808-obsidian-optin
 
+> ⚠️ **已取代（2026-09-04）**：本决策「默认只写飞书、Obsidian 按需」已被 `DECISION-20260904-obsidian-default.md` 翻转——现**默认只写本地 Obsidian、不写飞书**（`.env` 设 `OBSIDIAN_WRITE=1` + `DISABLE_FEISHU_SYNC=1`）。
+
 ## 背景
 用户原话：「写两遍有点浪费，默认写到飞书，如有需要写到 obsidian，我会提前和你说」。原规则是 Obsidian + 飞书强制双写（散落 RULES/AGENTS/SKILL/MEMORY/代码），用户认为重复写两遍不划算。
 

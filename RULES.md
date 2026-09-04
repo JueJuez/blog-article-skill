@@ -54,17 +54,18 @@
 
 > 两条路线都复用 `prompts/`（笔记模板）与 `articles` 的保存能力（`OutputManager`），**入口函数即真相**，勿手写抓取/总结。详细运行流程与已知坑见 **`monitors/README.md`**（监控运营）与各模块 `run.py --help`。
 
-### 3.0 默认飞书、Obsidian 按需（强制 · 2026-08-08 单写优先）
+### 3.0 默认只写本地 Obsidian、不写飞书（强制 · 2026-09-04 翻转）
 
-> **用户规则（2026-08-08）**：写两遍浪费，**默认只写飞书**，Obsidian 仅在用户明确要求时才写。代码门禁已落地（`OutputManager` 默认只写飞书），不靠 AI 记性。
-> - 用户说"写到 obsidian / 双写"时，在对应入口加 `--obsidian`（文章/视频/监控均支持）；`.env` 设 `OBSIDIAN_WRITE=1` 可一键回退双写。
-> - 飞书不可用（`DISABLE_FEISHU_SYNC=1`）且未请求 Obsidian 时回退本地 `notes/`，避免丢数据。
+> **用户规则（2026-09-04，取代 2026-08-08）**：默认**只写本地 Obsidian**（`OBSIDIAN_VAULT_PATH`），**不写飞书**。
+> - 代码门禁已在 `.env` 落地：`OBSIDIAN_WRITE=1`（让 Obsidian 成为默认落盘目标，等价于所有入口都带 `--obsidian`）+ `DISABLE_FEISHU_SYNC=1`（关掉飞书写入）。`OutputManager()` 默认即只解析到 Obsidian，不靠 AI 记性。
+> - 恢复飞书：把 `DISABLE_FEISHU_SYNC` 改为 `0`；要双写则同时保留 `OBSIDIAN_WRITE=1`。两者皆关（`OBSIDIAN_WRITE=0` 且 `DISABLE_FEISHU_SYNC=1`）时 `OutputManager` 无可用外部目标，回退本地 `notes/`，避免丢数据。
+> - 历史背景：2026-08-08 曾是「默认只写飞书、Obsidian 按需」，用户认为写两遍浪费；2026-09-04 反向调整为「默认只写 Obsidian」，因用户改用本地库为主、放弃飞书同步。
 
 ### 3.1 【待归类】收件箱约定（强制）
 
 > **L8（2026-09-03）**：`save_summary_only` folder 为空时自动走统一路由器（`resolve_folder`）——author/url 可识别的直接落作者节点/监控节点，**只有无法识别归属的才落【待归类】**（见 `docs/decisions/DECISION-20260903-save-folder-autoroute.md`）。
 
-无法识别作者与分类的新总结进「【待归类】」，用户后续手动拖到分类（启用 Obsidian 时与之对称，默认只写飞书）。系列课自带 `系列名/` 子目录，不进【待归类】。飞书分类节点与 Obsidian 分类文件夹一一对应（逻辑在 `articles/feishu.py` / `articles/obsidian.py`）。
+无法识别作者与分类的新总结进「【待归类】」，用户后续手动拖到分类（启用 Obsidian 时与之对称，默认只写本地 Obsidian）。系列课自带 `系列名/` 子目录，不进【待归类】。飞书分类节点与 Obsidian 分类文件夹一一对应（逻辑在 `articles/feishu.py` / `articles/obsidian.py`）。
 
 ### 3.2 监控账号归档：日更 + 系列自动归类 + 总览排序（2026-08-25）
 
@@ -76,6 +77,27 @@
 - 入口即真相：`tools/project_import/assets/main.py`（支持 `--from-article` / `--from-video` / 直接文本）。视频场景**描述优先于字幕**找仓库链接（用户 2026-09-02 确认）。
 - 细节与触发规则以 `tools/project_import/SKILL.md` 为准；本路线**不**走 `OutputManager`（不写 wiki 笔记、不碰 Obsidian 笔记）。
 - scys 新帖监控窗口以 `scripts/scys_projects.json` 的 `defaults.since_days` / `subscriptions.json` 的 scys 条目覆盖为准（不写死）。
+
+### 3.4 Obsidian 库结构（与飞书镜像 · 2026-09-04 调整）
+
+> 默认只写本地 Obsidian 后，库结构**直接镜像 `shared/routing.resolve_folder` 的飞书结构**（落盘代码把路由路径拼进 filename，Obsidian 原样保留）。三层根与飞书一一对应：
+
+```
+AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
+├── 【监控】/                        ← 跑一下（日更增量）
+│   ├── B站/<账号>/日更/  ·  /<系列>/
+│   ├── 公众号/<账号>/日更/  ·  /<系列>/
+│   └── 生财有术/<领域>/             ← 补齐 scys 也走这（回溯窗口更大，填同一树）
+├── 【我的总结】/                    ← 散文 / 手贴
+│   ├── 作者/<名>/
+│   ├── 系列课/<系列>/               ← 独立系列（无归属账号）
+│   └── <分类>/                       ← 散文（有分类）
+└── 【待归类】/                       ← 收件箱（作者未知且无分类；与飞书名对齐，旧【00_待归类】已弃用）
+```
+
+- **主题降级为标签**：独立开发 / 投资 / 流量… 等主题不再建文件夹，改存为笔记内 `#标签`（跟飞书一致：文件夹只按「来源/账号/系列」，主题靠标签面板检索）。
+- **三场景映射**：跑一下 → `【监控】`；补齐 → 同一 `【监控】` 树（历史回溯只是窗口更大）；散文 → `【我的总结】/`（`作者/` 认得作者、`系列课/` 独立系列、`<分类>/` 有主题）。
+- **存量迁移**：旧方案遗留文件夹（`01_独立开发`…`副业增长/生财有术`/`千刀千法`/`哲学思辨`/`【00_待归类】` 等）已由 `scripts/migrate_obsidian_vault.py` 按 `resolve_folder` 重路由 + 主题标签注入（先 `--dry-run` 预览；迁移日志 `scripts/migration_obsidian_log.json` 可回退）。`.bak` 备份整体暂存 `备份_遗留bak/`，未删，待用户确认后清理。
 
 ### 路线入口速查
 

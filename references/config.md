@@ -137,14 +137,14 @@ print("当前使用:", provider.name if provider else "无")
 
 ## 五、输出规则
 
-| 配置情况 | 默认输出（`obsidian=False`） | 追加 Obsidian（`obsidian=True` / `OBSIDIAN_WRITE=1`） |
+| 配置情况 | 默认输出（`OBSIDIAN_WRITE` 未设 / 为 0） | Obsidian 成默认（`OBSIDIAN_WRITE=1`） |
 |----------|----------|----------|
-| 无任何配置 | 保存到 `notes/` 目录（本地兜底） | 同上（无 Obsidian 可写） |
+| 无任何配置 | 保存到 `notes/` 目录（本地兜底） | 同上（无 Obsidian 可写则回退 `notes/`） |
 | 仅配置 Obsidian | 保存到 `notes/`（未请求 Obsidian，且无飞书） | 输出到 Obsidian 知识库 |
-| 仅配置飞书 | 输出到飞书知识库 | 同上（无 Obsidian 可写） |
-| 两者都配置 | 默认只输出**飞书**（2026-08-08 改为单写优先） | 同时输出到 Obsidian + 飞书 |
+| 仅配置飞书 | 输出到飞书知识库 | 同上（无 Obsidian 可写则仍写飞书） |
+| 两者都配置 | 默认只输出**飞书**（2026-08-08–2026-09-03 规则） | 同时输出到 Obsidian + 飞书（双写） |
 
-> **默认只写飞书，Obsidian 按需（2026-08-08 用户规则）**：写两遍浪费。代码门禁 `OutputManager` 默认不含 Obsidian，必须显式开启（`obsidian=True` 或在入口传 `--obsidian` / `OBSIDIAN_WRITE=1`）才写。详见 `RULES.md` §3.0。
+> **本项目当前默认（2026-09-04 起）：只写本地 Obsidian，不写飞书。** `.env` 已设 `OBSIDIAN_WRITE=1`（Obsidian 成默认目标）+ `DISABLE_FEISHU_SYNC=1`（关飞书写入），故 `OutputManager()` 默认只解析到 Obsidian。这是 2026-08-08「默认飞书、Obsidian 按需」规则的翻转——用户改用本地库为主、放弃飞书同步。详见 `RULES.md` §3.0 与 `docs/decisions/DECISION-20260904-obsidian-default.md`。
 
 ## 六、验证配置
 

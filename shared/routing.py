@@ -235,7 +235,7 @@ def resolve_folder(item: dict, state: dict = None) -> str:
     if author and author not in ("未知", "", "匿名"):
         return f"{MYNOTES_ROOT}/作者/{author}"
 
-    # 6) 手贴散文（有分类）→ 【我的笔记】/<分类>
+    # 6) 手贴散文（有分类）→ 【我的总结】/<分类>
     cat = (item.get("category") or "").strip()
     if cat:
         return f"{MYNOTES_ROOT}/{cat}"

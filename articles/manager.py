@@ -32,9 +32,15 @@ def _obsidian_env_enabled() -> bool:
 
 
 class OutputManager:
-    """落盘闸门。默认只写飞书；obsidian=True（或 OBSIDIAN_WRITE=1）时追加 Obsidian。
+    """落盘闸门。
 
-    两者皆不可用时（飞书关/不可用 且未请求 Obsidian）回退本地 notes/，避免丢数据。
+    默认行为由 `.env` 决定（不靠 AI 记性）：
+    - 本项目当前（2026-09-04 起）：`OBSIDIAN_WRITE=1` + `DISABLE_FEISHU_SYNC=1`
+      → 默认只写本地 Obsidian，不写飞书。
+    - 旧规则（2026-08-08–2026-09-03）：`OBSIDIAN_WRITE` 未设 → 默认只写飞书，
+      `obsidian=True` / `OBSIDIAN_WRITE=1` 时追加 Obsidian。
+
+    两者皆不可用（Obsidian 未配 且 飞书关/不可用）时回退本地 notes/，避免丢数据。
     """
 
     def __init__(self, obsidian: bool = False):
