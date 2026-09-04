@@ -10,6 +10,7 @@
 
 import os
 import re
+import random
 import time
 import tempfile
 import subprocess
@@ -42,6 +43,119 @@ def _risk_412_failfast() -> bool:
 def _is_http_412(e: Exception) -> bool:
     from urllib.error import HTTPError
     return isinstance(e, HTTPError) and getattr(e, "code", None) == 412
+
+
+# ---------------------------------------------------------------------------
+# 请求级追踪（2026-09-03）：批量补齐的结构化日志依赖。
+# _bili_urlopen 包装所有 B站 HTTP 调用，累积 _HTTP_TRACE（ts/endpoint/status/ms/ok），
+# run.py --batch-file 结束时随结果一起吐给编排层，写入运行日志。据此可分析：
+# 「请求是否密集」（相邻请求时间差）、「412/413/429/超时」各出现在哪条、持续多久。
+# ---------------------------------------------------------------------------
+_HTTP_TRACE: List[Dict] = []
+
+
+def _bili_urlopen(url: str, headers: Dict, timeout: float, tag: str = ""):
+    """urllib.request.urlopen 的 B站专用包装：发请求 + 记录追踪（不改变原语义）。
+
+    成功返回 response；HTTPError/网络异常在记录后原样抛出（与裸 urlopen 一致）。
+    """
+    import time as _t
+    import urllib.error as _ue
+    import urllib.request as _req
+    host = re.sub(r"^https?://([^/]+).*$", r"\1", url or "") or ""
+    t0 = _t.time()
+    rec: Dict = {"ts": round(_t.time(), 3), "endpoint": tag, "host": host,
+                 "status": None, "ms": 0, "ok": False}
+    try:
+        _rate_limit_acquire()  # 请求级滑动 1h 预算（所有 B站管线共用的单一咽喉）
+        r = _req.Request(url, headers=headers)
+        resp = _req.urlopen(r, timeout=timeout)
+        rec["status"] = resp.getcode()
+        rec["ms"] = int((_t.time() - t0) * 1000)
+        rec["ok"] = True
+        _HTTP_TRACE.append(rec)
+        return resp
+    except _ue.HTTPError as e:
+        rec["status"] = getattr(e, "code", None)
+        rec["ms"] = int((_t.time() - t0) * 1000)
+        rec["err"] = f"HTTP {e.code}"
+        _HTTP_TRACE.append(rec)
+        if getattr(e, "code", None) == 412:
+            _rate_limit_backoff_on_412()  # 越被风控越保守：本轮预算自动降档
+        raise
+    except Exception as e:
+        rec["ms"] = int((_t.time() - t0) * 1000)
+        rec["err"] = type(e).__name__
+        _HTTP_TRACE.append(rec)
+        raise
+
+
+def get_http_trace() -> List[Dict]:
+    """返回本进程累计的请求追踪（浅拷贝）。"""
+    return list(_HTTP_TRACE)
+
+
+def clear_http_trace() -> None:
+    _HTTP_TRACE.clear()
+
+
+def risk_412_hit() -> bool:
+    """本进程内是否已命中过 412 风控（供批量编排按条标记 risk412）。"""
+    return _risk_412_hit
+
+
+# ---------------------------------------------------------------------------
+# 请求级限流（2026-09-03，Q2/Q3）：预算以「请求数」而非「视频数」计，挂在
+# _bili_urlopen 这个 HTTP 单一咽喉上——单视频补齐 / 系列整季 / 监控 / 救回等
+# 所有 B站管线自动共用，不再出现「单视频有限流、系列批量零限流」的空洞。
+#
+# 预算是可算的（用户 Q2）：
+#   每视频 ≈ 3 请求（view + dm_view + subtitle_cdn）
+#   假设安全上限 200 请求/小时（经验值，待运行日志校准：密度/412 出现点），
+#   留 15% 余量 → 默认 170 请求/小时 ≈ 56 视频/小时。
+#   仅靠条间延迟 15~30s 只能压到 ≈440 请求/小时，压不进安全区 → 必须有请求级硬顶。
+# 动态调整（用户 Q3）：命中 412 自动降预算 ×0.7（下限 30/小时），本轮内生效——
+#   越被风控越保守；恢复需人工调 env 或下轮重新开始。
+# env: BILI_MAX_REQ_PER_HOUR（默认 170；0=不限，仅调试用）。
+# ---------------------------------------------------------------------------
+_RATE = {"limit": None, "window": []}
+
+
+def _rate_limit_max() -> int:
+    if _RATE["limit"] is None:
+        try:
+            _RATE["limit"] = int(os.environ.get("BILI_MAX_REQ_PER_HOUR", "170"))
+        except ValueError:
+            _RATE["limit"] = 170
+    return _RATE["limit"]
+
+
+def _rate_limit_acquire() -> None:
+    """滑动 1h 请求预算：满额则睡眠到最老请求出窗（+1~5s 抖动）。"""
+    limit = _rate_limit_max()
+    if limit <= 0:
+        return
+    now = time.time()
+    w = _RATE["window"]
+    while w and now - w[0] >= 3600:
+        w.pop(0)
+    if len(w) >= limit:
+        sleep_s = max(1.0, w[0] + 3600 - now + random.uniform(1, 5))
+        print(f"[rate] 请求预算 {limit}/小时已满，睡眠 {sleep_s:.0f}s 后继续", flush=True)
+        time.sleep(sleep_s)
+        now = time.time()
+        while w and now - w[0] >= 3600:
+            w.pop(0)
+    w.append(time.time())
+
+
+def _rate_limit_backoff_on_412() -> None:
+    """命中 412 → 本轮请求预算自动下调 ×0.7（下限 30/小时）。"""
+    limit = _rate_limit_max()
+    if limit <= 0:
+        return
+    _RATE["limit"] = max(30, limit * 7 // 10)  # 整数运算，避免 170*0.7=118.999 浮点截断
+    print(f"[rate] 命中412，请求预算自动下调：{limit} → {_RATE['limit']}/小时", flush=True)
 
 
 def is_youtube(url: str) -> bool:
@@ -252,14 +366,13 @@ def _bili_get_video_info(bvid: str) -> Optional[Dict]:
         {"aid", "cid"(首P), "title", "author"(UP主名),
          "pages": [{"cid", "page", "part"}, ...]} 或 None
     """
-    import json as _j, urllib.request as _req
+    import json as _j
     api = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
-    r = _req.Request(api, headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://www.bilibili.com/",
-    })
     try:
-        resp = _req.urlopen(r, timeout=15)
+        resp = _bili_urlopen(api, {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.bilibili.com/",
+        }, timeout=15, tag="view")
         data = _j.loads(resp.read())
         if data.get("code") == 0:
             d = data["data"]
@@ -306,17 +419,16 @@ def _bili_get_subtitle_list(aid: int, cid: int, retries: int = None) -> Optional
     retries 默认取环境变量 BILI_SUB_RETRIES（默认 3）；命中 HTTP 412 风控时立即
     放弃重试并置位风控标记（重试只会加深风控，不会成功）。
     """
-    import json as _j, urllib.request as _req, time as _t
+    import json as _j, time as _t
     if retries is None:
         retries = max(1, int(os.environ.get("BILI_SUB_RETRIES", "3")))
     url = f"https://api.bilibili.com/x/v2/dm/view?aid={aid}&oid={cid}&type=1"
     for attempt in range(retries):
-        r = _req.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://www.bilibili.com/",
-        })
         try:
-            resp = _req.urlopen(r, timeout=15)
+            resp = _bili_urlopen(url, {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://www.bilibili.com/",
+            }, timeout=15, tag="dm_view")
             data = _j.loads(resp.read())
             # code != 0 多为限流（-429）等瞬时故障，重试
             if data.get("code") != 0:
@@ -349,7 +461,7 @@ def _bili_download_subtitle_body(subtitle_url: str, cookies: str = None) -> Opti
     查询参数）。该 URL 自带签名、无需登录即可访问；自行拼装 URL 会因缺少
     auth_key 而 403。cookies 参数保留以备未来签名过期 Scenario。
     """
-    import json as _j, urllib.request as _req
+    import json as _j
     hdrs = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Referer": "https://www.bilibili.com/",
@@ -358,9 +470,8 @@ def _bili_download_subtitle_body(subtitle_url: str, cookies: str = None) -> Opti
         hdrs["Cookie"] = cookies
     # http(s) 兼容：CDN 返回的是 http 地址，直接复用即可
     url = subtitle_url
-    r = _req.Request(url, headers=hdrs)
     try:
-        resp = _req.urlopen(r, timeout=20)
+        resp = _bili_urlopen(url, hdrs, timeout=20, tag="subtitle_cdn")
         body = _j.loads(resp.read())
         items = body.get("body", [])
         if not isinstance(items, list):
@@ -451,17 +562,16 @@ def validate_bilibili_cookies(cookie_str: str) -> bool:
     调用 nav API，依据 data.isLogin 判断。任一异常均视为无效，不阻断主流程。
     SESSDATA 无论 URL 编码（%2C）还是解码（,）形式，nav API 均可识别。
     """
-    import json as _j, urllib.request as _req
+    import json as _j
     if not cookie_str:
         return False
     url = "https://api.bilibili.com/x/web-interface/nav"
-    r = _req.Request(url, headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://www.bilibili.com/",
-        "Cookie": cookie_str,
-    })
     try:
-        resp = _req.urlopen(r, timeout=15)
+        resp = _bili_urlopen(url, {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.bilibili.com/",
+            "Cookie": cookie_str,
+        }, timeout=15, tag="nav_validate")
         data = _j.loads(resp.read())
         return bool(data.get("data", {}).get("isLogin"))
     except Exception:
@@ -489,52 +599,96 @@ def _bili_load_valid_cached_cookies() -> Optional[str]:
     return None
 
 
-def _bili_auto_extract_cookies() -> Optional[str]:
-    """用 Playwright 挂载本机 Chrome *真实* 用户配置，读取其中已登录的 B 站 cookie。
+def _bili_extract_cookies_cdp(wait_s: float = None) -> Optional[str]:
+    """B站 cookie 获取的【唯一方法】（用户 2026-09-03 拍板「有且只有一个」）：
 
-    为什么必须挂载真实配置、而不是直接读库：
-    Chrome 127+ 启用了 App-Bound Encryption，cookie 明文只能由 Chrome 自身解密
-    （通过 CDP）。直接读 Cookies SQLite 库会因密钥受应用绑定保护而解密失败；
-    复制 profile 再读则会被 Chrome 当作新配置重新加密、旧 cookie 全部丢弃。
-
-    前置条件：本机 Chrome 必须**完全退出**（含后台进程）。若仍在后台运行，
-    配置目录被锁，挂载会失败并返回 None。成功后写入 .cache 缓存，后续复用。
+    CDP profile 克隆（关 Chrome → 克隆 → 非默认 dir 开调试端口，SharedCdpSession
+    生产路径）→ **真实访问 bilibili.com** → 从活会话读 cookie。
+    - 为什么必须访问：只读磁盘存量拿不到「最新」；带登录态访问后 B站校验/续发
+      Set-Cookie，活会话里读到的才是当前有效值。
+    - 未登录【不报错退出】：保持会话打开，每 5s 轮询 SESSDATA，等用户在可见窗口
+      登录，最长 wait_s（默认 BILI_COOKIE_WAIT_S=300，即 5 分钟）。
+    - Chrome 151+ 默认 dir 禁用一切远程调试（含 --remote-debugging-pipe），Playwright
+      挂真实 profile 的老路已死（实测 TimeoutError），故删除、不再保留。
+    代价：会杀掉当前 Chrome 进程（与监控登录态抓取同款行为）。
     """
+    if wait_s is None:
+        try:
+            wait_s = float(os.environ.get("BILI_COOKIE_WAIT_S", "300"))
+        except ValueError:
+            wait_s = 300.0
     try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        print("   ℹ️ 未安装 playwright（pip install playwright && playwright install chromium），跳过自动提取")
+        from shared.cdp_session import SharedCdpSession
+    except Exception as e:
+        print(f"   ℹ️ CDP 会话依赖不可用：{type(e).__name__}: {e}")
         return None
-
-    chrome_user_data = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "User Data")
-    if not os.path.isdir(chrome_user_data):
-        print("   ℹ️ 未检测到本机 Chrome 用户目录，跳过自动提取")
-        return None
-
+    sess = None
     try:
-        with sync_playwright() as p:
-            ctx = p.chromium.launch_persistent_context(
-                user_data_dir=chrome_user_data,
-                headless=True,
-                channel="chrome",
-                args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
-                timeout=20000,
-            )
-            try:
-                cookies = ctx.cookies("https://www.bilibili.com")
-            finally:
-                ctx.close()
-        if not cookies:
-            return None
+        sess = SharedCdpSession()
+        page = sess._ctx.pages[0] if getattr(sess._ctx, "pages", None) else sess._ctx.new_page()
+        page.goto("https://www.bilibili.com", wait_until="domcontentloaded", timeout=30_000)
+        page.wait_for_timeout(2500)
+        deadline = time.time() + wait_s
+        announced = False
+        while True:
+            cookies = sess._ctx.cookies("https://www.bilibili.com")
+            if any(c.get("name") == "SESSDATA" for c in cookies):
+                break
+            if time.time() >= deadline:
+                print(f"   ℹ️ 等待登录超时（{int(wait_s)}s 内未出现 SESSDATA），本轮轮换放弃。")
+                return None
+            if not announced:
+                announced = True
+                print(f"   ⏳ 未检测到 B站登录——请在弹出的浏览器窗口里登录（扫码/账密），"
+                      f"最长等 {int(wait_s)}s（每 5s 检测）…")
+            time.sleep(5)
         cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
         _bili_cache_cookies(cookie_str)
-        print(f"   ✅ 已自动从本机 Chrome 提取 B 站 cookie（{len(cookies)} 项，已缓存到 .cache）")
+        print(f"   ✅ 已从 CDP 活会话提取 B站 cookie（{len(cookies)} 项，含 SESSDATA，已缓存 .cache）")
         return cookie_str
     except Exception as e:
-        print("   ℹ️ 自动提取 B 站 cookie 失败：本机 Chrome 可能仍在后台运行（配置被锁）。")
-        print("      → 请完全退出 Chrome（任务栏右键图标→退出，或任务管理器结束 chrome.exe）后重试；")
-        print("        首次成功后 cookie 会缓存到 .cache，之后无需再开 Chrome。")
+        print(f"   ℹ️ CDP 提取 cookie 失败：{type(e).__name__}: {e}")
         return None
+    finally:
+        if sess is not None:
+            try:
+                sess.close()
+            except Exception:
+                pass
+
+
+def _persist_cookie_to_env(cookie_str: str) -> bool:
+    """把新 cookie 写回项目 .env 的 BILI_COOKIE 行（先备份 .env.bili_cookie.bak）。
+
+    为什么必须写：cookie 取用优先级是 env > .cache，.env 里留着过期 cookie 会让
+    每次运行都判定失效、重复走昂贵的 CDP 克隆轮换。写回后一轮到位。
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env_path = os.path.join(root, ".env")
+    try:
+        lines = []
+        if os.path.exists(env_path):
+            with open(env_path, encoding="utf-8") as f:
+                lines = f.read().splitlines()
+            with open(env_path + ".bili_cookie.bak", "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        hit = False
+        out = []
+        for ln in lines:
+            if ln.strip().startswith("BILI_COOKIE="):
+                out.append(f"BILI_COOKIE={cookie_str}")
+                hit = True
+            else:
+                out.append(ln)
+        if not hit:
+            out.append(f"BILI_COOKIE={cookie_str}")
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + "\n")
+        print("   💾 新 cookie 已写回 .env（备份：.env.bili_cookie.bak）")
+        return True
+    except Exception as e:
+        print(f"   ℹ️ 写回 .env 失败（可手动把新 cookie 粘到 BILI_COOKIE= 行）：{e}")
+        return False
 
 
 def _bili_build_cookies_from_env() -> Optional[str]:
@@ -557,7 +711,34 @@ def _bili_build_cookies_from_env() -> Optional[str]:
     cached = _bili_load_valid_cached_cookies()
     if cached:
         return cached
-    return _bili_auto_extract_cookies()
+    # 不在热路径里自动拉 CDP 会话（重 + 可能弹窗等登录）；cookie 轮换由
+    # rotate_bili_cookie_if_dead 显式触发（补齐管线运行开始/命中412后 + 手动脚本）。
+    return None
+
+
+def rotate_bili_cookie_if_dead() -> Tuple[str, Optional[str]]:
+    """惰性 cookie 轮换（2026-09-03）：当前 cookie 失效时，走【唯一方法】刷新。
+
+    策略（失败时检测轮换，不做定时轮询）：
+    1. 取当前 cookie（env/.cache 链）→ nav API 校验 isLogin；
+    2. 仍有效 → ("valid", None)（不折腾）；
+    3. 已失效 → `_bili_extract_cookies_cdp()`：CDP profile 克隆 → 真实访问 B站 →
+       活会话读 cookie（未登录则弹窗等待用户登录，默认最长 300s），
+       校验通过 → 写缓存 + 写回 .env，返回 ("rotated", 新串)；调用方应把新串设回
+       os.environ["BILI_COOKIE"] 让后续子进程继承；
+    4. 提取/校验失败/登录超时 → ("failed", None)。
+    """
+    cur = _bili_build_cookies_from_env()
+    if cur and validate_bilibili_cookies(cur):
+        return ("valid", None)  # 仍有效，无需轮换
+    print("   ⚠️ 当前 B站 cookie 已失效（nav isLogin=False）或不可用，走 CDP 轮换…")
+    fresh = _bili_extract_cookies_cdp()
+    if fresh and validate_bilibili_cookies(fresh):
+        print("   ♻️ cookie 已轮换（来源：CDP 活会话），后续请求使用新 cookie")
+        _persist_cookie_to_env(fresh)  # 写回 .env，否则过期 cookie 下轮仍以最高优先级命中
+        return ("rotated", fresh)
+    print("   ℹ️ cookie 轮换失败。字幕主链路无需登录不受影响；动态/系列等需登录接口会受影响。")
+    return ("failed", None)
 
 
 def _bili_fetch_page_subtitle(aid: int, cid: int, lang: str = "zh") -> Optional[List[Dict]]:
@@ -666,6 +847,12 @@ def fetch_subtitle_only(url: str, lang: str = "zh", page: int = None) -> Optiona
         print("   STOP 风控412命中，跳过 yt-dlp 兜底")
         return None
 
+    # 批量补齐：跳过 yt-dlp 兜底（避免自动字幕下载触发 412 / 拖慢节奏），
+    # 无 AI 字幕的视频留待后续单独 ASR 处理（BILI_BATCH_NO_ASR=1）。
+    if os.environ.get("BILI_BATCH_NO_ASR") == "1":
+        print("   SKIP 批量模式跳过 yt-dlp 兜底（无 AI 字幕，留待后续 ASR 单独处理）")
+        return None
+
     # 链路2：yt-dlp 自动字幕兜底（仍属「字幕」范畴，非 ASR）
     print("   WARN 该分P无 AI 字幕，尝试 yt-dlp 兜底抓自动字幕")
     try:
@@ -745,6 +932,11 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
     if _risk_412_failfast():
         print("   STOP 风控412命中，跳过 ASR 兜底")
         return None
+    # 批量补齐：跳过 ASR 音频转写（避免音频下载 412 / 长耗时），
+    # 无字幕视频留待后续单独 ASR 处理（BILI_BATCH_NO_ASR=1）。
+    if os.environ.get("BILI_BATCH_NO_ASR") == "1":
+        print("   SKIP 批量模式跳过 ASR 兜底（无 AI 字幕，留待后续 ASR 单独处理）")
+        return None
     # 字幕完全缺失 → ASR 兜底（保留旧行为，供非显式编排的调用方使用）
     try:
         from videos.asr import transcribe_video, check_asr_deps
@@ -775,10 +967,19 @@ def _fetch_series_entries(meta_list: List[Dict], lang: str) -> List[Dict]:
 
     已知 aid/cid 时直抓字幕（仅一次 dm/view + 一次下载，不重复调 view API）；
     aid/cid 缺失时退回按 bvid 走完整单视频抓取链路兜底。
+
+    集间节奏（2026-09-03 运行日志实测发现）：整季批量内部原先零间隔，实测
+    6 条系列入口触发 112 次请求、min_gap 0.04s / 194 次/分钟——是最容易被
+    B站风控盯上的请求形态。加 2~4s 随机间隔消除「机器脉冲」。
     """
+    import random as _rd
     entries: List[Dict] = []
     total = len(meta_list)
-    for m in meta_list:
+    for i, m in enumerate(meta_list):
+        if i > 0:
+            gap = _rd.uniform(2.0, 4.0)
+            print(f"   [series-gap] 集间等待 {gap:.1f}s", flush=True)
+            time.sleep(gap)
         page = m.get("page", "?")
         part = m.get("part", "")
         print(f"   🎞️ 抓取第 {page}/{total} 集: {part or '(无标题)'}")

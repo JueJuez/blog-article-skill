@@ -1,0 +1,18 @@
+Windows Registry Editor Version 5.00
+
+; 关闭 Chrome 自动更新（Google 官方企业策略键，2026-09-03 生成）
+; 用法：双击本文件 → UAC 弹窗点「是」→ 重启 Chrome 后生效。
+; 恢复自动更新：删除下面三个键值即可（或直接删除 Policies\Google\Update 这个键）。
+; 原理：AutoUpdateCheckPeriodMinutes=0 禁周期检查；UpdateDefault=0 全局默认关；
+;       Update{Chrome的AppGUID}=0 针对浏览器本体关。
+; 同时写入 64 位与 32 位（WOW6432Node）策略路径，覆盖两种位宽的更新器读取。
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Update]
+"AutoUpdateCheckPeriodMinutes"=dword:00000000
+"UpdateDefault"=dword:00000000
+"Update{8A69D345-D564-463C-AFF1-A69D9E530F96}"=dword:00000000
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Policies\Google\Update]
+"AutoUpdateCheckPeriodMinutes"=dword:00000000
+"UpdateDefault"=dword:00000000
+"Update{8A69D345-D564-463C-AFF1-A69D9E530F96}"=dword:00000000

@@ -4,14 +4,18 @@
 
 唯一路径（2026-09-02 塌缩，删除路径1/路径3）：
   关掉用户的 Chrome（释放 Network/Cookies 独占锁）
-  → 复制真实 profile 到非默认 ProfileClone 目录（ensure_profile_clone）
+  → 复制真实 profile 到非默认目录（ensure_profile_clone，默认 CdpAutomationProfile\Chrome，
+     可用 CDP_PROFILE_DIR 覆盖；旧 ProfileClone 目录已弃用）
   → 以该目录 + --remote-debugging-port 启动系统 Chrome（Chrome 151+ 仅在非默认 dir 放行调试）
   → connect_over_cdp 接管（导航/DOM/请求可读，登录态+扩展天然保留）。
 
 为什么要删另两条：
   - 路径1（接管活 Chrome）：Chrome 151+ 在默认 profile 上写了调试端口却不监听，本机不可行 → 删。
   - 路径3（headless 克隆无登录兜底）：会静默撞登录墙产出空壳 → 删。
-ProfileClone 是非默认目录的真实副本，Chrome 151+ 放行调试且不触发扩展垃圾回收。
+CdpAutomationProfile\\Chrome 是非默认目录的真实副本，Chrome 151+ 放行调试且不触发扩展垃圾回收。
+
+2026-09-04 修正：ensure_profile_clone 不再做增量同步（会破坏 Secure Preferences 一致性，
+导致扩展/Google 登录态丢失），改为「首次/缺失/陈旧时全量复制，否则直接复用」。
 
 用法：
   A. 单次取标题（公众号）：
@@ -111,14 +115,16 @@ def _ensure_chrome_closed() -> None:
 
 
 def _launch_cloned_logged_in_browser(p) -> tuple:
-    """可靠兜底（带登录态）：关 Chrome → 复制真实 profile 到非默认 ProfileClone 目录 → 该目录开调试端口启动。
+    """可靠兜底（带登录态）：关 Chrome → 全量复制真实 profile 到非默认目录 → 该目录开调试端口启动。
 
     为什么这条能同时保住「登录态 + CDP 控制」：
       - Chrome 151+ 在【默认 user-data-dir】上禁调试端口（实测 DevToolsActivePort 写了但不监听）；
         在【非默认目录】上放行（实测 5599 正常响应 /json/version）。
-      - 故启动用 ProfileClone（非默认 dir）→ CDP 控得住。
-      - 登录态靠复制真实 profile 的 cookie；但运行期 cookie 被独占锁，必须先关 Chrome 再复制
-        （ensure_profile_clone 增量同步才能把 Network/Cookies 拷过去）。
+      - 故启动用 CdpAutomationProfile\\Chrome（或 CDP_PROFILE_DIR 指定的非默认 dir）→ CDP 控得住。
+      - 登录态+扩展靠一次性「全量复制」整个真实 profile；运行期 cookie 被独占锁，
+        因此调用方必须先关 Chrome 再复制（ensure_profile_clone 会处理）。
+      - 2026-09-04 已验证：全量复制能完整保留书签、cookies、扩展、Google 登录态；
+        而只同步部分文件（增量）会破坏 Secure Preferences，导致扩展/Google 登录态丢失。
     启动方式是「直接拉起系统 Chrome + --remote-debugging-port」再 connect_over_cdp，
     规避 Playwright 在默认 dir 上对 pipe 的限制；非默认 dir 下该方式已实测可用。
 
@@ -127,7 +133,7 @@ def _launch_cloned_logged_in_browser(p) -> tuple:
     """
     from profile_clone_fetch import ensure_profile_clone, CLONE_DIR
     _ensure_chrome_closed()                 # 先释放 cookie 锁
-    clone_dir = ensure_profile_clone()       # 关了 Chrome 后，cookie 增量同步可成功
+    clone_dir = ensure_profile_clone()       # 关 Chrome 释放锁后，全量复制/复用副本（无增量同步）
     chrome_exe = _find_system_chrome()
     if not chrome_exe:
         raise RuntimeError("找不到系统 Chrome 可执行文件")
@@ -164,10 +170,11 @@ class SharedCdpSession:
         self.cdp_endpoint = None     # 供并行 worker 经 from_endpoint 复用的 ws 端点
 
         # 唯一路径（2026-09-02 塌缩，删路径1/路径3）：
-        # 关 Chrome → 复制真实 profile 到非默认 ProfileClone → 该 dir 开调试端口启动
+        # 关 Chrome → 全量复制真实 profile 到非默认 dir → 该 dir 开调试端口启动
         # → connect_over_cdp 接管（CDP 控得住 + 登录态/扩展保留；Chrome 151+ 仅非默认 dir 放行调试）。
+        # 2026-09-04：不再增量同步 cookie，改为「首次/缺失/陈旧时全量复制，否则直接复用」。
         self._ctx, self.cdp_endpoint, self._proc = _launch_cloned_logged_in_browser(self._p)
-        print(f"[CDP] 关 Chrome→克隆 profile→非默认 dir 开调试端口启动（登录态+CDP 控制）")
+        print(f"[CDP] 关 Chrome→全量复制 profile→非默认 dir 开调试端口启动（登录态+扩展+CDP 控制）")
 
         # 复用同一 page 取标题，避免泄漏
         self._page = self._ctx.pages[0] if getattr(self._ctx, "pages", None) else self._ctx.new_page()

@@ -50,7 +50,7 @@
    - **跨来源去重（2026-09-03）**：生财有术公众号文章送总结前与 `notes/_scraped/scys/` 归档做标题/正文前缀相似比对（`articles/dedup.py: find_cross_duplicate`），同一篇双渠道帖子只总结一次；命中日志 `[cross-dedup]`、健康度计 `scys重复`。URL 去重挡不住跨渠道同帖（两边 URL 天然不同），此比对补上该盲区。
    - B站视频/动态：视频 `summarize_video`；动态 API 正文内联，短动态存「速览」、完整动态走重模板。B站无字幕自动进 ASR 兜底（需本机装 `yt_dlp faster_whisper ctranslate2 imageio_ffmpeg`，2026-09-03 已装）。
    - FORCE_AGENT_MODE=1：**不自动总结**，全部进 `pending_summaries.json` 队列。
-4. **scys 增量（`subscriptions.json` 配了 `scys` 列表才跑）**：逐领域子进程跑 `scripts/scys_batch_fetch.py`（默认近 7 天窗口、精华过滤按 `scys_projects.json` 默认、翻 2 页列表），抓到的原文进 `notes/_scraped/scys/pending_summaries.json` 队列（与批量补齐共用，`.lock` 互斥防并发写坏 state）。CDP 不可用时自动回退到 `profile_clone_fetch`（持久化 ProfileClone，Chrome 151+ 默认走这条），不影响公众号/B站。
+4. **scys 增量（`subscriptions.json` 配了 `scys` 列表才跑）**：逐领域子进程跑 `scripts/scys_batch_fetch.py`（默认近 7 天窗口、精华过滤按 `scys_projects.json` 默认、翻 2 页列表），抓到的原文进 `notes/_scraped/scys/pending_summaries.json` 队列（与批量补齐共用，`.lock` 互斥防并发写坏 state）。登录态走统一 `SharedCdpSession`（默认 `CdpAutomationProfile\Chrome` 目录，由 `ensure_cdp_profile.py` 每天首跑全量、当天复用），不影响公众号/B站。
 5. **Agent 总结闭环**：本会话（执行模型）读队列 → 派**子 Agent** 按 `note_type` 模板总结 → `save_summary_only` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，见 `RULES.md` §3.0）→ 出队。**原子化**：成功才出队，中断可安全重跑。scys 队列同理（folder=生财有术/<领域>，语义见 `references/scys-fetch-sop.md` §9）。
 6. **看健康度行**：末尾 `📊 本轮健康度：...` 一行，异常（错误/限流待重试高）一眼可见。
 
@@ -66,7 +66,7 @@
   - 为什么放大：新帖常在发布数日后才被标精华，窗口太窄会永久漏「晚精华」帖；窗口放大只多翻列表页（便宜），done 去重兜底不会重复抓正文。
   - 已知局限：发布超过当前窗口（35 天）才标精华的帖会漏，靠半年一次的「补齐scys」兜底。
   - ⚠️ 另有一个**不同路径**的默认值 182：`scripts/scys_projects.json` 的 `defaults.since_days`，那是「补齐scys」批量抓取用的，与日常增量无关，别混为一谈。
-- **前提**：用户已在 Chrome 登录 scys.com。登录态抓取由 `scripts/scys_batch_fetch.py` 经 `SharedCdpSession` 自动完成（唯一路径：关 Chrome → 复制 profile 到非默认 `ProfileClone` 目录 → 该目录调试端口启动 → `connect_over_cdp` 接管；登录态由复制的 cookie 继承），不影响公众号/B站。
+- **前提**：用户已在 Chrome 登录 scys.com。登录态抓取由 `scripts/scys_batch_fetch.py` 经 `SharedCdpSession` 自动完成（唯一路径：关 Chrome → 全量复制 profile 到非默认 `CdpAutomationProfile\Chrome` 目录 → 该目录调试端口启动 → `connect_over_cdp` 接管；登录态由复制的 cookie 继承），不影响公众号/B站。
 - **互斥**：`notes/_scraped/scys/.lock` 进程锁——「跑一下」的 scys 增量与「补齐scys」批量不会并发写坏 state/pending；**2026-08-25 起残留自动释放**（锁内记录 PID：持有进程已死 → 自动接管；PID 读不出/无 psutil → 锁龄超 6 小时接管），无需再手动删锁。
 - **临时停用**：把 `subscriptions.json` 的 `scys` 列表清空即可，其他源照跑。
 

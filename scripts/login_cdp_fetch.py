@@ -52,7 +52,7 @@ EXTRA_SCAN_RANGE = range(0)
 # 旧方案 junction（DebugUDD → User Data）会被检测并触发安全清理（删 22 扩展，2026-08-24 实测）；
 # login_persistent_fetch.py（launch_persistent_context 真实目录 + pipe）同样被 151+ 拒绝。
 # 现行方案：shared/cdp_session.py 的 SharedCdpSession 关 Chrome → 复制 profile 到非默认
-# ProfileClone → 该 dir 开调试端口启动 → connect_over_cdp 接管（登录态+扩展保留）。
+# CdpAutomationProfile\Chrome → 该 dir 开调试端口启动 → connect_over_cdp 接管（登录态+扩展保留）。
 # 本文件只提供 CDP 探测原语（discover_chrome_devtools / probe_chrome_devtools），
 # 不再内嵌抓取兜底；可靠抓取统一走监控流水线 monitors/run.py。
 

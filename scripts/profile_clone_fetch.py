@@ -1,20 +1,23 @@
 # -*- coding: utf-8 -*-
 """profile_clone_fetch.py — Chrome profile 克隆原语（SharedCdpSession 路径2 的唯一依赖）。
 
-本模块只提供「复制用户 profile 到非默认 ProfileClone 目录」的能力；启动浏览器 + CDP 接管
+本模块只提供「复制用户 profile 到非默认 CdpAutomationProfile\\Chrome 目录」的能力；启动浏览器 + CDP 接管
 由 shared/cdp_session.py 的 _launch_cloned_logged_in_browser 负责。两层拆开，避免多路径混淆。
 
 设计：
-    持久化 ProfileClone 目录（%LOCALAPPDATA%\\Google\\Chrome\\ProfileClone）：
-    - 首次：全量复制 user-data-dir（~16GB，robocopy + ctypes 兜底锁文件）
-    - 后续：只同步 9 个 cookie/login 文件（秒级，ensure_profile_clone()）
+    唯一 CDP 自动化 profile 目录（%LOCALAPPDATA%\\CdpAutomationProfile\\Chrome）：
+    - 每 N 天首跑：全量同步 user-data-dir（robocopy /E /PURGE + ctypes 兜底锁文件）
+    - N 天内后续：直接复用，零复制（marker 记录上次全量日期，跨项目共享；N 默认 3，CDP_SYNC_INTERVAL_DAYS 可调）
     同 Windows 用户 + DPAPI ⇒ 复制后的 cookie db 自动可解 ⇒ 登录态自动生效。
+    禁止增量同步（只拷部分文件会破坏 Secure Preferences，Chrome 152+ 丢扩展/登录态）。
+    2026-09-04 末：ensure_profile_clone 已统一委托跨项目 SKILL（~/.workbuddy/skills/cdp-automation-profile/
+    ensure_cdp_profile.py）——本文件只保留 SKILL 缺失时的本地回退，避免三处逻辑漂移。
 
 ⚠️ Chrome 151+ 限制（为何必须是非默认 dir）：
     - --remote-debugging-port 在默认 user-data-dir 上被拒（Chrome 136+ 起）
     - --remote-debugging-pipe 在默认 user-data-dir 上也被拒（Chrome 151+ 起）
     - junction 指向默认目录会被检测，触发 extension_garbage_collector 删扩展（2026-08-24 实测）
-    → ProfileClone 是非默认目录的真实副本，Chrome 151+ 放行调试，不触发安全清理
+    → CdpAutomationProfile\\Chrome 是非默认目录的真实副本，Chrome 151+ 放行调试，不触发安全清理
 
 依赖：
     pip install playwright
@@ -34,29 +37,25 @@ import tempfile
 import subprocess
 import urllib.parse
 from pathlib import Path
+from datetime import date
 
 DEFAULT_SRC_DIR = Path(os.environ.get("LOCALAPPDATA", r"C:\Users\O1830\AppData\Local")) / r"Google\Chrome\User Data"
 DEFAULT_SRC_DIR_EDGE = Path(os.environ.get("LOCALAPPDATA", r"C:\Users\O1830\AppData\Local")) / r"Microsoft\Edge\User Data"
 
 DEFAULT_BROWSER = os.environ.get("LOGIN_CLONE_BROWSER", "chrome")  # 或 edge
 
-# 持久化 profile 副本目录（非临时，首次全量复制后保留，后续只同步 cookie）
-CLONE_DIR = Path(os.environ.get("LOCALAPPDATA", r"C:\Users\O1830\AppData\Local")) / r"Google\Chrome\ProfileClone"
+# 唯一 CDP 自动化 profile 目录（2026-09-04 定：CdpAutomationProfile\Chrome，弃用 ProfileClone）。
+# 可通过环境变量 CDP_PROFILE_DIR 覆盖。
+_LOCAL_APPDATA = Path(os.environ.get("LOCALAPPDATA", r"C:\Users\O1830\AppData\Local"))
+CLONE_DIR = Path(os.environ.get("CDP_PROFILE_DIR", _LOCAL_APPDATA / "CdpAutomationProfile" / "Chrome"))
 
-# 增量同步文件清单（只需这些文件保持最新即可继承登录态）
-SYNC_FILES = [
-    "Default/Cookies",
-    "Default/Cookies-journal",
-    "Default/Network/Cookies",
-    "Default/Network/Cookies-journal",
-    "Default/Login Data",
-    "Default/Login Data-journal",
-    "Default/Web Data",
-    "Default/Web Data-journal",
-    "Default/Preferences",
-    "Default/Secure Preferences",
-    "Local State",
-]
+# 全量副本 marker：存「最近全量同步日期」（YYYY-MM-DD）。跨项目共享——
+# 今天第一个项目触发全量，当天后续项目直接复用（见 ensure_profile_clone / cdp-automation-profile SKILL）。
+MARKER_DATE = ".cdp_full_copy_date"
+
+# [2026-09-04 删除] 旧的 SYNC_FILES 增量同步清单。实测增量同步只覆盖部分文件，会破坏
+# Secure Preferences 一致性，导致 Chrome 152+ 在副本里丢失扩展/Google 登录态。
+# 改为：首次/缺失/陈旧时一次性全量复制，日常直接复用完整副本。
 
 
 def pick_source_user_data_dir() -> Path:
@@ -69,45 +68,85 @@ def pick_source_user_data_dir() -> Path:
     )
 
 
-def ensure_profile_clone(src: Path | None = None) -> Path:
-    """确保持久化 ProfileClone 副本可用。首次全量复制(~16GB)，后续只同步 cookie 文件(~秒级)。
+def _touch_marker(path: Path) -> None:
+    path.write_text(str(time.time()), encoding="utf-8")
 
-    返回 CLONE_DIR 路径。调用方负责 kill Chrome 释放 cookie 锁后再调用。
+
+def _resolve_skill_py() -> str | None:
+    """定位跨项目共享 SKILL 的 ensure_cdp_profile.py（优先 CDP_SKILL_PY，否则标准路径）。"""
+    cand_env = os.environ.get("CDP_SKILL_PY")
+    if cand_env and os.path.exists(cand_env):
+        return cand_env
+    cand = Path.home() / ".workbuddy" / "skills" / "cdp-automation-profile" / "ensure_cdp_profile.py"
+    if cand.exists():
+        return str(cand)
+    return None
+
+
+def ensure_profile_clone(src: Path | None = None) -> Path:
+    """确保 CLONE_DIR 副本可用：每 N 天首跑全量、期间复用（委托跨项目 SKILL，单一真源）。
+
+    2026-09-04 末：改为委托 ~/.workbuddy/skills/cdp-automation-profile/ensure_cdp_profile.py
+    （与 steam/buff 同一份代码，避免三处漂移、换机只维护一份）。SKILL 缺失时回退本地逻辑
+    （保持 blog-article-skill 自包含）。
+
+    返回 CLONE_DIR 路径。调用方（SharedCdpSession）负责 kill Chrome 释放 cookie 锁后再调用。
     """
     src = src or pick_source_user_data_dir()
+    skill_py = _resolve_skill_py()
+    if skill_py is not None:
+        try:
+            py = os.environ.get("CDP_PYTHON") or sys.executable
+            r = subprocess.run(
+                [py, skill_py, "--dir", str(CLONE_DIR), "--source", str(src)],
+                capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=1800)
+            if r.returncode == 0 and r.stdout.strip():
+                line = r.stdout.strip().splitlines()[-1]
+                if line:
+                    return Path(line)
+            print(f"[clone] SKILL 委托未返回目录（rc={r.returncode}），回退本地逻辑："
+                  f"{(r.stderr or '').strip()[-300:]}")
+        except Exception as e:
+            print(f"[clone] 委托 SKILL 失败（{e}），回退本地逻辑")
+    return _ensure_profile_clone_local(src)
+
+
+def _ensure_profile_clone_local(src: Path) -> Path:
+    """SKILL 缺失时的回退：与 SKILL 同约定（每 N 天首跑全量，期间复用）。"""
+    marker = CLONE_DIR / MARKER_DATE
     cookie_check = CLONE_DIR / "Default" / "Network" / "Cookies"
-    if not CLONE_DIR.exists() or not cookie_check.exists():
-        print(f"[clone] 首次全量复制 {src.name} → {CLONE_DIR} (约 16GB，一次性)")
-        CLONE_DIR.mkdir(parents=True, exist_ok=True)
-        copy_user_data_dir(src, CLONE_DIR)
-        for lock_name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
-            for p in CLONE_DIR.rglob(lock_name):
-                try: p.unlink()
-                except Exception: pass
-        print(f"[clone] 全量复制完成，后续运行只同步 cookie 文件")
-    else:
-        print(f"[clone] 增量同步 cookie 文件 → {CLONE_DIR}")
-        synced = 0
-        for rel in SYNC_FILES:
-            src_file = src / rel
-            dst_file = CLONE_DIR / rel
-            if not src_file.exists():
-                continue
-            dst_file.parent.mkdir(parents=True, exist_ok=True)
+    today = date.today()
+    interval = int(os.environ.get("CDP_SYNC_INTERVAL_DAYS", "3"))
+    need_full = not CLONE_DIR.exists() or not cookie_check.exists()
+    if not need_full and marker.exists():
+        try:
+            md = date.fromisoformat(marker.read_text(encoding="utf-8").strip())
+        except Exception:
+            md = None
+        if md is None:
+            marker.write_text(today.isoformat(), encoding="utf-8")
+            return CLONE_DIR
+        days = (today - md).days
+        if days >= interval:
+            need_full = True
+        else:
+            print(f"[clone] 复用现有副本 {CLONE_DIR}（距上次全量 {days} 天 < {interval}）")
+            return CLONE_DIR
+    if not need_full and not marker.exists():
+        marker.write_text(today.isoformat(), encoding="utf-8")
+        print(f"[clone] 目录已完整且无 marker，补写今日 marker（跳过全量）")
+        return CLONE_DIR
+    print(f"[clone] 全量复制 {src.name} → {CLONE_DIR}（本地回退，"
+          f"{'首次' if not CLONE_DIR.exists() else f'距上次≥{interval}天'}）")
+    copy_user_data_dir(src, CLONE_DIR)
+    marker.write_text(today.isoformat(), encoding="utf-8")
+    for lock_name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        for p in CLONE_DIR.rglob(lock_name):
             try:
-                shutil.copy2(src_file, dst_file)
-                synced += 1
-            except PermissionError:
-                ok, msg = _copy_locked_file(src_file, dst_file)
-                if ok:
-                    synced += 1
-                else:
-                    print(f"        [skip] {rel} ({msg})")
-        for lock_name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
-            for p in CLONE_DIR.rglob(lock_name):
-                try: p.unlink()
-                except Exception: pass
-        print(f"[clone] 同步 {synced} 个文件完成")
+                p.unlink()
+            except Exception:
+                pass
+    print(f"[clone] 全量复制完成")
     return CLONE_DIR
 
 

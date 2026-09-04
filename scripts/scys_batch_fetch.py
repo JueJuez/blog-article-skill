@@ -595,7 +595,7 @@ class ScysBatchFetcher:
             if own_session and sess is not None:
                 sess.__exit__(None, None, None)
 
-        # ProfileClone 是持久化的，不删除（下次只同步 cookie 文件）
+        # CdpAutomationProfile\Chrome 是持久化的全量副本，不删除（由 ensure_cdp_profile.py 每天首跑全量、当天复用）
 
         print(f"[done] 本次抓取 {fetched} 篇，累计 {len(done_ids)} 篇，队列 {len(pending)} 待总结")
         return 0

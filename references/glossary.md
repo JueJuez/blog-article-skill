@@ -22,7 +22,7 @@
 ## 外部源与机制
 
 - **scys（生财有术）**：付费社群，按领域标签（项目）抓取。领域→menuId 映射在 `scripts/scys_projects.json`，抓取窗口以该 JSON 的 `defaults.since_days` / `monitors/subscriptions.json` 的 scys 条目覆盖为准（不写死）。触发词「补齐 scys / 补齐生财有术」启动全流程。
-- **SharedCdpSession**：`shared/cdp_session.py` 的登录态抓取唯一路径——关 Chrome → 克隆 profile 到非默认 `ProfileClone` 目录 → 调试端口启动克隆体 → `connect_over_cdp` 接管。取代已废弃的 junction / 活 Chrome 调试端口方案（Chrome 151+ 默认目录开调试端口会被拒）。
+- **SharedCdpSession**：`shared/cdp_session.py` 的登录态抓取唯一路径——关 Chrome → 全量复制 profile 到非默认 `CdpAutomationProfile\Chrome` 目录（经 `ensure_cdp_profile.py` 管理，每天首跑全量、当天复用）→ 调试端口启动克隆体 → `connect_over_cdp` 接管。取代已废弃的 junction / 活 Chrome 调试端口方案（Chrome 151+ 默认目录开调试端口会被拒）。
 - **bvid**：B站视频 ID。**raw 头与 body 的 bvid 可能复用错误**（小猪仔系曾全串成同一 bvid）。集号↔bvid 唯一可信来源是 `scripts/reconcile_series_bvid.py:fetch_season`（取 `ugc_season` 真源有序列表），绝盲信 raw 头或任何本地 collection json。
 - **ASR 兜底**：视频无 CC 字幕时自动下载音频 + 本地 Whisper 转写；CUDA cublas 缺包自动回退 CPU，并发由 `detect_asr_max_concurrency()` 决定（有卡=2 / 无卡=1）。
 

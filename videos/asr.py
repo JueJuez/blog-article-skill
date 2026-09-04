@@ -550,9 +550,27 @@ def transcribe_video(url: str, lang: str = "zh",
     wav = os.path.join(tmpdir, "audio.wav")
     try:
         if not extract_audio(url, wav, cookie_str=cookie_str, ffmpeg_exe=ffmpeg_exe):
-            if fetch and fetch.is_bilibili(url) and not cookie_str:
-                print("   ℹ️ B站音频下载失败：可能需要登录态。请在本机 Chrome 登录 B站并"
-                      "完全退出 Chrome 后重试（让 Playwright 能提取 cookie）。")
+            if fetch and fetch.is_bilibili(url):
+                if not cookie_str:
+                    print("   ℹ️ B站音频下载失败：缺少登录态 cookie。请在本机 Chrome 登录 B站并"
+                          "完全退出 Chrome 后重试（让 Playwright 能提取 cookie）。")
+                else:
+                    # Q4：412 / 下载失败可能源于 cookie 过期或被挤下线 →
+                    # 尝试从本机 Chrome 刷新一次再试，避免"过期 cookie 直接 412"卡死。
+                    try:
+                        fresh = fetch._bili_auto_extract_cookies()
+                        if fresh and fresh != cookie_str:
+                            print("   ♻️ 当前 cookie 可能已失效，已从本机 Chrome 刷新，重试音频下载一次")
+                            if extract_audio(url, wav, cookie_str=fresh, ffmpeg_exe=ffmpeg_exe):
+                                cookie_str = fresh
+                            else:
+                                return None
+                        else:
+                            print("   ℹ️ B站音频下载失败：cookie 刷新不可用（本机 Chrome 未完全退出？），跳过 ASR。")
+                            return None
+                    except Exception as e:
+                        print(f"   ℹ️ B站音频下载失败且 cookie 刷新异常：{e}，跳过 ASR。")
+                        return None
             return None
         segs = transcribe_audio(wav, model_size, lang, device, wall_timeout=wall_timeout)
         if not segs:

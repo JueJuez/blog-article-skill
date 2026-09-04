@@ -21,13 +21,13 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 
 1. **用户已在浏览器登录 scys.com**（用户唯一被允许做的事）。
 2. **脚本自动处理登录态浏览器**（无需用户手动启 debug，无需 junction）：
-   - 监控流水线（`monitors/run.py`）与 scys 批量抓取经 `shared/cdp_session.py` 的 `SharedCdpSession` 在需要登录态时，**自动走唯一路径**：先确保用户 Chrome 完全关闭（释放 cookie 独占锁）→ 复制真实 profile 到**非默认** `ProfileClone` 目录 → 用该目录以调试端口启动 Chrome → `connect_over_cdp` 接管。
+   - 监控流水线（`monitors/run.py`）与 scys 批量抓取经 `shared/cdp_session.py` 的 `SharedCdpSession` 在需要登录态时，**自动走唯一路径**：先确保用户 Chrome 完全关闭（释放 cookie 独占锁）→ 复制真实 profile 到**非默认** `CdpAutomationProfile\Chrome` 目录 → 用该目录以调试端口启动 Chrome → `connect_over_cdp` 接管。
    - 非默认目录 + 调试端口 = Chrome 151+ 放行调试；复制的 profile 含 cookie → 登录态继承。
    - 代价：每次该路径会**短暂关闭用户的 Chrome** 再重启一个带登录态的克隆浏览器；抓取完成后克隆浏览器退出，用户重开原 Chrome 即可。
 
 > ⚠️ **Chrome 151+ 禁止默认 user-data-dir 开调试端口**（实测）：junction 方案（`DebugUDD` → `User Data`）会被 Chrome 检测并触发 `extension_garbage_collector` 删除扩展（实测 22 个扩展被删）、清 Google 账号关联 —— **永久禁用 junction**。
 > 活 Chrome 接管（默认 profile 开 `--remote-debugging-port`）在 151+ 也不可用（端口文件写了但不监听）。
-> **当前唯一路径**：`SharedCdpSession` 复制真实 profile 到**非默认** `ProfileClone` 目录 → 该目录以调试端口启动（151+ 放行）→ `connect_over_cdp` 接管。登录态由复制的 cookie 文件继承，不会触发扩展清理。
+> **当前唯一路径**：`SharedCdpSession` 复制真实 profile 到**非默认** `CdpAutomationProfile\Chrome` 目录 → 该目录以调试端口启动（151+ 放行）→ `connect_over_cdp` 接管。登录态由复制的 cookie 文件继承，不会触发扩展清理。
 
 > ⚠️ **登录态所在的浏览器是用户的 Chrome，不是 Edge** —— Edge 里没有 scys 登录态。2026-08-19 实测确认。
 
@@ -54,7 +54,7 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 
 **退出码**：`0` = 成功且登录态生效；`2` = Chrome 没启 debug；`3` = 撞登录墙（见 §4）。
 
-> 机制（`SharedCdpSession` 唯一路径）：确保用户 Chrome 已关 → 复制 profile 到非默认 `ProfileClone` 目录 → 该目录以调试端口启动 Chrome → `connect_over_cdp(ws)` 接管 → 新标签 → `page.goto` → 等 SPA 渲染 → 取正文（selector 链取最长段，兜底 `body.innerText`）→ 落盘。登录态由复制的 cookie 继承；抓取结束克隆浏览器退出，用户重开原 Chrome 即可。
+> 机制（`SharedCdpSession` 唯一路径）：确保用户 Chrome 已关 → 复制 profile 到非默认 `CdpAutomationProfile\Chrome` 目录 → 该目录以调试端口启动 Chrome → `connect_over_cdp(ws)` 接管 → 新标签 → `page.goto` → 等 SPA 渲染 → 取正文（selector 链取最长段，兜底 `body.innerText`）→ 落盘。登录态由复制的 cookie 继承；抓取结束克隆浏览器退出，用户重开原 Chrome 即可。
 
 ---
 
@@ -88,7 +88,7 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 - **机制**：L3（设计如此，通用文档 §3 描述）。
 - **scys 案例**：
   - 2026-08-19 21:18 会话用本流程跑通 —— 落盘 `scys_article.md`（49 226 字节 / 正文 **21 264 字** / 无登录墙）。
-  - **2026-09-02 最新验证**（L1，现行机制）：走 `shared/cdp_session.py` 的 `SharedCdpSession` **单路径**——关 Chrome → 复制 profile 到非默认 `ProfileClone` → 该目录开调试端口启动 → `connect_over_cdp` 接管（登录态 + CDP 控制）→ 实测「出海」域捕获 30 篇（精华 25）无登录墙。机制细节与故障表见 `references/login-required-cdp-workflow.md`，本文档不重复叙述。
+  - **2026-09-02 最新验证**（L1，现行机制）：走 `shared/cdp_session.py` 的 `SharedCdpSession` **单路径**——关 Chrome → 复制 profile 到非默认 `CdpAutomationProfile\Chrome` → 该目录开调试端口启动 → `connect_over_cdp` 接管（登录态 + CDP 控制）→ 实测「出海」域捕获 30 篇（精华 25）无登录墙。机制细节与故障表见 `references/login-required-cdp-workflow.md`，本文档不重复叙述。
 
 ---
 

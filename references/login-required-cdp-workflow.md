@@ -2,7 +2,7 @@
 
 > 🔴 **2026-09-02 架构收敛 · 本文档机制部分已过时**
 > 原「路径 A（junction 接管活 Chrome）/ 路径 B（headless 克隆）」双路径框架**已删除**，代码现只有一条路径（见 `shared/cdp_session.py` 的 `SharedCdpSession`）：
-> **关掉用户 Chrome → 复制 profile 到非默认 `ProfileClone` 目录 → 该目录以调试端口启动 Chrome → `connect_over_cdp` 接管**。
+> **关掉用户 Chrome → 复制 profile 到非默认 `CdpAutomationProfile\Chrome` 目录 → 该目录以调试端口启动 Chrome → `connect_over_cdp` 接管**。
 > - junction 方案永久废弃（会触发扩展垃圾回收，实测删 22 个扩展）。
 > - 活 Chrome 接管（默认 profile 开调试端口）在 Chrome 151+ 不可用（端口写了但不监听）。
 > - `login_cdp_fetch.py` 现为**端口探测诊断工具**，不再自动回退抓取；需登录态抓取走监控流水线 `monitors/run.py`。
@@ -36,23 +36,23 @@ python scripts/login_cdp_fetch.py "<需登录的URL>" [out.md]
 `login_cdp_fetch.py` **现在仅作端口探测诊断**（不再抓取、不再自动回退）：
 1. 读 `%LOCALAPPDATA%\Google\Chrome\User Data\DevToolsActivePort`（兼容 `Default\DevToolsActivePort`）。
 2. TCP 连端口 + HTTP `GET /json/version`，确认是 Chrome DevTools 服务。
-3. `smoke` 成功 → 报「端口可用」；失败 → 报「无调试端口」并提示走 `monitors/run.py`（它会经 `SharedCdpSession` 自动克隆非默认目录 + 调试端口接管抓取）。
+3. `smoke` 成功 → 报「端口可用」；失败 → 报「无调试端口」并提示走 `monitors/run.py`（它会经 `SharedCdpSession` 先关 Chrome、再一次性全量复制 profile 到非默认目录 + 调试端口接管抓取）。
 
-> ⚠️ **实际抓取不再经本脚本**：需登录态的真实抓取（scys / 公众号）由监控流水线 `monitors/run.py` 与 `scripts/scys_batch_fetch.py` 内部的 `SharedCdpSession` 完成（自动克隆非默认 `ProfileClone` 目录 + 调试端口 + `connect_over_cdp` 接管）。
+> ⚠️ **实际抓取不再经本脚本**：需登录态的真实抓取（scys / 公众号）由监控流水线 `monitors/run.py` 与 `scripts/scys_batch_fetch.py` 内部的 `SharedCdpSession` 完成（先关 Chrome 释放锁，再**一次性全量复制**真实 profile 到非默认目录 + 调试端口 + `connect_over_cdp` 接管；默认 `CdpAutomationProfile\Chrome`，可用 `CDP_PROFILE_DIR` 覆盖为专用自动化目录）。
 
 ---
 
 ## 1. Chrome 启动前提（当前：用户零操作）
 
-> **关键前提（2026-09-02 更新）**：用户**无需手动启动调试端口**。当前方案由 `SharedCdpSession` 自动完成：先关闭用户 Chrome（释放 cookie 独占锁）→ 复制 profile 到非默认 `ProfileClone` 目录 → 用该目录以调试端口启动 Chrome → `connect_over_cdp` 接管（详见 §1.1）。`login_cdp_fetch.py` 仅作端口探测诊断。
+> **关键前提（2026-09-02 更新）**：用户**无需手动启动调试端口**。当前方案由 `SharedCdpSession` 自动完成：先关闭用户 Chrome（释放 cookie 独占锁）→ 复制 profile 到非默认 `CdpAutomationProfile\Chrome` 目录 → 用该目录以调试端口启动 Chrome → `connect_over_cdp` 接管（详见 §1.1）。`login_cdp_fetch.py` 仅作端口探测诊断。
 > ⚠️ 旧前提「用户 Chrome 必须已以 `--remote-debugging-port` 启动」已废弃（Chrome 151+ 默认目录开调试端口不可用；junction 方案会触发扩展垃圾回收）。
 
 ### 1.1 用户侧前置（当前无需任何操作）
 
 > **当前方案由 `SharedCdpSession`（代码）自动完成，用户零操作**：
-> 需要登录态抓取时，代码自动：先确保用户 Chrome 完全关闭（释放 cookie 独占锁）→ 复制真实 profile 到**非默认** `ProfileClone` 目录 → 用该目录以调试端口启动 Chrome → `connect_over_cdp` 接管。
-> 非默认目录 + 调试端口 = Chrome 151+ 放行调试；复制的 profile 含 cookie → 登录态继承。
-> 代价：每次会**短暂关闭用户的 Chrome** 再重启带登录态的克隆浏览器。
+> 需要登录态抓取时，代码自动：先确保用户 Chrome 完全关闭（释放 cookie 独占锁）→ **一次性全量复制**真实 profile 到**非默认**目录（默认 `CdpAutomationProfile\Chrome`，可用环境变量 `CDP_PROFILE_DIR` 覆盖）→ 用该目录以调试端口启动 Chrome → `connect_over_cdp` 接管。
+> 非默认目录 + 调试端口 = Chrome 151+ 放行调试；全量复制的完整 profile 含 cookie/扩展/Secure Preferences → 登录态+扩展完整继承。
+> 代价：首次/副本陈旧时会全量复制约 16GB，之后直接复用副本；每次仍须短暂关闭用户的 Chrome 以释放 cookie 锁。
 
 > 🚫 **junction 方案永久废弃**（2026-08-24 实测教训，勿复活）：把 `--user-data-dir=DebugUDD --remote-debugging-port=5494` 焊进快捷方式、`DebugUDD` 指向 `User Data` 的 junction，会被 Chrome 151+ 检测并触发 `extension_garbage_collector` 删除 22 个扩展 + 清 Google 账号关联。
 
@@ -146,13 +146,13 @@ python scripts/login_cdp_fetch.py "<任意URL>" smoke.md
       │
       ├─ ① 确保用户 Chrome 完全关闭（taskkill，释放 cookie 独占锁）
       │
-      ├─ ② 复制真实 profile → 非默认 ProfileClone 目录
-      │     · 复制时 Chrome 已关 → cookie 锁释放 → 登录态文件完整拷入
+      ├─ ② 一次性全量复制真实 profile → 非默认目录（默认 `CdpAutomationProfile\Chrome`，可用 `CDP_PROFILE_DIR` 覆盖）
+      │     · 复制时 Chrome 已关 → cookie 锁释放 → 完整 profile（含 cookie/扩展/Secure Preferences）完整拷入
       │
-      ├─ ③ 用 ProfileClone 目录以调试端口启动 Chrome（非默认 dir → 151+ 放行）
+      ├─ ③ 用该非默认目录以调试端口启动 Chrome（非默认 dir → 151+ 放行）
       │
       ├─ ④ Playwright.chromium.connect_over_cdp(ws_endpoint)
-      │     · 接管克隆浏览器首 context，复制来的 cookie → 登录态继承
+      │     · 接管克隆浏览器首 context，复制来的完整 profile → 登录态+扩展完整继承
       │
       ├─ ⑤ ctx.new_page() → page.goto(URL, wait_until='domcontentloaded')
       │     · SPA 等待 5–10s；取 title / 正文（selector 链或 body.innerText）
@@ -233,7 +233,7 @@ Chrome 自 132 起对 ws 上 DevTools 加了若干保护：
 
 - **ws 必须带正确的 `Host` 与 `Connection: Upgrade`**：用 Playwright 默认即可，**切勿手搓**。
 - **`Origin` 头**：Playwright 默认不发，不用 `suppress_origin` 也行；用 raw `websocket-client` 要 `suppress_origin=True`。
-- **默认 user-data-dir + debug port 在 Chrome 151+ 会被拒**（实测）：报错 `DevTools remote debugging requires a non-default data directory`。**当前方案用非默认 `ProfileClone` 目录（复制真实 profile）规避**，登录态靠复制的 cookie 继承，不用 junction。**
+- **默认 user-data-dir + debug port 在 Chrome 151+ 会被拒**（实测）：报错 `DevTools remote debugging requires a non-default data directory`。**当前方案用非默认 `CdpAutomationProfile\Chrome` 目录（复制真实 profile）规避**，登录态靠复制的 cookie 继承，不用 junction。**
 - 细节同 `youtube-cdp-workflow.md §1.3.1`（独立 CDP 副本也用非默认目录）。
 
 ### 5.2 多个并发抓取
@@ -261,7 +261,7 @@ Playwright `connect_over_cdp` **可以**创建多个 `page` 并发在同一 cont
 | 文件 | 接管对象 | user-data-dir | 目的 |
 |---|---|---|---|
 | `references/youtube-cdp-workflow.md` | **独立 Chrome-CDP 副本**（`%LOCALAPPDATA%\Google\Chrome-CDP`）| **非默认**（副本）| 视频字幕抓取（带代理扩展 iGuge，**不需要用户登录态**）|
-| **`references/login-required-cdp-workflow.md`**（本文件） | **ProfileClone**（持久化副本，非默认 dir，Chrome 151+ 放行）| **非默认**（ProfileClone，同步 cookie 继承登录态）| **任何需登录态的页面**（不带代理，纯靠用户的真实登录态）|
+| **`references/login-required-cdp-workflow.md`**（本文件） | **CdpAutomationProfile\Chrome**（持久化副本，非默认 dir，Chrome 151+ 放行；可用 `CDP_PROFILE_DIR` 覆盖）| **非默认**（一次性全量复制完整 profile 继承登录态+扩展）| **任何需登录态的页面**（不带代理，纯靠用户的真实登录态）|
 
 两者**互不干扰**，可以并存。
 
@@ -274,7 +274,7 @@ Playwright `connect_over_cdp` **可以**创建多个 `page` 并发在同一 cont
 3. 跑 `python scripts/login_cdp_fetch.py <URL>`。
 4. 若输出 `chrome debug not ready`：
    - 把错误原样贴回用户
-   - **无需用户手动启调试端口**：当前需登录态抓取统一走 `monitors/run.py`（公众号/B站）或 `scripts/scys_batch_fetch.py`（scys），由 `SharedCdpSession` 自动克隆非默认 `ProfileClone` 目录 + 调试端口接管（见 §1.1）；`login_cdp_fetch.py` 仅作端口探测诊断、不再回退抓取
+   - **无需用户手动启调试端口**：当前需登录态抓取统一走 `monitors/run.py`（公众号/B站）或 `scripts/scys_batch_fetch.py`（scys），由 `SharedCdpSession` 自动克隆非默认 `CdpAutomationProfile\Chrome` 目录 + 调试端口接管（见 §1.1）；`login_cdp_fetch.py` 仅作端口探测诊断、不再回退抓取
 5. 若脚本成功输出文件 → 读取正文（或读取 `out.md`），按 `articles/skill_main` 的模板（`structured` / `key_points` 等）总结，然后调 `OutputManager.save_all` 写入飞书。
 
 ---
@@ -283,8 +283,8 @@ Playwright `connect_over_cdp` **可以**创建多个 `page` 并发在同一 cont
 
 | 现象 | 根因定位 | 修法 |
 |---|---|---|
-| `[FAIL] port 5494 不是 Chrome DevTools` | 用户 chrome 没启 debug，或端口被占用 | **无需用户操作**：走 `monitors/run.py`，由 `SharedCdpSession` 自动克隆 `ProfileClone` 目录 + 调试端口接管（见 §1.1）；`login_cdp_fetch.py` 仅作端口探测诊断 |
-| `connect_over_cdp` 卡死无输出 | ws 协议被 Chrome 拒 | 确认由 `SharedCdpSession` 用**非默认 `ProfileClone` 目录**启动（`--user-data-dir` 指向克隆目录），而非默认 `User Data`（Chrome 151+ 默认目录开调试端口会被拒） |
+| `[FAIL] port 5494 不是 Chrome DevTools` | 用户 chrome 没启 debug，或端口被占用 | **无需用户操作**：走 `monitors/run.py`，由 `SharedCdpSession` 先关 Chrome、再一次性全量复制 profile 到非默认目录 + 调试端口接管（见 §1.1）；`login_cdp_fetch.py` 仅作端口探测诊断 |
+| `connect_over_cdp` 卡死无输出 | ws 协议被 Chrome 拒 | 确认由 `SharedCdpSession` 用**非默认 `CdpAutomationProfile\Chrome` 目录**启动（`--user-data-dir` 指向克隆目录），而非默认 `User Data`（Chrome 151+ 默认目录开调试端口会被拒） |
 | 抓到「登录后查看」字样 | Cookie 未发送 = 用户在那个站其实没登录 | 让用户到浏览器手工登录一次再抓 |
 | HTML 取到但正文是空白 | SPA 没渲染完 | `page.wait_for_timeout(8000)` 改 `15000` 或按 selector 等 |
 | Playwright import 报 ModuleNotFoundError | 缺包 | `python -m pip install playwright`；browser 我们不下载，连现有 Chrome 用就够了 |
@@ -537,10 +537,11 @@ URL 是否需登录？
 │   └─ 抓到后：按 articles/skill_main 模板总结 → OutputManager.save_all 落飞书
 └─ 拿不准 → 默认走 articles/skill_main，非登录墙报错再升级
 
-关键事实（2026-09-02 收敛后）：
-  • Chrome 151+ 禁止默认目录开调试 → 复制 profile 到非默认 `ProfileClone` 目录 + 调试端口（§1.1）
-  • 登录态 = 复制的 cookie 文件；复制前必须先关 Chrome 释放 cookie 独占锁
-  • 单路径：关 Chrome → 克隆 → 调试端口启动 → `connect_over_cdp` 接管（见 `shared/cdp_session.py`）
+关键事实（2026-09-04 修正）：
+  • Chrome 151+ 禁止默认目录开调试 → 一次性全量复制真实 profile 到非默认目录 + 调试端口（§1.1）；默认 `CdpAutomationProfile\Chrome`，可用 `CDP_PROFILE_DIR` 覆盖
+  • 登录态+扩展 = 全量复制的完整 profile；复制前必须先关 Chrome 释放 cookie 独占锁
+  • 已废弃：只同步部分文件（增量）会破坏 Secure Preferences，导致扩展/Google 登录态丢失
+  • 单路径：关 Chrome → 一次性全量克隆 → 调试端口启动 → `connect_over_cdp` 接管（见 `shared/cdp_session.py`）
   • `login_cdp_fetch.py` 仅端口探测诊断，不再自动回退；抓取走 `monitors/run.py`
   • junction 永久废弃（会删扩展）
 ```
