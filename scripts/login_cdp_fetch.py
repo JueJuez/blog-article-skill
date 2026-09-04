@@ -33,7 +33,9 @@ from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
-DEFAULT_USER_DIR = Path(os.environ.get("LOCALAPPDATA", r"C:\Users\O1830\AppData\Local")) / r"Google\Chrome\User Data"
+# LOCALAPPDATA 回退：用当前用户目录派生，不写死用户名（换机器/用户名后仍能解析）。
+_FALLBACK_LOCALAPPDATA = Path(os.path.expanduser("~/AppData/Local"))
+DEFAULT_USER_DIR = Path(os.environ.get("LOCALAPPDATA", _FALLBACK_LOCALAPPDATA)) / r"Google\Chrome\User Data"
 
 # 候选端口文件位置（Chrome 不同版本/不同 setup 会写在不同层）
 PORT_FILE_CANDIDATES = [

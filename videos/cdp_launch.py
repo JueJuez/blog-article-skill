@@ -38,6 +38,10 @@ def _chrome_exe() -> str:
     for p in _CHROME_CANDIDATES:
         if p and os.path.isfile(p):
             return p
+    # 候选全空（如重装到非标准位置）：再退到 PATH 上的 chrome
+    on_path = shutil.which("chrome") or shutil.which("chrome.exe")
+    if on_path:
+        return on_path
     return _CHROME_CANDIDATES[0]
 
 

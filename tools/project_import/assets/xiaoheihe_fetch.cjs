@@ -4,14 +4,34 @@
 // 由 Python 侧 content_source.fetch_xiaoheihe 读取 stdout。
 //
 // 用法: node xiaoheihe_fetch.cjs <url> [waitMs=4000]
-//   require('playwright') 优先走 NODE_PATH；找不到则回退到本机 managed workspace 绝对路径。
+//   require('playwright') 优先走 NODE_PATH；找不到则回退到本机 managed workspace 路径
+//   （按当前用户目录派生，不写死用户名 / 安装盘符）。
 'use strict';
 let chromium;
 try {
   chromium = require('playwright').chromium;
 } catch (e) {
-  const PW_ABS = 'C:\\Users\\O1830\\.workbuddy\\binaries\\node\\workspace\\node_modules\\playwright';
+  const homedir = require('os').homedir();
+  const PW_ABS = require('path').join(
+    homedir, '.workbuddy', 'binaries', 'node', 'workspace', 'node_modules', 'playwright'
+  );
   chromium = require(PW_ABS).chromium;
+}
+
+// 动态定位系统 Chrome 可执行文件（用户级安装 / Program Files 都可能，不能写死）。
+function findChrome() {
+  if (process.env.CHROME_PATH && require('fs').existsSync(process.env.CHROME_PATH)) {
+    return process.env.CHROME_PATH;
+  }
+  const candidates = [
+    (process.env.LOCALAPPDATA || '') + '\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  ].filter(Boolean);
+  for (const c of candidates) {
+    if (require('fs').existsSync(c)) return c;
+  }
+  return undefined;
 }
 
 (async () => {
@@ -20,9 +40,14 @@ try {
   const waitMs = parseInt(process.argv[3] || '4000', 10);
   let browser;
   try {
+    const execPath = findChrome();
+    if (!execPath) {
+      process.stderr.write('ERR: chrome.exe not found (set CHROME_PATH env)\n');
+      process.exit(3);
+    }
     browser = await chromium.launch({
       headless: true,
-      executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      executablePath: execPath,
     });
     const page = await browser.newPage({
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',

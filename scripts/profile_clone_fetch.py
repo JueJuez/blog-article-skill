@@ -39,14 +39,17 @@ import urllib.parse
 from pathlib import Path
 from datetime import date
 
-DEFAULT_SRC_DIR = Path(os.environ.get("LOCALAPPDATA", r"C:\Users\O1830\AppData\Local")) / r"Google\Chrome\User Data"
-DEFAULT_SRC_DIR_EDGE = Path(os.environ.get("LOCALAPPDATA", r"C:\Users\O1830\AppData\Local")) / r"Microsoft\Edge\User Data"
+# LOCALAPPDATA 回退：用当前用户目录派生，不写死用户名（换机器/用户名后仍能解析）。
+_FALLBACK_LOCALAPPDATA = Path(os.path.expanduser("~/AppData/Local"))
+
+DEFAULT_SRC_DIR = Path(os.environ.get("LOCALAPPDATA", _FALLBACK_LOCALAPPDATA)) / r"Google\Chrome\User Data"
+DEFAULT_SRC_DIR_EDGE = Path(os.environ.get("LOCALAPPDATA", _FALLBACK_LOCALAPPDATA)) / r"Microsoft\Edge\User Data"
 
 DEFAULT_BROWSER = os.environ.get("LOGIN_CLONE_BROWSER", "chrome")  # 或 edge
 
 # 唯一 CDP 自动化 profile 目录（2026-09-04 定：CdpAutomationProfile\Chrome，弃用 ProfileClone）。
 # 可通过环境变量 CDP_PROFILE_DIR 覆盖。
-_LOCAL_APPDATA = Path(os.environ.get("LOCALAPPDATA", r"C:\Users\O1830\AppData\Local"))
+_LOCAL_APPDATA = Path(os.environ.get("LOCALAPPDATA", _FALLBACK_LOCALAPPDATA))
 CLONE_DIR = Path(os.environ.get("CDP_PROFILE_DIR", _LOCAL_APPDATA / "CdpAutomationProfile" / "Chrome"))
 
 # 全量副本 marker：存「最近全量同步日期」（YYYY-MM-DD）。跨项目共享——

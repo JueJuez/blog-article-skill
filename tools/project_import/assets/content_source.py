@@ -22,6 +22,8 @@ import os
 import re
 import sys
 import subprocess
+import shutil
+import glob
 
 # Make the parent project importable so `import videos.fetch` / `import articles.fetch`
 # works whether this module is run as a script, imported by tests, or invoked by the agent.
@@ -39,10 +41,29 @@ _XIAOHEIHE_RE = re.compile(r"xiaoheihe\.cn", re.I)
 _REPO_HOST_RE = re.compile(r"github\.com|gitee\.com", re.I)
 
 # Node Playwright + system Chrome used to render xiaoheihe.cn deep links.
-_NODE_EXE = os.environ.get(
-    "NODE_EXE",
-    r"C:\Users\O1830\.workbuddy\binaries\node\versions\22.22.2\node.exe",
-)
+# 解析 node 可执行文件：环境变量 > 系统 PATH > managed 目录（按用户名派生，不写死版本）
+# > 回退到当前用户目录下的等价路径，避免「重装 / 换机器 / node 升版本」后硬路径失效。
+def _find_node() -> str:
+    env = os.environ.get("NODE_EXE")
+    if env and os.path.isfile(env):
+        return env
+    on_path = shutil.which("node") or shutil.which("node.exe")
+    if on_path:
+        return on_path
+    # managed 安装：~/.workbuddy/binaries/node/versions/<ver>/node.exe
+    managed = os.path.join(
+        os.path.expanduser("~"), ".workbuddy", "binaries", "node", "versions", "*", "node.exe"
+    )
+    hits = sorted(glob.glob(managed), reverse=True)
+    if hits:
+        return hits[0]
+    # 最后回退：当前用户名的等价路径
+    return os.path.join(
+        os.path.expanduser("~"), ".workbuddy", "binaries", "node", "versions", "22.22.2", "node.exe"
+    )
+
+
+_NODE_EXE = _find_node()
 _XIAOHEIHE_FETCH = os.path.join(_HERE, "xiaoheihe_fetch.cjs")
 
 
