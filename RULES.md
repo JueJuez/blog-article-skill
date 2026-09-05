@@ -64,6 +64,8 @@
 ### 3.1 【待归类】收件箱约定（强制）
 
 > **L8（2026-09-03）**：`save_summary_only` folder 为空时自动走统一路由器（`resolve_folder`）——author/url 可识别的直接落作者节点/监控节点，**只有无法识别归属的才落【待归类】**（见 `docs/decisions/DECISION-20260903-save-folder-autoroute.md`）。
+>
+> **L8 补强（2026-09-06）**：全入口审计收口 9 处缺口——分类提取单一真源 `shared/routing.py:category_from_tags`（tags 不直接参与路由，调用方须先折算成 category）；系列路径单点 `videos/main.py:series_folder`；只读运维一律逐层 `list_children` 查容器，禁用带建副作用的接口（见 `docs/decisions/DECISION-20260906-routing-gaps-b1-b9.md`）。
 
 无法识别作者与分类的新总结进「【待归类】」，用户后续手动拖到分类（启用 Obsidian 时与之对称，默认只写本地 Obsidian）。系列课自带 `系列名/` 子目录，不进【待归类】。飞书分类节点与 Obsidian 分类文件夹一一对应（逻辑在 `articles/feishu.py` / `articles/obsidian.py`）。
 
