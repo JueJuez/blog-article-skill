@@ -517,6 +517,27 @@ def _build_subagent_prompt(note_type: str, raw_path: str, md_path: str,
     )
 
 
+def series_folder(input_data: dict, author: str, series_title: str, url: str) -> str:
+    """系列课归档路径的单一计算点（B3/B4/B5 修复，2026-09-05）。
+
+    显式 folder 优先；否则走统一路由器：显式 series 命中第②级——
+    监控 UP → 【监控】/<平台>/<账号>/<系列>；非监控作者 → 【我的总结】/作者/<名>/<系列>；
+    无作者独立系列 → 【我的总结】/系列课/<系列>。series_title 为空时（playlist 总览）
+    退化为按 author/url 路由，与单集落点一致。
+    """
+    explicit = (input_data.get("folder", "") or "").strip()
+    if explicit:
+        return explicit
+    from shared.routing import resolve_folder
+    return resolve_folder({
+        "author": author or "",
+        "url": url or "",
+        "series": series_title or "",
+        "title": series_title or "",
+        "source": "video_series",
+    })
+
+
 def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
     """B站系列课处理：Phase1 全抓取（已由 fetch 完成）→ Phase2 逐集总结。
 
@@ -543,6 +564,9 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
     note_type_arg = input_data.get("note_type", "")
     force = input_data.get("force", False)
     obsidian = input_data.get("obsidian", False)
+    # B3 修复（2026-09-05）：系列容器不再默认挂 wiki 根——统一由路由器决定
+    # （显式 folder > 监控UP > 非监控作者 > 独立系列）。
+    folder = series_folder(input_data, author, series_title, url)
 
     # 增量去重：只把「尚未总结的集」列为 pending，避免每日重跑全量重总结。
     # 首跑 done 为空 → 全系列待总结；UP 更新后 done 含旧集 → 只列新增集。
@@ -552,7 +576,8 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
         print(f"\n✅ 系列「{series_title}」已是最新，无新集待总结"
               f"（{len(all_bases)} 集均在已总结记录中），仅重生成总览。")
         series_dir = os.path.join(articles_main.NOTES_DIR, _sanitize_filename(series_title))
-        overview_path = _generate_series_overview(series_title, series_dir, url, obsidian=obsidian)
+        overview_path = _generate_series_overview(series_title, series_dir, url,
+                                                  obsidian=obsidian, folder=folder)
         return {
             "success": True,
             "need_continue_summary": False,
@@ -603,7 +628,8 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
             continue
 
         ep_tags = list(base_tags) + [_NOTE_TYPE_TAG.get(note_type, "视频笔记")]
-        path = _save_series_note(final, series_dir, base, author, url, ep_tags, note_type, obsidian=obsidian)
+        path = _save_series_note(final, series_dir, base, author, url, ep_tags, note_type,
+                                 obsidian=obsidian, folder=folder)
         # 自愈：若此前降级留下 raw，成功总结后清除，避免半成品残留
         raw_path = os.path.join(series_dir, base + "_raw.md")
         if os.path.exists(raw_path):
@@ -615,7 +641,8 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
         print(f"   ✅ 已保存：{path}")
 
     # 系列总览大纲（用户规则：系列课总结必生成，含各集导航 + 一句话核心结论）
-    overview_path = _generate_series_overview(series_title, series_dir, url, obsidian=obsidian)
+    overview_path = _generate_series_overview(series_title, series_dir, url,
+                                              obsidian=obsidian, folder=folder)
     print(f"   🧭 系列总览已生成：{overview_path}")
 
     # 降级时显式告知外层「有待总结的集」，否则监控落盘闭环（只认 need_continue_summary）
@@ -707,6 +734,11 @@ def _finalize_single(title, segments, url, input_data, visual_context: str = "")
     folder = input_data.get("folder", "")
     obsidian = input_data.get("obsidian", False)
 
+    # B2 修复（2026-09-05）：单视频 folder 为空时走统一路由器（与文章 L8 对齐），
+    # 不再静默落根；author 会按需补进 tags。
+    from articles.main import autoroute_folder
+    folder, tags = autoroute_folder(folder, author, url, title, tags)
+
     filename, final_text, degraded, article_content, note_type = _summarize_and_save(
         segments, url, title, author, tags, note_type, force,
         visual_context=visual_context, publish_time=publish_time, folder=folder,
@@ -778,10 +810,12 @@ def _handle_playlist(url: str, input_data: dict):
         ov = _ai_summarize(overview_prompt, "\n\n===\n\n".join(texts[:12]))
         if ov:
             label = _NOTE_TYPE_TAG.get(input_data.get("note_type", "") or "structured", "结构化复盘")
+            # B5 修复（2026-09-05）：总览与单集同目录（走统一路由器，显式 folder 优先）
+            ov_folder = series_folder(input_data, input_data.get("author", ""), "", url)
             formatted, overview_file = save_summarized_article(
                 ov, original_url=url, author=input_data.get("author", ""),
                 tags=[label, "系列总览"], original_title="系列总览", note_type="structured",
-                obsidian=input_data.get("obsidian", False)
+                obsidian=input_data.get("obsidian", False), folder=ov_folder
             )
 
     return {

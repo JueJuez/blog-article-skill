@@ -18,11 +18,11 @@ NOTE_WORD_LIMITS = {
     "structured": (1500, 3000),
     "general": (1500, 3000),  # 兜底通用版，与 structured 同 prompt 同区间
     "key_points": (800, 1500),
-    "case": (800, 1500),
+    "case": (900, 1800),
     "opinion": (500, 1000),
     "interview": (1000, 2000),
     "roundup": (1000, 2000),
-    "reading": (1000, 2000),
+    "reading": (1000, 2200),
     "dissection": (800, 1500),
 }
 

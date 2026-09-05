@@ -32,18 +32,34 @@ from videos.main import (
 )
 
 
-def _feishu_series_children(f: FeishuOutput, series_title: str):
-    ctok = f.ensure_series_node(series_title)
-    if not ctok:
+def _feishu_series_children(f: FeishuOutput, series_title: str, author: str = "", url: str = ""):
+    """沿 series_folder 期望路径逐层 list_children 定位系列容器（B7 修复：只查不建）。
+
+    旧实现走的是缺省挂 wiki 根、找不到就新建的容器接口，verify 这种只读场景
+    也会把刚清理过的根容器再次污染。新实现任一层缺失即返回 (None, [])，
+    绝不创建任何节点。
+    """
+    from videos.main import series_folder
+    folder = series_folder({}, author or "", series_title, url or "")
+    parts = [p for p in folder.split("/") if p]
+    tok = f.wiki_parent_node
+    if not tok:
         return None, []
-    return ctok, f.list_children(ctok)
+    for part in parts:
+        hit = next((k for k in f.list_children(tok) if k.get("title") == part), None)
+        if hit is None:
+            return None, []
+        tok = hit.get("obj_token") or hit.get("node_token")
+        if not tok:
+            return None, []
+    return tok, f.list_children(tok)
 
 
 def cmd_verify(args):
     f = FeishuOutput()
     if not f.is_available():
         print("⚠️ 飞书不可用"); return
-    ctok, kids = _feishu_series_children(f, args.series)
+    ctok, kids = _feishu_series_children(f, args.series, author=args.author, url=args.url or "")
     if ctok is None:
         print(f"⚠️ 飞书无「{args.series}」容器"); return
     eps = [k for k in kids if re.match(r'^第\d{2}集', k.get("title", ""))]
@@ -80,7 +96,9 @@ def cmd_regen_overview(args):
     if not f.is_available():
         print("⚠️ 飞书不可用"); return
     series_dir = args.series_dir or os.path.join(ROOT, "notes", _sanitize_filename(args.series))
-    out = _generate_series_overview(args.series, series_dir, args.url or "", obsidian=False)
+    from videos.main import series_folder
+    folder = series_folder({}, args.author or "", args.series, args.url or "")
+    out = _generate_series_overview(args.series, series_dir, args.url or "", obsidian=False, folder=folder)
     print(f"✅ 总览已重生成（upsert，不重复）：{out}")
 
 
@@ -91,6 +109,8 @@ def cmd_reland(args):
     sd = args.series_dir
     if not os.path.isdir(sd):
         print(f"⚠️ 目录不存在：{sd}"); return
+    from videos.main import series_folder
+    folder = series_folder({}, args.author or "", args.series, args.url or "")
     bodies = sorted(glob_body(sd))
     print(f"🔁 重落地 {len(bodies)} 个 body（upsert 幂等）...")
     ok = 0
@@ -103,14 +123,15 @@ def cmd_reland(args):
         note_type = "structured"
         tags = [args.series, _NOTE_TYPE_TAG.get(note_type, "视频笔记")]
         try:
-            _save_series_note(content, sd, base, args.author or "", args.url or "", tags, note_type, obsidian=False)
+            _save_series_note(content, sd, base, args.author or "", args.url or "", tags, note_type,
+                              obsidian=False, folder=folder)
             ok += 1
             print(f"  ✅ 已落盘：{base}")
         except Exception as e:
             print(f"  ❌ 落盘失败 {base}: {e}")
     # 重生成总览
     try:
-        _generate_series_overview(args.series, sd, args.url or "", obsidian=False)
+        _generate_series_overview(args.series, sd, args.url or "", obsidian=False, folder=folder)
         print("  🧭 总览已重生成")
     except Exception as e:
         print(f"  ⚠️ 总览重生成失败（非致命）：{e}")
@@ -128,10 +149,13 @@ def main():
 
     v = sub.add_parser("verify", help="抽样校验飞书落盘质量")
     v.add_argument("--series", required=True)
+    v.add_argument("--author", default="")
+    v.add_argument("--url", default="")
 
     r = sub.add_parser("regen-overview", help="重生成系列总览（upsert）")
     r.add_argument("--series", required=True)
     r.add_argument("--series-dir", default=None)
+    r.add_argument("--author", default="")
     r.add_argument("--url", default="")
 
     rl = sub.add_parser("reland", help="重落地本地 body 到飞书（upsert）")

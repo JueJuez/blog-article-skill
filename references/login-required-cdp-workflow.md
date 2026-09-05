@@ -534,7 +534,7 @@ URL 是否需登录？
 │   │       ├─ "文件过期/非调试实例" → 用户 Chrome 需重启（快捷方式已焊好 flags，
 │   │       │   正常重开 Chrome 即可；若仍失败按 §1.2 junction 命令恢复）
 │   │       └─ "没找到任何端口" → 同上，先确认用户从正确快捷方式启动了 Chrome
-│   └─ 抓到后：按 articles/skill_main 模板总结 → OutputManager.save_all 落飞书
+│   └─ 抓到后：按 articles/skill_main 模板总结 → OutputManager.save_all 落盘（默认本地 Obsidian）
 └─ 拿不准 → 默认走 articles/skill_main，非登录墙报错再升级
 
 关键事实（2026-09-04 修正）：

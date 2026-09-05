@@ -157,9 +157,9 @@ python videos/run.py --file "/path/to/video.mp4"
 | 函数 | 说明 |
 |------|------|
 | `fetch_web_content(url)` | 抓取网页，返回 `(title, content)` 或 `None` |
-| `summarize_and_save(url, author, tags, obsidian=False)` | 全自动：抓取→总结→保存（默认飞书，obsidian=True 追加 Obsidian） |
+| `summarize_and_save(url, author, tags, obsidian=False)` | 全自动：抓取→总结→保存（默认落本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0） |
 | `skill_main(params_dict)` | 技能系统统一入口，处理链接/原文/降级逻辑（`params_dict` 可带 `obsidian`） |
-| `save_summarized_article(content, url, author, tags, original_title='', meta=None, note_type='', publish_time=0, folder='', obsidian=False)` | 保存已总结好的内容（默认飞书，obsidian=True 追加 Obsidian） |
+| `save_summarized_article(content, url, author, tags, original_title='', meta=None, note_type='', publish_time=0, folder='', obsidian=False)` | 保存已总结好的内容（默认落本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0） |
 | `save_summary_only(input_data)` | 降级模式下外层总结完后的保存入口 |
 | `summarize_content(content, author, url, tags, original_title)` | 调用 AI 对内容做结构化总结 |
 

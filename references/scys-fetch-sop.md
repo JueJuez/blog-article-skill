@@ -40,7 +40,7 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 | 1 | 打开项目根目录终端 | — |
 | 2 | `python scripts/login_cdp_fetch.py smoke` | `[OK] port 5494 ws ... devtools-bridge alive`（失败见 §4） |
 | 3 | `python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544148552844858"` | 见下方真实输出示例 |
-| 4 | 读产物（默认 `notes/_scraped/&lt;topic-id&gt;.md`）→ 按 `articles/skill_main` 模板总结 → `OutputManager.save_all` 落飞书（默认只写飞书；双写加 `--obsidian`） | — |
+| 4 | 读产物（默认 `notes/_scraped/&lt;topic-id&gt;.md`）→ 按 `articles/skill_main` 模板总结 → `OutputManager.save_all` 落盘（默认本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0） | — |
 
 **步骤 3 真实输出示例（[1/3]→[3/3]）**：
 
@@ -112,8 +112,8 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 - 自动处理：站内 `articleDetail` 引用（前情提要）递归抓一层；外部知识库（飞书/语雀等）滚动到底抓全文；登录墙检测
 - **限速（模拟人类）**：篇间随机 15~40s；每 10~15 篇歇 3~8 分钟；翻页间 3~6s；CDP 页面被关自动重试（实测救回过）
 - 断点续传：`notes/_scraped/scys/state.json`；中断重跑自动跳过已抓（关机/杀进程都不丢进度）
-- 产物：原文 `notes/_scraped/scys/<topicId>.md`；队列 `pending_summaries.json`（总结后标 `summarized:true` 防重复落飞书）
-- 总结落盘：子 Agent 读原文 -> **消费队列中已算好的 prompt**（入队写点 `scripts/scys_batch_fetch.py:build_pending_entry` 按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好随条目投递，无需自调 CLI；2026-09-05 起三队列统一此口径）-> 按该 prompt 总结 -> `python articles/_save_summary.py <md> --url ... --tags "生财有术,<项目>" --title ...`（默认飞书；**已内置机械去重闸门**：URL 已总结过自动跳过，强制重写加 `--force`）。⚠️ **不要全部用 structured 模板**：分类器会按内容自动选 structured/interview/opinion/case/roundup/key_points/reading/dissection 八种模板（2026-08-26 起含 dissection 创作解剖：爆款拆解/带货/涨粉/账号运营类 scys 文章会走它，额外提炼可复用结构模具）。
+- 产物：原文 `notes/_scraped/scys/<topicId>.md`；队列 `pending_summaries.json`（总结后标 `summarized:true` 防重复落盘）
+- 总结落盘：子 Agent 读原文 -> **消费队列中已算好的 prompt**（入队写点 `scripts/scys_batch_fetch.py:build_pending_entry` 按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好随条目投递，无需自调 CLI；2026-09-05 起三队列统一此口径）-> 按该 prompt 总结 -> `python articles/_save_summary.py <md> --url ... --tags "生财有术,<项目>" --title ...`（默认本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0；**已内置机械去重闸门**：URL 已总结过自动跳过，强制重写加 `--force`）。⚠️ **不要全部用 structured 模板**：分类器会按内容自动选 structured/interview/opinion/case/roundup/key_points/reading/dissection 八种模板（2026-08-26 起含 dissection 创作解剖：爆款拆解/带货/涨粉/账号运营类 scys 文章会走它，额外提炼可复用结构模具）。
 - 已知限制：飞书 **PDF 预览型**文档文字在 canvas 里抓不到（落盘文件头有页码碎片），此类需下载 PDF 另行处理；文字型 wiki 滚动方案有效
 - python 环境：用 managed venv `C:\Users\O1830\.workbuddy\binaries\python\versions\3.13.12\python`（已带 playwright）；anaconda python 未必有
 
@@ -152,8 +152,8 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 
 **执行闭环（模型每批照做）**：
 1. 后台跑 `D:\App\anaconda3\python.exe -u scripts/scys_batch_fetch.py --project <领域> --limit 30`（断点续传，重复执行幂等，已抓自动跳过）
-2. 每批完成 -> 派**子 Agent**（>3 篇必须拆子 Agent）总结落飞书（tags=`生财有术,<领域>`，入口 `articles/_save_summary.py`，详见 §7 总结落盘段）。⚠️ 子 Agent **消费队列中已算好的 prompt**：入队写点 `scripts/scys_batch_fetch.py:build_pending_entry` 已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 把 prompt 算好塞进队列条目，子 Agent 直接按该 prompt 总结，**无需自调任何 CLI**。**不要全部用 structured 模板**。
-3. 总结完把 `pending_summaries.json` 对应条目标 `summarized:true`（防重复落飞书）
+2. 每批完成 -> 派**子 Agent**（>3 篇必须拆子 Agent）总结落盘（tags=`生财有术,<领域>`，入口 `articles/_save_summary.py`，详见 §7 总结落盘段）。⚠️ 子 Agent **消费队列中已算好的 prompt**：入队写点 `scripts/scys_batch_fetch.py:build_pending_entry` 已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 把 prompt 算好塞进队列条目，子 Agent 直接按该 prompt 总结，**无需自调任何 CLI**。**不要全部用 structured 模板**。
+3. 总结完把 `pending_summaries.json` 对应条目标 `summarized:true`（防重复落盘）
 4. 向用户汇报累计/剩余进度，然后启动下一批
 
 **半年重抓**：直接说「补齐scys」即可——`state.json` 断点续传自动只抓上次之后的新帖/漏帖；要扩时间窗加时间后缀（如「补齐scys 近两年」）。

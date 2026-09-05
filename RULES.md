@@ -114,7 +114,7 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
 - **循环 → 一次性查询后筛选**：循环内逐条查询/抓取/请求，优先改为「一次批量查询/抓取，再在内存里筛选」，**避免 N 次往返**。
 - **串行 → 并行**：多个独立任务（多视频 / 多文件 / 多链接）评估并行（`asyncio.gather` / 线程池），注意限流与去重，避免无意义串行等待。
 - **复用入口，不重复造轮子**：统一走 `fetch_transcript` / `skill_main` / `summarize_video` / `OutputManager` 等既有入口，禁止在多处复制抓取/保存逻辑。
-- **已总结内容机械拦截（三层前置 · 2026-08-25；跨来源去重 · 2026-09-03）**：AI 只交总结，「要不要总结 / 写不写」由代码决定——①入队：`run.py` 查 dedup 索引，已总结 URL 不入队；②派单前：`python scripts/filter_pending.py` 清洗 monitors + scys 两队列（已总结条目出队，不浪费总结 token）；③落盘：`save_summary_only` / `_save_summary.py` 查索引，命中返回 `skipped` 并按成功出队（`force` / `--force` 强制重写）。多 Agent 接力（前一个积分耗尽/中断）不重复总结、不重复落飞书。决策见 `docs/decisions/DECISION-20260825-dedup-frontload-and-lock-release.md`。**④跨来源（2026-09-03）**：生财有术双渠道订阅（公众号 + scys 站内），同一篇帖子两边 URL 不同，URL 去重挡不住——公众号抓取侧在总结前与 `notes/_scraped/scys/` 归档做标题（规范化相似≥0.85 / 截断前缀）/正文前 300 字相似比对，命中直接跳过（`articles/dedup.py: find_cross_duplicate`，健康度行计 `scys重复`）。
+- **已总结内容机械拦截（三层前置 · 2026-08-25；跨来源去重 · 2026-09-03）**：AI 只交总结，「要不要总结 / 写不写」由代码决定——①入队：`run.py` 查 dedup 索引，已总结 URL 不入队；②派单前：`python scripts/filter_pending.py` 清洗 monitors + scys 两队列（已总结条目出队，不浪费总结 token）；③落盘：`save_summary_only` / `_save_summary.py` 查索引，命中返回 `skipped` 并按成功出队（`force` / `--force` 强制重写）。多 Agent 接力（前一个积分耗尽/中断）不重复总结、不重复落盘。决策见 `docs/decisions/DECISION-20260825-dedup-frontload-and-lock-release.md`。**④跨来源（2026-09-03）**：生财有术双渠道订阅（公众号 + scys 站内），同一篇帖子两边 URL 不同，URL 去重挡不住——公众号抓取侧在总结前与 `notes/_scraped/scys/` 归档做标题（规范化相似≥0.85 / 截断前缀）/正文前 300 字相似比对，命中直接跳过（`articles/dedup.py: find_cross_duplicate`，健康度行计 `scys重复`）。
 - **长内容必走两段式分块**：超过单模型上下文的内容，先经 `shared.chunking` 分块再总结，禁止整篇直接喂模型。
 - **大批量 → 子 Agent 隔离主线程（防上下文胀爆）**：当待处理内容达到批量阈值（如 >3 条笔记/视频，或单批原文大到会撑爆主会话上下文）时，**必须**用 Agent 工具派发子 Agent 并行处理，勿把全部原文/中间稿堆在主线程。注意：① 子 Agent 上下文是空白的，派发 prompt 必须**自包含**（嵌入输出契约：落盘闸门＝默认本地 Obsidian（2026-09-04 起）、飞书仅 `DISABLE_FEISHU_SYNC=0` 时追加；入口函数 `videos/run.py --url` 或 `skill_main`、`note_type`、YouTube/无字幕规则按需）；② **飞书并发重复坑**：多子 Agent 同时 `save_series` 写飞书会因集级无查重建重复节点（见 §4.7）；**安全模式**＝子 Agent 只**返回成品 Markdown 文本＋元数据**（标题/作者/url/tags/note_type），由编排方**串行**调保存入口（`_save_series_note` / `save_all`）落盘，绝不让多子 Agent 并发各自调 `save_series`。
 
@@ -208,7 +208,7 @@ NOTE_GATE_THRESHOLD=85     # 评分阈值，默认 85；低于此分触发重试
 - [ ] 会话开始：先读 **RULES.md（本文件）** + `SKILL.md`，确认两条路线入口与降级逻辑。
 - [ ] 收到「总结/整理」+ 素材 → 调 `skill_main` / `summarize_video`，**不要手写抓取或手写总结**。
 - [ ] 触发降级（`need_continue_summary`）→ **派子 Agent** 用返回的 `prompt` + `raw_file` 做总结，再调 `save_summary_only` 存档（主会话只做编排，不直写总结，保上下文干净）。
-- [ ] **存档后自检落盘**：确认**飞书**知识库「AI 总结笔记」下出现对应节点；本次带了 `obsidian` 才检查 Obsidian vault 对应文件（没带则 Obsidian 不应有新文件，是预期不是失败）；本地 `notes/` **预期为空**（有飞书即不落本地），**不要因本地为空而误判失败**；飞书 user 身份须 `lark-cli auth status` ready，否则只告警不落飞书。
+- [ ] **存档后自检落盘**：确认 Obsidian vault（`OBSIDIAN_VAULT_PATH`）出现对应文件（2026-09-04 起默认落盘端，见 §3.0）；飞书仅在双写/镜像模式（`DISABLE_FEISHU_SYNC=0` 或 `audit_sync.py`）时检查——届时飞书 user 身份须 `lark-cli auth status` ready，否则只告警不落飞书；本地 `notes/` **预期为空**（有外部目标即不落本地），**不要因本地为空而误判失败**。
 - [ ] 本文件（RULES.md）变更 → 同步进 `MEMORY.md`「规则摘要」并视作平台规则。
 - [ ] 遇到网络/代理问题 → 先查 `references/youtube-cdp-workflow.md`，不要绕去挖代理配置。
 - [ ] YouTube 字幕抓取返回 None 且页面已加载、`captionTracks` 为空 → `videos/main` 自动走 ASR 兜底；ASR 也失败才回终态文案「【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】」并停止（§4.4）。

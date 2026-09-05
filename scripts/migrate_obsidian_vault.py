@@ -43,7 +43,7 @@ if BASE_DIR not in sys.path:
 from dotenv import load_dotenv
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-from shared.routing import resolve_folder
+from shared.routing import resolve_folder, category_from_tags
 
 VAULT = os.getenv("OBSIDIAN_VAULT_PATH", "")
 # 新结构根：这些下面的文件一律不动（已是目标结构）
@@ -228,7 +228,8 @@ def plan_one(abs_path, rel_parts):
     folder_series = _folder_series(top, top_abs)
     series = folder_series
 
-    item = {"url": url or "", "author": author or "", "title": title, "tags": tags or []}
+    item = {"url": url or "", "author": author or "", "title": title, "tags": tags or [],
+            "category": category_from_tags(tags or [])}
     if "生财有术" in rel_parts or topic == "生财有术":
         item["scys_domain"] = topic if topic != "生财有术" else "副业增长"
     if series:

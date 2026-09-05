@@ -37,6 +37,23 @@ DAILY = "日更"
 _PLATFORM_FOLDER = {"bilibili": "B站", "wechat": "公众号", "scys": "生财有术"}
 _SCYS_AUTHOR = "生财有术"
 
+# 「分类」提取时必须跳过的系统标签（纯元信息，不决定落盘目录）。
+# 与 articles/main.py 2026-08-22 分类修复决策同源，此处为单一真源。
+CATEGORY_SKIP_TAGS = {"文章总结", "转载", "总结", "笔记",
+                      "动态速览", "短动态", "🔥当日", "本周", "更早"}
+
+
+def category_from_tags(tags) -> str:
+    """从标签列表提取「分类」（首个非系统标签），空/全系统标签返回 ''。
+
+    注意：tags 本身不参与 resolve_folder 路由；调用方须先用本函数把 tags
+    折算成 category 字段再传入 item（B1/B9 修复，2026-09-05）。
+    """
+    for tag in (tags or []):
+        if tag and tag not in CATEGORY_SKIP_TAGS:
+            return tag
+    return ""
+
 
 def _subs_path() -> str:
     return os.path.join(BASE_DIR, "monitors", "subscriptions.json")

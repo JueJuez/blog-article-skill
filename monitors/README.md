@@ -1,6 +1,6 @@
 # 订阅监控（monitors/）
 
-持续订阅 **B站UP主**、**公众号** 与 **scys（生财有术）项目标签**，发现新内容 → AI 总结 → 默认落飞书（需 Obsidian 时加 `--obsidian` 双写，见 `RULES.md` §3.0）。
+持续订阅 **B站UP主**、**公众号** 与 **scys（生财有术）项目标签**，发现新内容 → AI 总结 → 默认落本地 Obsidian（2026-09-04 起，见 `RULES.md` §3.0；恢复飞书双写改 `.env` 的 `DISABLE_FEISHU_SYNC=0`）。
 本文件是监控模块的操作文档 + 注意事项；决策背景见 `../_archive/decisions/DECISION-20260720-sub-monitor.md`（已取代，仅供历史追溯）。
 
 ## 架构
@@ -13,7 +13,7 @@
 | `ad_filter.py` | 广告过滤：整篇纯广告 skip / 干货夹广告净化保留 |
 | `run.py` | CLI + 调度入口（`--apply` 直接调总结管线）；末尾自动调 `drain_series_pending` 收尾系列课；`--apply` 时按 `subscriptions.json` 的 `scys` 列表逐领域子进程跑 `scripts/scys_batch_fetch.py` 增量抓新帖（见下方「scys 新帖监控」） |
 | `_auth.py` | 公众号扫码登录 / 轮询换 JWT（落盘 `.wechat_auth.json`，日志 `.poll_daemon.log`） |
-| `apply_pending_series.py` | 系列课降级待总结队列 drainer：`drain_series_pending` 被 `run.py` 自动调用，把 `pending_series.json` 里已有 `.body.md` 的集串行落飞书 + 重生成总览（详见下方「系列课全自动闭环」） |
+| `apply_pending_series.py` | 系列课降级待总结队列 drainer：`drain_series_pending` 被 `run.py` 自动调用，把 `pending_series.json` 里已有 `.body.md` 的集串行落盘 + 重生成总览（详见下方「系列课全自动闭环」） |
 | `../shared/series_state.py` | 系列课增量去重状态（`monitors/series_state.json`）：记录每集 base/URL 是否已总结，每日增量只抓未总结的集 |
 
 ## 抓取规则（当前版本 · 暂定）
@@ -51,7 +51,7 @@
    - B站视频/动态：视频 `summarize_video`；动态 API 正文内联，短动态存「速览」、完整动态走重模板。B站无字幕自动进 ASR 兜底（需本机装 `yt_dlp faster_whisper ctranslate2 imageio_ffmpeg`，2026-09-03 已装）。
    - FORCE_AGENT_MODE=1：**不自动总结**，全部进 `pending_summaries.json` 队列。
 4. **scys 增量（`subscriptions.json` 配了 `scys` 列表才跑）**：逐领域子进程跑 `scripts/scys_batch_fetch.py`（默认近 7 天窗口、精华过滤按 `scys_projects.json` 默认、翻 2 页列表），抓到的原文进 `notes/_scraped/scys/pending_summaries.json` 队列（与批量补齐共用，`.lock` 互斥防并发写坏 state）。登录态走统一 `SharedCdpSession`（默认 `CdpAutomationProfile\Chrome` 目录，由 `ensure_cdp_profile.py` 每天首跑全量、当天复用），不影响公众号/B站。
-5. **Agent 总结闭环**：本会话（执行模型）读队列 → 派**子 Agent** 消费条目已预计算的 prompt 总结（入队时已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好，2026-09-05 起三队列统一）→ `save_summary_only` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，见 `RULES.md` §3.0）→ 出队。**原子化**：成功才出队，中断可安全重跑。scys 队列同理（folder=生财有术/<领域>，语义见 `references/scys-fetch-sop.md` §9）。
+5. **Agent 总结闭环**：本会话（执行模型）读队列 → 派**子 Agent** 消费条目已预计算的 prompt 总结（入队时已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好，2026-09-05 起三队列统一）→ `save_summary_only` 落盘（默认本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0）→ 出队。**原子化**：成功才出队，中断可安全重跑。scys 队列同理（folder=生财有术/<领域>，语义见 `references/scys-fetch-sop.md` §9）。
 6. **看健康度行**：末尾 `📊 本轮健康度：...` 一行，异常（错误/限流待重试高）一眼可见。
 
 **重试矩阵（无需手动干预）**：token 失效→弹码等扫码 / 401 瞬错×3 / 代理空轮退避重试 / 正文限流→`pending_refetch`（`python run.py --refetch-only` 统一重抓）。
@@ -111,8 +111,8 @@
 
 `FORCE_AGENT_MODE=1`（默认）时，`skill_main` / 监控管线均不自动总结：入队写点把原文 + 预计算模板 `prompt`（分类器选模板 + `QUALITY_GATE_SELFCHECK`，2026-09-05 起三队列统一）+ `raw_file` + `folder` 写入 **`pending_summaries.json`**（按 `url` 去重），`run.py` 末尾打印 `NEED_CONTINUE_SUMMARY` 提示。该队列**不会自动消化**，由外层模型接单：
 
-- **派子 Agent 执行（强制，保持主会话干净）**：每文件夹起一个子 Agent（如 `副业增长/生财有术` 一个、`投资交易/中金点睛` 一个），串行处理避免飞书并发建节点重复；子 Agent 读 `raw_file` → 按条目已预计算的 prompt 总结（无需自己组 prompt / 调 CLI）→ 调 `scripts/persist_summary.py` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，保存成功后**自动从队列移除该条**，中途停止可安全重跑）。
-- **派单前先跑 `python scripts/filter_pending.py`**（机械清洗两队列：URL 命中 dedup 索引的条目自动出队，scys 队列同时清 `summarized:true`——多 Agent 接力时已总结内容不再消耗 AI token、不再重复落飞书；决策见 `docs/decisions/DECISION-20260825-dedup-frontload-and-lock-release.md`）。
+- **派子 Agent 执行（强制，保持主会话干净）**：每文件夹起一个子 Agent（如 `副业增长/生财有术` 一个、`投资交易/中金点睛` 一个），串行处理避免并发写冲突（飞书双写时避免并发建节点重复）；子 Agent 读 `raw_file` → 按条目已预计算的 prompt 总结（无需自己组 prompt / 调 CLI）→ 调 `scripts/persist_summary.py` 落盘（默认本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0，保存成功后**自动从队列移除该条**，中途停止可安全重跑）。
+- **派单前先跑 `python scripts/filter_pending.py`**（机械清洗两队列：URL 命中 dedup 索引的条目自动出队，scys 队列同时清 `summarized:true`——多 Agent 接力时已总结内容不再消耗 AI token、不再重复落盘；决策见 `docs/decisions/DECISION-20260825-dedup-frontload-and-lock-release.md`）。
 - 严禁在主会话里直接总结——会污染上下文、降低总结质量。
 
 **双队列模型（务必分清）**：
@@ -130,7 +130,7 @@
 B站系列课（多集连续内容）走一套独立的「全系列一次性总结 + 后续增量只抓新集」闭环，与单篇降级队列并存。
 
 **核心语义（用户决策 · 2026-08）**：
-- **首抓**：订阅的 UP / 公众号若含系列课，默认把**全系列**总结一次（落飞书，除非显式 `--obsidian`）。
+- **首抓**：订阅的 UP / 公众号若含系列课，默认把**全系列**总结一次（默认落本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0）。
 - **增量（每日 `auto`）**：UP 更新后，按 `series_state.json` 跳过已总结的集，**只抓取未总结的新集**，避免重复总结。
 - **落地全自动**：`monitors/run.py --apply` 末尾自动调 `drain_series_pending()`，无需再手动跑命令。
 
@@ -140,20 +140,20 @@ B站系列课（多集连续内容）走一套独立的「全系列一次性总�
 |------|------|------|
 | `pending_refetch.json` | **抓取失败**：正文被限流成空 / fetch 报错 | `python monitors/run.py --refetch-only` |
 | `pending_summaries.json` | **单篇有正文但无 AI**：等外层派子 Agent 总结 | 外层派子 Agent 读 raw → `persist_summary.py` |
-| `pending_series.json` | **系列课降级待落盘**：`run.py` 发现系列且降级时登记（含每集 `degraded_raws`）；`drain_series_pending` 把已产出 `.body.md` 的集落飞书后出队 | 被 `run.py` 自动 drain；也可手动 `python monitors/apply_pending_series.py [--regenerate] [--obsidian]` |
+| `pending_series.json` | **系列课降级待落盘**：`run.py` 发现系列且降级时登记（含每集 `degraded_raws`）；`drain_series_pending` 把已产出 `.body.md` 的集落盘后出队 | 被 `run.py` 自动 drain；也可手动 `python monitors/apply_pending_series.py [--regenerate] [--obsidian]` |
 | `series_state.json` | **系列课增量去重状态**（运行时生成）：记录每系列已总结的集 `base`/`url`/`author`，每日增量据此跳过 | 代码内部读取；`python scripts/series_maintenance.py forget --series <名>` 可清空某系列记录重抓 |
 
 **闭环链路**（`run.py --apply` 一次跑完）：
 1. discover → 抓到系列课（`fetch_bilibili_series` 拿全集字幕）。
 2. 降级（无外部 AI）：每集产出 `notes/<系列名>/*_raw.md`；`run.py` 把系列登记进 `pending_series.json`。
 3. 本会话（执行模型）派子 Agent 把 raw → `.body.md` 总结正文。
-4. `run.py` 末尾自动 `drain_series_pending()`：串行调 `_save_series_note` 落飞书 → `series_state.mark_done`（增量去重关键）→ 删本地 raw/body → 重生成「00_系列总览」（upsert：删旧节点 + 建新，**不重复**）。
+4. `run.py` 末尾自动 `drain_series_pending()`：串行调 `_save_series_note` 落盘 → `series_state.mark_done`（增量去重关键）→ 删本地 raw/body → 重生成「00_系列总览」（upsert：删旧节点 + 建新，**不重复**）。
 
 **关键工程纪律**：
-- 系列课**只落飞书**（除非 `--obsidian` 双写），与单篇一致。
-- 落盘用「删旧节点 + 建新」而非 `docs +update --command overwrite`——后者会把文档标题改写成正文首行，破坏标题去重、产生重复节点（2026-08 踩坑修复）。
+- 系列课与单篇一致：默认只落本地 Obsidian（2026-09-04 起，见 `RULES.md` §3.0）；用户明确要求写飞书时才写。
+- 飞书侧落盘用「删旧节点 + 建新」而非 `docs +update --command overwrite`——后者会把文档标题改写成正文首行，破坏标题去重、产生重复节点（2026-08 踩坑修复）。
 - 增量靠 `series_state.json`，**不依赖本地 `notes/` 文件**；本地中间文件（`.body.md` / `_raw.md` / `*.manifest`）属冗余副本，可安全删除（`.gitignore` 已忽略，删除不可逆）。
-- 维护工具：`scripts/series_maintenance.py`（`verify` 校验飞书节点一致性 / `regen-overview` 重生成总览 / `reland` 重落地），用于飞书侧系列运维。
+- 维护工具：`scripts/series_maintenance.py`（`verify` 校验飞书节点一致性 / `regen-overview` 重生成总览 / `reland` 重落地），用于飞书侧系列运维（仅双写/镜像模式下需要）。
 
 ## 用法
 
@@ -162,7 +162,7 @@ B站系列课（多集连续内容）走一套独立的「全系列一次性总�
 python monitors/run.py                 # 等价 --mode auto
 python monitors/run.py --mode first    # 首跑回填（30 天窗口）
 
-# 发现并直接调总结管线落盘（默认飞书，需 Obsidian 时加 --obsidian）
+# 发现并直接调总结管线落盘（默认本地 Obsidian，2026-09-04 起，见 RULES.md §3.0）
 python monitors/run.py --apply
 python monitors/run.py --mode first --apply
 ```

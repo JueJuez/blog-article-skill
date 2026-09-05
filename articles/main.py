@@ -205,14 +205,16 @@ def save_raw_content_to_file(content: str, title: str = "", prefix: str = "_raw_
     return os.path.abspath(filepath)
 
 
-def save_summarized_from_file(filepath: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", obsidian: bool = False):
+def save_summarized_from_file(filepath: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", obsidian: bool = False, folder: str = "", category: str = "") -> tuple:
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"总结内容文件不存在: {filepath}")
     with open(filepath, 'r', encoding='utf-8') as f:
         content = f.read()
     if not content.strip():
         raise ValueError(f"总结内容文件为空: {filepath}")
-    return save_summarized_article(content, original_url=original_url, author=author, tags=tags, original_title=original_title, obsidian=obsidian)
+    folder, tags = autoroute_folder(folder, author, original_url, original_title, tags,
+                                    category=category)
+    return save_summarized_article(content, original_url=original_url, author=author, tags=tags, original_title=original_title, obsidian=obsidian, folder=folder)
 
 
 def _extract_title_from_summary(summarized_content: str) -> str:
@@ -296,9 +298,9 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
     title = original_title or _extract_title_from_summary(summarized_content) or ""
     category = ""
     # 跳过「纯元信息/系统标签」——这些只作笔记内 #标签，不抢「分类」（分类决定落盘文件夹）。
-    # 含：默认标签、转载标记、短动态类、新鲜度标签（🔥当日/本周/更早），保证监控产出统一落「待归类」。
-    skip_categories = {"文章总结", "转载", "总结", "笔记",
-                       "动态速览", "短动态", "🔥当日", "本周", "更早"}
+    # 单一真源：shared/routing.CATEGORY_SKIP_TAGS（含默认标签/转载标记/短动态类/新鲜度标签）。
+    from shared.routing import CATEGORY_SKIP_TAGS
+    skip_categories = CATEGORY_SKIP_TAGS
     for tag in tags:
         if tag not in skip_categories:
             category = tag
@@ -568,6 +570,30 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None,
         return summarized_content, None, None, original_title, error_msg
 
 
+def autoroute_folder(folder: str, author: str, original_url: str, original_title: str, tags: list = None, source: str = "user_link", category: str = "") -> tuple:
+    """folder 为空时按 author/url 走统一路由器兜底（L8 语义，2026-09-05 收编全部旁路入口）。
+
+    「落哪」由代码决定，不靠调用方记性。返回 (folder, tags)；author 会补进 tags。
+    显式传了 folder 的调用方（monitors 管线 / land_scys_batch / drain_pending 等）原样返回。
+    category：手贴散文的分类（B9 修复）。显式参数优先，缺省时从 tags 推断——
+    无作者但有分类的内容落【我的总结】/<分类>，而不是被兜进【待归类】。
+    """
+    if folder:
+        return folder, list(tags or [])
+    from shared.routing import resolve_folder, extract_author, category_from_tags
+    _author = (author or "").strip() or extract_author((original_url or "").strip())
+    _category = (category or "").strip() or category_from_tags(tags)
+    folder = resolve_folder({
+        "author": _author, "url": original_url or "",
+        "title": original_title, "source": source,
+        "category": _category,
+    })
+    if _author and _author not in (tags or []):
+        tags = list(tags or []) + [_author]
+    print(f"   📁 folder 未传，自动路由到: {folder}")
+    return folder, tags
+
+
 def save_summary_only(input_data: dict) -> dict:
     print("💾 执行外层兜底总结后的自动保存...")
     summarized_content = input_data.get('summarized_content', '')
@@ -603,16 +629,8 @@ def save_summary_only(input_data: dict) -> dict:
     # L8 修复（2026-09-03）：自带总结的保存路径 folder 为空时自动走统一路由器，
     # 与 skill_main 的 L7 手贴 URL 路径对齐——「落哪」由代码决定，不靠调用方记性。
     # 背景：批量总结曾有 78 篇因调用方漏传 folder 全部落进【待归类】。
-    if not folder:
-        from shared.routing import resolve_folder, extract_author
-        _author = (author or "").strip() or extract_author((original_url or "").strip())
-        folder = resolve_folder({
-            "author": _author, "url": original_url or "",
-            "title": original_title, "source": "user_link",
-        })
-        if _author and _author not in (tags or []):
-            tags = list(tags or []) + [_author]
-        print(f"   📁 folder 未传，自动路由到: {folder}")
+    folder, tags = autoroute_folder(folder, author, original_url, original_title, tags,
+                                    category=input_data.get('category', ''))
     try:
         formatted_note, filename = save_summarized_article(
             summarized_content, original_url=original_url, author=author,
@@ -697,13 +715,14 @@ def skill_main(input_data: dict) -> dict:
         return {'success': False, 'message': f'执行失败: {str(e)}'}
 
 
-def skill_continue_summary(article_content: str, summary_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", obsidian: bool = False):
+def skill_continue_summary(article_content: str, summary_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", obsidian: bool = False, folder: str = "") -> dict:
     if not summary_content or not summary_content.strip():
         return {'success': False, 'message': '总结内容为空，请提供有效的总结内容'}
     try:
+        folder, tags = autoroute_folder(folder, author, original_url, original_title, tags)
         formatted_note, filename = save_summarized_article(
             summarized_content=summary_content, original_url=original_url, author=author,
-            tags=tags or [], original_title=original_title, obsidian=obsidian
+            tags=tags, original_title=original_title, obsidian=obsidian, folder=folder
         )
         return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note}
     except Exception as e:
@@ -715,20 +734,11 @@ async def async_fetch_web_content(url: str):
     return await asyncio.to_thread(fetch_web_content, url)
 
 
-async def async_save_summarized_from_file(filepath: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", obsidian: bool = False):
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"总结内容文件不存在: {filepath}")
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
-    if not content.strip():
-        raise ValueError(f"总结内容文件为空: {filepath}")
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        None,
-        lambda: save_summarized_article(
-            content, original_url=original_url, author=author, tags=tags,
-            original_title=original_title, obsidian=obsidian
-        )
+async def async_save_summarized_from_file(filepath: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", obsidian: bool = False, folder: str = "") -> tuple:
+    """委托同步版 save_summarized_from_file（线程池执行），自动继承 folder 路由。"""
+    return await asyncio.to_thread(
+        save_summarized_from_file, filepath, original_url=original_url, author=author,
+        tags=tags, original_title=original_title, obsidian=obsidian, folder=folder
     )
 
 

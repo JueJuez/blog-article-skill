@@ -63,10 +63,10 @@ class TestTemplateNumbering:
         numbers = _top_level_numbers(_fixed_structure_section(prompt))
         assert numbers == list(range(1, len(numbers) + 1))
 
-    def test_reading_final_item_is_nine(self):
-        """READING 修复后共 9 条，「总结收束」为末条（此前双 6 错位致末条为 8）。"""
+    def test_reading_final_item_is_eleven(self):
+        """READING 学习包（2026-09-05）后共 11 条：9 自测三问 / 10 讲出来 / 11 总结收束仍为末条。"""
         section = _fixed_structure_section(READING_PROMPT)
-        assert "9. **总结收束**" in section
+        assert "11. **总结收束**" in section
 
     def test_tail_splice_untouched(self):
         """编号修复不得影响尾部 UNIVERSAL_RULES 拼接契约（test_templates.py 同款锚点）。"""

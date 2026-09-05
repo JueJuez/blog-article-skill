@@ -112,6 +112,10 @@ def main():
         return run_batch(args)
 
     content = args.content or args.url_arg or args.url or ''
+    # 场景2优先：位置参数是本地文件时必须走文件模式（--url 仅作原文链接记录），
+    # 否则 --url 会把 content 抢成链接，本地文件被当成待抓取内容（2026-09-05 修复）
+    if args.url and os.path.isfile(args.url):
+        content = args.url
 
     if not content and not args.summarized:
         print("用法:")
@@ -159,6 +163,7 @@ def main():
         try:
             save_func(
                 filepath=content,
+                original_url=args.url_arg or "",
                 author=args.author,
                 tags=tags
             )

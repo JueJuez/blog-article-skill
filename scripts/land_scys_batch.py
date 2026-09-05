@@ -40,6 +40,7 @@ def extract_tags_and_strip(content: str):
 
 def main():
     from articles.main import save_summary_only
+    from shared.routing import resolve_folder
 
     dm = json.load(open(MAP, encoding="utf-8"))
     temp = dm["temp"]
@@ -62,7 +63,9 @@ def main():
         orig_tags, stripped = extract_tags_and_strip(content)
         # 合并：原文标签 + 领域标签（去重保序）
         tags = list(dict.fromkeys(orig_tags + ["生财有术", project]))
-        folder = f"生财有术/{project}"
+        # B6 修复（2026-09-05）：folder 走统一路由器（scys_domain 命中第①级
+        # →【监控】/生财有术/<领域>），不再手拼缺【监控】前缀的路径。
+        folder = resolve_folder({"author": "", "url": url, "scys_domain": project})
 
         # 按 raw_file 定位队列条目（队列字段名为 output；normpath 抗分隔符差异）
         qi = next((i for i, x in enumerate(queue)

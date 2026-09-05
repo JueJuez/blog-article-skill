@@ -39,3 +39,13 @@
 - `references/config.md` §五 输出规则表已更新。
 - `articles/manager.py` 文档字符串已更新。
 - 项目工作记忆（`.workbuddy/memory/MEMORY.md`）「输出规则（硬红线）」已更新。
+
+### 文档同步补完（2026-09-06）
+- 初版同步清单遗漏多处现行文档，旧口径「默认飞书 / Obsidian 按需」残留，本次补齐：
+  - `AGENTS.md` 队列消费步骤（单篇 / scys / 系列课落盘口径）
+  - `RULES.md` §5 存档后自检（Obsidian 为默认落盘端，飞书仅双写/镜像时检查）
+  - `README.md` API 表 `summarize_and_save` / `save_summarized_article` 两行
+  - `monitors/README.md` 全篇（Agent 总结闭环 / 三队列 / 系列课闭环 / 用法注释）
+  - `references/scys-fetch-sop.md` §7 落盘段 + §9 执行闭环
+  - `references/login-required-cdp-workflow.md` 流程树落盘行
+- 历史记录文档（DECISION-2026 08xx / PLAN / RUNBOOK / 完成记录 / `_archive/`）保持原样不改。
