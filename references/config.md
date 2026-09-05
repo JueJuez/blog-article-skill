@@ -225,7 +225,8 @@ NOTE_GATE_THRESHOLD=85
 
 - **开启（`NOTE_QUALITY_GATE=1`）**：`verify_note()` 调外部 AI Provider 审核 → 返回 `{score, passed, issues}`；`should_gate_retry()` 在 `score < NOTE_GATE_THRESHOLD` 时返回 `True`，由调用方把问题清单追加进 prompt **重试一次**。
 - **关闭（默认）**：`verify_note()` 直接返回 `None`，跳过整轮审核，不重试、不额外耗 token。
-- **降级路径（无外部 AI Provider）**：闸门无法调 AI，此时走「自检闸门」——`QUALITY_GATE_SELFCHECK` 文本会被追加进模板 prompt，由外层对话模型按两条专项自检（思维模型深挖 + 固定结构合规）自行核对；通用红线已在 prompt 正文 `UNIVERSAL_RULES` §八覆盖，自检段不重复（无循环依赖、不阻塞）。
+- **降级路径（无外部 AI Provider）**：闸门无法调 AI，此时走「自检闸门」——`QUALITY_GATE_SELFCHECK` 文本会被追加进模板 prompt，由外层对话模型按三条专项自检（思维模型深挖 + 固定结构合规 + 篇幅区间）自行核对；通用红线已在 prompt 正文 `UNIVERSAL_RULES` §八覆盖，自检段不重复（无循环依赖、不阻塞）。
+- **机械落盘门禁（不受本开关控制 · 2026-09-05）**：无论 `NOTE_QUALITY_GATE` 开或关，`save_summary_only` 落盘前都会过 `prompts/verifier.py` 的机械校验（主标题唯一 / 来源链接卫生 / 字数硬阈值，无环境变量可关——它是落盘底线不是可选审核）；被拦返回 `VERIFIER_FAILED:<issues>`，修复后重试同一入口即可。
 - **阈值与重试用环境变量即可调节**，无需改代码。代码层见 `prompts/templates.py` 的 `QUALITY_GATE_ENABLED` / `GATE_THRESHOLD`。
 
 ## 十、订阅监控（B站 / 公众号）配置

@@ -164,7 +164,8 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
 
 > 目标：让笔记「质量高、上下文清晰、不破去水分红线」。三件套均在 `prompts/templates.py` 落地，由入口函数自动套用，**AI 无需手动触发**。
 
-- **A. 质量闸门（second-pass verifier）**：总结后再调一次 AI 按 6 红线打 0–100 分，低于阈值带反馈重试一次。**默认关闭**（省一轮 AI 调用）；开关见下方「去哪里开关」。无外部 AI 的降级路径走 `QUALITY_GATE_SELFCHECK` 自检段（模板 prompt 内嵌两条专项自检——思维模型深挖 + 固定结构合规，与 `UNIVERSAL_RULES` §八红线不重复，外层模型自核对）。
+- **A. 质量闸门（second-pass verifier）**：总结后再调一次 AI 按 7 评分维度打 0–100 分（含篇幅达标），低于阈值带反馈重试一次。**默认关闭**（省一轮 AI 调用）；开关见下方「去哪里开关」。无外部 AI 的降级路径走 `QUALITY_GATE_SELFCHECK` 自检段（模板 prompt 内嵌三条专项自检——思维模型深挖 + 固定结构合规 + 篇幅区间，与 `UNIVERSAL_RULES` §八红线不重复，外层模型自核对）。
+- **A2. 机械落盘门禁（零 AI 依赖 · 2026-09-05）**：`prompts/verifier.py` 的 `verify_note_mechanical` 在 `save_summary_only` 落盘前机械校验：主标题恰好 1 个；正文不写来源链接行、不出现原文 URL（防 formatter 权威追加后落盘出现两个链接）；字数对照模板区间硬阈值（<min×0.6 或 >max×1.5 拦截，轻微越界仅告警）。接入顺序：dedup 闸门之后（已总结出队优先）、folder 自动路由之前；拦截返回 `VERIFIER_FAILED:<issues>`，不落盘不 dedup，子 Agent 按 issues 修复重试；`force` 只豁免 dedup 不豁免本门禁。`NOTE_WORD_LIMITS` 与模板「单篇正文 X～Y 字」声明由测试防漂移（`tests/test_note_mechanical_gate.py`）。
 - **B. 字幕清洗层**：`shared/subtitle_clean.py` 纯函数（`preprocess_segments`/`preprocess_text`），已在 `videos/fetch.py` 三路径（B站原生 / YouTube API+CDP / yt-dlp 兜底）自动接入；只清洗口误填充词（删独立语气词 嗯/啊/呃）、合并相邻近重、≥8 字长句去重——**不激进折叠**（保留"然后/那个"等自然语流）。
 - **C. 强制证据红线（思维模型透镜）**：全部 9 模板共用 `UNIVERSAL_RULES` 第九节（structured 内联第十四节），6 模型按序 LIST（第一性原理→5-Why冰山→二阶思维→脉络还原→奥卡姆剃刀→类比迁移）逐条过、不适用跳过；**每条适用模型须给「洞察（不同视角）+ 原文证据句（「」括起原话，禁改写）」**，禁只写"用了X 模型"；全不适用须逐条列 6 模型理由。与去水分红线兼容，不硬凑固定章节。
 - **D. 元数据归一**：`UNIVERSAL_RULES` 强制 `#标签1 #标签2` 井号格式；`normalize_note_metadata()` 把 `**标签**：xxx` 转井号，`format_note_with_prompt` 自动应用。
@@ -212,7 +213,8 @@ NOTE_GATE_THRESHOLD=85     # 评分阈值，默认 85；低于此分触发重试
 - [ ] 遇到网络/代理问题 → 先查 `references/youtube-cdp-workflow.md`，不要绕去挖代理配置。
 - [ ] YouTube 字幕抓取返回 None 且页面已加载、`captionTracks` 为空 → `videos/main` 自动走 ASR 兜底；ASR 也失败才回终态文案「【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】」并停止（§4.4）。
 - [ ] 笔记作者栏**必须显示真实作者/UP主**；视频链路 `series.get("author","") or input_data.get("author","")` 已兜底，调用方无需手传，禁止无端输出【作者未知】（§4.5）。
-- [ ] **质量闸门（可选 · 默认关）**：要更严质检时在 `.env` 设 `NOTE_QUALITY_GATE=1`（阈值 `NOTE_GATE_THRESHOLD` 默认 85）；降级无外部 AI 时闸门自动转自检段，按两条专项自检（思维模型深挖 + 固定结构合规）自核对，无需手动开。详见 `references/config.md` §九 与 §4.6。
+- [ ] **质量闸门（可选 · 默认关）**：要更严质检时在 `.env` 设 `NOTE_QUALITY_GATE=1`（阈值 `NOTE_GATE_THRESHOLD` 默认 85）；降级无外部 AI 时闸门自动转自检段，按三条专项自检（思维模型深挖 + 固定结构合规 + 篇幅区间）自核对，无需手动开。详见 `references/config.md` §九 与 §4.6。
+- [ ] **机械落盘门禁（默认生效 · 2026-09-05）**：`save_summary_only` 落盘前自动过 `verify_note_mechanical`（主标题唯一 / 来源链接卫生 / 字数硬阈值），不受 `NOTE_QUALITY_GATE` 开关控制；被拦返回 `VERIFIER_FAILED:<issues>` 时子 Agent 应按 issues 修复后重试同一入口，禁止绕门禁手写文件（§4.6 A2）。
 - [ ] **涉及架构级改动 / 新功能链路 / 跨多模块改动** → 先按 §6 grill_rules 拷问拉齐认知，再动手。
 
 ---

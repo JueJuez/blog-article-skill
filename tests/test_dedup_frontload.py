@@ -48,7 +48,8 @@ class TestSaveSummaryOnlyGate:
 
     def test_marks_index_after_success(self, dedup_index):
         res = articles_main.save_summary_only({
-            "summarized_content": "总结", "original_url": "https://b.com/y",
+            "summarized_content": "# 笔记\n总结正文",
+            "original_url": "https://b.com/y",
             "original_title": "T"})
         assert res.get("success") is True
         assert dedup_index.is_summarized(url="https://b.com/y") != {}
@@ -56,13 +57,14 @@ class TestSaveSummaryOnlyGate:
     def test_force_bypasses_gate(self, dedup_index):
         dedup_index.mark_summarized(url="https://c.com/z", filename="old.md")
         res = articles_main.save_summary_only({
-            "summarized_content": "总结", "original_url": "https://c.com/z",
+            "summarized_content": "# 笔记\n总结正文",
+            "original_url": "https://c.com/z",
             "force": True})
         assert res.get("skipped") is not True
         assert self.calls == [1]
 
     def test_no_url_falls_through_to_save(self, dedup_index):
-        res = articles_main.save_summary_only({"summarized_content": "总结"})
+        res = articles_main.save_summary_only({"summarized_content": "# 笔记\n总结正文"})
         assert res.get("success") is True
         assert self.calls == [1]
 
