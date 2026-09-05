@@ -87,14 +87,32 @@ class TestRunScysDaily:
 
 
 class TestBatchLock:
-    def test_lock_acquire_block_and_release(self, monkeypatch, tmp_path):
+    def test_lock_acquire_release_cycle(self, monkeypatch, tmp_path):
         import scys_batch_fetch as sbf
         monkeypatch.setattr(sbf, "BASE", tmp_path)
         lock = sbf._acquire_lock()
         assert lock.exists()
-        with pytest.raises(SystemExit):
-            sbf._acquire_lock()
         sbf._release_lock(lock)
         assert not lock.exists()
         lock2 = sbf._acquire_lock()
         sbf._release_lock(lock2)
+
+    def test_same_process_reacquire_takes_over(self, monkeypatch, tmp_path):
+        # DECISION-20260825：自身 PID 不当外来进程误杀 → 同进程重入自动接管（不再 SystemExit）
+        import scys_batch_fetch as sbf
+        monkeypatch.setattr(sbf, "BASE", tmp_path)
+        sbf._acquire_lock()
+        lock2 = sbf._acquire_lock()
+        assert lock2.exists()
+        sbf._release_lock(lock2)
+
+    def test_foreign_live_lock_raises(self, monkeypatch, tmp_path):
+        # 外来存活进程持有锁 → SystemExit 拒绝并发
+        import scys_batch_fetch as sbf
+        monkeypatch.setattr(sbf, "BASE", tmp_path)
+        lock = sbf._acquire_lock()
+        sbf._release_lock(lock)
+        lock.write_text("999999", encoding="utf-8")
+        monkeypatch.setattr(sbf, "_lock_is_stale", lambda _p: False)
+        with pytest.raises(SystemExit):
+            sbf._acquire_lock()

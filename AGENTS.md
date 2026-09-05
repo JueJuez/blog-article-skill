@@ -42,8 +42,8 @@
     4. 运行结束后，本会话（执行模型）**必须**在本次会议内闭环两类待总结队列（全自动，无需用户手动命令）：
        - **派单前先跑 `python scripts/filter_pending.py`**（机械清洗两队列：URL 命中 dedup 索引的已总结条目自动出队、scys 队列清 `summarized:true`——多 Agent 接力时已总结内容不再浪费 AI token、不重复落飞书）。
        - **跨来源去重（2026-09-03，代码自动）**：生财有术公众号文章在总结管线前会与 scys 归档做标题/正文前缀相似比对，命中直接跳过（日志 `[cross-dedup]`、健康度 `scys重复 N`），无需人工干预（详见 `docs/decisions/DECISION-20260903-cross-source-dedup.md`）。
-       - **单篇**：读 `pending_summaries.json`，派**子 Agent** 按模板总结并 `save_summary_only` 落盘（默认飞书，Obsidian 按需追加）。
-       - **scys**：读 `notes/_scraped/scys/pending_summaries.json`，派**子 Agent** 按 `references/scys-fetch-sop.md` §9 语义总结并落飞书（folder=生财有术/<领域>）-> 出队。⚠️ 子 Agent **消费队列中已算好的 prompt**：`articles/main.py` 已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 把 prompt 算好塞进队列条目（`pending_summaries.json` / `notes/_scraped/scys/pending_summaries.json`），子 Agent 直接按该 prompt 总结并 `save_summary_only` 落盘，**无需自调任何 CLI**。**不要全部用 structured 模板**（2026-08-22 分类修复，详见 `docs/decisions/DECISION-20260821-scys-classification-fix.md`）。
+       - **单篇**：读 `pending_summaries.json`，派**子 Agent** 消费条目已预计算的 prompt 总结并 `save_summary_only` 落盘（默认飞书，Obsidian 按需追加）。
+       - **scys**：读 `notes/_scraped/scys/pending_summaries.json`，派**子 Agent** 按 `references/scys-fetch-sop.md` §9 语义总结并落飞书（folder=生财有术/<领域>）-> 出队。⚠️ **三队列统一 prompt 预计算（2026-09-05 起）**：monitors 降级队列 / scys 批量队列 / UP 队列三个入队写点（`monitors/run.py:_queue_pending_summary`、`scripts/scys_batch_fetch.py:build_pending_entry`、`scripts/fetch_up_range.py`）都会按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 把 prompt 算好塞进队列条目（条目缺 note_type 时自动兜底分类），子 Agent 直接消费该 prompt 总结并 `save_summary_only` 落盘，**无需自调任何 CLI**。**不要全部用 structured 模板**（2026-08-22 分类修复，详见 `docs/decisions/DECISION-20260821-scys-classification-fix.md`）。
        - **系列课**：读 `pending_series.json`，对每个系列按 `notes/<系列名>/*_raw.md` 分片派**子 Agent** 总结成 `.body.md`，再跑 `python monitors/apply_pending_series.py` 落地（run.py 末尾已自动触发一次落地，body 存在时直接落；此处是为「刚总结出的新 body」补一遍落地）。系列课**只落飞书**，除非用户明确要双写/只写 Obsidian。
        - ⚠️ 系列课增量语义：每日重跑时，`videos.main` 已按 `monitors/series_state.json` 去重，**只把未总结的集**写入 raw 并排队；UP 更新后自动只抓新增集，已总结的旧集不会重复总结/落盘。
        - ⚠️ 系列课落盘结构（2026-08-23 修复）：系列容器挂 `【监控】/<平台>/<UP>/<系列名>/` 下（不是根），由统一路由器 `shared/routing.py: resolve_folder` 算路径。`apply_pending_series.py` 传给 `_save_series_note` 的 `folder` **只到账号层**（`rsplit('/',1)[0]`），系列容器由 `ensure_series_node` 单建——否则系列名被建两次造成嵌套。`_read_series_from_feishu` 的 `parent_token` 已是容器 token 时直接用，不再内部 `ensure_series_node`。
@@ -79,17 +79,17 @@
 ## 配置（`.env`）
 复制 `.env.example` → `.env`，至少关注：
 - `FORCE_AGENT_MODE=1`（默认）：不调用外部 AI，总结一律由执行模型（主/子 Agent）完成；旧 `AI_PROVIDER` 配置已废弃。
-- `OBSIDIAN_VAULT_PATH` —— Obsidian 库路径（按需端；仅 `obsidian=True`/`OBSIDIAN_WRITE=1` 时写入）
-- `FEISHU_WIKI_SPACE` + `FEISHU_WIKI_PARENT_NODE` —— 飞书知识库（默认落盘端）
+- `OBSIDIAN_VAULT_PATH` —— Obsidian 库路径（**默认落盘端**；2026-09-04 起）
+- `FEISHU_WIKI_SPACE` + `FEISHU_WIKI_PARENT_NODE` —— 飞书知识库（**可选副本端**；2026-09-04 起默认不写，仅整库镜像 `audit_sync.py` 时启用）
 - `BILI_COOKIE` —— B站登录态 Cookie（订阅监控动态接口必需）
 - 监控可调参：`BILI_GAP`(30) / `BILI_FIRST_WINDOW_DAYS`(30) / `BILI_DAILY_WINDOW_DAYS`(1) / `BILI_PAGE_SIZE`(50) / `STATE_KEEP`(1000) / `BILI_SHORT_DYNAMIC_MAX`(80)
 - 完整变量见 `references/config.md`
 
 ## 红线（必须遵守）
-- **输出默认飞书、Obsidian 按需（强制 · 2026-08-08）**：写两遍浪费，**默认只落飞书**；Obsidian 仅在用户明确要求（提前说「写到 obsidian / 双写」）时才写。由 `OutputManager` 代码门禁保证（没显式开启就不写 Obsidian），不靠 AI 记性。`.env` 设 `OBSIDIAN_WRITE=1` 可一键回退双写。本地 `notes/` 仅在 lark-cli 实际不可用（FEISHU_WIKI_SPACE 未配或 lark-cli 未认证）且未请求 Obsidian 时兜底。飞书落盘走 lark-cli，与面板 feishu MCP 连接器状态无关，面板连接器是否连接不影响落盘。禁止 AI 手动写 `notes/`、禁止只存本地漏飞书。
+- **输出默认本地 Obsidian、飞书按需（强制 · 2026-09-04 翻转，取代 2026-08-08）**：写两遍浪费，故**默认只落本地 Obsidian**；飞书仅在 `DISABLE_FEISHU_SYNC=0`（双写）或整库镜像 `audit_sync.py` 时写入。由 `OutputManager` 代码门禁 + `.env` 开关保证，不靠 AI 记性。`.env`：`OBSIDIAN_WRITE=1`（Obsidian 默认）+ `DISABLE_FEISHU_SYNC=1`（关飞书）。本地 `notes/` 仅在 lark-cli 实际不可用且未请求 Obsidian 时兜底。飞书落盘走 lark-cli，与面板 feishu MCP 连接器状态无关。禁止 AI 手动写 `notes/`、禁止只存本地漏飞书（双写场景）。
 - **复用入口，不手写抓取 / 总结**：一律走 `skill_main` / `summarize_video` / `fetch_transcript` / `monitors/run.py`，
   不要临时写 `_xxx.py` 脚本、不要手搓 URL、不要 diagnose 平台私有接口。
-- **无字幕自动走 ASR 兜底（2026-08-06 授权）**：`fetch_transcript` 返回 None（真无 CC 字幕）时，`videos.main` 自动调 `videos.asr` 下载音频 + 本地 Whisper 转写；成功则继续总结并落盘（默认飞书，带 `obsidian` 时双写），仅 ASR 也失败才回「无可用字幕」文案并停止。环境坑由 `asr.py` 自动处理，勿手敲 export / 勿额外开发兜底。
+- **无字幕自动走 ASR 兜底（2026-08-06 授权）**：`fetch_transcript` 返回 None（真无 CC 字幕）时，`videos.main` 自动调 `videos.asr` 下载音频 + 本地 Whisper 转写；成功则继续总结并落盘（默认本地 Obsidian，带飞书时双写需 `DISABLE_FEISHU_SYNC=0`），仅 ASR 也失败才回「无可用字幕」文案并停止。环境坑由 `asr.py` 自动处理，勿手敲 export / 勿额外开发兜底。
 
 ---
 

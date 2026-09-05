@@ -41,3 +41,10 @@ transcripts/
 apply_*.log
 # 并行监控运行态产物（任务 ledger / 状态快照），非源码，不提交
 monitors/run_status/
+
+# 迁移 / 看护 运行时产物（非源码，不提交）
+scripts/_*
+scripts/feishu_to_obsidian_log.json
+scripts/migrate_watchdog.log
+scripts/migrate_watchdog_status.json
+

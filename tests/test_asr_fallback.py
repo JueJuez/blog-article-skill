@@ -20,6 +20,7 @@ CUDA dll / symlink）连踩 6 次失败，且曾因 `glob('notes/_raw_*.md')` �
 """
 import os
 import sys
+import types
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -176,7 +177,7 @@ def test_resolve_local_model_dir_uses_real_files_not_symlinks():
     """强制 local_dir_use_symlinks=False（绕开 Windows 沙箱 symlink 坑）。"""
     calls = {}
     with mock.patch.object(asr, "_HAS_HF_HUB", True), \
-         mock.patch.object(asr, "snapshot_download",
+         mock.patch.object(asr, "snapshot_download", create=True,
                            side_effect=lambda *a, **kw: calls.update(kw)) as sd, \
          mock.patch("os.path.exists", return_value=False), \
          mock.patch("os.makedirs"):
@@ -195,16 +196,19 @@ def test_resolve_device_explicit():
 
 
 def test_resolve_device_auto_sees_cuda():
-    # 直接验证内部逻辑：mock ctranslate2 返回 1 个 CUDA 设备
-    with mock.patch("ctranslate2.get_cuda_device_count", return_value=1):
+    # 直接验证内部逻辑：注入 fake ctranslate2（本机可未安装该包），返回 1 个 CUDA 设备
+    fake = types.ModuleType("ctranslate2")
+    fake.get_cuda_device_count = lambda: 1
+    with mock.patch.dict(sys.modules, {"ctranslate2": fake}):
         dev, ct = asr._resolve_device("auto")
     assert (dev, ct) == ("cuda", "float16")
 
 
 def test_resolve_device_auto_cpu_fallback():
-    import videos.asr as a
-    with mock.patch("ctranslate2.get_cuda_device_count", return_value=0):
-        dev, ct = a._resolve_device("auto")
+    fake = types.ModuleType("ctranslate2")
+    fake.get_cuda_device_count = lambda: 0
+    with mock.patch.dict(sys.modules, {"ctranslate2": fake}):
+        dev, ct = asr._resolve_device("auto")
     assert (dev, ct) == ("cpu", "int8")
 
 

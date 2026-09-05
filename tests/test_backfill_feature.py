@@ -11,6 +11,7 @@ import os
 import sys
 import time
 
+import pytest
 import requests
 from requests.exceptions import HTTPError
 
@@ -83,6 +84,29 @@ def setup_env(names, since_ts):
     os.environ["WECHAT_BACKFILL_NAMES"] = ",".join(names)
     os.environ["WECHAT_BACKFILL_SINCE"] = str(since_ts)
     os.environ["WECHAT_BACKFILL_PAGES"] = "200"
+
+
+_BACKFILL_ENV_KEYS = (
+    "WECHAT_BACKFILL", "WECHAT_BACKFILL_NAMES", "WECHAT_BACKFILL_SINCE", "WECHAT_BACKFILL_PAGES",
+)
+
+
+@pytest.fixture(autouse=True)
+def _restore_backfill_env():
+    """pytest 模式下自动恢复 WECHAT_BACKFILL_* 环境变量。
+
+    根因：setup_env 直接写 os.environ 且不恢复，残留的 WECHAT_BACKFILL=1
+    会让后续测试文件里不在回溯名单的公众号源被 discover 的 backfill 门禁
+    跳过（返回空列表），表现为 test_sub_monitor 全量运行时 6 个用例失败。
+    直跑模式（python 本文件）fixture 不生效，进程结束自然释放，无需处理。
+    """
+    saved = {k: os.environ.get(k) for k in _BACKFILL_ENV_KEYS}
+    yield
+    for key, val in saved.items():
+        if val is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = val
 
 
 def fresh_state():

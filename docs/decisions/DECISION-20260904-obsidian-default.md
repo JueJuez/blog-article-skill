@@ -18,7 +18,17 @@
 ## 回退路径
 - 恢复飞书默认：把 `DISABLE_FEISHU_SYNC` 改为 `0`；要双写则同时保留 `OBSIDIAN_WRITE=1`。
 - 回到 2026-08-08 旧规则：设 `OBSIDIAN_WRITE=0` 且 `DISABLE_FEISHU_SYNC=0`。
-- 两者皆关（`OBSIDIAN_WRITE=0` 且 `DISABLE_FEISHU_SYNC=1`）→ `OutputManager` 无可用外部目标 → 回退本地 `notes/`，不丢数据。
+  - 两者皆关（`OBSIDIAN_WRITE=0` 且 `DISABLE_FEISHU_SYNC=1`）→ `OutputManager` 无可用外部目标 → 回退本地 `notes/`，不丢数据。
+
+## 整库镜像到飞书（Obsidian → 飞书，不违背本决策）
+
+本决策关的是**实时捕获流水线**（monitors/scys → `OutputManager`）的飞书写入。另有**独立的整库镜像工具** `scripts/audit_sync.py`，用于把整个 Obsidian 主库（旧镜像 + 新写）按需/定时推到飞书作为副本——它**绕开 `DISABLE_FEISHU_SYNC`**（直接调 `lark-cli`），与本决策的默认不冲突：
+
+- 身份判定优先级 `feishu_node_token`（frontmatter）＞ `source_url`（frontmatter）＞ 路径+标题，保证**只推新增、绝不重复、绝不删任何侧数据**；
+- 推送前剥掉笔记的 YAML frontmatter（飞书文档体不带元数据）；推送成功后把飞书节点 token 写回本地 frontmatter 供后续精确匹配；
+- 可选经 `audit_sync_watchdog.py` 周期运行保持飞书镜像同步。
+
+即：日常主库在 Obsidian；想让飞书也持有一份副本时跑一次 `audit_sync.py --fix` 即可，不改变「实时流水线不写飞书」的默认。
 
 ## 验证
 `python -c "from articles.manager import OutputManager; print([o.name for o in OutputManager().get_available_outputs()])"`

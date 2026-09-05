@@ -51,7 +51,7 @@
    - B站视频/动态：视频 `summarize_video`；动态 API 正文内联，短动态存「速览」、完整动态走重模板。B站无字幕自动进 ASR 兜底（需本机装 `yt_dlp faster_whisper ctranslate2 imageio_ffmpeg`，2026-09-03 已装）。
    - FORCE_AGENT_MODE=1：**不自动总结**，全部进 `pending_summaries.json` 队列。
 4. **scys 增量（`subscriptions.json` 配了 `scys` 列表才跑）**：逐领域子进程跑 `scripts/scys_batch_fetch.py`（默认近 7 天窗口、精华过滤按 `scys_projects.json` 默认、翻 2 页列表），抓到的原文进 `notes/_scraped/scys/pending_summaries.json` 队列（与批量补齐共用，`.lock` 互斥防并发写坏 state）。登录态走统一 `SharedCdpSession`（默认 `CdpAutomationProfile\Chrome` 目录，由 `ensure_cdp_profile.py` 每天首跑全量、当天复用），不影响公众号/B站。
-5. **Agent 总结闭环**：本会话（执行模型）读队列 → 派**子 Agent** 按 `note_type` 模板总结 → `save_summary_only` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，见 `RULES.md` §3.0）→ 出队。**原子化**：成功才出队，中断可安全重跑。scys 队列同理（folder=生财有术/<领域>，语义见 `references/scys-fetch-sop.md` §9）。
+5. **Agent 总结闭环**：本会话（执行模型）读队列 → 派**子 Agent** 消费条目已预计算的 prompt 总结（入队时已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好，2026-09-05 起三队列统一）→ `save_summary_only` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，见 `RULES.md` §3.0）→ 出队。**原子化**：成功才出队，中断可安全重跑。scys 队列同理（folder=生财有术/<领域>，语义见 `references/scys-fetch-sop.md` §9）。
 6. **看健康度行**：末尾 `📊 本轮健康度：...` 一行，异常（错误/限流待重试高）一眼可见。
 
 **重试矩阵（无需手动干预）**：token 失效→弹码等扫码 / 401 瞬错×3 / 代理空轮退避重试 / 正文限流→`pending_refetch`（`python run.py --refetch-only` 统一重抓）。
@@ -109,9 +109,9 @@
 
 ## 降级闭环与子 Agent 委派
 
-无 `AI_PROVIDER` 时，`skill_main` 进入降级：把原文 + 模板 `prompt` + `raw_file` + `folder` 写入 **`pending_summaries.json`**（按 `url` 去重），`run.py` 末尾打印 `NEED_CONTINUE_SUMMARY` 提示。该队列**不会自动消化**，由外层模型接单：
+`FORCE_AGENT_MODE=1`（默认）时，`skill_main` / 监控管线均不自动总结：入队写点把原文 + 预计算模板 `prompt`（分类器选模板 + `QUALITY_GATE_SELFCHECK`，2026-09-05 起三队列统一）+ `raw_file` + `folder` 写入 **`pending_summaries.json`**（按 `url` 去重），`run.py` 末尾打印 `NEED_CONTINUE_SUMMARY` 提示。该队列**不会自动消化**，由外层模型接单：
 
-- **派子 Agent 执行（强制，保持主会话干净）**：每文件夹起一个子 Agent（如 `副业增长/生财有术` 一个、`投资交易/中金点睛` 一个），串行处理避免飞书并发建节点重复；子 Agent 读 `raw_file` → 按 `note_type` 模板总结 → 调 `scripts/persist_summary.py` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，保存成功后**自动从队列移除该条**，中途停止可安全重跑）。
+- **派子 Agent 执行（强制，保持主会话干净）**：每文件夹起一个子 Agent（如 `副业增长/生财有术` 一个、`投资交易/中金点睛` 一个），串行处理避免飞书并发建节点重复；子 Agent 读 `raw_file` → 按条目已预计算的 prompt 总结（无需自己组 prompt / 调 CLI）→ 调 `scripts/persist_summary.py` 落盘（默认飞书，带 `--obsidian` 时追加 Obsidian，保存成功后**自动从队列移除该条**，中途停止可安全重跑）。
 - **派单前先跑 `python scripts/filter_pending.py`**（机械清洗两队列：URL 命中 dedup 索引的条目自动出队，scys 队列同时清 `summarized:true`——多 Agent 接力时已总结内容不再消耗 AI token、不再重复落飞书；决策见 `docs/decisions/DECISION-20260825-dedup-frontload-and-lock-release.md`）。
 - 严禁在主会话里直接总结——会污染上下文、降低总结质量。
 

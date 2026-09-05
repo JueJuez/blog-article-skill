@@ -1,7 +1,8 @@
-"""回归测试：双写规则改为「默认只写飞书，Obsidian 按需开启」。
+"""回归测试：输出端默认行为。
 
-保护的需求（用户规则 2026-08-08）：
-- 默认 OutputManager() → 只写飞书，不写 Obsidian（避免重复落盘浪费）。
+保护的需求：
+- 2026-08-08：默认只写飞书，Obsidian 按需开启。
+- 2026-09-04：默认改为只写本地 Obsidian，不写飞书（飞书按需）。
 - OutputManager(obsidian=True) → 飞书 + Obsidian 双写。
 - .env 设 OBSIDIAN_WRITE=1 时，默认也双写（持久开关，给用户回退到双写的逃生舱）。
 - 飞书不可用且未请求 Obsidian 时，回退本地 notes/，不丢数据。
@@ -26,11 +27,11 @@ def _both_cloud_available(monkeypatch):
     monkeypatch.setattr(ObsidianOutput, "is_available", lambda self: True)
 
 
-def test_default_is_feishu_only(monkeypatch):
+def test_default_is_obsidian_only(monkeypatch):
     _both_cloud_available(monkeypatch)
     mgr = OutputManager()
     names = {o.name for o in mgr.get_available_outputs()}
-    assert names == {"feishu"}
+    assert names == {"obsidian"}
 
 
 def test_obsidian_true_writes_both(monkeypatch):

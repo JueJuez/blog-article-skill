@@ -43,7 +43,7 @@
 
 ## 2. 项目定位与适用场景
 
-- **一句话定位**：把「文章/视频链接、原文、字幕」自动转成结构化/要点笔记，并归档到飞书（默认）/ Obsidian（按需）。
+- **一句话定位**：把「文章/视频链接、原文、字幕」自动转成结构化/要点笔记，并归档到本地 Obsidian（默认 · 2026-09-04 起）/ 飞书（可选副本，仅整库镜像 `audit_sync.py` 时启用）。
 - **触发场景（同时满足）**：① 用户说「总结/提炼/整理/归档/保存笔记」类词；② 给了素材（文章链接、原文粘贴、视频/字幕）。
 - **不触发**：只聊概念没给素材、或纯答疑。
 - **默认行为**：不在对话框输出完整笔记正文，只给 1~3 句核心结论 + 成品路径。
@@ -116,7 +116,7 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
 - **复用入口，不重复造轮子**：统一走 `fetch_transcript` / `skill_main` / `summarize_video` / `OutputManager` 等既有入口，禁止在多处复制抓取/保存逻辑。
 - **已总结内容机械拦截（三层前置 · 2026-08-25；跨来源去重 · 2026-09-03）**：AI 只交总结，「要不要总结 / 写不写」由代码决定——①入队：`run.py` 查 dedup 索引，已总结 URL 不入队；②派单前：`python scripts/filter_pending.py` 清洗 monitors + scys 两队列（已总结条目出队，不浪费总结 token）；③落盘：`save_summary_only` / `_save_summary.py` 查索引，命中返回 `skipped` 并按成功出队（`force` / `--force` 强制重写）。多 Agent 接力（前一个积分耗尽/中断）不重复总结、不重复落飞书。决策见 `docs/decisions/DECISION-20260825-dedup-frontload-and-lock-release.md`。**④跨来源（2026-09-03）**：生财有术双渠道订阅（公众号 + scys 站内），同一篇帖子两边 URL 不同，URL 去重挡不住——公众号抓取侧在总结前与 `notes/_scraped/scys/` 归档做标题（规范化相似≥0.85 / 截断前缀）/正文前 300 字相似比对，命中直接跳过（`articles/dedup.py: find_cross_duplicate`，健康度行计 `scys重复`）。
 - **长内容必走两段式分块**：超过单模型上下文的内容，先经 `shared.chunking` 分块再总结，禁止整篇直接喂模型。
-- **大批量 → 子 Agent 隔离主线程（防上下文胀爆）**：当待处理内容达到批量阈值（如 >3 条笔记/视频，或单批原文大到会撑爆主会话上下文）时，**必须**用 Agent 工具派发子 Agent 并行处理，勿把全部原文/中间稿堆在主线程。注意：① 子 Agent 上下文是空白的，派发 prompt 必须**自包含**（嵌入输出契约：落盘闸门＝默认飞书、obsidian=True 时追加；入口函数 `videos/run.py --url` 或 `skill_main`、`note_type`、YouTube/无字幕规则按需）；② **飞书并发重复坑**：多子 Agent 同时 `save_series` 写飞书会因集级无查重建重复节点（见 §4.7）；**安全模式**＝子 Agent 只**返回成品 Markdown 文本＋元数据**（标题/作者/url/tags/note_type），由编排方**串行**调保存入口（`_save_series_note` / `save_all`）落盘，绝不让多子 Agent 并发各自调 `save_series`。
+- **大批量 → 子 Agent 隔离主线程（防上下文胀爆）**：当待处理内容达到批量阈值（如 >3 条笔记/视频，或单批原文大到会撑爆主会话上下文）时，**必须**用 Agent 工具派发子 Agent 并行处理，勿把全部原文/中间稿堆在主线程。注意：① 子 Agent 上下文是空白的，派发 prompt 必须**自包含**（嵌入输出契约：落盘闸门＝默认本地 Obsidian（2026-09-04 起）、飞书仅 `DISABLE_FEISHU_SYNC=0` 时追加；入口函数 `videos/run.py --url` 或 `skill_main`、`note_type`、YouTube/无字幕规则按需）；② **飞书并发重复坑**：多子 Agent 同时 `save_series` 写飞书会因集级无查重建重复节点（见 §4.7）；**安全模式**＝子 Agent 只**返回成品 Markdown 文本＋元数据**（标题/作者/url/tags/note_type），由编排方**串行**调保存入口（`_save_series_note` / `save_all`）落盘，绝不让多子 Agent 并发各自调 `save_series`。
 
 ### 4.2 工程纪律
 - **个人信息保护**：`.env`（含 `OBSIDIAN_VAULT_PATH`、`FEISHU_WIKI_SPACE` 等）与 `notes/` 已被 gitignore，**禁止**手动 `git add` 提交。
@@ -136,7 +136,7 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
 
 - **统一入口（勿另写脚本）**：YouTube/Bilibili 字幕只用 `videos.fetch.fetch_transcript(url)`（或 `videos/run.py --url`）。它已内置 API→CDP 全自动回退，**禁止**为「只收集字幕」自写自定义抓取脚本。
 - **「无 CC 字幕」→ 自动走 ASR 兜底，失败才终态**（用户规则 2026-08-06 授权）：当 `fetch_transcript` 返回 `None`（视频本身无 CC / 自动字幕轨道），**不再直接停**，而是由 `videos.main._handle_single_video` 自动调用 `videos.asr.transcribe_video`（下载音频 + 本地 faster-whisper 转写）。
-  - ASR 成功 → 继续正常总结并落盘（默认飞书，带 `obsidian` 时双写）。
+  - ASR 成功 → 继续正常总结并落盘（默认本地 Obsidian，带飞书时双写需 `DISABLE_FEISHU_SYNC=0`）。
   - ASR 也失败（音频下载或本地转写未成功，可能需 B站登录态 / 网络受限 / YouTube 无出口）→ 才回下面这句并停止：
   > **【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】**
   - **不要**在 `videos/asr.py` 已提供的兜底之外「自作主张开发新兜底」。环境坑（HF 镜像 / xet / CUDA dll / 沙箱安全删除）已由 `asr.py` 的 `_apply_env_defaults()` 自动处理，**无需手敲 export、不要 diagnose**。
@@ -164,7 +164,7 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
 
 > 目标：让笔记「质量高、上下文清晰、不破去水分红线」。三件套均在 `prompts/templates.py` 落地，由入口函数自动套用，**AI 无需手动触发**。
 
-- **A. 质量闸门（second-pass verifier）**：总结后再调一次 AI 按 6 红线打 0–100 分，低于阈值带反馈重试一次。**默认关闭**（省一轮 AI 调用）；开关见下方「去哪里开关」。无外部 AI 的降级路径走 `QUALITY_GATE_SELFCHECK` 自检段（模板 prompt 内嵌 6 红线，外层模型自核对）。
+- **A. 质量闸门（second-pass verifier）**：总结后再调一次 AI 按 6 红线打 0–100 分，低于阈值带反馈重试一次。**默认关闭**（省一轮 AI 调用）；开关见下方「去哪里开关」。无外部 AI 的降级路径走 `QUALITY_GATE_SELFCHECK` 自检段（模板 prompt 内嵌两条专项自检——思维模型深挖 + 固定结构合规，与 `UNIVERSAL_RULES` §八红线不重复，外层模型自核对）。
 - **B. 字幕清洗层**：`shared/subtitle_clean.py` 纯函数（`preprocess_segments`/`preprocess_text`），已在 `videos/fetch.py` 三路径（B站原生 / YouTube API+CDP / yt-dlp 兜底）自动接入；只清洗口误填充词（删独立语气词 嗯/啊/呃）、合并相邻近重、≥8 字长句去重——**不激进折叠**（保留"然后/那个"等自然语流）。
 - **C. 强制证据红线（思维模型透镜）**：全部 9 模板共用 `UNIVERSAL_RULES` 第九节（structured 内联第十四节），6 模型按序 LIST（第一性原理→5-Why冰山→二阶思维→脉络还原→奥卡姆剃刀→类比迁移）逐条过、不适用跳过；**每条适用模型须给「洞察（不同视角）+ 原文证据句（「」括起原话，禁改写）」**，禁只写"用了X 模型"；全不适用须逐条列 6 模型理由。与去水分红线兼容，不硬凑固定章节。
 - **D. 元数据归一**：`UNIVERSAL_RULES` 强制 `#标签1 #标签2` 井号格式；`normalize_note_metadata()` 把 `**标签**：xxx` 转井号，`format_note_with_prompt` 自动应用。
@@ -212,7 +212,7 @@ NOTE_GATE_THRESHOLD=85     # 评分阈值，默认 85；低于此分触发重试
 - [ ] 遇到网络/代理问题 → 先查 `references/youtube-cdp-workflow.md`，不要绕去挖代理配置。
 - [ ] YouTube 字幕抓取返回 None 且页面已加载、`captionTracks` 为空 → `videos/main` 自动走 ASR 兜底；ASR 也失败才回终态文案「【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】」并停止（§4.4）。
 - [ ] 笔记作者栏**必须显示真实作者/UP主**；视频链路 `series.get("author","") or input_data.get("author","")` 已兜底，调用方无需手传，禁止无端输出【作者未知】（§4.5）。
-- [ ] **质量闸门（可选 · 默认关）**：要更严质检时在 `.env` 设 `NOTE_QUALITY_GATE=1`（阈值 `NOTE_GATE_THRESHOLD` 默认 85）；降级无外部 AI 时闸门自动转自检段，按 6 红线自核对，无需手动开。详见 `references/config.md` §九 与 §4.6。
+- [ ] **质量闸门（可选 · 默认关）**：要更严质检时在 `.env` 设 `NOTE_QUALITY_GATE=1`（阈值 `NOTE_GATE_THRESHOLD` 默认 85）；降级无外部 AI 时闸门自动转自检段，按两条专项自检（思维模型深挖 + 固定结构合规）自核对，无需手动开。详见 `references/config.md` §九 与 §4.6。
 - [ ] **涉及架构级改动 / 新功能链路 / 跨多模块改动** → 先按 §6 grill_rules 拷问拉齐认知，再动手。
 
 ---

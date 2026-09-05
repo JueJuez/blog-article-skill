@@ -36,6 +36,10 @@ from status_store import (  # noqa: E402
     new_run_id, record_task, finalize_run,
     detect_asr_max_concurrency,
 )
+from prompts.classify import classify_note_type  # noqa: E402
+from prompts.templates import (  # noqa: E402
+    NOTE_TEMPLATES, QUALITY_GATE_SELFCHECK, get_note_prompt,
+)
 
 def _ledger_record_discover(run_id: str, items: list) -> None:
     """发现阶段：按源聚合记录 discovered 计数（P0 仅每源结果，不逐条）。"""
@@ -389,23 +393,38 @@ def _queue_pending_summary(it: dict, res: dict) -> None:
         if _dedup.is_summarized(url=url):
             print(f"[need-summary] 跳过入队（已总结过）: {url}")
             return
-    # 标题从正文提炼：列表标题若泛化（如「大家好，我是哥飞。」），改从 body 首句命名
+    # 标题从正文提炼：列表标题若泛化（如「大家好，我是哥飞。」），改从 body 首句取名
     list_title = res.get("original_title") or it.get("title", "")
     entry_title = derive_title_from_body(res.get("raw_file", ""), list_title)
+    # note_type 兜底分类 + prompt 预计算（与 fetch_up_range/scys 队列统一口径）：
+    # res 未带 note_type（或为 dynamic 等非模板类型）时按标题+正文开头补判，
+    # 保证子 Agent 读队列条目直接按 prompt 总结，无需自调任何 CLI
+    note_type = res.get("note_type") or ""
+    if note_type not in NOTE_TEMPLATES:
+        raw_body = ""
+        raw_path = res.get("raw_file", "")
+        if raw_path and os.path.exists(raw_path):
+            try:
+                with open(raw_path, encoding="utf-8") as f:
+                    raw_body = f.read(4000)
+            except OSError:
+                raw_body = ""
+        note_type = classify_note_type(entry_title, raw_body)
     entry = {
         "url": url,
         "title": entry_title,
         "author": res.get("author") or it.get("mp_name", ""),
-        "note_type": res.get("note_type", ""),
+        "note_type": note_type,
         "tags": res.get("tags") or [],
         "publish_time": it.get("publish_time", 0),
         "folder": _item_folder(it),
         "raw_file": res.get("raw_file", ""),
+        "prompt": get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK,
         "queued_at": int(time.time()),
     }
     pending.append(entry)
     _save_json(_path, pending)
-    print(f"[need-summary] 已入降级队列: {entry_title} -> {entry['raw_file']}")
+    print(f"[need-summary] 已入降级队列（prompt 已预计算）: {entry_title} -> {entry['raw_file']}")
 
 
 def _queue_pending_series(it: dict, res: dict) -> None:
@@ -1124,8 +1143,8 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
         print(
             f"\n🤖 NEED_AGENT_SUMMARY: {len(pending)} 条内容已抓取，等待执行模型（Agent）总结。"
             f"清单见 {_summary_path}\n"
-            f"   处理路径：Read 条目 raw_file → 按 note_type 模板"
-            f"（prompts.templates.get_note_prompt）总结 → 调 articles.main.save_summary_only("
+            f"   处理路径：Read 条目 prompt（已按 note_type 预计算，含质量自检段）"
+            f"→ 按该 prompt 总结 → 调 articles.main.save_summary_only("
             f"{{summarized_content, original_url, author, tags, original_title, publish_time, folder}}) "
             f"落盘 → 从队列移除该条。"
         )

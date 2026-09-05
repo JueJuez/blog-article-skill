@@ -6,7 +6,7 @@
 
 - **解决什么**：长期订阅大量 B站UP主 / 微信公众号 / 生财有术领域标签，手工读+整理成本高。本工具把「发现新内容 → 抓取正文/字幕 → AI 结构化总结 → 归档知识库」做成自动化流水线，产出统一风格的笔记。
 - **核心约束（必读）**：
-  - **默认只写飞书**，Obsidian 仅用户显式要求时才写（代码门禁保证，不靠 AI 记性）。详见 `RULES.md` §3.0。
+  - **默认只写本地 Obsidian（2026-09-04 起），飞书不再默认写入**；仅在整库镜像 `audit_sync.py` 时按需推飞书。详见 `RULES.md` §3.0。
   - **复用入口，不手搓抓取/总结**：一律走 `skill_main` / `summarize_video` / `monitors/run.py` 等入口函数，不临时写脚本、不手搓平台私有接口。
   - **无外部 AI 时由执行模型（主/子 Agent）总结**（`FORCE_AGENT_MODE=1` 默认）；旧 `AI_PROVIDER` 外部调用已废弃。
 - **能力边界**：覆盖四类输入 —— ① 一次性总结（文章/视频链接、原文、字幕）；② 订阅监控（B站UP主 / 公众号 / scys 领域，增量发现新内容并总结）；③ 系列课（UP 系列视频按集拆解归档）；④ 开源项目抽取归档（`tools/project_import`，只入本地项目库、**不总结原文**）。不涉及通用爬虫，不取代人工筛选。完整能力清单见 `AGENTS.md`。
@@ -212,10 +212,10 @@ save_summarized_article(
 ```python
 from articles.manager import OutputManager
 
-manager = OutputManager()                  # 默认只写飞书
-# manager = OutputManager(obsidian=True)     # 追加 Obsidian（双写）
+manager = OutputManager()                  # 默认只写本地 Obsidian（2026-09-04 起，飞书关）
+# 飞书关（DISABLE_FEISHU_SYNC=1）下 OutputManager 仅解析到 Obsidian；双写飞书需 .env 设 DISABLE_FEISHU_SYNC=0
 
-# 保存到已解析的目标（按上面的闸门：默认飞书，obsidian=True 时追加 Obsidian）
+# 保存到已解析的目标（闸门：默认本地 Obsidian；DISABLE_FEISHU_SYNC=0 时追加飞书）
 manager.save_all(content, "文章标题.md")
 
 # 或显式指定单端目标
@@ -264,7 +264,7 @@ python articles/run.py notes/_summary.md --author "作者" --tags "AI,技术"
 
 ### 本地文件（兜底，非默认）
 
-> ⚠️ 与项目红线一致（`RULES.md` §3.0）：**默认输出端是飞书**，本地 `notes/` **不是默认端**。
+> ⚠️ 与项目红线一致（`RULES.md` §3.0）：**默认输出端是本地 Obsidian（2026-09-04 起，飞书关）**，本地 `notes/` **不是默认端**。
 > 仅当飞书实际不可用（未配 `FEISHU_WIKI_SPACE` 或 lark-cli 未认证）且未请求 Obsidian 时，才回退保存到项目 `notes/` 目录，避免丢数据。
 > 配好飞书后本地应为空——**不要因本地为空而误判失败**。
 
@@ -397,7 +397,7 @@ blog-article-skill/
 │   ├── __init__.py
 │   ├── templates.py          # NOTE_TEMPLATES + classify_note_type
 │   └── classify.py           # 笔记类型分类
-├── monitors/                 # 订阅监控（B站UP主 / 公众号 / scys 领域）：发现新内容→AI总结→默认写飞书
+├── monitors/                 # 订阅监控（B站UP主 / 公众号 / scys 领域）：发现新内容→AI总结→默认写本地 Obsidian（2026-09-04 起，飞书关）
 │   ├── bilibili.py           # B站源（官方 API + WBI 签名，带登录 Cookie）
 │   ├── wechat.py             # 公众号源（经 weread 代理发现新文）；token 数小时失效，交互式弹码续期、headless 跳过
 │   ├── run.py                # CLI + 调度入口（--apply 直接调总结管线）
@@ -429,7 +429,7 @@ blog-article-skill/
 │   ├── parallel-monitor-runbook.md  # 并行监控运维手册
 │   └── RUNBOOK-series-rescue.md     # 系列课抢救手册
 ├── _archive/                 # 已归档的过期文档与废弃脚本（PRD.md / scys-cdp-lessons-learned.md / decisions）
-├── audit_sync.py             # Obsidian ↔ 飞书 一致性审计 + 幂等补传（仅双写时启用，AUDIT_SYNC=0 可关）
+├── audit_sync.py             # Obsidian 主库 → 飞书镜像 一致性审计 + 幂等补传（手动/定时运行；绕开 DISABLE_FEISHU_SYNC 把整库镜像到飞书，只推新增、绝不重复/删除）
 ├── tests/                    # 回归测试（可直接 `python tests/test_xxx.py` 跑，无需 pytest）
 │   ├── （当前 22 个用例文件，完整清单以目录为准；关键几个如下）
 │   ├── test_cross_source_dedup.py      # 公众号↔scys 跨来源去重

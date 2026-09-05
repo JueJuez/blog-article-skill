@@ -38,6 +38,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 让 shared 包可导入
 from login_cdp_fetch import discover_chrome_devtools, write_output
 from shared.cdp_session import SharedCdpSession
+from prompts.classify import classify_note_type
+from prompts.templates import QUALITY_GATE_SELFCHECK, get_note_prompt
 
 CONFIG_PATH = Path(__file__).resolve().parent / "scys_projects.json"
 
@@ -48,6 +50,32 @@ def load_config() -> dict:
     if not projects:
         raise SystemExit(f"配置无可用项目：{CONFIG_PATH}")
     return {"projects": projects, "defaults": cfg.get("defaults", {})}
+
+
+def build_pending_entry(r: dict, project: str, list_item: dict) -> dict:
+    """组装待总结队列条目；prompt 预计算（与 monitors/UP 队列统一口径）。
+
+    分类读 output 正文前 4000 字（fetch_article 刚写好的原文），文件缺失/为空时
+    退化为仅按标题分类；prompt 恒有值，子 Agent 读队列即可总结，无需自调任何 CLI。
+    """
+    raw_body = ""
+    try:
+        with open(r["output"], encoding="utf-8") as f:
+            raw_body = f.read(4000)
+    except OSError:
+        pass
+    note_type = classify_note_type(r.get("title", ""), raw_body)
+    return {
+        "topicId": str(r["topicId"]), "project": project, "title": r["title"],
+        "url": r["url"], "chars": r["chars"],
+        "output": r["output"],
+        "external_docs": r["external_docs"], "related": r["related"],
+        "note_type": note_type,
+        "prompt": get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK,
+        "list_meta": {k: list_item.get(k) for k in
+                      ("isDigested", "readingCount", "likeCount", "coinCount",
+                       "commentCount", "favoriteCount", "gmtCreate", "aiSummary")},
+    }
 
 
 BASE = Path(__file__).resolve().parent.parent / "notes" / "_scraped" / "scys"
@@ -567,15 +595,7 @@ class ScysBatchFetcher:
                     done_ids.add(tid)
                     self.state["done"] = sorted(done_ids)
                     self._save_state()
-                    pending.append({
-                        "topicId": tid, "project": self.name, "title": r["title"],
-                        "url": r["url"], "chars": r["chars"],
-                        "output": r["output"],
-                        "external_docs": r["external_docs"], "related": r["related"],
-                        "list_meta": {k: it.get(k) for k in
-                                      ("isDigested", "readingCount", "likeCount", "coinCount",
-                                       "commentCount", "favoriteCount", "gmtCreate", "aiSummary")},
-                    })
+                    pending.append(build_pending_entry(r, self.name, it))
                     self.pending_path.write_text(
                         json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
                     fetched += 1

@@ -14,3 +14,4 @@
 修正后分布：structured 244(79%) / case 17(6%) / opinion 16(5%) / key_points 15(5%) / interview 10(3%) / roundup 6(2%) / reading 1
 - 65 篇用错模板的文章已删除飞书旧节点并重新总结
 - 子 Agent **消费队列中已算好的 prompt**（`articles/main.py` 按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好随 `pending_summaries.json` 投递，无需自调 CLI）
+- （2026-09-05 更新）prompt 预计算实际落在**入队写点**（`scripts/scys_batch_fetch.py:build_pending_entry` 等），并已统一扩展到 monitors / UP 三队列；本行保留当时表述作历史记录，详见 `DECISION-20260905-prompt-precompute-three-queues.md`

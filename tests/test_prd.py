@@ -56,7 +56,8 @@ class StubOutput(BaseOutput):
     def get_output_path(self, filename: str) -> str:
         return os.path.join("stub", filename)
 
-    def save(self, content: str, filename: str) -> bool:
+    def save(self, content: str, filename: str, title: str = "") -> bool:
+        # 对齐 articles/base.py 基类契约（OutputManager 会传 title 关键字）
         self.saved.append((filename, content))
         return True
 
@@ -188,7 +189,9 @@ def test_a2_dedup_content(tmp_dedup):
 # A4 token 计量 + frontmatter
 # ---------------------------------------------------------------------------
 
-def test_a4_frontmatter_tokens(stub_output):
+def test_a4_frontmatter_tokens(stub_output, monkeypatch):
+    # FORCE_AGENT_MODE 默认 "1"（delenv 无效），AI 路径特有行为必须显式关闭降级
+    monkeypatch.setenv("FORCE_AGENT_MODE", "0")
     content = "独立开发者使用AI编程变现的实战复盘内容。" * 40  # 足够长
     title, formatted, filename, _, err = am.summarize_and_save(content, author="测试", force=True)
     assert err is None
@@ -241,7 +244,8 @@ def test_a1_fetch_trafilatura(monkeypatch):
 # 视频：P1 字幕文本直总
 # ---------------------------------------------------------------------------
 
-def test_videos_p1_transcript(stub_output):
+def test_videos_p1_transcript(stub_output, monkeypatch):
+    monkeypatch.setenv("FORCE_AGENT_MODE", "0")
     res = vm.summarize_video({"content": "大家好 欢迎来到本期 我们讲 AI 编程变现 " * 30,
                                "note_type": "key_points"})
     assert res.get("success") is True
@@ -265,7 +269,8 @@ def fake_transcript(monkeypatch):
     yield
 
 
-def test_videos_p21_youtube(fake_transcript, stub_output):
+def test_videos_p21_youtube(fake_transcript, stub_output, monkeypatch):
+    monkeypatch.setenv("FORCE_AGENT_MODE", "0")
     res = vm.summarize_video({
         "url": "https://www.youtube.com/watch?v=abcdEFGhijK",
         "note_type": "key_points",
@@ -280,6 +285,7 @@ def test_videos_p21_youtube(fake_transcript, stub_output):
 # ---------------------------------------------------------------------------
 
 def test_videos_p23_playlist(monkeypatch, stub_output):
+    monkeypatch.setenv("FORCE_AGENT_MODE", "0")
     monkeypatch.setattr(vf, "fetch_playlist", lambda url, limit=None: [
         {"url": "https://www.youtube.com/watch?v=aaa", "title": "第1集"},
         {"url": "https://www.youtube.com/watch?v=bbb", "title": "第2集"},
@@ -324,6 +330,7 @@ def test_videos_p3_asr_no_whisper(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_videos_p4_multimodal_graceful(monkeypatch, fake_transcript, stub_output):
+    monkeypatch.setenv("FORCE_AGENT_MODE", "0")
     # 避免真实下载卡 60s
     monkeypatch.setattr(mm, "_download_for_multimodal", lambda url, timeout=60: None)
     res = vm.summarize_video({

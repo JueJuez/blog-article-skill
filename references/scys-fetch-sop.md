@@ -113,7 +113,7 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 - **限速（模拟人类）**：篇间随机 15~40s；每 10~15 篇歇 3~8 分钟；翻页间 3~6s；CDP 页面被关自动重试（实测救回过）
 - 断点续传：`notes/_scraped/scys/state.json`；中断重跑自动跳过已抓（关机/杀进程都不丢进度）
 - 产物：原文 `notes/_scraped/scys/<topicId>.md`；队列 `pending_summaries.json`（总结后标 `summarized:true` 防重复落飞书）
-- 总结落盘：子 Agent 读原文 -> **消费队列中已算好的 prompt**（`articles/main.py` 已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好随 `pending_summaries.json` 投递，无需自调 CLI）-> 按该 prompt 总结 -> `python articles/_save_summary.py <md> --url ... --tags "生财有术,<项目>" --title ...`（默认飞书；**已内置机械去重闸门**：URL 已总结过自动跳过，强制重写加 `--force`）。⚠️ **不要全部用 structured 模板**：分类器会按内容自动选 structured/interview/opinion/case/roundup/key_points/reading/dissection 八种模板（2026-08-26 起含 dissection 创作解剖：爆款拆解/带货/涨粉/账号运营类 scys 文章会走它，额外提炼可复用结构模具）。
+- 总结落盘：子 Agent 读原文 -> **消费队列中已算好的 prompt**（入队写点 `scripts/scys_batch_fetch.py:build_pending_entry` 按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好随条目投递，无需自调 CLI；2026-09-05 起三队列统一此口径）-> 按该 prompt 总结 -> `python articles/_save_summary.py <md> --url ... --tags "生财有术,<项目>" --title ...`（默认飞书；**已内置机械去重闸门**：URL 已总结过自动跳过，强制重写加 `--force`）。⚠️ **不要全部用 structured 模板**：分类器会按内容自动选 structured/interview/opinion/case/roundup/key_points/reading/dissection 八种模板（2026-08-26 起含 dissection 创作解剖：爆款拆解/带货/涨粉/账号运营类 scys 文章会走它，额外提炼可复用结构模具）。
 - 已知限制：飞书 **PDF 预览型**文档文字在 canvas 里抓不到（落盘文件头有页码碎片），此类需下载 PDF 另行处理；文字型 wiki 滚动方案有效
 - python 环境：用 managed venv `C:\Users\O1830\.workbuddy\binaries\python\versions\3.13.12\python`（已带 playwright）；anaconda python 未必有
 
@@ -152,7 +152,7 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 
 **执行闭环（模型每批照做）**：
 1. 后台跑 `D:\App\anaconda3\python.exe -u scripts/scys_batch_fetch.py --project <领域> --limit 30`（断点续传，重复执行幂等，已抓自动跳过）
-2. 每批完成 -> 派**子 Agent**（>3 篇必须拆子 Agent）总结落飞书（tags=`生财有术,<领域>`，入口 `articles/_save_summary.py`，详见 §7 总结落盘段）。⚠️ 子 Agent **消费队列中已算好的 prompt**：`articles/main.py` 已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 把 prompt 算好塞进队列条目，子 Agent 直接按该 prompt 总结，**无需自调任何 CLI**。**不要全部用 structured 模板**。
+2. 每批完成 -> 派**子 Agent**（>3 篇必须拆子 Agent）总结落飞书（tags=`生财有术,<领域>`，入口 `articles/_save_summary.py`，详见 §7 总结落盘段）。⚠️ 子 Agent **消费队列中已算好的 prompt**：入队写点 `scripts/scys_batch_fetch.py:build_pending_entry` 已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 把 prompt 算好塞进队列条目，子 Agent 直接按该 prompt 总结，**无需自调任何 CLI**。**不要全部用 structured 模板**。
 3. 总结完把 `pending_summaries.json` 对应条目标 `summarized:true`（防重复落飞书）
 4. 向用户汇报累计/剩余进度，然后启动下一批
 
@@ -160,4 +160,4 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 
 **首轮补齐完成记录（2026-08-21）**：四领域 180 篇全部抓取+总结落飞书（生财有术/<领域> 容器），队列 180/180 出队。飞书外链问题帖的用户决策（勿再追问）：**PDF 预览型 1 篇与 404 一篇不抓**；截断 wiki 中仅 2 篇用 `feishu_ext_refetch.py` 补全（小红书虚拟店铺 SOP、YouTube 150万订阅复盘，飞书存「（完整版）」笔记），其余截断篇用户已看过/不需要。
 
-**分类修复记录（2026-08-22）**：发现 scys boilerplate「AI问答」导致分类器将全部 309 篇误判为 interview（子 Agent 首轮全用了 structured 模板）。修复方案：从 INTERVIEW_KEYWORDS 移除「问答」、从 KEY_POINTS_KEYWORDS 移除「分享」（均因过于泛化）。修正后 65 篇应为非 structured 模板（case 17/opinion 16/key_points 15/interview 10/roundup 6/reading 1），已删除飞书旧节点并按正确模板重新总结落盘。子 Agent **消费队列中已算好的 prompt**（`articles/main.py` 按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好随 `pending_summaries.json` 投递，无需自调 CLI）。回归测试：`tests/test_scys_classification.py`（8 新 + 38 旧全通过）。详见 `docs/decisions/DECISION-20260821-scys-classification-fix.md`。
+**分类修复记录（2026-08-22）**：发现 scys boilerplate「AI问答」导致分类器将全部 309 篇误判为 interview（子 Agent 首轮全用了 structured 模板）。修复方案：从 INTERVIEW_KEYWORDS 移除「问答」、从 KEY_POINTS_KEYWORDS 移除「分享」（均因过于泛化）。修正后 65 篇应为非 structured 模板（case 17/opinion 16/key_points 15/interview 10/roundup 6/reading 1），已删除飞书旧节点并按正确模板重新总结落盘。子 Agent **消费队列中已算好的 prompt**（入队写点 `scripts/scys_batch_fetch.py` 按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好随条目投递，无需自调 CLI；2026-09-05 起三队列统一，见 `docs/decisions/DECISION-20260905-prompt-precompute-three-queues.md`）。回归测试：`tests/test_scys_classification.py`（8 新 + 38 旧全通过）。详见 `docs/decisions/DECISION-20260821-scys-classification-fix.md`。

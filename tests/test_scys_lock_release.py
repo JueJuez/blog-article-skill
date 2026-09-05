@@ -46,10 +46,19 @@ class TestLockStaleRelease:
         sbf._release_lock(lock)
 
     def test_live_pid_lock_still_blocks(self, lock_dir, monkeypatch):
+        # 外来存活进程（非自身 PID）仍须被互斥保护（DECISION-20260825）
         _fake_psutil(monkeypatch, alive=True)
-        (lock_dir / ".lock").write_text(str(os.getpid()), encoding="utf-8")
+        (lock_dir / ".lock").write_text("999999", encoding="utf-8")
         with pytest.raises(SystemExit):
             sbf._acquire_lock()
+
+    def test_self_pid_lock_taken_over(self, lock_dir, monkeypatch):
+        # 自身 PID 视为 stale：本进程重入允许接管，不再误判互斥（DECISION-20260825）
+        _fake_psutil(monkeypatch, alive=True)
+        (lock_dir / ".lock").write_text(str(os.getpid()), encoding="utf-8")
+        lock = sbf._acquire_lock()
+        assert lock == lock_dir / ".lock"
+        sbf._release_lock(lock)
 
     def test_unreadable_pid_old_lock_released(self, lock_dir, monkeypatch):
         _no_psutil(monkeypatch)
