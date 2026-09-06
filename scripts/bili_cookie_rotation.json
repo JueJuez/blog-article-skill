@@ -1,0 +1,63 @@
+{
+  "interval_days": 7,
+  "last_rotation_ts": "2026-09-06T01:20:09+08:00",
+  "last_interval_attempt_ts": "2026-09-06T09:54:31",
+  "history": [
+    {
+      "ts": "2026-09-06T01:20:09+08:00",
+      "trigger": "manual",
+      "result": "rotated",
+      "method": "cdp",
+      "note": "CDP 提取成功并写回 .env/.cache"
+    },
+    {
+      "ts": "2026-09-06T01:21:57",
+      "trigger": "interval",
+      "result": "valid",
+      "method": "none",
+      "note": "当前 cookie 有效，未到轮换周期"
+    },
+    {
+      "ts": "2026-09-06T01:22:30",
+      "trigger": "interval",
+      "result": "valid",
+      "method": "none",
+      "note": "当前 cookie 有效，未到轮换周期"
+    },
+    {
+      "ts": "2026-09-06T01:28:40",
+      "trigger": "interval",
+      "result": "valid",
+      "method": "none",
+      "note": "当前 cookie 有效，未到轮换周期"
+    },
+    {
+      "ts": "2026-09-06T02:27:41",
+      "trigger": "interval",
+      "result": "valid",
+      "method": "none",
+      "note": "当前 cookie 有效，未到轮换周期"
+    },
+    {
+      "ts": "2026-09-06T02:47:24",
+      "trigger": "interval",
+      "result": "valid",
+      "method": "none",
+      "note": "当前 cookie 有效，未到轮换周期"
+    },
+    {
+      "ts": "2026-09-06T03:49:56",
+      "trigger": "interval",
+      "result": "valid",
+      "method": "none",
+      "note": "当前 cookie 有效，未到轮换周期"
+    },
+    {
+      "ts": "2026-09-06T09:54:31",
+      "trigger": "interval",
+      "result": "valid",
+      "method": "none",
+      "note": "当前 cookie 有效，未到轮换周期"
+    }
+  ]
+}

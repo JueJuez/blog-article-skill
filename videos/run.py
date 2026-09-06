@@ -88,6 +88,11 @@ def _run_batch(args) -> int:
             rec["ok"] = bool(r.get("success"))
             rec["series"] = bool(r.get("series_dir"))
             rec["raw_file"] = r.get("raw_file", "") or ""
+            # V2（2026-09-06）：系列课降级信息透传给编排层——此前 degraded_raws 被
+            # 丢弃，补齐路径的系列 raw 变成三不管（fetched 已标、无人总结、无队列接管）。
+            rec["series_title"] = r.get("series_title", "") or ""
+            rec["series_dir"] = r.get("series_dir", "") or ""
+            rec["degraded_raws"] = r.get("degraded_raws", []) or []
             if not rec["ok"]:
                 rec["error"] = (r.get("message", "") or "")[:300]
         except Exception as e:

@@ -10,11 +10,13 @@
 
 import os
 import re
+import json
 import random
 import time
 import tempfile
 import subprocess
 import threading
+from datetime import datetime
 from typing import Optional, List, Dict, Tuple
 
 YT_RE = re.compile(r"(?:youtube\.com/(?:watch\?v=|embed/|shorts/)|youtu\.be/)([\w-]{11})")
@@ -716,28 +718,138 @@ def _bili_build_cookies_from_env() -> Optional[str]:
     return None
 
 
-def rotate_bili_cookie_if_dead() -> Tuple[str, Optional[str]]:
-    """惰性 cookie 轮换（2026-09-03）：当前 cookie 失效时，走【唯一方法】刷新。
+# ---------------------------------------------------------------------------
+# B站 cookie 轮换状态记录（2026-09-06 加：记录换取时间 + 被动每7天 + 每次换必记录）
+# ---------------------------------------------------------------------------
+_BILI_ROTATION_STATE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "scripts", "bili_cookie_rotation.json",
+)
 
-    策略（失败时检测轮换，不做定时轮询）：
-    1. 取当前 cookie（env/.cache 链）→ nav API 校验 isLogin；
-    2. 仍有效 → ("valid", None)（不折腾）；
-    3. 已失效 → `_bili_extract_cookies_cdp()`：CDP profile 克隆 → 真实访问 B站 →
-       活会话读 cookie（未登录则弹窗等待用户登录，默认最长 300s），
-       校验通过 → 写缓存 + 写回 .env，返回 ("rotated", 新串)；调用方应把新串设回
-       os.environ["BILI_COOKIE"] 让后续子进程继承；
-    4. 提取/校验失败/登录超时 → ("failed", None)。
+
+def _bili_rotation_state_path() -> str:
+    return _BILI_ROTATION_STATE_PATH
+
+
+def _bili_load_rotation_state() -> dict:
+    """读取轮换状态；不存在/损坏则返回默认值。"""
+    default = {
+        "interval_days": int(os.environ.get("BILI_COOKIE_INTERVAL_DAYS", "7")),
+        "last_rotation_ts": None,          # 最近一次【成功】换 cookie 的时间(ISO)
+        "last_interval_attempt_ts": None,  # 最近一次【尝试】被动(7天)轮换时间(含失败, ISO)
+        "history": [],                     # 最近事件：{ts, trigger, result, method, note}
+    }
+    try:
+        if os.path.exists(_BILI_ROTATION_STATE_PATH):
+            with open(_BILI_ROTATION_STATE_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+            for k in default:
+                if k not in data:
+                    data[k] = default[k]
+            return data
+    except Exception:
+        pass
+    return default
+
+
+def _bili_save_rotation_state(state: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(_BILI_ROTATION_STATE_PATH), exist_ok=True)
+        with open(_BILI_ROTATION_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"   ℹ️ 轮换状态写回失败（不影响主流程）：{e}")
+
+
+def _bili_last_event_dt(state: dict) -> Optional[datetime]:
+    """取 last_rotation_ts / last_interval_attempt_ts 中较新者（用于7天闸门）。"""
+    cands = [state.get("last_rotation_ts"), state.get("last_interval_attempt_ts")]
+    dts = []
+    for c in cands:
+            if c:
+                try:
+                    # 统一转 naive（存的时候可能是带时区的 ISO），避免与 datetime.now() 相减报 TypeError
+                    dts.append(datetime.fromisoformat(c).replace(tzinfo=None))
+                except Exception:
+                    pass
+    return max(dts) if dts else None
+
+
+def _bili_record_rotation_event(state: dict, trigger: str, result: str,
+                                method: str = "none", note: str = None) -> None:
+    """把一次轮换尝试记入 history（截断到最近 50 条）并落盘。
+
+    result: 'rotated' | 'valid' | 'failed'
+    method: 'cdp' | 'none'
+    成功换 → 更新 last_rotation_ts；被动(interval)触发 → 同时更新 last_interval_attempt_ts
+    （无论成功失败都更新，使失败也延迟7天再试，避免每天弹窗等登录）。
     """
+    now = datetime.now().isoformat(timespec="seconds")
+    state.setdefault("history", []).append({
+        "ts": now, "trigger": trigger, "result": result,
+        "method": method, "note": note,
+    })
+    state["history"] = state["history"][-50:]
+    if result == "rotated":
+        state["last_rotation_ts"] = now
+    if trigger == "interval":
+        state["last_interval_attempt_ts"] = now
+    _bili_save_rotation_state(state)
+
+
+def rotate_bili_cookie_if_dead(trigger: str = "manual", force: bool = False,
+                               interval_days: int = None) -> Tuple[str, Optional[str]]:
+    """cookie 轮换（2026-09-06 升级：支持被动7天 + 全程记录）。
+
+    决策（按序）：
+    1. force=True（主动换）→ 无条件走 CDP 重新提取；
+    2. 当前 cookie 失效（nav isLogin=False）→ 走 CDP；
+    3. trigger=="interval" 且距上次成功/尝试 ≥ interval_days（默认7）→ 走 CDP（被动换）；
+    4. 否则 → ("valid", None)（不折腾）。
+
+    CDP 提取成功且 nav 校验通过 → 写回 .env/.cache，记录 result='rotated'；
+    提取/校验失败/登录超时 → 记录 result='failed'（被动场景仍延迟7天再试）。
+
+    每次调用都会落盘一条 history（ts/trigger/result/method），满足「每一次换都要记录」。
+    interval_days 可由环境变量 BILI_COOKIE_INTERVAL_DAYS 覆盖（默认7）。
+    返回 (state, fresh_or_None)。
+    """
+    if interval_days is None:
+        try:
+            interval_days = int(os.environ.get("BILI_COOKIE_INTERVAL_DAYS", "7"))
+        except ValueError:
+            interval_days = 7
+    state = _bili_load_rotation_state()
+    state["interval_days"] = interval_days
+
     cur = _bili_build_cookies_from_env()
-    if cur and validate_bilibili_cookies(cur):
-        return ("valid", None)  # 仍有效，无需轮换
-    print("   ⚠️ 当前 B站 cookie 已失效（nav isLogin=False）或不可用，走 CDP 轮换…")
+    cur_valid = bool(cur) and validate_bilibili_cookies(cur)
+
+    last_evt = _bili_last_event_dt(state)
+    due_by_interval = (
+        trigger == "interval"
+        and last_evt is not None
+        and (datetime.now() - last_evt).total_seconds() / 86400.0 >= interval_days
+    )
+
+    if not force and cur_valid and not due_by_interval:
+        # 仍有效且未到被动轮换周期 → 不换，仅记录一次检查
+        _bili_record_rotation_event(state, trigger, "valid", "none",
+                                    "当前 cookie 有效，未到轮换周期")
+        return ("valid", None)
+
+    print(f"   ⚠️ 触发 B站 cookie 轮换（trigger={trigger}, force={force}, "
+          f"cur_valid={cur_valid}）→ 走 CDP 活会话提取…")
     fresh = _bili_extract_cookies_cdp()
     if fresh and validate_bilibili_cookies(fresh):
         print("   ♻️ cookie 已轮换（来源：CDP 活会话），后续请求使用新 cookie")
-        _persist_cookie_to_env(fresh)  # 写回 .env，否则过期 cookie 下轮仍以最高优先级命中
+        _persist_cookie_to_env(fresh)
+        _bili_record_rotation_event(state, trigger, "rotated", "cdp",
+                                    "CDP 提取成功并写回 .env/.cache")
         return ("rotated", fresh)
-    print("   ℹ️ cookie 轮换失败。字幕主链路无需登录不受影响；动态/系列等需登录接口会受影响。")
+    note = "CDP 提取超时或 nav 校验未通过（本机 Chrome 是否登录 B站？）"
+    print(f"   ℹ️ cookie 轮换失败。{note}")
+    _bili_record_rotation_event(state, trigger, "failed", "cdp", note)
     return ("failed", None)
 
 
@@ -962,7 +1074,7 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
     return None
 
 
-def _fetch_series_entries(meta_list: List[Dict], lang: str) -> List[Dict]:
+def _fetch_series_entries(meta_list: List[Dict], lang: str, series_title: str = None, force: bool = False) -> List[Dict]:
     """根据每集元信息（含 aid/cid 或 bvid）逐集抓取字幕，返回带 segments 的 entries。
 
     已知 aid/cid 时直抓字幕（仅一次 dm/view + 一次下载，不重复调 view API）；
@@ -971,17 +1083,29 @@ def _fetch_series_entries(meta_list: List[Dict], lang: str) -> List[Dict]:
     集间节奏（2026-09-03 运行日志实测发现）：整季批量内部原先零间隔，实测
     6 条系列入口触发 112 次请求、min_gap 0.04s / 194 次/分钟——是最容易被
     B站风控盯上的请求形态。加 2~4s 随机间隔消除「机器脉冲」。
+
+    抓取层去重(B, 2026-09-06)：series_title 非空时，凡「字幕已抓过」的集
+    （series_state.is_fetched，跨进程持久）直接跳过网络请求，不重复打 dm/view。
+    这是修复「同系列多集 URL 各自触发整季重抓 → 段错误/请求爆炸」的关键——
+    即便调用方把同系列 75 个集 URL 各喂一次，首集抓全季并 mark_fetched 后，
+    其余 74 个触发时整季 74 集均命中 is_fetched 跳过，实际只发一次整季请求。
     """
     import random as _rd
+    from shared.sanitize import sanitize_filename
     entries: List[Dict] = []
     total = len(meta_list)
     for i, m in enumerate(meta_list):
+        page = m.get("page", "?")
+        part = m.get("part", "")
+        base = f"第{page:02d}集_{sanitize_filename(part or '未命名')}"
+        # B 抓取层去重：已抓过的集跳过网络请求
+        if not force and series_title and _series_episode_skip(series_title, base, page):
+            print(f"   [skip-fetch] 第 {page}/{total} 集已抓过字幕，跳过网络请求", flush=True)
+            continue
         if i > 0:
             gap = _rd.uniform(2.0, 4.0)
             print(f"   [series-gap] 集间等待 {gap:.1f}s", flush=True)
             time.sleep(gap)
-        page = m.get("page", "?")
-        part = m.get("part", "")
         print(f"   🎞️ 抓取第 {page}/{total} 集: {part or '(无标题)'}")
         segs = None
         if m.get("aid") and m.get("cid"):
@@ -992,12 +1116,52 @@ def _fetch_series_entries(meta_list: List[Dict], lang: str) -> List[Dict]:
                 segs = t[1]
         if segs:
             entries.append({**m, "segments": segs})
+            if series_title:
+                _series_episode_mark_fetched(series_title, base)
         else:
             print(f"   ⚠️ 第 {page} 集无字幕，跳过")
     return entries
 
 
-def fetch_bilibili_series(url: str, lang: str = "zh") -> Optional[Dict]:
+# 本进程内已抓过的(系列名, 集号)缓存：同一进程内（如一个 batch-file 含多集同系列）
+# 第二次触发整季抓取时，已抓集直接命中，避免进程内重复打网络。
+_FETCHED_SERIES_EPISODES = set()
+
+
+def _series_episode_skip(series_title: str, base: str, page) -> bool:
+    """抓取层去重判定：该集字幕是否已抓过（进程内缓存 ∪ 跨进程持久索引）。"""
+    if (series_title, page) in _FETCHED_SERIES_EPISODES:
+        return True
+    try:
+        from shared import series_state
+        if series_state.is_fetched(series_title, base):
+            _FETCHED_SERIES_EPISODES.add((series_title, page))
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _series_episode_mark_fetched(series_title: str, base: str) -> None:
+    """抓取成功后记录「已抓」，供后续同系列触发跳过（跨进程持久）。"""
+    page = _page_from_base(base)
+    if page is not None:
+        _FETCHED_SERIES_EPISODES.add((series_title, page))
+    try:
+        from shared import series_state
+        series_state.mark_fetched(series_title, base)
+    except Exception:
+        pass
+
+
+def _page_from_base(base: str):
+    """从 base（第XX集_xxx）解析集号 int，失败返回 None。"""
+    import re as _re
+    m = _re.match(r"第(\d+)集", base or "")
+    return int(m.group(1)) if m else None
+
+
+def fetch_bilibili_series(url: str, lang: str = "zh", force: bool = False) -> Optional[Dict]:
     """一次性抓取 B 站系列课全部集的字幕。
 
     支持两种聚合形态：
@@ -1006,6 +1170,9 @@ def fetch_bilibili_series(url: str, lang: str = "zh") -> Optional[Dict]:
 
     设计要点（用户需求）：**先一次性抓完全部集字幕，再交给上层逐集总结**，
     避免逐集重复建连 / 重复解析页面结构造成的性能浪费。
+
+    抓取层去重(B, 2026-09-06)：force=False 时，已抓过字幕的集（series_state.is_fetched）
+    直接跳过网络请求，避免同系列多集 URL 各自触发整季重抓导致请求爆炸/段错误。
 
     Returns:
         {"series_title": str, "bvid": str, "kind": "ugc_season"|"multipart",
@@ -1026,10 +1193,15 @@ def fetch_bilibili_series(url: str, lang: str = "zh") -> Optional[Dict]:
     if us and us.get("sections"):
         series_title = us.get("title") or title
         meta_list: List[Dict] = []
+        # 跨 section 全局集号（V5，2026-09-06）：此前每个 section 独立 enumerate(1)，
+        # 多 section 系列会出现两个「第01集」→ base 冲突 → series_state 键互相污染 +
+        # 笔记文件名互相覆盖。改为全局递增，单 section 系列行为不变。
+        page_no = 0
         for sec in us["sections"]:
-            for i, ep in enumerate(sec.get("episodes", []), 1):
+            for ep in sec.get("episodes", []):
+                page_no += 1
                 meta_list.append({
-                    "page": i,
+                    "page": page_no,
                     "part": ep.get("title", ""),
                     "bvid": ep.get("bvid"),
                     "aid": ep.get("aid"),
@@ -1037,7 +1209,7 @@ def fetch_bilibili_series(url: str, lang: str = "zh") -> Optional[Dict]:
                     "title": ep.get("title", ""),
                 })
         if meta_list:
-            entries = _fetch_series_entries(meta_list, lang)
+            entries = _fetch_series_entries(meta_list, lang, series_title=series_title, force=force)
             if entries:
                 print(f"   ✅ 系列课「{series_title}」全部 {len(entries)} 集字幕抓取完成")
                 return {"series_title": series_title, "bvid": bvid, "kind": "ugc_season", "author": info.get("author", ""), "entries": entries}
@@ -1055,7 +1227,7 @@ def fetch_bilibili_series(url: str, lang: str = "zh") -> Optional[Dict]:
             "cid": p["cid"],
             "title": p.get("part") or f"第{p['page']}集",
         } for p in pages]
-        entries = _fetch_series_entries(meta_list, lang)
+        entries = _fetch_series_entries(meta_list, lang, series_title=series_title, force=force)
         if entries:
             print(f"   ✅ 多P视频「{series_title}」全部 {len(entries)} 集字幕抓取完成")
             return {"series_title": series_title, "bvid": bvid, "kind": "multipart", "author": info.get("author", ""), "entries": entries}

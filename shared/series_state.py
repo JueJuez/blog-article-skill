@@ -7,7 +7,13 @@
 - UP 更新后：done 含旧集 → 只把新增集列为 pending（增量）。
 
 状态文件：monitors/series_state.json（运行时状态，已被 .gitignore 忽略，不入库）。
-结构：{ "<系列名>": { "url": "...", "author": "...", "done": ["第01集_xxx", ...] } }
+结构：{ "<系列名>": { "url": "...", "author": "...", "done": [...], "fetched": [...] } }
+
+- done:    已成功落盘(总结)的集 base（由 drainer / apply_pending_series 调用 mark_done）
+- fetched: 字幕已成功抓取过的集 base（由 videos.fetch 抓取层调用 mark_fetched）
+  ⚠️ 二者语义不同：补齐/直调路径只调 mark_fetched 不调 mark_done（落盘走 notes/ 本地，
+  不回写 series_state.done）。抓取层去重用 fetched（跨进程持久，避免同系列多集 URL
+  各自触发整季重抓），与 done 解耦，互不污染。
 """
 import os
 import json
@@ -54,15 +60,33 @@ def is_done(series_title: str, base: str) -> bool:
     return base in entry.get("done", [])
 
 
-def get_pending(series_title: str, all_bases: list) -> list:
-    """增量去重核心：返回 all_bases 中尚未总结的子集。
+# ---------------------------------------------------------------------------
+# 字幕已抓索引（抓取层去重用，2026-09-06 引入，与 done 解耦）
+# ---------------------------------------------------------------------------
+def mark_fetched(series_title: str, base: str, url: str = "", author: str = "") -> None:
+    """标记某集字幕已成功抓取（由 videos.fetch 在抓到字幕后调用）。
 
-    all_bases 通常是 [第01集_xxx, 第02集_xxx, ...]（与落盘文件名 base 一致）。
+    与 mark_done 分离：补齐/直调路径落盘在 notes/ 本地、不回写 done，但抓取层
+    需要"已抓过就别再打网络"的跨进程信号，故单独记 fetched。
     """
     state = load()
+    entry = state.setdefault(series_title, {"url": url, "author": author, "done": [], "fetched": []})
+    if url:
+        entry["url"] = url
+    if author:
+        entry["author"] = author
+    if base not in entry.get("fetched", []):
+        entry.setdefault("fetched", []).append(base)
+    save(state)
+
+
+def is_fetched(series_title: str, base: str) -> bool:
+    """抓取层去重：该集字幕是否已抓过（跨进程持久）。"""
+    state = load()
     entry = state.get(series_title)
-    done = set(entry.get("done", [])) if entry else set()
-    return [b for b in all_bases if b not in done]
+    if not entry:
+        return False
+    return base in entry.get("fetched", [])
 
 
 def forget(series_title: str = None) -> None:
@@ -73,3 +97,14 @@ def forget(series_title: str = None) -> None:
         state = load()
         state.pop(series_title, None)
         save(state)
+
+
+def get_pending(series_title: str, all_bases: list) -> list:
+    """增量去重核心：返回 all_bases 中尚未总结的子集。
+
+    all_bases 通常是 [第01集_xxx, 第02集_xxx, ...]（与落盘文件名 base 一致）。
+    """
+    state = load()
+    entry = state.get(series_title)
+    done = set(entry.get("done", [])) if entry else set()
+    return [b for b in all_bases if b not in done]

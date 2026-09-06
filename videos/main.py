@@ -161,11 +161,9 @@ def _looks_like_playlist(url: str, input_data: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 def _sanitize_filename(name: str) -> str:
-    if not name:
-        return "未命名"
-    s = re.sub(r'[\\/:*?"<>|\n\r\t]', '_', name).strip()
-    s = re.sub(r'\s+', ' ', s)
-    return s[:80] or "未命名"
+    """文件名安全化（单一真源见 shared.sanitize，避免 base 匹配漂移导致去重失效）。"""
+    from shared.sanitize import sanitize_filename
+    return sanitize_filename(name)
 
 
 def _local_write_enabled() -> bool:
@@ -548,7 +546,8 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
         series: 已由 fetch.fetch_bilibili_series 抓好字幕的系列结构；为 None 时内部再抓一次。
     """
     if series is None:
-        series = fetch.fetch_bilibili_series(url, lang=input_data.get("lang", "zh"))
+        series = fetch.fetch_bilibili_series(url, lang=input_data.get("lang", "zh"),
+                                            force=input_data.get("force", False))
     if not series:
         # 实际是单P，退回单视频逻辑
         return _handle_single_video(url, input_data)
@@ -851,7 +850,8 @@ def summarize_video(input_data: dict) -> dict:
 
     if url and fetch.is_bilibili(url):
         # 系列课（ugc_season 或 多P）：先批量抓取再逐集总结；单P 走单视频逻辑
-        series = fetch.fetch_bilibili_series(url, lang=input_data.get("lang", "zh"))
+        force = input_data.get("force", False)
+        series = fetch.fetch_bilibili_series(url, lang=input_data.get("lang", "zh"), force=force)
         if series:
             return _handle_bilibili_series(url, input_data, series)
         return _handle_single_video(url, input_data)

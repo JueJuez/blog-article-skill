@@ -300,7 +300,25 @@ python scripts/filter_pending.py
 
 - 入队条目：url/title/author/note_type（分类器）/tags/publish_time/folder（统一路由器预计算）/raw_file/prompt（`get_note_prompt + QUALITY_GATE_SELFCHECK`）/queued_at；
 - 已在队列或已总结过（dedup 闸门）→ 自动跳过；`--no-enqueue` 可退回纯抓取；
-- 队列路径可被 `MON_PENDING_SUMMARY_PATH` 覆盖（与 monitors 并行模式约定一致）。
+- 队列路径可被 `MON_PENDING_SUMMARY_PATH` 覆盖（与 monitors 并行模式约定一致）；
+- **系列课降级 raw 自动接管（2026-09-06，V2）**：代表集触发的系列管线在 FORCE_AGENT_MODE
+  下降级产出的 `notes/<系列>/*_raw.md`，由编排层登记进 `monitors/pending_series.json`
+  （与 monitors.run 同 schema 同合并语义），由 `apply_pending_series.py` 统一总结落地——
+  补齐路径不再出现「字幕已抓（series_state.fetched）却无人总结」的悬挂；
+- **待抓过滤三合一（2026-09-06，V4）**：todo = 列表切片 − fetch_results 真完成条目 −
+  dedup 索引批量命中（`batch_is_summarized`）− risk_skip。以前经监控/其它路径补过的
+  视频在**抓取前**就被剔除，不再浪费字幕请求；
+- **系列去重预扫（`--dedup-series` 默认开）**：预扫逐条 view 归并同系列（0.5~1.5s 抖动，
+  412 即熔断 exit 87），同系列只喂 idx 最小代表触发整季抓取；被覆盖集写**结构化 JSON
+  凭证**（`{"covered_by":…}`）进 fetch_results，`_is_really_done` 按 `covered_by` 字段
+  识别（2026-09-06 修复 V1：旧凭证仅 54 字符，被「>100 字符」门槛误判为超时误记，
+  导致被覆盖集每轮重进 todo → 回退单视频重抓 + 重复入队成单篇）；
+- **环境异常熔断（2026-09-06，V6）**：连续 2 批子进程「无输出秒退且 0 请求」（rc=1）
+  → 判运行环境异常熔断（exit 88），不再空转烧完批间延迟；
+- **重置工具**：`scripts/reset_up_backfill.py --uid <uid> --author <名> [--apply]`——
+  用户清空某 UP 的 Obsidian 内容后成套清 fetch_results/dedup/series_state/本地系列
+  文件夹（迁移到备份目录，可回滚）；vault 记录对账与超期文件报告见
+  `scripts/vault_lifecycle.py`。
 
 **限速与风控防护（2026-09-03，两轮迭代）**——教训：零间隔连续抓 2 小时+ 会触发 B站 412 风控，且失败重试 + yt-dlp/ASR 兜底会让每条失败视频反而发出更多请求，越抓越拦：
 
