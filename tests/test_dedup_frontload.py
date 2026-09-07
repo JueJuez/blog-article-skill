@@ -47,24 +47,27 @@ class TestSaveSummaryOnlyGate:
         assert self.calls == []
 
     def test_marks_index_after_success(self, dedup_index):
+        # mark 收敛（PLAN-20260906 任务2）：登记在 save_summarized_article 内部完成，
+        # 本类 stub 掉保存函数即 stub 掉登记点；端到端登记断言见 test_mark_and_frontmatter.py。
+        # 此处守护第③层闸门语义：未命中索引 → 必须调用保存函数且仅一次。
         res = articles_main.save_summary_only({
-            "summarized_content": "# 笔记\n总结正文",
+            "summarized_content": "总结正文",
             "original_url": "https://b.com/y",
             "original_title": "T"})
         assert res.get("success") is True
-        assert dedup_index.is_summarized(url="https://b.com/y") != {}
+        assert self.calls == [1]
 
     def test_force_bypasses_gate(self, dedup_index):
         dedup_index.mark_summarized(url="https://c.com/z", filename="old.md")
         res = articles_main.save_summary_only({
-            "summarized_content": "# 笔记\n总结正文",
+            "summarized_content": "总结正文",
             "original_url": "https://c.com/z",
             "force": True})
         assert res.get("skipped") is not True
         assert self.calls == [1]
 
     def test_no_url_falls_through_to_save(self, dedup_index):
-        res = articles_main.save_summary_only({"summarized_content": "# 笔记\n总结正文"})
+        res = articles_main.save_summary_only({"summarized_content": "总结正文"})
         assert res.get("success") is True
         assert self.calls == [1]
 

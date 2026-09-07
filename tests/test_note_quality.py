@@ -207,6 +207,33 @@ def test_format_with_prompt_normalizes_metadata():
 
 
 # --------------------------------------------------------------------------
+# G：去 H1 + LLM 停输出标签行（DECISION-20260907，tags 参数为代码侧权威）
+# --------------------------------------------------------------------------
+
+def test_format_strips_llm_hashtag_line_when_add_metadata():
+    """双标签回归：LLM 输出的井号标签行须被剥离，仅保留 tags 参数的系统标签行。"""
+    md = "#结构化复盘 #AI #效率\n\n**作者**：张三 | **来源链接**：[x](u)\n\n正文"
+    out = format_note_with_prompt(md, tags=["结构化复盘"], url="", add_metadata=True)
+    assert "#AI" not in out and "#效率" not in out
+    assert out.count("#结构化复盘") == 1
+
+
+def test_format_drops_star_tag_line_when_add_metadata():
+    """add_metadata=True 时 `**标签**：` 行归一为井号后被剥离（tags 权威），不再出现第二行标签。"""
+    md = "**标签**：案例拆解 · 创业\n\n**作者**：张三\n\n正文"
+    out = format_note_with_prompt(md, tags=["案例拆解"], url="", add_metadata=True)
+    assert "**标签**" not in out
+    assert out.count("#案例拆解") == 1
+
+
+def test_format_keeps_hash_inside_code_fence():
+    """围栏感知：代码块内 `# TODO` 开头的行是代码注释，不得当标签行剥离。"""
+    md = "```python\n# TODO: 保留\nprint(1)\n```\n\n正文"
+    out = format_note_with_prompt(md, tags=["结构化复盘"], url="", add_metadata=True)
+    assert "# TODO: 保留" in out
+
+
+# --------------------------------------------------------------------------
 # A：质量闸门（纯函数层，离线可测）
 # --------------------------------------------------------------------------
 

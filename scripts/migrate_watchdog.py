@@ -36,6 +36,8 @@ import subprocess
 import argparse
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)  # 便于 import shared.rolling_log（按天滚动日志）
 SCRIPT = os.path.join(BASE_DIR, "scripts", "feishu_to_obsidian.py")
 LOG_PATH = os.path.join(BASE_DIR, "scripts", "feishu_to_obsidian_log.json")
 # 迁移自写此文件(见 feishu_to_obsidian.py MIGRATE_PID); 看护只读它来识别/杀死迁移。
@@ -56,11 +58,11 @@ _child_streams = []
 
 
 def wlog(msg):
+    from shared.rolling_log import append_rolling
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}\n"
     try:
-        with open(WATCHDOG_LOG, "a", encoding="utf-8") as f:
-            f.write(line)
+        append_rolling(WATCHDOG_LOG, line)  # 按天滚动 + 惰性清理（LOG_KEEP_DAYS，默认 7 天）
     except Exception:
         pass
     print(line, end="")
@@ -123,9 +125,12 @@ def start_migration():
     agent 服务(等效 52256 的稳定方式), 故迁移作为看护的「普通子进程」(不 DETACHED)
     即可稳定常驻——既避开旧监控 DETACHED 父子树 ~60s 回收怪相, 也不依赖 powershell
     (本环境安全策略拦截 powershell 派生新进程, Start-Process 拉不起 python)。
-    子进程 stdout 重定向到 CHILD_LOG(句柄挂模块级, 永不关, 否则子进程写 stdout 崩)。
+    子进程 stdout 重定向到 CHILD_LOG 按天滚动文件(句柄挂模块级, 永不关,
+    否则子进程写 stdout 崩; 重启迁移自然切天, 打开前顺手清理过期日志)。
     """
-    out = open(CHILD_LOG, "a", encoding="utf-8")
+    from shared.rolling_log import cleanup_expired, rolling_log_path
+    cleanup_expired(CHILD_LOG)
+    out = open(rolling_log_path(CHILD_LOG), "a", encoding="utf-8")
     _child_streams.append(out)
     subprocess.Popen([PY, SCRIPT], cwd=BASE_DIR, env=ensure_env(),
                      stdout=out, stderr=out, close_fds=True)

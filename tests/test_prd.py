@@ -186,20 +186,21 @@ def test_a2_dedup_content(tmp_dedup):
 
 
 # ---------------------------------------------------------------------------
-# A4 token 计量 + frontmatter
+# A4 token 计量 + frontmatter 停产（DECISION-20260906 延后项，2026-09-07 实施）
 # ---------------------------------------------------------------------------
 
-def test_a4_frontmatter_tokens(stub_output, monkeypatch):
+def test_a4_frontmatter_stopped(stub_output, monkeypatch):
     # FORCE_AGENT_MODE 默认 "1"（delenv 无效），AI 路径特有行为必须显式关闭降级
     monkeypatch.setenv("FORCE_AGENT_MODE", "0")
     content = "独立开发者使用AI编程变现的实战复盘内容。" * 40  # 足够长
     title, formatted, filename, _, err = am.summarize_and_save(content, author="测试", force=True)
     assert err is None
     assert filename
-    # A4：token 用量写入 frontmatter
-    assert "tokens:" in formatted
-    assert "prompt_tokens" in formatted
-    assert "mock-model" in formatted
+    # frontmatter 停产：token/model 元信息不再写入笔记，检索改走登记表
+    assert not formatted.startswith("---")
+    assert "tokens:" not in formatted
+    assert "prompt_tokens" not in formatted
+    assert "mock-model" not in formatted
     assert len(stub_output.saved) == 1
 
 

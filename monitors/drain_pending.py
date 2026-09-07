@@ -50,17 +50,6 @@ def parse_indices(spec: str, total: int):
     return sorted(i for i in idx if 0 <= i < total)
 
 
-def _extract_h1(content: str) -> str:
-    """取总结文件首个 # 标题行（子 Agent 已从正文提炼的有信息量标题）。"""
-    for ln in content.splitlines():
-        s = ln.strip()
-        if s.startswith("#"):
-            h = s.lstrip("#").strip()
-            if h:
-                return h
-    return ""
-
-
 def drain(indices, temp_dir, apply, obsidian):
     pending = load_pending()
     total = len(pending)
@@ -93,13 +82,13 @@ def drain(indices, temp_dir, apply, obsidian):
             bad += 1
             continue
         content = open(sum_file, encoding="utf-8").read()
-        # 标题机械优先序（用户 2026-08-25 决策：不依赖模型）：
-        #   来源侧标题（title，已由 derive_title_from_body 确定性提炼）> 总结 H1 > 来源；
+        # 标题机械优先序（用户 2026-08-25 决策：不依赖模型；2026-09-07 去 H1 后 summary_h1 兜底废止）：
+        #   node_title 纯由来源侧标题（title，已由 derive_title_from_body 确定性提炼）决定；
         #   全程 normalize_title 清洗（去模型段标题/非法字符/折叠空白/截断）。
         # 旧逻辑 node_title = _extract_h1(content) or title 把"模型自创的段标题"
-        # 当节点标题，是飞书标题乱/错的根因，已废弃。
+        # 当节点标题，是飞书标题乱/错的根因；去 H1 后正文不再含一级标题，兜底彻底移除。
         from shared.title_norm import choose_node_title
-        node_title = choose_node_title(title, _extract_h1(content))
+        node_title = choose_node_title(title)
         # L1 硬卡①：标题为空则直接报错跳过，绝不静默落盘成「未命名笔记」
         if not node_title.strip():
             print(f"  ❌ 索引 {i} 标题为空，跳过落盘（防未命名笔记）")

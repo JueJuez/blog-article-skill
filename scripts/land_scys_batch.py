@@ -75,13 +75,15 @@ def main():
             miss += 1
             continue
 
+        # 发布时间（2026-09-07 生成侧发布时间链路）：scys 列表 API 的 gmtCreate（秒级 epoch）
+        pub = int((queue[qi].get("list_meta") or {}).get("gmtCreate") or 0)
         res = save_summary_only({
             "summarized_content": stripped,
             "original_url": url,
             "author": "",
             "tags": tags,
             "original_title": title,
-            "publish_time": 0,
+            "publish_time": pub,
             "folder": folder,
             "obsidian": False,
         })

@@ -182,11 +182,15 @@ def launch_chrome(port: int = CDP_PORT, verbose: bool = True) -> bool:
         if verbose:
             print(f"   🔌 将加载代理扩展: {proxy_ext}")
     args.append("about:blank")
-    log_path = os.path.join(CDP_PROFILE, "cdp_launch.log")
+    # 按天滚动（防膨胀）：Chrome 进程存活期间 fd 固定在启动当天文件，重启自然切天
+    log_base = os.path.join(CDP_PROFILE, "cdp_launch.log")
     flags = 0
     if sys.platform == "win32":
         flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     try:
+        from shared.rolling_log import cleanup_expired, rolling_log_path
+        cleanup_expired(log_base)
+        log_path = rolling_log_path(log_base)
         with open(log_path, "a", encoding="utf-8") as log:
             subprocess.Popen(args, stdout=log, stderr=log, creationflags=flags, close_fds=True)
         if verbose:
@@ -216,7 +220,8 @@ def ensure_chrome_running(port: int = CDP_PORT, timeout: int = 25, verbose: bool
                 print(f"   ✅ Chrome 调试端口 {port} 已就绪")
             return True
     if verbose:
-        print(f"   ⚠️ Chrome 启动超时（{timeout}s 内 {port} 未响应），查看日志: {os.path.join(CDP_PROFILE, 'cdp_launch.log')}")
+        print(f"   ⚠️ Chrome 启动超时（{timeout}s 内 {port} 未响应），"
+              f"查看当日日志 cdp_launch.{time.strftime('%Y%m%d')}.log（CDP 副本目录内）")
     return False
 
 

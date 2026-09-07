@@ -9,11 +9,13 @@
 状态文件：monitors/series_state.json（运行时状态，已被 .gitignore 忽略，不入库）。
 结构：{ "<系列名>": { "url": "...", "author": "...", "done": [...], "fetched": [...] } }
 
-- done:    已成功落盘(总结)的集 base（由 drainer / apply_pending_series 调用 mark_done）
+- done:    已成功落盘(总结)的集 base（由 drainer / apply_pending_series / videos.main
+  直连路径调用 mark_done，2026-09-07 起三处全覆盖）
 - fetched: 字幕已成功抓取过的集 base（由 videos.fetch 抓取层调用 mark_fetched）
-  ⚠️ 二者语义不同：补齐/直调路径只调 mark_fetched 不调 mark_done（落盘走 notes/ 本地，
-  不回写 series_state.done）。抓取层去重用 fetched（跨进程持久，避免同系列多集 URL
-  各自触发整季重抓），与 done 解耦，互不污染。
+  ⚠️ 二者语义不同：done 表示「已总结落盘」，fetched 表示「已抓过字幕」。
+  2026-09-07 前直调路径只调 mark_fetched 不调 mark_done，导致每日重跑重复总结；
+  现已补齐（_handle_bilibili_series 成功保存/冲突跳过后均 mark_done）。抓取层去重
+  仍用 fetched（跨进程持久，避免同系列多集 URL 各自触发整季重抓），与 done 解耦。
 """
 import os
 import json
@@ -40,7 +42,7 @@ def save(state: dict) -> None:
 
 
 def mark_done(series_title: str, base: str, url: str = "", author: str = "") -> None:
-    """标记某集已成功落盘（由 drainer 在 _save_series_note 成功后调用）。"""
+    """标记某集已成功落盘（drainer / apply_pending_series / videos.main 直连路径均调用）。"""
     state = load()
     entry = state.setdefault(series_title, {"url": url, "author": author, "done": []})
     if url:
@@ -66,8 +68,8 @@ def is_done(series_title: str, base: str) -> bool:
 def mark_fetched(series_title: str, base: str, url: str = "", author: str = "") -> None:
     """标记某集字幕已成功抓取（由 videos.fetch 在抓到字幕后调用）。
 
-    与 mark_done 分离：补齐/直调路径落盘在 notes/ 本地、不回写 done，但抓取层
-    需要"已抓过就别再打网络"的跨进程信号，故单独记 fetched。
+    与 mark_done 分离：抓取层需要"已抓过就别再打网络"的跨进程信号，故单独记
+    fetched；落盘成功与否由 mark_done 另行记录（2026-09-07 起直调路径也回写 done）。
     """
     state = load()
     entry = state.setdefault(series_title, {"url": url, "author": author, "done": [], "fetched": []})

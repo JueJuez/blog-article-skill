@@ -38,7 +38,7 @@ def capture_save(monkeypatch):
 
 def test_no_folder_routes_by_author(capture_save):
     res = am.save_summary_only({
-        "summarized_content": "# 笔记\n内容",
+        "summarized_content": "笔记内容",
         "original_url": "https://www.bilibili.com/video/BV1xx",
         "author": "趋势浪子",
         "original_title": "测试笔记",
@@ -50,7 +50,7 @@ def test_no_folder_routes_by_author(capture_save):
 
 def test_explicit_folder_unchanged(capture_save):
     res = am.save_summary_only({
-        "summarized_content": "# 笔记\n内容",
+        "summarized_content": "笔记内容",
         "original_url": "https://www.bilibili.com/video/BV1xx",
         "author": "趋势浪子",
         "original_title": "测试笔记",
@@ -62,7 +62,7 @@ def test_explicit_folder_unchanged(capture_save):
 
 def test_no_author_falls_to_inbox(capture_save):
     res = am.save_summary_only({
-        "summarized_content": "# 笔记\n内容",
+        "summarized_content": "笔记内容",
         "original_url": "",
         "original_title": "无主笔记",
     })
@@ -77,7 +77,7 @@ def test_no_author_falls_to_inbox(capture_save):
 
 def _tmp_summary_file(tmp_path) -> str:
     p = tmp_path / "summary.md"
-    p.write_text("# 笔记\n内容", encoding="utf-8")
+    p.write_text("笔记内容", encoding="utf-8")
     return str(p)
 
 
@@ -122,7 +122,7 @@ def test_from_file_missing_file_raises(capture_save, tmp_path):
 
 def test_continue_summary_routes_by_author(capture_save):
     res = am.skill_continue_summary(
-        "原文内容", "# 笔记\n内容",
+        "原文内容", "笔记内容",
         original_url="https://www.bilibili.com/video/BV1xx",
         author="趋势浪子", original_title="测试笔记")
     assert res["success"] is True
@@ -131,7 +131,7 @@ def test_continue_summary_routes_by_author(capture_save):
 
 def test_continue_summary_explicit_folder_unchanged(capture_save):
     res = am.skill_continue_summary(
-        "原文内容", "# 笔记\n内容", author="趋势浪子", original_title="测试笔记",
+        "原文内容", "笔记内容", author="趋势浪子", original_title="测试笔记",
         folder="自定义/目录")
     assert res["success"] is True
     assert capture_save["folder"] == "自定义/目录"

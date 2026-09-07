@@ -58,6 +58,32 @@ def _sanitize_title(t: str) -> str:
     return t
 
 
+_FM_SCAN_LINES = 20
+
+
+def _strip_frontmatter(content: str) -> str:
+    """剥离存量笔记的 YAML frontmatter（PLAN-20260906 任务3）。
+
+    frontmatter 已停产（任务2），但历史登记/草稿里仍存有带 `---` 头的内容，
+    重写落飞书时 YAML 头会被当正文渲染成大量分隔线，故写入端统一剥离。
+    仅当首行恰为 `---` 且闭合 `---` 出现在前 _FM_SCAN_LINES 行内才动作，
+    否则原样返回（正文中的 markdown 分隔线、未闭合的 `---` 都不受影响）。
+    """
+    if not content:
+        return content
+    lines = content.split("\n")
+    if lines[0].strip() != "---":
+        return content
+    for i in range(1, min(len(lines), _FM_SCAN_LINES)):
+        if lines[i].strip() == "---":
+            rest = lines[i + 1:]
+            j = 0
+            while j < len(rest) and not rest[j].strip():
+                j += 1
+            return "\n".join(rest[j:])
+    return content
+
+
 class FeishuOutput(BaseOutput):
     # 进程内缓存已解析的系列容器 node_token，避免同进程重复建/重复查
     _series_node_cache: dict = {}
@@ -575,6 +601,7 @@ class FeishuOutput(BaseOutput):
     def save(self, content: str, filename: str, parent_token: str = None, title: str = "") -> bool:
         if not self.is_available():
             return False
+        content = _strip_frontmatter(content)
 
         # filename 含子目录（如「投资交易/舟亦横/xxx.md」）→ 逐级建容器节点，与 Obsidian 对称
         dirs, base_name = self._split_subdir(filename)
@@ -650,6 +677,7 @@ class FeishuOutput(BaseOutput):
     async def save_async(self, content: str, filename: str, parent_token: str = None, title: str = "") -> bool:
         if not self.is_available():
             return False
+        content = _strip_frontmatter(content)
 
         # filename 含子目录 → 逐级建容器节点（同步 ensure，量小可接受）
         dirs, base_name = self._split_subdir(filename)

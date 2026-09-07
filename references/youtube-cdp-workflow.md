@@ -161,7 +161,7 @@ C:/Users/O1830/.workbuddy/binaries/python/versions/3.13.12/python.exe videos/run
 
 | 现象 | 原因 / 解决 |
 |------|------|
-| `无法连接 9222` | Chrome(CDP) 没起来。`ensure_chrome_running` 会自动启动；若仍失败，查 `Chrome-CDP/cdp_launch.log`。确认未被杀软拦截。 |
+| `无法连接 9222` | Chrome(CDP) 没起来。`ensure_chrome_running` 会自动启动；若仍失败，查 `Chrome-CDP/cdp_launch.YYYYMMDD.log`（按天滚动，取当天日期）。确认未被杀软拦截。 |
 | `DevTools remote debugging requires a non-default data directory` | 误用了默认 user-data-dir。代码已用 `Chrome-CDP` 副本，勿改成默认路径。 |
 | `403 Forbidden` on WebSocket | ws 连接带了 Origin 头。确认 `create_connection(..., suppress_origin=True)`。 |
 | `405 Method Not Allowed` on `/json/new` | 用了 GET。确认用 PUT。 |

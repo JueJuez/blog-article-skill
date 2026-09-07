@@ -1,9 +1,10 @@
 """笔记机械质量门禁（零 AI 依赖）。
 
-背景（DECISION-20260905）：FORCE_AGENT_MODE=1 主路径上，模型输出直接经
-save_summary_only 落盘，历史上偶发缺/多主标题、正文写来源链接（formatter
-权威追加后出现两个链接）、篇幅严重偏离模板区间。AI 审核员（NOTE_QUALITY_GATE）
-默认关且无外部 AI 时返回 None，兜不住，故提供机械基线：
+背景（DECISION-20260905 / DECISION-20260907）：FORCE_AGENT_MODE=1 主路径上，模型输出直接经
+save_summary_only 落盘，历史上偶发正文写来源链接（formatter 权威追加后出现两个
+链接）、篇幅严重偏离模板区间；2026-09-07 起去 H1，正文出现一级标题改为拦截
+（标题由文件名/飞书节点标题承担，代码围栏内 # 注释不算）。AI 审核员
+（NOTE_QUALITY_GATE）默认关且无外部 AI 时返回 None，兜不住，故提供机械基线：
 - 8 模板字数区间与模板「风格/字数」行声明一一对应（tests 防漂移）；
 - 硬阈值（<min*0.6 或 >max*1.5）拦截，轻微越界仅 warning 不拦；
 - note_type 不在字数表内时跳过篇幅检查（自定义类型不误伤）。
@@ -31,6 +32,7 @@ WORD_HARD_LOW_RATIO = 0.6
 WORD_HARD_HIGH_RATIO = 1.5
 
 _H1_RE = re.compile(r"^# .+", re.MULTILINE)
+_CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)  # H1 扫描前剥离，围栏内 # 注释不算标题
 _SOURCE_LINK_LINE_RE = re.compile(r"^\s*\**\s*来源链接\s*\**\s*[：:]", re.MULTILINE)
 
 
@@ -40,7 +42,7 @@ def count_note_words(note: str) -> int:
 
 
 def verify_note_mechanical(note: str, note_type: str = "", source_url: str = "") -> dict:
-    """机械校验模型输出的笔记：主标题唯一 / 来源链接卫生 / 字数区间。
+    """机械校验模型输出的笔记：无一级标题 / 来源链接卫生 / 字数区间。
 
     返回 {"passed": bool, "issues": [...], "warnings": [...]}：
     - issues 非空 → 必须拦截，子 Agent 按 issues 修复后重试；
@@ -48,9 +50,11 @@ def verify_note_mechanical(note: str, note_type: str = "", source_url: str = "")
     """
     issues: list[str] = []
     warnings: list[str] = []
-    h1_list = _H1_RE.findall(note)
-    if len(h1_list) != 1:
-        issues.append(f"主标题必备项不达标：检测到 {len(h1_list)} 个一级标题（# ），须恰好 1 个")
+    prose = _CODE_FENCE_RE.sub("", note)  # 剥离代码围栏，围栏内 # 注释不算一级标题
+    h1_list = _H1_RE.findall(prose)
+    if h1_list:
+        issues.append(f"去 H1 约束：正文出现 {len(h1_list)} 个一级标题（# ），"
+                      "标题由文件名/飞书节点标题承担，须删除后重交")
     if _SOURCE_LINK_LINE_RE.search(note):
         issues.append("正文不得写来源链接行（**来源链接**：...）：由系统 formatter 权威追加，"
                       "重复写入会导致落盘后出现两个链接")

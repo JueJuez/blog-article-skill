@@ -54,3 +54,9 @@
 - ep5 / ep18：按正确超时各自后台重跑（任务 `bi5yLe` / `I312jt`），转写完（数小时）后再总结→drain 闭环全 38 集。
 - 运行前必跑 `rescue_episode.py --check` 确认模型真实路径（避免再扫错默认 `~/.cache/huggingface`）。
 
+---
+
+## 增补（2026-09-07）：进度日志改按天滚动
+
+G 项的 `.series_progress.log` 自 2026-09-07 起改走 `shared/rolling_log.py` 按天滚动（`.series_progress.YYYYMMDD.log`，`LOG_KEEP_DAYS` 默认 7 天自动清理过期文件），见 `DECISION-20260907-rolling-logs-and-gate-blockers-ledger.md`。
+

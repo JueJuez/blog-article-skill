@@ -24,14 +24,17 @@ from articles.main import (
     call_ai_summary_with_meta,
     save_summarized_article,
 )
+from articles.dedup import is_summarized
 from shared.title_norm import choose_node_title
 from prompts.templates import (
     get_note_prompt, format_note_with_prompt,
     verify_note, should_gate_retry, build_gate_critique, QUALITY_GATE_SELFCHECK,
 )
 from prompts.classify import classify_note_type
+from prompts.verifier import verify_note_mechanical
 from shared.chunking import chunk_segments, chunk_text, two_stage_summarize, segments_to_text
 from shared import series_state
+from shared import series_naming as sn
 
 from . import fetch, asr, multimodal
 
@@ -180,7 +183,8 @@ def _local_write_enabled() -> bool:
 
 def _save_series_note(content: str, series_dir: str, base_name: str,
                       author: str, url: str, tags: list, note_type: str,
-                      obsidian: bool = False, folder: str = "") -> str:
+                      obsidian: bool = False, folder: str = "",
+                      publish_time: int = 0) -> str:
     """把单集总结笔记同步到所有已配置输出（Obsidian / 飞书等）。
 
     满足用户需求：系列课先建一个「系列名」容器（Obsidian=同名子文件夹；
@@ -193,10 +197,23 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
     系列容器不再挂飞书根，而是挂在该 folder 节点下（【监控】/B站/<UP>/<系列>）。
 
     Returns 本地绝对路径（有云时不写本地，返回预期路径字符串）。
+
+    机械质量门禁（DECISION-20260907）：输入是纯模型产出，先于 formatter 拦截
+    H1 / 来源链接行 / 原文 URL / 篇幅崩塌，与 save_summary_only 串式管道同基线。
+    违规抛 ValueError("VERIFIER_FAILED: ...") 不落盘。
     """
+    gate = verify_note_mechanical(content, note_type, source_url=url)
+    if not gate["passed"]:
+        from shared.gate_blockers import log_gate_block
+        # 拦截事件持久化（gate_blockers 台账）：直连/apply 两条路共用本函数，
+        # 在此记录即全覆盖；台账失败不影响抛错主流程。
+        log_gate_block(source="series", note_type=note_type, url=url,
+                       title=base_name, issues=gate["issues"],
+                       warnings=gate.get("warnings", []))
+        raise ValueError("VERIFIER_FAILED: " + "；".join(gate["issues"]))
     formatted = format_note_with_prompt(
         content=content, author=author, url=url,
-        tags=tags, add_metadata=True
+        tags=tags, add_metadata=True, publish_time=publish_time
     )
     filename = f"{base_name}.md"
     path = os.path.join(series_dir, filename)
@@ -536,6 +553,29 @@ def series_folder(input_data: dict, author: str, series_title: str, url: str) ->
     })
 
 
+def _collect_landed_series_names(series_dir: str, folder: str, series_title: str) -> list:
+    """汇总系列已落盘成稿名：本地 notes 目录 + vault 容器（只读探测，零副作用）。
+
+    集数一致性校验（拍板3）基线：folder 形态有两种——
+    直连含系列名（parts[-1] == 系列名 sanitize 版）与账号层级（drain rsplit），
+    后者需追加系列名再定位容器。只 listdir 扫描，绝不 mkdir。
+    """
+    vault = os.getenv("OBSIDIAN_VAULT_PATH", "")
+    names = list(sn.scan_landed_names([series_dir]))
+    if not vault or not folder:
+        return names
+    parts = [d for d in folder.split("/") if d]
+    if not parts:
+        return names
+    if parts[-1] != _sanitize_filename(series_title):
+        parts.append(_sanitize_filename(series_title))
+    container = os.path.join(vault, *parts)
+    for n in sn.scan_landed_names([container]):
+        if n not in names:
+            names.append(n)
+    return names
+
+
 def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
     """B站系列课处理：Phase1 全抓取（已由 fetch 完成）→ Phase2 逐集总结。
 
@@ -567,6 +607,11 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
     # （显式 folder > 监控UP > 非监控作者 > 独立系列）。
     folder = series_folder(input_data, author, series_title, url)
 
+    # 系列发布时间（2026-09-07 生成侧发布时间链路）：全系列 pubdate 唯一时采用，
+    # 多值/缺失诚实置 0，不用处理时间冒充发布时间；每集落盘也统一用该值。
+    pubs = {int(e.get("pubdate") or 0) for e in entries if e.get("pubdate")}
+    series_publish_time = pubs.pop() if len(pubs) == 1 else 0
+
     # 增量去重：只把「尚未总结的集」列为 pending，避免每日重跑全量重总结。
     # 首跑 done 为空 → 全系列待总结；UP 更新后 done 含旧集 → 只列新增集。
     all_bases = [f"第{e['page']:02d}集_{_sanitize_filename(e['part'] or '未命名')}" for e in entries]
@@ -584,11 +629,14 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
             "series_title": series_title, "series_dir": series_dir, "url": url,
             "author": author, "degraded_raws": [], "results": [],
             "overview": overview_path, "degraded_any": False,
+            "publish_time": series_publish_time,
         }
 
     print(f"\n📁 建立系列文件夹：notes/{_sanitize_filename(series_title)}/")
     series_dir = os.path.join(articles_main.NOTES_DIR, _sanitize_filename(series_title))
     os.makedirs(series_dir, exist_ok=True)
+    # 集数一致性（拍板3）：扫本地 notes + vault 容器已有成稿名，作为页码冲突检测基线
+    landed_names = _collect_landed_series_names(series_dir, folder, series_title)
 
     print(f"🧠 Phase 2：逐集总结（共 {len(entries)} 集，其中 {len(pending_bases)} 集待总结）...")
     results: List[Dict] = []
@@ -603,6 +651,15 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
         # 增量去重：已总结过的集直接跳过，不重写 raw、不排队
         if base not in pending_bases:
             results.append({"page": page, "part": part, "done": True})
+            continue
+
+        # 集数一致性（拍板3）：同页码已有「不同标题」成稿 → 跳过本集，保留原标题。
+        # 病灶：Penny-Weight 类条目换标题重抓后整集重复落盘；此处确定性防护，force 也绕不过。
+        conflict = sn.find_page_conflict(landed_names, page, part or "未命名")
+        if conflict:
+            print(f"   ⏭️ 第{page}集已有不同标题成稿「{conflict}」，跳过本集（保留原标题）。")
+            series_state.mark_done(series_title, base, url=url, author=author)
+            results.append({"page": page, "part": part, "done": True, "conflict": conflict})
             continue
 
         print(f"\n[{idx}/{len(entries)}] 第{page}集：{part or '(无标题)'}")
@@ -627,8 +684,15 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
             continue
 
         ep_tags = list(base_tags) + [_NOTE_TYPE_TAG.get(note_type, "视频笔记")]
-        path = _save_series_note(final, series_dir, base, author, url, ep_tags, note_type,
-                                 obsidian=obsidian, folder=folder)
+        try:
+            path = _save_series_note(final, series_dir, base, author, url, ep_tags, note_type,
+                                     obsidian=obsidian, folder=folder,
+                                     publish_time=series_publish_time)
+        except ValueError as e:
+            # 机械门禁拦截（VERIFIER_FAILED）：不落盘不 mark_done，下轮重跑自动重试本集
+            results.append({"page": page, "part": part, "error": str(e)})
+            print(f"   ❌ 机械门禁拦截，本集跳过待重试：{base}：{e}")
+            continue
         # 自愈：若此前降级留下 raw，成功总结后清除，避免半成品残留
         raw_path = os.path.join(series_dir, base + "_raw.md")
         if os.path.exists(raw_path):
@@ -638,6 +702,8 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
                 pass
         results.append({"page": page, "part": part, "filename": os.path.relpath(path, articles_main.NOTES_DIR)})
         print(f"   ✅ 已保存：{path}")
+        # 直连路径此前漏 mark_done → 每日重跑会重复总结本集；补齐与 drain 落盘路径对齐
+        series_state.mark_done(series_title, base, url=url, author=author)
 
     # 系列总览大纲（用户规则：系列课总结必生成，含各集导航 + 一句话核心结论）
     overview_path = _generate_series_overview(series_title, series_dir, url,
@@ -662,6 +728,7 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
         "results": results,
         "overview": overview_path,
         "degraded_any": degraded_any,
+        "publish_time": series_publish_time,
     }
 
 
@@ -670,6 +737,20 @@ def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
 # ---------------------------------------------------------------------------
 
 def _handle_single_video(url: str, input_data: dict, suppress: bool = False):
+    # P1-2 入口闸门（2026-09-07）：已总结过的视频直接跳过，杜绝重复跑产生重复文件。
+    # force=True 可绕过（重总结场景）；url 为空（字幕文本直喂）不适用闸门。
+    if url and not input_data.get("force", False):
+        rec = is_summarized(url=url)
+        if rec:
+            fname = rec.get("filename", "")
+            if not suppress:
+                print(f"⏭️ 该视频已总结过，跳过：{fname}（如需重跑请加 force=True）")
+            return {
+                "success": True,
+                "skipped": True,
+                "filename": fname,
+                "message": f"该视频已总结过，跳过（{fname}）。如需重跑请加 force=True",
+            }
     if not suppress:
         print(f"\n📺 获取视频字幕: {url}")
     result = fetch.fetch_transcript(url)
@@ -689,6 +770,10 @@ def _handle_single_video(url: str, input_data: dict, suppress: bool = False):
         input_data = {**input_data, "author": author}
         return _finalize_single(title, segments, url, input_data)
     title, segments, fetched_author = result
+    # 生成侧发布时间（2026-09-07）：fetch_subtitle_only 已把 view API 的 pubdate
+    # 存入 fetch.LAST_PUBDATE；调用方未显式传入时注入保存链路。
+    if not input_data.get("publish_time") and getattr(fetch, "LAST_PUBDATE", 0):
+        input_data = {**input_data, "publish_time": fetch.LAST_PUBDATE}
     if not segments:
         return {
             "success": False,
@@ -760,6 +845,7 @@ def _finalize_single(title, segments, url, input_data, visual_context: str = "")
             "tags": tags,
             "raw_file": raw_file,
             "folder": folder,
+            "publish_time": publish_time,
         }
 
     return {

@@ -1,33 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""scripts/audit_sync.py — Obsidian 主库 → 飞书镜像 的一致性审计 + 幂等补传。
+"""scripts/audit_sync.py — Obsidian vault → 飞书 对账/补传（薄壳，2026-09-07 任务5）。
 
-设计目标（2026-09-05 重做）：Obsidian 是主归档，用户持续在 Obsidian 写新笔记，
-希望整个库（旧镜像 + 新写）镜像到飞书作为副本。本脚本把"飞书缺的 Obsidian 笔记"
-幂等补传，且**绝不重复推送、绝不删除任何侧数据**。
+对账 + 幂等补传 + 死链清理 + 登记表 link 回填的**全部逻辑已收编**到
+scripts/vault_lifecycle.py 的 `_run_push`（PLAN-20260906 任务5）；
+本文件只保留可复用原语（parse_frontmatter / collect_obs / collect_feishu /
+classify_missing / classify_only / push_missing 等，供 vault_lifecycle 与测试引用），
+CLI 侧做纯转发：--fix/--only/--obs-root 参数语义不变。
 
-身份判定优先级（避免误判重复 / 结构漂移漏判）：
-  1. feishu_node_token（frontmatter）—— 推送后写回，最强；改名/挪位都不重复
-  2. source_url（frontmatter）   —— 指向飞书原文档，提取 token 匹配（覆盖 923 镜像篇）
-  3. 路径+标题（path/title）     —— 兜底（新笔记首推、尚无 token 时）
-只要任一身份命中"已在飞书"，即跳过；只推真正缺的。
+身份判定优先级（防误判重复）：feishu_node_token > source_url 提取 token > 路径+标题。
+孤儿（飞书有、Obsidian 无）只报告不处理。
 
-推送成功后把飞书节点 token 写回笔记 frontmatter（feishu_node_token:），
-使后续重跑按 token 精确匹配，不依赖文件夹结构是否对齐。
-
-孤儿（飞书有、Obsidian 无）只报告不处理（用户确认不需删）。
-
-用法：
+用法（语义与旧版一致）：
   python scripts/audit_sync.py                 # 仅报告差异（不改数据）
-  python scripts/audit_sync.py --fix           # 报告 + 幂等补传（并写回 feishu_node_token）
-  python scripts/audit_sync.py --only PATH      # 只处理单篇（测试/定点补传）
-  python scripts/audit_sync.py --obs-root X --feishu-node Y
-也可被监控脚本（audit_sync_watchdog.py）周期调用。
+  python scripts/audit_sync.py --fix           # 对账 + 幂等补传（并写回 feishu_node_token）
+  python scripts/audit_sync.py --only PATH     # 只处理单篇（测试/定点补传）
+  python scripts/audit_sync.py --obs-root X    # 覆盖 vault 根
+也可被监控脚本（audit_sync_watchdog.py）周期调用（其仅传 --fix，完全兼容）。
 """
 import os
 import re
 import sys
-import json
 import argparse
 
 # 笔记前导 YAML frontmatter 块（---...---），推送飞书时整体剥掉，只留正文。
@@ -41,8 +34,6 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(os.path.join(ROOT, ".env"))
 
 from articles.feishu import FeishuOutput, _sanitize_title  # noqa: E402
-
-OBS_ROOT = os.getenv("OBSIDIAN_VAULT_PATH", "")
 
 # 跳过的中间产物 / 隐藏目录
 SKIP_FILE_PREFIXES = ("_summary_", "_raw_", ".", "~")
@@ -258,115 +249,27 @@ def push_missing(feishu: FeishuOutput, missing: list) -> tuple:
     return created, skipped, failed, token_written
 
 
-def run_audit(fix: bool = False, obs_root: str = None, feishu_node: str = None,
-              only: str = None) -> tuple:
-    """执行审计，返回 (missing_in_feishu: list, orphan_in_feishu: list)。
-
-    仅在 fix=True 时改动数据（补传缺飞书的笔记 + 写回 token）。绝不删除任何侧的数据。
-    """
-    feishu = FeishuOutput()
-    if not feishu.is_available():
-        print("⚠️ 飞书不可用（需 FEISHU_WIKI_SPACE + lark-cli），无法审计，退出")
-        return [], []
-    root = obs_root or OBS_ROOT
-    if not root or not os.path.isdir(root):
-        print(f"⚠️ Obsidian 成品根不存在：{root}")
-        return [], []
-    parent = feishu_node or feishu.wiki_parent_node
-    if not parent:
-        print("⚠️ 未配置 FEISHU_WIKI_PARENT_NODE，退出")
-        return [], []
-
-    print(f"📂 Obsidian 根：{root}")
-    print(f"📁 飞书根节点：{parent}")
-
-    obs = collect_obs(root)
-    if only:
-        # 单篇轻量模式：不扫整树(963 节点)，按本地身份 + 目标文件夹查重，O(1) 而非 O(整树)
-        only_path = os.path.abspath(only)
-        obs = {k: v for k, v in obs.items() if os.path.abspath(v) == only_path}
-        if not obs:
-            print(f"⚠️ --only 指定的文件不在 Obsidian 成品树内或无 .md：{only}")
-            return [], []
-        missing_in_feishu = classify_only(feishu, only_path, root)
-        orphan_in_feishu = []
-        print(f"\n=== 单篇审计（{only_path}）===")
-        print(f"待补(缺飞书)：{len(missing_in_feishu)} 篇")
-        for k, _ in missing_in_feishu:
-            print(f"  + {k}")
-        if fix:
-            if missing_in_feishu:
-                c, s, f, tw = push_missing(feishu, missing_in_feishu)
-                print(f"\n=== 补传汇总 ===\n新增：{c}  跳过(已存在)：{s}  失败：{f}  "
-                      f"写回token：{tw}")
-                # 复验（#7）：目标文件夹再查一次，断言归零
-                remain = classify_only(feishu, only_path, root)
-                print(f"复验后缺飞书：{len(remain)} 篇"
-                      + ("  ✅ 已同步" if not remain else "  ⚠️ 仍有缺口"))
-            else:
-                print("\n✓ 该篇已在飞书，无需补传")
-        return missing_in_feishu, orphan_in_feishu
-
-    fei = collect_feishu(feishu, parent)
-    fei_keys = set(fei.keys())
-    fei_tokens = set(fei.values())
-
-    obs_keys = set(obs)
-    fei_keyset = fei_keys
-
-    missing_in_feishu = classify_missing(obs, fei_keyset, fei_tokens)
-    orphan_in_feishu = sorted(fei_keyset - obs_keys)  # 飞书有、Obsidian 无 → 待人工复核
-
-    print(f"\n=== 一致性报告 ===")
-    print(f"Obsidian 成品：{len(obs_keys)} 篇")
-    print(f"飞书文档    ：{len(fei_keyset)} 篇")
-    print(f"缺飞书（待补）：{len(missing_in_feishu)} 篇")
-    print(f"飞书孤儿（待复核，只报告不删）：{len(orphan_in_feishu)} 篇")
-
-    if missing_in_feishu:
-        print("\n--- 缺飞书（Obsidian 有、飞书无）---")
-        for k in missing_in_feishu:
-            print(f"  + {k}")
-    if orphan_in_feishu:
-        print("\n--- 飞书孤儿（飞书有、Obsidian 无；只报告不删，需人工复核）---")
-        for k in orphan_in_feishu:
-            print(f"  ? {k}")
-
-    if fix and missing_in_feishu:
-        print("\n=== 开始补传 ===")
-        c, s, f, tw = push_missing(feishu, missing_in_feishu)
-        print(f"\n=== 补传汇总 ===\n新增：{c}  跳过(已存在)：{s}  失败：{f}  "
-              f"写回token：{tw}")
-        # 复验（#7）：重算缺飞书，断言归零
-        print("\n=== 复验 ===")
-        obs2 = collect_obs(root)
-        fei2 = collect_feishu(feishu, parent)
-        remain = classify_missing(obs2, set(fei2.keys()), set(fei2.values()))
-        print(f"复验后缺飞书：{len(remain)} 篇"
-              + ("  ✅ 已全部同步" if not remain else "  ⚠️ 仍有缺口，见上"))
-        for k in remain:
-            print(f"  + {k}")
-        return remain, orphan_in_feishu
-    elif fix:
-        print("\n✓ 无缺口，无需补传")
-
-    return missing_in_feishu, orphan_in_feishu
-
-
 def main():
-    import argparse as _ap
-    p = _ap.ArgumentParser(description="Obsidian 主库 → 飞书镜像 一致性审计/补传")
-    p.add_argument("--fix", action="store_true", help="缺飞书的笔记自动幂等补传(并写回 token)")
-    p.add_argument("--only", default=None, help="只处理单篇笔记(路径)，用于测试/定点补传")
-    p.add_argument("--obs-root", default=OBS_ROOT, help="Obsidian 成品根（覆盖 OBSIDIAN_VAULT_PATH）")
-    p.add_argument("--feishu-node", default=None, help="飞书根节点 token（覆盖 FEISHU_WIKI_PARENT_NODE）")
+    p = argparse.ArgumentParser(
+        description="Obsidian vault → 飞书 对账/补传（薄壳，逻辑在 vault_lifecycle._run_push）")
+    p.add_argument("--fix", action="store_true",
+                   help="缺飞书的笔记自动幂等补传(并写回 token)")
+    p.add_argument("--only", default="", help="只处理单篇笔记(路径)，用于测试/定点补传")
+    p.add_argument("--obs-root", dest="obs_root", default="",
+                   help="Obsidian 成品根（覆盖 OBSIDIAN_VAULT_PATH）")
+    p.add_argument("--feishu-node", dest="feishu_node", default="",
+                   help="[废弃] 飞书根节点参数已不再使用")
     args = p.parse_args()
-
-    missing, _ = run_audit(fix=args.fix, obs_root=args.obs_root,
-                           feishu_node=args.feishu_node, only=args.only)
-
-    # 退出码：仅报告模式且有缺口时返回 1（便于编排/Cron 感知失败）
-    if missing and not args.fix:
+    if args.feishu_node:
+        print("[废弃] --feishu-node 已废弃：飞书根节点统一取 FEISHU_WIKI_PARENT_NODE 配置。")
+    import vault_lifecycle as vl  # 延迟导入：允许测试以 fake 拦截
+    res = vl._run_push(apply=args.fix, vault=args.obs_root or "",
+                       only=args.only or "")
+    if res is None:
+        print("❌ 对账补传未执行（门禁未过，见上方日志）。")
+        sys.exit(1)
+    if not args.fix and res.get("missing", 0) > 0:
+        print(f"⚠️ 飞书缺 {res['missing']} 篇（仅报告模式）。")
         sys.exit(1)
 
 

@@ -434,7 +434,12 @@ def _start_poll_daemon() -> None:
 
     try:
         auth_py = os.path.join(_HERE, "_auth.py")
-        log_fd = open(_POLL_LOG, "a", encoding="utf-8")
+        # 按天滚动（防膨胀）：daemon 存活期间 fd 固定在启动当天文件，
+        # 重启自然切天；打开前顺手清理过期日志。
+        from shared.rolling_log import cleanup_expired, rolling_log_path
+        cleanup_expired(_POLL_LOG)
+        log_path = rolling_log_path(_POLL_LOG)
+        log_fd = open(log_path, "a", encoding="utf-8")
         proc = subprocess.Popen(
             [sys.executable, "-u", auth_py, "poll"],  # -u: unbuffered stdout/stderr
             cwd=_HERE, stdout=log_fd, stderr=subprocess.STDOUT,
@@ -445,7 +450,7 @@ def _start_poll_daemon() -> None:
                 f.write(str(proc.pid))
         except Exception:
             pass
-        print(f"[poll-daemon] 已启动 poll 进程 (PID={proc.pid})，日志: {_POLL_LOG}", file=sys.stderr)
+        print(f"[poll-daemon] 已启动 poll 进程 (PID={proc.pid})，日志: {log_path}", file=sys.stderr)
     except Exception as e:
         print(f"[poll-daemon-fail] {e}", file=sys.stderr)
 

@@ -8,12 +8,21 @@
 - raw : 第{page:02d}集_{sanitized_part}_raw.md
 - body: 第{page:02d}集_{sanitized_part}.body.md   ← 注意是「点」分隔，非下划线
 - 落盘: 第{page:02d}集_{sanitized_part}.md
+
+集数一致性校验（拍板3，2026-09-07）：parse_landed_name / find_page_conflict /
+scan_landed_names 三函数只认「落盘成稿」命名——同页码已有不同标题成稿时，
+新条目跳过（保留原标题，force 也绕不过），杜绝 Penny-Weight 类换标题重抓
+导致的整集重复落盘。基线由 _collect_landed_series_names 汇总
+（本地 notes 目录 + vault 容器）。
 """
 import os
 import re
 
+from shared.sanitize import sanitize_filename
+
 _RAW_RE = re.compile(r"^第(\d+)集_(.*?)(_raw)?\.md$")
 _BODY_RE = re.compile(r"^第(\d+)集_(.*?)\.body\.md$")
+_LANDED_RE = re.compile(r"^第(\d+)集_(.+)$")
 
 
 def parse_raw_name(filename: str):
@@ -69,3 +78,57 @@ def detect_stray_underscore(series_dir: str) -> list:
 def normalized_base(page: int, part: str) -> str:
     """生成 第NN集_xxx 基础名（不含后缀）。part 应已 sanitize。"""
     return f"第{page:02d}集_{part}"
+
+
+def parse_landed_name(filename: str):
+    """落盘成稿名（第NN集_xxx.md 或 base）→ (page, part)；raw/body/总览等返回 (None, None)。
+
+    集数一致性校验（拍板3）的解析基座：只认「最终成稿」命名，
+    中间产物（_raw.md / .body.md）与容器内其他文件（总览、随手记）一律不解析。
+    """
+    name = os.path.basename(str(filename or ""))
+    if name.endswith("_raw.md") or name.endswith(".body.md"):
+        return None, None
+    if name.endswith(".md"):
+        name = name[: -len(".md")]
+    m = _LANDED_RE.match(name)
+    if not m:
+        return None, None
+    return int(m.group(1)), m.group(2)
+
+
+def find_page_conflict(existing_names: list, page: int, part: str) -> str:
+    """同页码、sanitize 后不同标题 → 返回冲突名；否则 ""。
+
+    不受 force 影响（拍板3：确定性防护，重跑也不得覆盖已有页码的其他标题）。
+    标题按 sanitize 后比较，空白折叠/非法字符差异视为同名。
+    """
+    new_part = sanitize_filename(part or "")
+    for name in existing_names or []:
+        p, ex_part = parse_landed_name(name)
+        if p is None or ex_part is None:
+            continue
+        if p == page and sanitize_filename(ex_part) != new_part:
+            return name
+    return ""
+
+
+def scan_landed_names(series_dirs: list) -> list:
+    """扫描系列目录（列表），返回落盘成稿 base 名（无 .md 后缀），去重。
+
+    目录缺失忽略、raw/body/非成稿文件排除。供 _collect_landed_series_names
+    汇总「本地 notes + vault 容器」两处已有成稿，作为页码冲突检测基线。
+    """
+    seen = []
+    for d in series_dirs or []:
+        if not d or not os.path.isdir(d):
+            continue
+        for f in os.listdir(d):
+            p, _part = parse_landed_name(f)
+            if p is None:
+                continue
+            if f.endswith(".md"):
+                f = f[: -len(".md")]
+            if f not in seen:
+                seen.append(f)
+    return seen

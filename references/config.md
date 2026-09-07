@@ -258,12 +258,13 @@ NOTE_GATE_THRESHOLD=85
 | `BILI_SHORT_DYNAMIC_MAX` | 80 | 短动态轻量化阈值（字）：净化后正文 ≤ 此值走「速览」，不走重总结模板 |
 | `FIRST_RUN_LIMIT` | 50 | 首跑每类型安全上限（实际受 `BILI_SAFETY_CAP`=50 夹取，防极端 UP 刷爆） |
 | `STATE_KEEP` | 1000 | 每源 `seen` 保留的最大 ID 数（`mark_seen` 按源裁剪，防 `state.json` 膨胀） |
+| `LOG_KEEP_DAYS` | 7 | 滚动日志/旧分片保留天数：`shared/rolling_log.py` 按天切文件（`foo.YYYYMMDD.log`）写入时惰性清理过期文件，`run_status/` 旧 run 分片同策略按 mtime 清理；适用于系列进度 / 扫码轮询 / CDP 启动 / 看护心跳 / 门禁拦截台账等全部滚动日志 |
 
 ### 公众号认证（非 `.env`）
 
 公众号经 `weread.111965.xyz` 转发发现新文，认证 token 落在 `monitors/.wechat_auth.json`（已 gitignore），是转发服务器自签 JWT，**数小时即失效**。`run.py` 检测到失效会弹二维码（`RELOGIN_QR:`）并阻塞等待扫码：交互式（Windows 本机）会话**扫到即刷新 token、本次自动继续抓取公众号源**（无需手动重跑）；若 `WECHAT_RELOGIN_WAIT`（默认 180s）内未扫码，则**本次跳过公众号源、保 B站照跑、下次运行恢复**；headless/自动化（`WECHAT_RELOGIN_WAIT=0`）下无人看码等价于跳过。无「稳 + 免费 + 免维护」方案，详见 `monitors/README.md` 注意事项。
 
-续期排查：扫码后仍未恢复公众号，先看 `monitors/.poll_daemon.log` 是否出现 `[poll-success]`（说明 daemon 抓到 token）；若只有 `[poll-error#n]` 或一直 `status=pending`，说明 weread proxy 当前不稳定（超时/5xx）或二维码 UUID 已过期（被微信扫码后服务端会很快销毁旧 UUID），重新触发一次 `run.py` 生成新二维码再扫即可。
+续期排查：扫码后仍未恢复公众号，先看当日滚动日志 `monitors/.poll_daemon.YYYYMMDD.log`（按天切文件，旧文件按 `LOG_KEEP_DAYS` 清理）是否出现 `[poll-success]`（说明 daemon 抓到 token）；若只有 `[poll-error#n]` 或一直 `status=pending`，说明 weread proxy 当前不稳定（超时/5xx）或二维码 UUID 已过期（被微信扫码后服务端会很快销毁旧 UUID），重新触发一次 `run.py` 生成新二维码再扫即可。
 
 ### 公众号历史回溯（backfill）`.env` 变量
 
@@ -318,7 +319,11 @@ python scripts/filter_pending.py
 - **重置工具**：`scripts/reset_up_backfill.py --uid <uid> --author <名> [--apply]`——
   用户清空某 UP 的 Obsidian 内容后成套清 fetch_results/dedup/series_state/本地系列
   文件夹（迁移到备份目录，可回滚）；vault 记录对账与超期文件报告见
-  `scripts/vault_lifecycle.py`。
+  `scripts/vault_lifecycle.py`；
+- **GC 不可再生域白名单（2026-09-07，P2-5）**：`.env` `GC_NONREGEN_HOSTS`（逗号分隔，
+  缺省 `mp.weixin.qq.com`）——`vault_lifecycle.py gc` 淘汰过期记录时，URL 命中不可再生
+  域的条目**永久保留**（公众号正文代理侧已不可达，删了就永远抓不回来；其余域过期
+  记录只清中间产物、可重抓再生）。
 
 **限速与风控防护（2026-09-03，两轮迭代）**——教训：零间隔连续抓 2 小时+ 会触发 B站 412 风控，且失败重试 + yt-dlp/ASR 兜底会让每条失败视频反而发出更多请求，越抓越拦：
 

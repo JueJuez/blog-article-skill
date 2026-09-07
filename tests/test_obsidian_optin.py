@@ -10,6 +10,7 @@
 import pytest
 
 from articles.manager import OutputManager
+from articles import manager as manager_mod
 from articles.feishu import FeishuOutput
 from articles.obsidian import ObsidianOutput
 from articles.local import LocalOutput
@@ -17,9 +18,14 @@ from articles.local import LocalOutput
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    # 清掉可能来自 .env 的持久开关，保证默认行为可测
+    # 清掉可能来自 .env 的持久开关，保证默认行为可测。
+    # 同时锁死 load_dotenv 单向锁（manager._env_loaded）：无论全量跑时 .env
+    # 是否已被先前测试加载进 os.environ，本文件所有测试都在「干净基线」下
+    # 运行，消除首次加载时序依赖（2026-09-07，test_mark_and_frontmatter 提前
+    # 触发首次加载暴露此缺陷）。
     monkeypatch.delenv("OBSIDIAN_WRITE", raising=False)
     monkeypatch.delenv("DISABLE_FEISHU_SYNC", raising=False)
+    monkeypatch.setattr(manager_mod, "_env_loaded", True)
 
 
 def _both_cloud_available(monkeypatch):
@@ -28,6 +34,10 @@ def _both_cloud_available(monkeypatch):
 
 
 def test_default_is_obsidian_only(monkeypatch):
+    # 项目默认（2026-09-04 起，由 .env 落地）：OBSIDIAN_WRITE=1 + DISABLE_FEISHU_SYNC=1
+    # → 默认只写本地 Obsidian，不写飞书。
+    monkeypatch.setenv("OBSIDIAN_WRITE", "1")
+    monkeypatch.setenv("DISABLE_FEISHU_SYNC", "1")
     _both_cloud_available(monkeypatch)
     mgr = OutputManager()
     names = {o.name for o in mgr.get_available_outputs()}

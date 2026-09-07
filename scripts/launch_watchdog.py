@@ -14,12 +14,19 @@ import sys
 import subprocess
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
+from shared.rolling_log import cleanup_expired, rolling_log_path  # noqa: E402
+
 PY = sys.executable
 WATCHDOG = os.path.join(BASE_DIR, "scripts", "migrate_watchdog.py")
-OUT = os.path.join(BASE_DIR, "scripts", "migrate_watchdog.log")
+OUT_BASE = os.path.join(BASE_DIR, "scripts", "migrate_watchdog.log")
 DETACHED = 0x00000008
 
 args = sys.argv[1:]
+cleanup_expired(OUT_BASE)  # 按天滚动（防膨胀），打开前顺手清理过期日志
+OUT = rolling_log_path(OUT_BASE)
 out = open(OUT, "a", encoding="utf-8")
 subprocess.Popen([PY, WATCHDOG] + args, cwd=BASE_DIR,
                  stdout=out, stderr=out, creationflags=DETACHED, close_fds=True)

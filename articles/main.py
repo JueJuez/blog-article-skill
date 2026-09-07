@@ -183,14 +183,18 @@ def generate_filename(title: str, url: str = "", category: str = "", publish_tim
         date_str = datetime.now().strftime('%Y%m%d')
     if category:
         safe_category = re.sub(r'[\\/:*?"<>|\n\r]', '_', category).strip()
-        filename = f"【{safe_category}】{safe_title[:50]}-{date_str}.md"
+        # 日期前缀强制（2026-09-07）：日期在最前，按名排序即按时间排序，
+        # 彻底取代此前「标题-日期」后缀格式（后缀排序错乱 + 同名不同日期不可区分）。
+        filename = f"{date_str}_【{safe_category}】{safe_title[:50]}.md"
     else:
-        filename = f"{safe_title[:50]}-{date_str}.md"
+        filename = f"{date_str}_{safe_title[:50]}.md"
     return filename
 
 
 # 最近一次降级暂存的 raw 文件路径（供 skill_main 降级返回时携带给外层/监控）
 _LAST_RAW_FILEPATH = ""
+# 最近一次降级时的发布时间（epoch 秒，2026-09-07 生成侧发布时间链路）
+_LAST_PUBLISH_TIME = 0
 
 
 def save_raw_content_to_file(content: str, title: str = "", prefix: str = "_raw_") -> str:
@@ -218,36 +222,14 @@ def save_summarized_from_file(filepath: str, original_url: str = "", author: str
 
 
 def _extract_title_from_summary(summarized_content: str) -> str:
-    lines = summarized_content.split('\n')
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith('**作者') or stripped.startswith('作者'):
-            j = i - 1
-            while j >= 0:
-                prev = lines[j].strip()
-                if prev and not re.match(r'^#\S+(?:\s+#\S+)*$', prev):
-                    return prev[:50]
-                j -= 1
-            break
-    for line in lines:
+    """去 H1（DECISION-20260907）：正文不再含一级标题/标签行，标题由 original_title/文件名承担；
+    本函数仅作「核心定位：」兜底提取，不再扫作者行上方（旧格式 H1 已废止）。"""
+    for line in summarized_content.split('\n'):
         stripped = line.strip()
         match = re.search(r'\*{0,2}核心定位\*{0,2}\s*[：:]\s*(.+)', stripped)
         if match:
             return match.group(1).strip()[:50]
     return ""
-
-
-def _yaml_frontmatter(meta: dict) -> str:
-    """把 meta 渲染成 YAML frontmatter（无 pyyaml 依赖）。"""
-    lines = []
-    for k, v in meta.items():
-        if isinstance(v, dict):
-            lines.append(f"{k}:")
-            for kk, vv in v.items():
-                lines.append(f"  {kk}: {vv}")
-        else:
-            lines.append(f"{k}: {v if v is not None else ''}")
-    return "---\n" + "\n".join(lines) + "\n---\n\n"
 
 
 def _freshness_label(publish_time: int) -> str:
@@ -275,13 +257,15 @@ def _sanitize_folder(folder: str) -> str:
     return "/".join(parts)
 
 
-def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False):
+def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "") -> tuple:
     """保存已总结的文章内容到所有可用目标。
 
     Args:
-        meta: A4 增强，含 {'usage': {...}, 'model': str}；存在时写入笔记 frontmatter
-        note_type: 笔记类型，写入 frontmatter 便于检索
-        publish_time: 内容原始发布时间（epoch 秒）；>0 时文件名日期与 frontmatter 用发布时间，
+        meta: 保留参数兼容；frontmatter 已停产（PLAN-20260906 任务2），检索改走去重登记表
+        note_type: 保留参数兼容；不再写入笔记 frontmatter
+        content_key: 无 original_url 的粘贴原文场景，按此原文内容哈希登记去重；
+                     有 url 时忽略。两者皆无则本篇不进登记表。
+        publish_time: 内容原始发布时间（epoch 秒）；>0 时文件名日期用发布时间，
                       而非处理时间——投资类内容时效性强，记录「内容何时发的」才有意义。
         folder: 归档子目录（如「投资交易/舟亦横」）。非空时笔记落
                 Obsidian `<vault>/<folder>/` 与飞书对应层级容器节点下（不进「待归类」）；
@@ -338,24 +322,6 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
         tags=tags, add_metadata=True, publish_time=publish_time
     )
 
-    # A4：frontmatter（常驻）。新鲜度 + 发布时间用于时效感知；token 用量在走 AI 时补。
-    fm = {}
-    if original_url:
-        fm["source_url"] = original_url
-    if note_type:
-        fm["note_type"] = note_type
-    fresh = _freshness_label(publish_time)
-    if fresh:
-        fm["freshness"] = fresh
-    if publish_time and publish_time > 0:
-        fm["published_at"] = datetime.fromtimestamp(publish_time).isoformat(timespec="seconds")
-    if meta and meta.get("usage"):
-        fm["model"] = meta.get("model")
-        fm["tokens"] = meta.get("usage")
-        fm["generated_at"] = datetime.now().isoformat(timespec="seconds")
-    if fm:
-        formatted_note = _yaml_frontmatter(fm) + formatted_note
-
     # ── P2 Draft-only 模式（并行 worker 用，避免并发落飞书；Landing 阶段统一落盘）──
     # 控制来源：显式参数优先；否则读环境变量 DRAFT_ONLY（worker 子进程启动时设置）。
     # 含 folder 的 filename（如「投资交易/舟亦横/x.md」）在 _drafts 下保留层级，Landing 按原 filename 落盘。
@@ -382,6 +348,11 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
         return formatted_note, dp
 
     manager.save_all(formatted_note, filename, title=title)
+
+    # mark 收敛（PLAN-20260906 任务2）：登记只发生在本保存点，调用方不再各自 mark。
+    # url 优先；粘贴原文（无 url）按 content_key 哈希登记；两者皆无则不登记。
+    if original_url or content_key:
+        dedup.mark_summarized(url=original_url, content=content_key, title=title, filename=filename)
 
     # 总览索引维护（仅监控路径 folder 非空时）：落盘成功后把本篇插入账号容器总览，
     # 解决飞书按创建时间排、补历史数据后顺序乱的问题（用户 2026-08-25 决策）。
@@ -541,8 +512,9 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None,
     if ai_result.get("summary") is None:
         print("\n⚠️ AI总结暂不可用，已成功抓取文章内容")
         raw_filepath = save_raw_content_to_file(article_content, title=original_title)
-        global _LAST_RAW_FILEPATH
+        global _LAST_RAW_FILEPATH, _LAST_PUBLISH_TIME
         _LAST_RAW_FILEPATH = raw_filepath
+        _LAST_PUBLISH_TIME = publish_time
         print(f"   📄 原始内容已暂存至: {raw_filepath}")
         print("   💡 外层对话可直接 Read 该文件获取完整原文，避免终端截断")
         return None, article_content, original_url, original_title, None
@@ -558,10 +530,9 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None,
         formatted_note, filename = save_summarized_article(
             summarized_content, original_url, author, tags, original_title,
             meta={"usage": usage, "model": model}, note_type=note_type,
-            publish_time=publish_time, folder=folder, obsidian=obsidian
+            publish_time=publish_time, folder=folder, obsidian=obsidian,
+            content_key=article_content
         )
-        # A2：记录去重
-        dedup.mark_summarized(url=original_url, content=article_content, title=original_title, filename=filename)
         print("\n✅ 文章总结与保存流程完成！")
         return summarized_content, formatted_note, filename, original_title, None
     except Exception as e:
@@ -620,10 +591,16 @@ def save_summary_only(input_data: dict) -> dict:
     # 在 folder 自动路由之前（违规内容不触发路由副作用）。拦截不落盘、不 dedup——
     # 子 Agent 可按返回的 issues 修复后重试；force 只豁免 dedup，不豁免质量底线。
     from prompts.verifier import verify_note_mechanical
+    from shared.gate_blockers import log_gate_block
     _gate = verify_note_mechanical(summarized_content, input_data.get('note_type', ''),
                                    source_url=original_url)
     if not _gate["passed"]:
         print("⛔ 机械门禁拦截：" + "；".join(_gate["issues"]))
+        # 拦截事件持久化（gate_blockers 台账）：队列路径此前无拦截记录，无法区分
+        # 「未消费」与「被拦」，观测缺口由此补齐；台账失败不影响主流程。
+        log_gate_block(source="queue", note_type=input_data.get('note_type', ''),
+                       url=original_url or "", title=original_title or "",
+                       issues=_gate["issues"], warnings=_gate.get("warnings", []))
         return {'success': False, 'message': 'VERIFIER_FAILED:' + '；'.join(_gate["issues"]),
                 'issues': _gate["issues"]}
     # L8 修复（2026-09-03）：自带总结的保存路径 folder 为空时自动走统一路由器，
@@ -637,7 +614,6 @@ def save_summary_only(input_data: dict) -> dict:
             tags=tags, original_title=original_title, publish_time=publish_time,
             folder=folder, obsidian=obsidian
         )
-        dedup.mark_summarized(url=original_url, title=original_title, filename=filename)
         return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note}
     except Exception as e:
         return {'success': False, 'message': f'保存失败: {str(e)}'}
@@ -708,6 +684,7 @@ def skill_main(input_data: dict) -> dict:
                 'prompt': get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK, 'original_url': original_url,
                 'original_title': original_title, 'author': author, 'tags': tags,
                 'raw_file': _LAST_RAW_FILEPATH, 'folder': folder, 'obsidian': obsidian,
+                'publish_time': _LAST_PUBLISH_TIME or publish_time,
             }
         else:
             return {'success': False, 'message': '内容获取失败'}
@@ -715,14 +692,15 @@ def skill_main(input_data: dict) -> dict:
         return {'success': False, 'message': f'执行失败: {str(e)}'}
 
 
-def skill_continue_summary(article_content: str, summary_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", obsidian: bool = False, folder: str = "") -> dict:
+def skill_continue_summary(article_content: str, summary_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", obsidian: bool = False, folder: str = "", publish_time: int = 0) -> dict:
     if not summary_content or not summary_content.strip():
         return {'success': False, 'message': '总结内容为空，请提供有效的总结内容'}
     try:
         folder, tags = autoroute_folder(folder, author, original_url, original_title, tags)
         formatted_note, filename = save_summarized_article(
             summarized_content=summary_content, original_url=original_url, author=author,
-            tags=tags, original_title=original_title, obsidian=obsidian, folder=folder
+            tags=tags, original_title=original_title, obsidian=obsidian, folder=folder,
+            publish_time=publish_time
         )
         return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note}
     except Exception as e:

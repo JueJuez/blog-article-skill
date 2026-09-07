@@ -1,9 +1,10 @@
-"""机械质量门禁测试（DECISION-20260905）：verifier 落盘前零 AI 校验。
+"""笔记机械质量门禁测试（DECISION-20260905 / DECISION-20260907）：verifier 落盘前零 AI 校验。
 
-保护需求（历史小问题复盘）：模型输出偶发缺/多主标题、正文写来源链接
-（formatter 权威追加后出现两个链接）、篇幅严重偏离模板区间。这些在
-FORCE_AGENT_MODE=1 主路径（save_summary_only）上无任何校验环节——
-AI 审核员默认关且无外部 AI 时返回 None，兜不住，必须机械拦截。
+保护需求（历史小问题复盘）：模型输出偶发正文写来源链接（formatter 权威追加后
+出现两个链接）、篇幅严重偏离模板区间；2026-09-07 起去 H1（标题由文件名/飞书
+节点标题承担），正文出现 # 一级标题改为拦截，代码围栏内 # 注释不误伤。这些在
+FORCE_AGENT_MODE=1 主路径（save_summary_only）上无任何校验环节——AI 审核员
+默认关且无外部 AI 时返回 None，兜不住，必须机械拦截。
 """
 import re
 import sys
@@ -26,49 +27,77 @@ def _body(n: int) -> str:
     return "字" * n
 
 
-VALID_NOTE = "# 合规标题\n\n" + _body(1000)  # key_points 区间 (800, 1500) 内
+VALID_NOTE = _body(1000)  # key_points 区间 (800, 1500) 内（去 H1：正文不带 # 标题）
 
 
-class TestH1:
-    """主标题必备项：单 H1 通过，缺失或重复拦截。"""
+class TestNoH1:
+    """去 H1（DECISION-20260907）：正文不含一级标题通过，出现即拦截；围栏内 # 注释不算。"""
 
-    def test_single_h1_passes(self):
-        res = verify_note_mechanical("# 标题\n\n正文若干", note_type="")
+    def test_no_h1_passes(self):
+        res = verify_note_mechanical("没有主标题的正文", note_type="")
         assert res["passed"] is True
         assert res["issues"] == []
 
-    def test_no_h1_fails(self):
-        res = verify_note_mechanical("没有主标题的正文", note_type="")
+    def test_h1_fails(self):
+        res = verify_note_mechanical("# 标题\n\n正文若干", note_type="")
         assert res["passed"] is False
-        assert any("主标题" in i for i in res["issues"])
+        assert any("一级标题" in i for i in res["issues"])
 
     def test_double_h1_fails(self):
         res = verify_note_mechanical("# 一\n\n正文\n\n# 二", note_type="")
         assert res["passed"] is False
-        assert any("主标题" in i for i in res["issues"])
+        assert any("一级标题" in i for i in res["issues"])
+
+    def test_code_fence_hash_lines_ignored(self):
+        # 去围栏后扫描：代码块内 # 注释行不得计为一级标题（旧逻辑双 H1 误伤）
+        content = _body(1000) + "\n\n```bash\n# 安装依赖\npip install x\n# 验证\npip check\n```\n"
+        res = verify_note_mechanical(content, note_type="")
+        assert res["passed"] is True
+        assert res["issues"] == []
+
+
+class TestExtractTitleFromSummary:
+    """去 H1 后标题提取（DECISION-20260907）：不再扫作者行上方（无 H1 可取），仅认「核心定位：」兜底。"""
+
+    def test_no_core_line_returns_empty(self):
+        # 作者行上方无标题时返回空串（original_title 缺省由文件名承担）
+        assert articles_main._extract_title_from_summary("**作者**：张三\n\n正文若干") == ""
+
+    def test_core_line_extracted(self):
+        md = "**作者**：张三\n\n**核心定位**：这篇讲复利的底层逻辑\n\n正文"
+        assert articles_main._extract_title_from_summary(md) == "这篇讲复利的底层逻辑"
+
+    def test_legacy_h1_header_not_extracted(self):
+        # 旧格式（H1+标签行+作者行）不再取 H1 当标题：去 H1 后标题由文件名承担
+        md = "# 旧格式标题\n\n#标签1 #标签2\n\n**作者**：张三\n\n正文"
+        assert articles_main._extract_title_from_summary(md) == ""
+
+    def test_truncated_to_50_chars(self):
+        md = "**核心定位**：" + "长" * 80
+        assert articles_main._extract_title_from_summary(md) == "长" * 50
 
 
 class TestSourceLink:
     """来源链接卫生：正文不写来源链接行，避免 formatter 权威追加后出现两个链接。"""
 
     def test_no_source_link_passes(self):
-        res = verify_note_mechanical("# 标题\n\n纯正文", note_type="")
+        res = verify_note_mechanical("纯正文", note_type="")
         assert res["passed"] is True
 
     def test_source_link_line_fails(self):
-        note = "# 标题\n\n**来源链接**：[原文](https://a.com)\n\n正文"
+        note = "**来源链接**：[原文](https://a.com)\n\n正文"
         res = verify_note_mechanical(note, note_type="")
         assert res["passed"] is False
         assert any("来源链接" in i for i in res["issues"])
 
     def test_source_url_in_body_fails(self):
-        note = "# 标题\n\n正文引用了 https://a.com/post/1 当论据"
+        note = "正文引用了 https://a.com/post/1 当论据"
         res = verify_note_mechanical(note, note_type="", source_url="https://a.com/post/1")
         assert res["passed"] is False
         assert any("来源链接" in i for i in res["issues"])
 
     def test_empty_source_url_no_false_positive(self):
-        res = verify_note_mechanical("# 标题\n\n普通正文", note_type="", source_url="")
+        res = verify_note_mechanical("普通正文", note_type="", source_url="")
         assert res["passed"] is True
 
 
@@ -76,33 +105,33 @@ class TestWordCount:
     """篇幅区间：硬阈值（<min*0.6 或 >max*1.5）拦截，轻微越界仅 warning。"""
 
     def test_in_range_passes(self):
-        res = verify_note_mechanical("# 标题\n\n" + _body(1000), note_type="key_points")
+        res = verify_note_mechanical(_body(1000), note_type="key_points")
         assert res["passed"] is True
 
     def test_severely_low_fails(self):
         # 400 字 < 800*0.6=480 → 硬拦
-        res = verify_note_mechanical("# 标题\n\n" + _body(400), note_type="key_points")
+        res = verify_note_mechanical(_body(400), note_type="key_points")
         assert res["passed"] is False
         assert any("字数" in i for i in res["issues"])
 
     def test_severely_high_fails(self):
         # 2500 字 > 1500*1.5=2250 → 硬拦
-        res = verify_note_mechanical("# 标题\n\n" + _body(2500), note_type="key_points")
+        res = verify_note_mechanical(_body(2500), note_type="key_points")
         assert res["passed"] is False
         assert any("字数" in i for i in res["issues"])
 
     def test_slightly_out_of_range_warns_only(self):
         # 700 字 ∈ (480, 800)：轻微越界不拦，仅提示
-        res = verify_note_mechanical("# 标题\n\n" + _body(700), note_type="key_points")
+        res = verify_note_mechanical(_body(700), note_type="key_points")
         assert res["passed"] is True
         assert res["warnings"] and any("字数" in w for w in res["warnings"])
 
     def test_unknown_note_type_skips_word_count(self):
-        res = verify_note_mechanical("# 标题\n\n" + _body(3), note_type="mystery")
+        res = verify_note_mechanical(_body(3), note_type="mystery")
         assert res["passed"] is True
 
     def test_empty_note_type_skips_word_count(self):
-        res = verify_note_mechanical("# 标题\n\n" + _body(3), note_type="")
+        res = verify_note_mechanical(_body(3), note_type="")
         assert res["passed"] is True
 
 

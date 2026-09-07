@@ -481,6 +481,16 @@ def _extract_publish_time(soup: BeautifulSoup, html: str = "") -> int:
     return 0
 
 
+def _scys_publish_time_from_body(body: str) -> int:
+    """从 scys 抓取正文中提取发布时间（独立行 `YYYY-MM-DD HH:MM`）。
+
+    scys CDP 抓取的正文含一行独立的发布时间，页面 meta 无可靠字段，故从正文
+    解析（须整行匹配，行内出现的时间串不算）；缺失/不匹配返回 0。
+    """
+    m = re.search(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\s*$", body or "", re.MULTILINE)
+    return _parse_date_to_epoch(m.group(1)) if m else 0
+
+
 # ---------------------------------------------------------------------------
 # 对外主函数
 # ---------------------------------------------------------------------------
@@ -519,7 +529,7 @@ def fetch_web_content(url: str, cdp_on_fail: bool = True):
         if len(body.strip()) < 100:
             print("❌ scys 抓取正文过短，视为失败")
             return None
-        return (result["title"], body, 0)
+        return (result["title"], body, _scys_publish_time_from_body(body))
 
     # 微信公众号文章：直连常撞墙，先试直连，失败按 cdp_on_fail 处理（见 _fetch_wechat_article）
     if is_wechat_article_url(url):

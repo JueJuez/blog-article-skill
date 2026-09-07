@@ -12,7 +12,7 @@
 | `bilibili.py` | B站UP主源（官方 API + WBI 签名，带登录 Cookie） |
 | `ad_filter.py` | 广告过滤：整篇纯广告 skip / 干货夹广告净化保留 |
 | `run.py` | CLI + 调度入口（`--apply` 直接调总结管线）；末尾自动调 `drain_series_pending` 收尾系列课；`--apply` 时按 `subscriptions.json` 的 `scys` 列表逐领域子进程跑 `scripts/scys_batch_fetch.py` 增量抓新帖（见下方「scys 新帖监控」） |
-| `_auth.py` | 公众号扫码登录 / 轮询换 JWT（落盘 `.wechat_auth.json`，日志 `.poll_daemon.log`） |
+| `_auth.py` | 公众号扫码登录 / 轮询换 JWT（落盘 `.wechat_auth.json`，日志 `.poll_daemon.YYYYMMDD.log`，按天滚动） |
 | `apply_pending_series.py` | 系列课降级待总结队列 drainer：`drain_series_pending` 被 `run.py` 自动调用，把 `pending_series.json` 里已有 `.body.md` 的集串行落盘 + 重生成总览（详见下方「系列课全自动闭环」） |
 | `../shared/series_state.py` | 系列课增量去重状态（`monitors/series_state.json`）：记录每集 base/URL 是否已总结，每日增量只抓未总结的集 |
 
@@ -98,10 +98,10 @@
 2. **公众号 token 不稳定**：`weread.111965.xyz` 转发服务器共享 IP 被微信读书风控，JWT 数小时即失效，**无「稳 + 免费 + 免维护」方案**。`run.py` 检测到失效 → 自动弹二维码（`RELOGIN_QR:` 路径 + `_notify_user` 弹图片查看器+提示框），交互式（Windows 本机）会话用户扫码后续期，**本次运行即继续抓取**公众号（刷新 token 后重试整轮）；headless/自动化下无人看码，等价于本次跳过公众号、保 B站照跑。
    - **续期流程**：`run.py` 检测到 token 失效（或全源 discover 持续 401 兜底）→ `trigger_relogin()` 生成二维码（`login_qr.png`）+ 启动后台轮询 daemon（`python _auth.py poll`）；用微信扫该码即自动把 JWT 落盘 `.wechat_auth.json`，**本次运行立即续抓**（无需下次重跑）。
    - **2026-07-28 修复（过期不再静默丢源）**：`is_token_valid` 探针原打 `list_articles`（过期返回 200 空、失明）→ 过期 token 被误判有效、不弹码、公众号静默全挂。改用 `resolve_mp(force=True)`（过期稳定 401）；并新增「全源零结果 + 持续 401」兜底自动重登。回归测试 `tests/test_wechat_relogin_fallback.py`。
-   - **可观测性**：轮询 daemon 输出写入 `monitors/.poll_daemon.log`（含 `[poll-start]` / `[polling] status=...` / `[poll-error#n]` / `[poll-success]`）；巡检该日志可确认扫码是否被捕获、API 是否在超时。
+   - **可观测性**：轮询 daemon 输出写入 `monitors/.poll_daemon.YYYYMMDD.log`（按天滚动，`LOG_KEEP_DAYS` 默认 7 天自动清理；含 `[poll-start]` / `[polling] status=...` / `[poll-error#n]` / `[poll-success]`）；巡检当日日志可确认扫码是否被捕获、API 是否在超时。
    - **防重复弹窗**：`trigger_relogin()` 带跨进程互斥锁（Windows `msvcrt.locking`）+ 5 分钟幂等 TTL，多进程同时触发（如手动 + 定时重复跑）也只弹一个码、只起一个轮询 daemon（PID 锁定于 `.poll_daemon.pid`）。
    - **失败容忍**：`poll_login` API 偶发超时/5xx 时，`_auth.py` 指数退避重试（3s→6s→…→30s，连续 10 次失败退出），不会因一次抖动就放弃。
-   - ⚠️ 同一二维码（UUID）被微信扫码后，weread 服务端会很快销毁旧 UUID（再 poll 返回 500）。若扫完仍 0 条，优先查 `.poll_daemon.log` 是否捕获到 `[poll-success]`；未捕获则重新触发一次让 `run.py` 生成新二维码再扫。
+   - ⚠️ 同一二维码（UUID）被微信扫码后，weread 服务端会很快销毁旧 UUID（再 poll 返回 500）。若扫完仍 0 条，优先查当日滚动日志 `.poll_daemon.YYYYMMDD.log` 是否捕获到 `[poll-success]`；未捕获则重新触发一次让 `run.py` 生成新二维码再扫。
 3. **自建 wewe-rss 救不了公众号稳定性**：其 `PLATFORM_URL` 默认仍指向同一转发服务器，脏活没变。
 4. **B站 `-352` 真因**：缺 `dm_img_*` WebGL 指纹 + 无登录态 + `web_location` 写错；已带 `BILI_COOKIE` + 指纹修复。付费 / 粉丝可见内容 `code=-404/-403` 直接跳过不重试。
 5. **`state.json` 膨胀**：`mark_seen` 按源裁剪到 `STATE_KEEP`（默认 1000，首跑单源约 100 ID，留 10× 余量）。上限取决于"窗口内 ID 数"，与"运行次数"无关——每日跑两遍不会撑爆。

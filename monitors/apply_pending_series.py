@@ -40,7 +40,8 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(ROOT, ".env"))
 
 import articles.main as articles_main
-from videos.main import _save_series_note, _generate_series_overview, _NOTE_TYPE_TAG, _sanitize_filename
+from videos.main import (_save_series_note, _generate_series_overview, _NOTE_TYPE_TAG,
+                         _sanitize_filename, _collect_landed_series_names)
 from articles.feishu import _sanitize_title
 from shared.routing import resolve_folder
 from shared import series_state
@@ -179,9 +180,10 @@ def _verify_in_feishu(series_title: str, base: str, parent_token: str = None) ->
 
 def _log_progress(log_path: str, page: int, base: str, ok: bool, detail: str):
     try:
-        with open(log_path, "a", encoding="utf-8") as fh:
-            fh.write(f"{datetime.now().isoformat(timespec='seconds')} | 第{page:02d}集 | "
-                     f"{'OK' if ok else 'FAIL'} | {base} | {detail}\n")
+        from shared.rolling_log import append_rolling
+        line = (f"{datetime.now().isoformat(timespec='seconds')} | 第{page:02d}集 | "
+                f"{'OK' if ok else 'FAIL'} | {base} | {detail}\n")
+        append_rolling(log_path, line)
     except Exception:
         pass
 
@@ -251,6 +253,10 @@ def drain_series_pending(obsidian: bool = False, regenerate: bool = False,
                                 notes_dir=NOTES_DIR, reconcile=True, parent_token=_up_tok)
             print(f"   {m.summary_line()}")
 
+            # 集数一致性（拍板3）：以飞书白名单 + 本地 notes + vault 容器已有成稿为基线。
+            # obsidian-only 场景（_container_tok=None）下白名单闸门失效，这里是唯一防线。
+            landed_names = list(_existing_titles) + _collect_landed_series_names(series_dir, folder, series_title)
+
             progress_log = os.path.join(series_dir, ".series_progress.log")
             cands = _candidate_bodies(series_dir, m)
             print(f"   待落盘候选：{len(cands)} 集")
@@ -274,6 +280,18 @@ def drain_series_pending(obsidian: bool = False, regenerate: bool = False,
                     ep_url = (ep.get("url")
                               or (f"https://www.bilibili.com/video/{ep['bvid']}" if ep.get("bvid") else "")
                               or url)
+
+                    # 集数一致性（拍板3）：同页码已有不同标题成稿 → 跳过本集（保留原标题）
+                    _, new_part = sn.parse_landed_name(base)
+                    if new_part is not None:
+                        conflict = sn.find_page_conflict(landed_names, page, new_part)
+                        if conflict:
+                            m.set_state(page, sm.VERIFIED)
+                            series_state.mark_done(series_title, base, url=ep_url, author=author)
+                            print(f"  ⏭️  集数冲突（已有 {conflict}），跳过：{base}")
+                            _log_progress(progress_log, page, base, True, "skipped(conflict)")
+                            continue
+
                     try:
                         body = open(body_abs, encoding="utf-8").read()
                     except Exception as e:

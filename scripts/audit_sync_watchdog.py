@@ -41,9 +41,12 @@ INTERVAL = int(os.environ.get("AUDIT_WATCHDOG_INTERVAL", "300"))
 
 
 def wlog(msg: str):
+    from shared.rolling_log import append_rolling
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    with open(LOG, "a", encoding="utf-8") as f:
-        f.write(f"[{ts}] {msg}\n")
+    try:
+        append_rolling(LOG, f"[{ts}] {msg}\n")  # 按天滚动 + 惰性清理（LOG_KEEP_DAYS，默认 7 天）
+    except Exception:
+        pass
 
 
 def alive(pid: int) -> bool:

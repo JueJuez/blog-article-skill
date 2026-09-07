@@ -100,6 +100,7 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
 - **主题降级为标签**：独立开发 / 投资 / 流量… 等主题不再建文件夹，改存为笔记内 `#标签`（跟飞书一致：文件夹只按「来源/账号/系列」，主题靠标签面板检索）。
 - **三场景映射**：跑一下 → `【监控】`；补齐 → 同一 `【监控】` 树（历史回溯只是窗口更大）；散文 → `【我的总结】/`（`作者/` 认得作者、`系列课/` 独立系列、`<分类>/` 有主题）。
 - **存量迁移**：旧方案遗留文件夹（`01_独立开发`…`副业增长/生财有术`/`千刀千法`/`哲学思辨`/`【00_待归类】` 等）已由 `scripts/migrate_obsidian_vault.py` 按 `resolve_folder` 重路由 + 主题标签注入（先 `--dry-run` 预览；迁移日志 `scripts/migration_obsidian_log.json` 可回退）。`.bak` 备份整体暂存 `备份_遗留bak/`，未删，待用户确认后清理。
+- **落盘文件名日期前缀强制（2026-09-07）**：`articles/main.generate_filename` 产出 `YYYYMMDD_【分类】标题[:50].md` / `YYYYMMDD_标题[:50].md`（日期=内容发布时间，缺失时用处理时间）——日期在最前，按文件名排序即按时间排序，取代旧「标题-日期」后缀格式；空/短标题兜底 `未命名笔记-时间戳.md` 不变。测试 `tests/test_patch_trio.py`。
 
 ### 路线入口速查
 
@@ -116,7 +117,7 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
 - **循环 → 一次性查询后筛选**：循环内逐条查询/抓取/请求，优先改为「一次批量查询/抓取，再在内存里筛选」，**避免 N 次往返**。
 - **串行 → 并行**：多个独立任务（多视频 / 多文件 / 多链接）评估并行（`asyncio.gather` / 线程池），注意限流与去重，避免无意义串行等待。
 - **复用入口，不重复造轮子**：统一走 `fetch_transcript` / `skill_main` / `summarize_video` / `OutputManager` 等既有入口，禁止在多处复制抓取/保存逻辑。
-- **已总结内容机械拦截（三层前置 · 2026-08-25；跨来源去重 · 2026-09-03）**：AI 只交总结，「要不要总结 / 写不写」由代码决定——①入队：`run.py` 查 dedup 索引，已总结 URL 不入队；②派单前：`python scripts/filter_pending.py` 清洗 monitors + scys 两队列（已总结条目出队，不浪费总结 token）；③落盘：`save_summary_only` / `_save_summary.py` 查索引，命中返回 `skipped` 并按成功出队（`force` / `--force` 强制重写）。多 Agent 接力（前一个积分耗尽/中断）不重复总结、不重复落盘。决策见 `docs/decisions/DECISION-20260825-dedup-frontload-and-lock-release.md`。**④跨来源（2026-09-03）**：生财有术双渠道订阅（公众号 + scys 站内），同一篇帖子两边 URL 不同，URL 去重挡不住——公众号抓取侧在总结前与 `notes/_scraped/scys/` 归档做标题（规范化相似≥0.85 / 截断前缀）/正文前 300 字相似比对，命中直接跳过（`articles/dedup.py: find_cross_duplicate`，健康度行计 `scys重复`）。
+- **已总结内容机械拦截（三层前置 · 2026-08-25；跨来源去重 · 2026-09-03）**：AI 只交总结，「要不要总结 / 写不写」由代码决定——①入队：`run.py` 查 dedup 索引，已总结 URL 不入队；②派单前：`python scripts/filter_pending.py` 清洗 monitors + scys 两队列（已总结条目出队，不浪费总结 token）；③落盘：`save_summary_only` / `_save_summary.py` 查索引，命中返回 `skipped` 并按成功出队（`force` / `--force` 强制重写）。多 Agent 接力（前一个积分耗尽/中断）不重复总结、不重复落盘。决策见 `docs/decisions/DECISION-20260825-dedup-frontload-and-lock-release.md`。**④跨来源（2026-09-03）**：生财有术双渠道订阅（公众号 + scys 站内），同一篇帖子两边 URL 不同，URL 去重挡不住——公众号抓取侧在总结前与 `notes/_scraped/scys/` 归档做标题（规范化相似≥0.85 / 截断前缀）/正文前 300 字相似比对，命中直接跳过（`articles/dedup.py: find_cross_duplicate`，健康度行计 `scys重复`）。**⑤视频入口闸门（2026-09-07）**：`videos.main._handle_single_video` 开头查 `is_summarized(url=url)`，已总结视频直接返回 `skipped`（`force=True` 绕过）——重复喂链接不再产生重复文件；⑥**系列集数一致性（2026-09-07）**：`shared/series_naming.find_page_conflict` 以「本地 notes + vault 容器已有成稿」为基线，同页码已有**不同标题**成稿 → 新条目跳过（保留原标题，`force` 也绕不过），直连路径与 drain 落盘后均回写 `mark_done`（增量闭环）。测试 `tests/test_patch_trio.py`。
 - **长内容必走两段式分块**：超过单模型上下文的内容，先经 `shared.chunking` 分块再总结，禁止整篇直接喂模型。
 - **大批量 → 子 Agent 隔离主线程（防上下文胀爆）**：当待处理内容达到批量阈值（如 >3 条笔记/视频，或单批原文大到会撑爆主会话上下文）时，**必须**用 Agent 工具派发子 Agent 并行处理，勿把全部原文/中间稿堆在主线程。注意：① 子 Agent 上下文是空白的，派发 prompt 必须**自包含**（嵌入输出契约：落盘闸门＝默认本地 Obsidian（2026-09-04 起）、飞书仅 `DISABLE_FEISHU_SYNC=0` 时追加；入口函数 `videos/run.py --url` 或 `skill_main`、`note_type`、YouTube/无字幕规则按需）；② **飞书并发重复坑**：多子 Agent 同时 `save_series` 写飞书会因集级无查重建重复节点（见 §4.7）；**安全模式**＝子 Agent 只**返回成品 Markdown 文本＋元数据**（标题/作者/url/tags/note_type），由编排方**串行**调保存入口（`_save_series_note` / `save_all`）落盘，绝不让多子 Agent 并发各自调 `save_series`。
 
@@ -167,10 +168,10 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
 > 目标：让笔记「质量高、上下文清晰、不破去水分红线」。三件套均在 `prompts/templates.py` 落地，由入口函数自动套用，**AI 无需手动触发**。
 
 - **A. 质量闸门（second-pass verifier）**：总结后再调一次 AI 按 7 评分维度打 0–100 分（含篇幅达标），低于阈值带反馈重试一次。**默认关闭**（省一轮 AI 调用）；开关见下方「去哪里开关」。无外部 AI 的降级路径走 `QUALITY_GATE_SELFCHECK` 自检段（模板 prompt 内嵌三条专项自检——思维模型深挖 + 固定结构合规 + 篇幅区间，与 `UNIVERSAL_RULES` §八红线不重复，外层模型自核对）。
-- **A2. 机械落盘门禁（零 AI 依赖 · 2026-09-05）**：`prompts/verifier.py` 的 `verify_note_mechanical` 在 `save_summary_only` 落盘前机械校验：主标题恰好 1 个；正文不写来源链接行、不出现原文 URL（防 formatter 权威追加后落盘出现两个链接）；字数对照模板区间硬阈值（<min×0.6 或 >max×1.5 拦截，轻微越界仅告警）。接入顺序：dedup 闸门之后（已总结出队优先）、folder 自动路由之前；拦截返回 `VERIFIER_FAILED:<issues>`，不落盘不 dedup，子 Agent 按 issues 修复重试；`force` 只豁免 dedup 不豁免本门禁。`NOTE_WORD_LIMITS` 与模板「单篇正文 X～Y 字」声明由测试防漂移（`tests/test_note_mechanical_gate.py`）。
+- **A2. 机械落盘门禁（零 AI 依赖 · 2026-09-05，去 H1 更新 2026-09-07）**：`prompts/verifier.py` 的 `verify_note_mechanical` 在 `save_summary_only` 落盘前机械校验：**正文 0 个一级标题**（去 H1：标题由文件名/飞书节点标题承担，扫描前剥离代码围栏，`#` 注释不误伤）；正文不写来源链接行、不出现原文 URL（防 formatter 权威追加后落盘出现两个链接）；字数对照模板区间硬阈值（<min×0.6 或 >max×1.5 拦截，轻微越界仅告警）。接入顺序：dedup 闸门之后（已总结出队优先）、folder 自动路由之前；拦截返回 `VERIFIER_FAILED:<issues>`，不落盘不 dedup，子 Agent 按 issues 修复重试；`force` 只豁免 dedup 不豁免本门禁。`NOTE_WORD_LIMITS` 与模板「单篇正文 X～Y 字」声明由测试防漂移（`tests/test_note_mechanical_gate.py`）。
 - **B. 字幕清洗层**：`shared/subtitle_clean.py` 纯函数（`preprocess_segments`/`preprocess_text`），已在 `videos/fetch.py` 三路径（B站原生 / YouTube API+CDP / yt-dlp 兜底）自动接入；只清洗口误填充词（删独立语气词 嗯/啊/呃）、合并相邻近重、≥8 字长句去重——**不激进折叠**（保留"然后/那个"等自然语流）。
 - **C. 强制证据红线（思维模型透镜）**：全部 9 模板共用 `UNIVERSAL_RULES` 第九节（structured 内联第十四节），6 模型按序 LIST（第一性原理→5-Why冰山→二阶思维→脉络还原→奥卡姆剃刀→类比迁移）逐条过、不适用跳过；**每条适用模型须给「洞察（不同视角）+ 原文证据句（「」括起原话，禁改写）」**，禁只写"用了X 模型"；全不适用须逐条列 6 模型理由。与去水分红线兼容，不硬凑固定章节。
-- **D. 元数据归一**：`UNIVERSAL_RULES` 强制 `#标签1 #标签2` 井号格式；`normalize_note_metadata()` 把 `**标签**：xxx` 转井号，`format_note_with_prompt` 自动应用。
+- **D. 元数据归一（去 H1 更新 2026-09-07）**：**标签行由系统权威追加**（LLM 禁止输出任何形式的标签行，`tags` 代码侧权威：`summarize_and_save`→`suggest_default_tags`、`drain_pending`→TAGMAP、`save_summary_only`→`input_data.tags`）；`normalize_note_metadata()` 仍把旧格式 `**标签**：xxx` 机械归一，`format_note_with_prompt` 自动应用并剥离 LLM 残留标签行（围栏感知，代码块内 `#` 注释不误剥）。
 - **E. 读书争议维度**：`reading` 模板含「争议与不同声音」段（作者回避点 / 学界不同声音 / 与已知冲突，标笔记者补充存疑）——**推荐、非强制**，非争议类书评不硬凑。
 
 **去哪里开关（质量闸门 A）**：

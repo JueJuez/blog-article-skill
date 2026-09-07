@@ -93,6 +93,9 @@ def _run_batch(args) -> int:
             rec["series_title"] = r.get("series_title", "") or ""
             rec["series_dir"] = r.get("series_dir", "") or ""
             rec["degraded_raws"] = r.get("degraded_raws", []) or []
+            # 生成侧发布时间链路（2026-09-07）：编排层入队需要，优先用清单值，
+            # 缺失时回退单视频链路注入的值
+            rec["publish_time"] = ent.get("publish_time", 0) or r.get("publish_time", 0)
             if not rec["ok"]:
                 rec["error"] = (r.get("message", "") or "")[:300]
         except Exception as e:

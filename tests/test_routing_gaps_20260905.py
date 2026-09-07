@@ -167,7 +167,7 @@ def mock_series_pipeline(monkeypatch, tmp_path):
     captured = {"save": [], "ov": []}
 
     def fake_save(content, series_dir, base, author, url, tags, note_type,
-                  obsidian=False, folder=""):
+                  obsidian=False, folder="", publish_time=0):
         captured["save"].append({"folder": folder, "base": base})
         return os.path.join(series_dir, f"{base}.md")
 

@@ -70,6 +70,51 @@ def _shard_path(run_id: str, shard: str) -> str:
 # 任务记录（append-only，分片）
 # ---------------------------------------------------------------------------
 
+# 旧 run 分片保留天数：与 shared.rolling_log.LOG_KEEP_DAYS 同源（同名 env、
+# 同默认值），但直接读 env 而非 import shared，保持本模块「可独立 import」契约。
+RUN_STATUS_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "7"))
+
+_GC_INTERVAL_SECONDS = 3600  # 惰性 GC 速率限制：每进程每小时至多全量扫描一次
+_last_gc_ts = 0.0
+
+
+def cleanup_old_runs(keep_days: Optional[int] = None,
+                     now: Optional[float] = None) -> int:
+    """删除 mtime 超过 keep_days 的旧 run 分片文件，返回删除数。
+
+    run_id 含日期但格式为 YYYYMMDD-HHMMSS，不满足按天文件名的 8 位纯日期
+    校验，故直接按 mtime 判断（分片 append-only，mtime ≈ 该 run 最后写入时间）。
+    只匹配 *.tasks.jsonl，latest.json 等非分片文件不受影响；目录不存在返回 0；
+    单文件删除失败跳过不影响其余文件。
+    """
+    if not os.path.isdir(RUN_STATUS_DIR):
+        return 0
+    keep = RUN_STATUS_KEEP_DAYS if keep_days is None else keep_days
+    cutoff = (now if now is not None else time.time()) - keep * 86400
+    removed = 0
+    for path in glob.glob(os.path.join(RUN_STATUS_DIR, "*.tasks.jsonl")):
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _maybe_gc() -> None:
+    """惰性 GC 入口：record_task 顺手调用，速率限制内直接返回。"""
+    global _last_gc_ts
+    now = time.time()
+    if now - _last_gc_ts < _GC_INTERVAL_SECONDS:
+        return
+    _last_gc_ts = now
+    try:
+        cleanup_old_runs()
+    except Exception:
+        pass
+
+
 def record_task(
     run_id: str,
     source: str,
@@ -106,6 +151,7 @@ def record_task(
     }
     line = json.dumps(rec, ensure_ascii=False)
     path = _shard_path(run_id, shard)
+    _maybe_gc()  # 惰性清理旧 run 分片（速率限制，防 run_status 目录无限膨胀）
     with _local_lock:
         with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")

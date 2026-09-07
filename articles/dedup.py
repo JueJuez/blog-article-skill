@@ -1,25 +1,69 @@
-"""articles/dedup.py — 增量去重（A2）
+"""articles/dedup.py — 增量去重（A2）+ 双端同步登记表（PLAN-20260906 任务1）
 
 按规范化 URL（或正文内容 hash）记录已总结项，重复运行时跳过并提示已存在，
 避免重复消耗 token。
 
-索引持久化在仓库根的 `.cache/dedup.json`，该目录已被 .gitignore 忽略，不进仓库。
+登记表（P0-2）：持久化在 notes/_meta/sync_ledger.json，不再放易失的 .cache/；
+旧 .cache/dedup.json 在首次读取时自动搬家（新档已存在则旧档保留不动）。
+记录 schema：{source_url, title, filename, feishu_link, obsidian_link, ts}，
+feishu_link / obsidian_link 是各端最后一次验证成功时写入的指针。
+
+并发安全（P0-3）：写入方（mark_summarized / set_links / clear_links）读-改-写
+全程持有 O_EXCL 文件锁，并以临时文件 + os.replace 原子落盘；读取方不加锁，
+靠原子替换保证不会读到半文件。锁等待超时后放行兜底
+（与 feishu.py/_node_creation_lock、apply_pending_series._drain_lock 同模式）。
 """
 
 import os
 import json
 import hashlib
 import time
+import tempfile
+from contextlib import contextmanager
 from urllib.parse import urlsplit, urlunsplit
 
 # 仓库根（articles/ 上一级）
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CACHE_DIR = os.path.join(_ROOT, ".cache")
-_INDEX_FILE = os.path.join(_CACHE_DIR, "dedup.json")
+# P0-2：登记表默认落点（tests 断言该常量；conftest 只 patch _INDEX_FILE/_CACHE_DIR）
+_DEFAULT_INDEX_FILE = os.path.join(_ROOT, "notes", "_meta", "sync_ledger.json")
+_INDEX_FILE = _DEFAULT_INDEX_FILE
+_LEGACY_INDEX_FILE = os.path.join(_CACHE_DIR, "dedup.json")
+# P0-3：O_EXCL 锁目录（跨进程；tests 通过 patch _LOCK_DIR 隔离）
+_LOCK_DIR = os.path.join(tempfile.gettempdir(), "blog_article_skill_dedup_locks")
+_LOCK_TIMEOUT = 10.0
 
 
-def _ensure_cache():
-    os.makedirs(_CACHE_DIR, exist_ok=True)
+@contextmanager
+def _index_lock():
+    """登记表写入锁：O_EXCL 独占创建，超时放行避免陈锁死等。"""
+    os.makedirs(_LOCK_DIR, exist_ok=True)
+    lock_path = os.path.join(_LOCK_DIR, "dedup_index.lock")
+    deadline = time.time() + _LOCK_TIMEOUT
+    fd = None
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            if time.time() >= deadline:
+                break  # 超时放行：与 feishu/drain 锁的兜底语义一致
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+            try:
+                os.remove(lock_path)
+            except OSError:
+                pass
+
+
+def _ensure_parent(path: str) -> None:
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
 
 
 def _normalize_url(url: str) -> str:
@@ -41,19 +85,49 @@ def _hash(text: str) -> str:
 
 
 def _load_index() -> dict:
+    _migrate_legacy()
     if not os.path.exists(_INDEX_FILE):
         return {}
     try:
         with open(_INDEX_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
     except Exception:
+        # 损坏索引不静默吞：改名 .corrupt-<ts> 备份后从空开始
+        try:
+            os.replace(_INDEX_FILE, _INDEX_FILE + ".corrupt-" + str(int(time.time())))
+        except OSError:
+            pass
         return {}
 
 
 def _save_index(index: dict) -> None:
-    _ensure_cache()
-    with open(_INDEX_FILE, "w", encoding="utf-8") as f:
+    _ensure_parent(_INDEX_FILE)
+    tmp = _INDEX_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(index, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _INDEX_FILE)
+
+
+def _migrate_legacy() -> None:
+    """P0-2：旧 .cache/dedup.json 自动搬家到新路径；新档已存在则旧档保留不动。
+
+    损坏的旧档视为空表照常搬入并删除（旧档本就是易失缓存，无修复价值）。
+    """
+    if os.path.exists(_INDEX_FILE) or not os.path.exists(_LEGACY_INDEX_FILE):
+        return
+    try:
+        with open(_LEGACY_INDEX_FILE, "r", encoding="utf-8") as f:
+            legacy = json.load(f)
+        if not isinstance(legacy, dict):
+            legacy = {}
+    except Exception:
+        legacy = {}
+    _save_index(legacy)
+    try:
+        os.remove(_LEGACY_INDEX_FILE)
+    except OSError:
+        pass
 
 
 def _key_for(url: str = "", content: str = "") -> (str, str):
@@ -65,11 +139,20 @@ def _key_for(url: str = "", content: str = "") -> (str, str):
     return "none", ""
 
 
+def _with_link_defaults(rec: dict) -> dict:
+    """迁移来的旧记录缺 link 字段：API 层读出时补默认值（不改存储）。"""
+    out = dict(rec)
+    out.setdefault("feishu_link", "")
+    out.setdefault("obsidian_link", "")
+    return out
+
+
 def is_summarized(url: str = "", content: str = "") -> dict:
     """查询是否已总结过。
 
     Returns:
-        {} 表示未记录；否则为 {key, title, filename, ts} 记录
+        {} 表示未记录；否则为 {key, source_url, title, filename,
+        feishu_link, obsidian_link, ts} 记录
     """
     prefix, h = _key_for(url, content)
     if prefix == "none" or not h:
@@ -77,7 +160,7 @@ def is_summarized(url: str = "", content: str = "") -> dict:
     index = _load_index()
     rec = index.get(h)
     if rec:
-        return {"key": h, **rec}
+        return {"key": h, **_with_link_defaults(rec)}
     return {}
 
 
@@ -95,17 +178,93 @@ def batch_is_summarized(urls) -> set:
 
 
 def mark_summarized(url: str = "", content: str = "", title: str = "", filename: str = "") -> None:
-    """记录一次成功总结。"""
+    """记录一次成功总结（读-改-写全程锁内；已有记录保留已写 link）。"""
     prefix, h = _key_for(url, content)
     if prefix == "none" or not h:
         return
-    index = _load_index()
-    index[h] = {
-        "title": title or "",
-        "filename": filename or "",
-        "ts": int(time.time()),
-    }
-    _save_index(index)
+    with _index_lock():
+        index = _load_index()
+        old = index.get(h) or {}
+        index[h] = {
+            "source_url": url or "",
+            "title": title or "",
+            "filename": filename or "",
+            "feishu_link": old.get("feishu_link", ""),
+            "obsidian_link": old.get("obsidian_link", ""),
+            "ts": int(time.time()),
+        }
+        _save_index(index)
+
+
+def get_entry(url: str = "", content: str = "") -> dict:
+    """按 url/content 查登记表记录，未命中返回 {}；旧记录的 link 补默认值。"""
+    prefix, h = _key_for(url, content)
+    if prefix == "none" or not h:
+        return {}
+    rec = _load_index().get(h)
+    if not rec:
+        return {}
+    return {"key": h, **_with_link_defaults(rec)}
+
+
+def set_links(url: str = "", content: str = "", feishu_link: "str | None" = None,
+              obsidian_link: "str | None" = None) -> dict:
+    """更新已有记录的双端 link（只改传入的字段），返回更新后的记录。
+
+    未命中已有记录时返回 {} 且不新造键——link 只跟着 mark_summarized 建立的记录走。
+    """
+    prefix, h = _key_for(url, content)
+    if prefix == "none" or not h:
+        return {}
+    with _index_lock():
+        index = _load_index()
+        rec = index.get(h)
+        if not rec:
+            return {}
+        if feishu_link is not None:
+            rec["feishu_link"] = feishu_link
+        if obsidian_link is not None:
+            rec["obsidian_link"] = obsidian_link
+        _save_index(index)
+        return {"key": h, **_with_link_defaults(rec)}
+
+
+def clear_links(url: str = "", content: str = "") -> bool:
+    """清空已有记录的双端 link（对账发现两端均丢时用）；未命中返回 False。"""
+    prefix, h = _key_for(url, content)
+    if prefix == "none" or not h:
+        return False
+    with _index_lock():
+        index = _load_index()
+        rec = index.get(h)
+        if not rec:
+            return False
+        rec["feishu_link"] = ""
+        rec["obsidian_link"] = ""
+        _save_index(index)
+        return True
+
+
+def set_links_by_key(key: str, feishu_link: "str | None" = None,
+                     obsidian_link: "str | None" = None) -> dict:
+    """按登记表主键 key 直改双端 link（只改传入的字段），返回更新后的记录。
+
+    set_links 按 url/content 键定位，覆盖不了 content-key 记录与对账场景；
+    本函数供已知 key 的调用方（vault 对账回写）使用。空 key / 未命中返回 {}。
+    """
+    if not key:
+        return {}
+    with _index_lock():
+        index = _load_index()
+        rec = index.get(key)
+        if not rec:
+            return {}
+        if feishu_link is not None:
+            rec["feishu_link"] = feishu_link
+        if obsidian_link is not None:
+            rec["obsidian_link"] = obsidian_link
+        _save_index(index)
+        return {"key": key, **_with_link_defaults(rec)}
 
 
 # ---------------- 跨来源标题/内容去重（公众号 ↔ scys） ----------------

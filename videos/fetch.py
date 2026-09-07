@@ -361,6 +361,11 @@ def _bili_extract_bvid(url: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+# 最近一次抓到的 B 站视频发布时间（epoch 秒，2026-09-07 生成侧发布时间链路）：
+# fetch_subtitle_only 拿到 view 信息后写入，_handle_single_video 读取注入保存链路。
+LAST_PUBDATE = 0
+
+
 def _bili_get_video_info(bvid: str) -> Optional[Dict]:
     """返回视频基础信息 + 所有分P（多P系列课）列表。
 
@@ -385,6 +390,8 @@ def _bili_get_video_info(bvid: str) -> Optional[Dict]:
             return {
                 "aid": d["aid"],
                 "cid": d["cid"],
+                # 视频发布时间（epoch 秒，2026-09-07 生成侧发布时间链路）
+                "pubdate": int(d.get("pubdate") or 0),
                 "title": d.get("title", ""),
                 # 视频简介/描述（project_import 用它优先找仓库链接）
                 "desc": d.get("desc", ""),
@@ -934,6 +941,8 @@ def fetch_subtitle_only(url: str, lang: str = "zh", page: int = None) -> Optiona
     info = _bili_get_video_info(bvid)
     if not info:
         return None
+    global LAST_PUBDATE
+    LAST_PUBDATE = int(info.get("pubdate") or 0)
     aid = info["aid"]
     title = info["title"]
     pages = info.get("pages") or []
@@ -1207,6 +1216,9 @@ def fetch_bilibili_series(url: str, lang: str = "zh", force: bool = False) -> Op
                     "aid": ep.get("aid"),
                     "cid": ep.get("cid"),
                     "title": ep.get("title", ""),
+                    # 单集发布时间（ugc_season episode 的 arc.pubdate，新版本在顶层）
+                    "pubdate": int((ep.get("arc") or {}).get("pubdate")
+                                   or ep.get("pubdate") or 0),
                 })
         if meta_list:
             entries = _fetch_series_entries(meta_list, lang, series_title=series_title, force=force)
@@ -1226,6 +1238,8 @@ def fetch_bilibili_series(url: str, lang: str = "zh", force: bool = False) -> Op
             "aid": aid,
             "cid": p["cid"],
             "title": p.get("part") or f"第{p['page']}集",
+            # 多P 共享同一视频发布时间
+            "pubdate": int(info.get("pubdate") or 0),
         } for p in pages]
         entries = _fetch_series_entries(meta_list, lang, series_title=series_title, force=force)
         if entries:
