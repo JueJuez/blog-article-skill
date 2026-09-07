@@ -76,6 +76,15 @@
 
 ---
 
+## 迁移质量门禁 v3（2026-09-08 · 检测出清单、重抓替换）
+
+- **命令**：`python scripts/migrate_gate.py --vault "$env:OBSIDIAN_VAULT_PATH" --scope=`（dry-run 只读出清单）+ `--apply` 才动文件。五步：dedup → fm_sync → scan（5 类异常+链接指纹分组）→ queue（重抓队列，只生成不执行）→ verify。清单 JSON+MD 写 vault 同级 `_migrate_gate_archive/`。
+- **铁律**：重抓**成功落盘→校验→才删旧文**；失败旧文原地保留停留清单持续重试；B站重传 URL 会变，用队列 `old_titles` 做标题+内容相似度匹配，不能只凭 URL。串位文件也全量重抓（H1 改名机制已删）。
+- **消费队列**：`kind=bili_video` 走 `videos` 管线、`article` 走 `articles.skill_main`、`manual_no_url` 等人工补链接；folder_hint=旧文父目录（重抓产物落同目录）。
+- **真源**：`docs/decisions/DECISION-20260908-regen-gate-v3.md`；测试 `tests/test_migrate_gate.py`（70 例）。
+
+---
+
 ## 配置（`.env`）
 复制 `.env.example` → `.env`，至少关注：
 - `FORCE_AGENT_MODE=1`（默认）：不调用外部 AI，总结一律由执行模型（主/子 Agent）完成；旧 `AI_PROVIDER` 配置已废弃。

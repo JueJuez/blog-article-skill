@@ -583,6 +583,19 @@ def main():
     print(f"  含图片笔记(本批): {has_img_total}")
     print(f"  进度日志: {LOG_PATH}")
 
+    # ── 迁移内容门禁 v3(2026-09-08): 检测出清单、重抓替换 ──
+    # dedup(正文指纹去重→归档 vault 外) → fm_sync(迁移文 fm source_url 补链) →
+    # scan(5类异常只读检测) → queue(重抓队列只生成不执行) → verify(集数核验)。
+    # 清单(JSON+MD)写 vault 同级 _migrate_gate_archive/；门禁异常不影响迁移主结果。
+    try:
+        print("\n=== 迁移内容门禁 ===")
+        cmd = [sys.executable, os.path.join(BASE_DIR, "scripts", "migrate_gate.py"), "--apply"]
+        if VAULT:
+            cmd += ["--vault", VAULT]
+        subprocess.run(cmd, check=False)
+    except Exception as e:
+        print(f"  ⚠ 门禁执行异常(不影响迁移结果): {e}")
+
 
 def _pid_alive(pid):
     # Windows 下 os.kill(pid, 0) 用于探测存活: 进程存在→无异常, 不存在→ProcessLookupError。

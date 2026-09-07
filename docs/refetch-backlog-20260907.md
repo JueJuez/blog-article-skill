@@ -80,3 +80,4 @@
 2. **pending_refetch.json 里的 2 条不在本文档**（哥飞投放数据文章、价投小猪仔系列课视频）：那是监控自动重试队列，下次「跑一次」自动消化，无需人工登记。
 3. **执行进度（2026-09-07）**：A1 ✅ 删副本、A2 ✅ staging 日期重命名（免重抓）、B 组 ✅ 重抓+总结落盘+删占位（补装 `trafilatura` 后直连即通，未走 CDP）。**backlog 全部清零。**
 4. **全库缺前缀盘点补充（2026-09-07）**：全库 658 个 .md 中共 273 条缺 `YYYYMMDD_` 前缀，其中 255 条为系列规范命名（B站 UP 系列课「第NN集_」、【我的总结】\奇衡DK-CAPITAL\千刀千法），属集数序号语义，不适用日期前缀、保持原样；真异常仅生财有术 18 条（A1+A2），已全部处理。
+5. **后续同类盘点统一走门禁（2026-09-08）**：不再人工登记——跑 `python scripts/migrate_gate.py --vault "$env:OBSIDIAN_VAULT_PATH" --scope=` 自动扫描出异常清单与重抓队列（JSON+MD 写 `_migrate_gate_archive/`），见 `docs/decisions/DECISION-20260908-regen-gate-v3.md`。
