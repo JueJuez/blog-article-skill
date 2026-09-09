@@ -118,6 +118,7 @@ from monitors.wechat import (  # noqa: E402
     WereadClient, WechatSource, trigger_relogin,
 )
 from monitors.bilibili import BilibiliSource, _SOURCE_GAP  # noqa: E402
+from monitors import bilibili as _bili_mod  # noqa: E402  健康度行读 LAST_COOKIE_EVENT 用模块引用
 from monitors.ad_filter import is_fully_ad, purify_content  # noqa: E402
 
 SUB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subscriptions.json")
@@ -724,6 +725,18 @@ def discover_all(subs: dict, state: dict, mode: str = "auto",
                     print(f"⏰ 等待扫码超时（{WECHAT_RELOGIN_WAIT}s），本次跳过公众号源"
                           f"（B站照常）；下次运行自动恢复。", file=sys.stderr)
 
+    # B站 cookie 失效检测（2026-09-09）：失效表现是 -101/空数据而非 412，被动钩子不触发，
+    # 轮次开始主动 nav 探测；失效自动 CDP 轮换（会短暂关闭 Chrome）。仅在有 B站订阅时运行。
+    # 放在 discover_all（而非 main）里，串行与并行模式共用此入口，天然两态覆盖。
+    if subs.get("bilibili"):
+        _cookie_evt = _bili_mod.refresh_cookie_if_dead()
+        if _cookie_evt == "rotated":
+            print("♻️ [B站] cookie 已失效并自动轮换（CDP 提取），本轮使用新 cookie。")
+        elif _cookie_evt == "failed":
+            print("⚠️ [B站] cookie 已失效且自动轮换未成功——动态接口大概率 -352；"
+                  "请登录本机 Chrome 的 B站后重跑，或手动 python scripts/bili_cookie_refresh.py。",
+                  file=sys.stderr)
+
     for b in subs.get("bilibili", []):
         src = BilibiliSource(b["uid"], types=b.get("types"),
                              all_videos=b.get("all_videos", False),
@@ -1100,6 +1113,10 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
             print(f"   - 《{d['title']}》｜{d['mp_name']}｜{d['url']}")
             print(f"     └ 原因：{d['reason']}")
 
+    # B站 cookie 检测结果并入健康度行（仅异常态展示，正常态静默）
+    _cookie_label = _bili_mod.cookie_health_label()
+    _cookie_seg = f" · {_cookie_label}" if _cookie_label else ""
+
     # 📊 健康度一行：视频 / 动态（速览·完整）/ 文章 / 跳过项，异常时一眼可见
     print(
         f"\n📊 本轮健康度：视频 {stats['video']}（充电跳过 {stats['video_charging_skip']}）"
@@ -1110,6 +1127,7 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
         f" · scys重复 {stats.get('cross_dup_skip', 0)}"
         f" · 登记表跳过 {stats.get('registry_skip', 0)}"
         f" · 限流待重试 {len(refetch_next)} · 墙文移除 {len(dropped)} · 错误 {stats['error']}"
+        f"{_cookie_seg}"
     )
 
     # Agent 待总结队列提示：由 WorkBuddy 执行模型（主 Agent / 子 Agent）接单处理

@@ -149,6 +149,59 @@ def _get_session() -> requests.Session:
     return _SESSION
 
 
+# 最后一次 cookie 检测事件（供 run.py 健康度行读取）：
+# ""=未检测 / "valid"=有效 / "rotated"=已轮换 / "failed"=失效且轮换未成功 / "skipped_no_cookie"=未配置
+LAST_COOKIE_EVENT = ""
+
+
+def refresh_cookie_if_dead() -> str:
+    """监控轮次开始的 B站 cookie 失效检测（2026-09-09，与补齐管线同源）。
+
+    背景：monitors 的 B站失效表现为 -101/空数据而非 412，补齐管线那套
+    「412 后被动轮换」钩子在监控场景不会触发，故轮次开始主动探测。
+
+    - 未配置 BILI_COOKIE → 跳过（游客态本就是既定降级；轮换会 kill 用户 Chrome，
+      未选择登录态的用户不应被每轮惊动）；
+    - 已配置 → 复用 videos.fetch.rotate_bili_cookie_if_dead：nav isLogin 探测，
+      失效自动走 CDP 从本机 Chrome 提取新 cookie 并写回 .env/.cache；
+      有效则原样继续（额外 1 次 nav 请求/轮，可忽略）；
+    - 轮换成功 → 刷新本模块 _COOKIE / os.environ 并置空 _SESSION 强制重建，
+      否则进程内缓存会让整轮继续用死 cookie。
+
+    异常一律吞掉（打印告警），绝不阻断监控主流程。返回事件字符串。
+    """
+    global _COOKIE, _SESSION, LAST_COOKIE_EVENT
+    if not _COOKIE:
+        LAST_COOKIE_EVENT = "skipped_no_cookie"
+        return LAST_COOKIE_EVENT
+    try:
+        from videos.fetch import rotate_bili_cookie_if_dead
+        state, fresh = rotate_bili_cookie_if_dead(trigger="monitors")
+    except Exception as e:
+        print(f"[bili-cookie] cookie 检测异常（沿用现有 cookie 继续）：{e}", file=sys.stderr)
+        LAST_COOKIE_EVENT = "failed"
+        return LAST_COOKIE_EVENT
+    if state == "rotated" and fresh:
+        _COOKIE = fresh
+        os.environ["BILI_COOKIE"] = fresh  # 子进程（视频总结管线等）继承新 cookie
+        _SESSION = None  # 强制 _get_session() 重建，带上新 cookie
+        LAST_COOKIE_EVENT = "rotated"
+    elif state == "valid":
+        LAST_COOKIE_EVENT = "valid"
+    else:
+        LAST_COOKIE_EVENT = "failed"
+    return LAST_COOKIE_EVENT
+
+
+def cookie_health_label() -> str:
+    """健康度行片段：仅异常状态展示（rotated/failed），正常态静默。"""
+    if LAST_COOKIE_EVENT == "rotated":
+        return "cookie已轮换"
+    if LAST_COOKIE_EVENT == "failed":
+        return "cookie检测失败"
+    return ""
+
+
 # B站官方 WBI 混淆表
 _ENC = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
         33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
