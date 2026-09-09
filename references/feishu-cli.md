@@ -65,4 +65,4 @@ lark-cli wiki +node-delete \
 | 删节点报类型错 | 用了 `--obj-type docx` | 改用 `--obj-type wiki` |
 | 重生成总览出现 2 个 | 没先删旧节点 | 先 `wiki +node-delete --obj-type wiki` 再生成 |
 | 两个同名 `土斯` 文件夹 | 两进程同秒抢建作者文件夹（TOCTOU） | 已加原子锁根治：建失败重查复用，不再重复建 |
-| 落盘个别集 FAIL | 飞书 429 限流 | 重跑 `apply_pending_series.py`（幂等） |
+| 落盘个别集 FAIL | 飞书 429 限流 | 重跑 `python monitors/run.py --apply`（幂等） |

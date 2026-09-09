@@ -923,8 +923,8 @@ def _bili_part_redundant(main: str, part: str) -> bool:
 def fetch_subtitle_only(url: str, lang: str = "zh", page: int = None) -> Optional[Tuple[str, List[Dict], str]]:
     """【线性主干·步骤B：只抓字幕】原生 API 优先 → yt-dlp 自动字幕兜底，**不做 ASR**。
 
-    这是 rescue_episode 单集救回流程里的「抓字幕」步骤。字幕完全缺失时返回 None，
-    交由上层 rescue 显式决定何时走 ASR 分支（而不是把 ASR 藏在本函数里让调用方看不见）。
+    字幕完全缺失时返回 None，交由上层调用方显式决定何时走 ASR 分支
+    （而不是把 ASR 藏在本函数里让调用方看不见）。
 
     Returns: (title, segments, author) 或 None
     """
@@ -1043,8 +1043,8 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
     """获取 Bilibili 单集字幕（含 ASR 兜底的总入口，兼容旧调用方）。
 
     线性流程：先 fetch_subtitle_only（原生API→yt-dlp 字幕）；字幕缺失再 ASR 音频转写兜底。
-    **rescue_episode 单集救回为显式拆分「字幕/ASR」两步，直接调 fetch_subtitle_only +
-    asr.transcribe_video，不走本函数**——避免 ASR 藏在内部分支里让调用方看不见流程。
+    需要显式拆分「字幕/ASR」两步的场景（scripts/backfill_series.py 点名补齐）直接调
+    fetch_subtitle_only + asr.transcribe_video，不走本函数——避免 ASR 藏在内部分支里。
     """
     sub = fetch_subtitle_only(url, lang=lang, page=page)
     if sub:
@@ -1082,173 +1082,6 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
         print(f"   FAIL Bilibili ASR 兜底也失败: {e}")
     return None
 
-
-def _fetch_series_entries(meta_list: List[Dict], lang: str, series_title: str = None, force: bool = False) -> List[Dict]:
-    """根据每集元信息（含 aid/cid 或 bvid）逐集抓取字幕，返回带 segments 的 entries。
-
-    已知 aid/cid 时直抓字幕（仅一次 dm/view + 一次下载，不重复调 view API）；
-    aid/cid 缺失时退回按 bvid 走完整单视频抓取链路兜底。
-
-    集间节奏（2026-09-03 运行日志实测发现）：整季批量内部原先零间隔，实测
-    6 条系列入口触发 112 次请求、min_gap 0.04s / 194 次/分钟——是最容易被
-    B站风控盯上的请求形态。加 2~4s 随机间隔消除「机器脉冲」。
-
-    抓取层去重(B, 2026-09-06)：series_title 非空时，凡「字幕已抓过」的集
-    （series_state.is_fetched，跨进程持久）直接跳过网络请求，不重复打 dm/view。
-    这是修复「同系列多集 URL 各自触发整季重抓 → 段错误/请求爆炸」的关键——
-    即便调用方把同系列 75 个集 URL 各喂一次，首集抓全季并 mark_fetched 后，
-    其余 74 个触发时整季 74 集均命中 is_fetched 跳过，实际只发一次整季请求。
-    """
-    import random as _rd
-    from shared.sanitize import sanitize_filename
-    entries: List[Dict] = []
-    total = len(meta_list)
-    for i, m in enumerate(meta_list):
-        page = m.get("page", "?")
-        part = m.get("part", "")
-        base = f"第{page:02d}集_{sanitize_filename(part or '未命名')}"
-        # B 抓取层去重：已抓过的集跳过网络请求
-        if not force and series_title and _series_episode_skip(series_title, base, page):
-            print(f"   [skip-fetch] 第 {page}/{total} 集已抓过字幕，跳过网络请求", flush=True)
-            continue
-        if i > 0:
-            gap = _rd.uniform(2.0, 4.0)
-            print(f"   [series-gap] 集间等待 {gap:.1f}s", flush=True)
-            time.sleep(gap)
-        print(f"   🎞️ 抓取第 {page}/{total} 集: {part or '(无标题)'}")
-        segs = None
-        if m.get("aid") and m.get("cid"):
-            segs = _bili_fetch_page_subtitle(m["aid"], m["cid"], lang)
-        if not segs and m.get("bvid"):
-            t = fetch_bilibili_transcript(f"https://www.bilibili.com/video/{m['bvid']}", lang=lang)
-            if t:
-                segs = t[1]
-        if segs:
-            entries.append({**m, "segments": segs})
-            if series_title:
-                _series_episode_mark_fetched(series_title, base)
-        else:
-            print(f"   ⚠️ 第 {page} 集无字幕，跳过")
-    return entries
-
-
-# 本进程内已抓过的(系列名, 集号)缓存：同一进程内（如一个 batch-file 含多集同系列）
-# 第二次触发整季抓取时，已抓集直接命中，避免进程内重复打网络。
-_FETCHED_SERIES_EPISODES = set()
-
-
-def _series_episode_skip(series_title: str, base: str, page) -> bool:
-    """抓取层去重判定：该集字幕是否已抓过（进程内缓存 ∪ 跨进程持久索引）。"""
-    if (series_title, page) in _FETCHED_SERIES_EPISODES:
-        return True
-    try:
-        from shared import series_state
-        if series_state.is_fetched(series_title, base):
-            _FETCHED_SERIES_EPISODES.add((series_title, page))
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def _series_episode_mark_fetched(series_title: str, base: str) -> None:
-    """抓取成功后记录「已抓」，供后续同系列触发跳过（跨进程持久）。"""
-    page = _page_from_base(base)
-    if page is not None:
-        _FETCHED_SERIES_EPISODES.add((series_title, page))
-    try:
-        from shared import series_state
-        series_state.mark_fetched(series_title, base)
-    except Exception:
-        pass
-
-
-def _page_from_base(base: str):
-    """从 base（第XX集_xxx）解析集号 int，失败返回 None。"""
-    import re as _re
-    m = _re.match(r"第(\d+)集", base or "")
-    return int(m.group(1)) if m else None
-
-
-def fetch_bilibili_series(url: str, lang: str = "zh", force: bool = False) -> Optional[Dict]:
-    """一次性抓取 B 站系列课全部集的字幕。
-
-    支持两种聚合形态：
-    - A. 系列课（ugc_season）：UP主把多个独立 BV 视频聚成系列，每集是独立视频
-    - B. 多P视频：同一 BV 下多个分P（page）
-
-    设计要点（用户需求）：**先一次性抓完全部集字幕，再交给上层逐集总结**，
-    避免逐集重复建连 / 重复解析页面结构造成的性能浪费。
-
-    抓取层去重(B, 2026-09-06)：force=False 时，已抓过字幕的集（series_state.is_fetched）
-    直接跳过网络请求，避免同系列多集 URL 各自触发整季重抓导致请求爆炸/段错误。
-
-    Returns:
-        {"series_title": str, "bvid": str, "kind": "ugc_season"|"multipart",
-         "entries": [{"page","part","bvid","aid","cid","title","segments"}, ...]}
-        或 None（单P 且非系列课 / 抓取失败）
-    """
-    bvid = _bili_extract_bvid(url)
-    if not bvid:
-        return None
-    info = _bili_get_video_info(bvid)
-    if not info:
-        return None
-    aid = info["aid"]
-    title = info["title"]
-
-    # 形态A：ugc_season 系列课（每集独立 BV）
-    us = info.get("ugc_season")
-    if us and us.get("sections"):
-        series_title = us.get("title") or title
-        meta_list: List[Dict] = []
-        # 跨 section 全局集号（V5，2026-09-06）：此前每个 section 独立 enumerate(1)，
-        # 多 section 系列会出现两个「第01集」→ base 冲突 → series_state 键互相污染 +
-        # 笔记文件名互相覆盖。改为全局递增，单 section 系列行为不变。
-        page_no = 0
-        for sec in us["sections"]:
-            for ep in sec.get("episodes", []):
-                page_no += 1
-                meta_list.append({
-                    "page": page_no,
-                    "part": ep.get("title", ""),
-                    "bvid": ep.get("bvid"),
-                    "aid": ep.get("aid"),
-                    "cid": ep.get("cid"),
-                    "title": ep.get("title", ""),
-                    # 单集发布时间（ugc_season episode 的 arc.pubdate，新版本在顶层）
-                    "pubdate": int((ep.get("arc") or {}).get("pubdate")
-                                   or ep.get("pubdate") or 0),
-                })
-        if meta_list:
-            entries = _fetch_series_entries(meta_list, lang, series_title=series_title, force=force)
-            if entries:
-                print(f"   ✅ 系列课「{series_title}」全部 {len(entries)} 集字幕抓取完成")
-                return {"series_title": series_title, "bvid": bvid, "kind": "ugc_season", "author": info.get("author", ""), "entries": entries}
-            return None
-
-    # 形态B：多P视频（单 BV 多 page）
-    pages = info.get("pages") or []
-    if len(pages) > 1:
-        series_title = title
-        meta_list = [{
-            "page": p["page"],
-            "part": p.get("part", ""),
-            "bvid": bvid,
-            "aid": aid,
-            "cid": p["cid"],
-            "title": p.get("part") or f"第{p['page']}集",
-            # 多P 共享同一视频发布时间
-            "pubdate": int(info.get("pubdate") or 0),
-        } for p in pages]
-        entries = _fetch_series_entries(meta_list, lang, series_title=series_title, force=force)
-        if entries:
-            print(f"   ✅ 多P视频「{series_title}」全部 {len(entries)} 集字幕抓取完成")
-            return {"series_title": series_title, "bvid": bvid, "kind": "multipart", "author": info.get("author", ""), "entries": entries}
-        return None
-
-    # 单P 且非系列课
-    return None
 
 # ---------------------------------------------------------------------------
 # 统一入口 + playlist

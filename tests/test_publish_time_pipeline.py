@@ -49,19 +49,6 @@ def _scys_body() -> str:
     return f"{filler}\n\n2026-03-20 16:32\n\n正文从这里开始。"
 
 
-def _fake_series(pubdates):
-    """构造 fetch_bilibili_series 形状的假系列（entries 带 pubdate 字段）。"""
-    entries = []
-    for i, pub in enumerate(pubdates, 1):
-        entries.append({
-            "page": i, "part": f"第{i}讲", "bvid": f"BV{i:010d}", "aid": i, "cid": i,
-            "title": f"第{i}讲 标题", "pubdate": pub,
-            "segments": [{"text": f"第{i}讲的字幕句子。"}],
-        })
-    return {"series_title": "测试系列课", "bvid": "BV1test0000", "kind": "ugc_season",
-            "author": "UP主小张", "entries": entries}
-
-
 class FakeResp:
     def __init__(self, payload):
         self._payload = payload
@@ -201,66 +188,6 @@ class TestLandScysBatchPublishTime:
     def test_missing_list_meta_falls_back_to_zero(self, tmp_path, monkeypatch):
         captured = self._run_landing(tmp_path, monkeypatch, with_gmt=False)
         assert captured.get("publish_time") == 0
-
-
-# ---------------------------------------------------------------------------
-# ⑤ B站系列课：entries pubdate → 落盘与返回值
-# ---------------------------------------------------------------------------
-
-class TestBiliSeriesPublishTime:
-    def _patch_series_env(self, monkeypatch, tmp_path, pending_bases):
-        monkeypatch.setattr(am, "NOTES_DIR", str(tmp_path))
-        monkeypatch.setattr(vm.series_state, "get_pending",
-                            lambda title, bases: list(pending_bases))
-        monkeypatch.setattr(vm.series_state, "mark_done", lambda *a, **k: None)
-        monkeypatch.setattr(
-            vm, "_summarize_segments",
-            lambda segs, note_type, title="", visual_context="": f"总结：{title}")
-        monkeypatch.setattr(vm, "_generate_series_overview", lambda *a, **k: "")
-        monkeypatch.setattr(vm, "_collect_landed_series_names", lambda *a, **k: [])
-
-    def _patch_series_save(self, monkeypatch):
-        saved = []
-
-        def fake_save(content, series_dir, base_name, author, url, tags, note_type,
-                      obsidian=False, folder="", publish_time=0):
-            saved.append((base_name, publish_time))
-            return os.path.join(series_dir, f"{base_name}.md")
-
-        monkeypatch.setattr(vm, "_save_series_note", fake_save)
-        return saved
-
-    def _run(self, monkeypatch, tmp_path, pubdates, pending_bases=None):
-        self._patch_series_env(monkeypatch, tmp_path,
-                               pending_bases if pending_bases is not None
-                               else [f"第{e['page']:02d}集_{e['part']}"
-                                     for e in _fake_series(pubdates)["entries"]])
-        saved = self._patch_series_save(monkeypatch)
-        url = "https://www.bilibili.com/video/BV1test0000"
-        res = vm._handle_bilibili_series(url, {"url": url}, series=_fake_series(pubdates))
-        return res, saved
-
-    def test_uniform_pubdate_flows_to_notes_and_result(self, monkeypatch, tmp_path):
-        res, saved = self._run(monkeypatch, tmp_path, [PT, PT])
-        assert res["success"] is True
-        assert res["publish_time"] == PT
-        assert saved and all(pub == PT for _, pub in saved)
-
-    def test_mixed_pubdates_honest_zero(self, monkeypatch, tmp_path):
-        res, saved = self._run(monkeypatch, tmp_path, [PT, PT + 86400])
-        assert res["publish_time"] == 0
-        assert saved and all(pub == 0 for _, pub in saved)
-
-    def test_missing_pubdates_zero(self, monkeypatch, tmp_path):
-        res, saved = self._run(monkeypatch, tmp_path, [None, None])
-        assert res["publish_time"] == 0
-        assert saved and all(pub == 0 for _, pub in saved)
-
-    def test_all_done_early_return_carries_publish_time(self, monkeypatch, tmp_path):
-        res, saved = self._run(monkeypatch, tmp_path, [PT], pending_bases=[])
-        assert res["success"] is True
-        assert res["publish_time"] == PT
-        assert saved == []
 
 
 # ---------------------------------------------------------------------------

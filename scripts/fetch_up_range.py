@@ -71,44 +71,6 @@ def _pending_path() -> str:
                           os.path.join(ROOT, "monitors", "pending_summaries.json"))
 
 
-PENDING_SERIES_PATH = os.path.join(ROOT, "monitors", "pending_series.json")
-
-
-def enqueue_pending_series(series_title: str, series_dir: str, url: str,
-                           author: str, degraded_raws: list) -> None:
-    """系列课降级 raw 登记（V2，2026-09-06）。
-
-    与 monitors.run._queue_pending_series 同 schema、同合并语义（按 series_title
-    合并 raw 列表），供 apply_pending_series.py 统一接管落盘。修复背景：补齐路径
-    的系列课降级 raw 此前无人接管——series_state.fetched 已标记（抓取层跳过），
-    却没有任何队列引用，73 集悬挂「已抓未总结」。
-    """
-    data = []
-    if os.path.exists(PENDING_SERIES_PATH):
-        try:
-            data = json.load(open(PENDING_SERIES_PATH, encoding="utf-8"))
-        except Exception:
-            data = []
-    for d in data:
-        if d.get("series_title") == series_title:
-            merged = set(d.get("degraded_raws", [])) | set(degraded_raws)
-            d["degraded_raws"] = sorted(merged)
-            d["queued_at"] = int(time.time())
-            break
-    else:
-        data.append({
-            "series_title": series_title,
-            "series_dir": series_dir,
-            "url": url,
-            "author": author,
-            "degraded_raws": sorted(degraded_raws),
-            "queued_at": int(time.time()),
-        })
-    os.makedirs(os.path.dirname(PENDING_SERIES_PATH), exist_ok=True)
-    with open(PENDING_SERIES_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=1)
-
-
 def _risk_skip_path(author: str) -> str:
     return os.path.join(ROOT, "notes", "_scraped", f"{author}_risk_skip.json")
 
@@ -202,6 +164,26 @@ def _is_really_done(entry: dict) -> bool:
         except Exception:
             pass
     return len(tail) > 100
+
+
+def filter_by_registry(items: list) -> tuple:
+    """抓取前登记表预查（PLAN-20260908 阶段3.3）：批量查 dedup 登记表，
+    已总结视频在请求字幕之前剔除（每条省 ~3 请求）。返回 (todo, hits)；
+    登记表读失败时放行原列表。"""
+    if not items:
+        return items, set()
+    try:
+        from articles import dedup
+        urls = [f"https://www.bilibili.com/video/{it['bvid']}" for it in items]
+        hits = dedup.batch_is_summarized(urls)
+        if not hits:
+            return items, set()
+        todo = [it for it, u in zip(items, urls) if u not in hits]
+        _log(f"[registry] 登记表命中 {len(items) - len(todo)} 条已总结，本次不重抓")
+        return todo, hits
+    except Exception as e:
+        _log(f"[registry-err] 登记表预查失败（放行原列表）：{e}")
+        return items, set()
 
 
 def _gc_old_logs(author: str, ttl_days: int) -> None:
@@ -298,8 +280,6 @@ def main():
                     help="批量也跑 ASR 音频转写（默认关：无 AI 字幕视频留待后续单独处理）")
     ap.add_argument("--reset-risk-skip", action="store_true", default=False,
                     help="清空已记录的 412 风险跳过列表，让这些视频重新参与抓取")
-    ap.add_argument("--no-dedup-series", dest="dedup_series", action="store_false", default=True,
-                    help="关闭按系列去重（默认开：同系列多集 URL 只抓一个代表，避免整季重抓）")
     ap.add_argument("--log-ttl-days", type=int, default=7,
                     help="无异常运行日志保留天数（默认 7，运行开始时自动清理；0=不清理）")
     args = ap.parse_args()
@@ -334,18 +314,9 @@ def main():
             if args.start <= it["idx"] <= args.end
             and f"https://www.bilibili.com/video/{it['bvid']}" not in done_urls
             and it["bvid"] not in risk_skip]
-    # V4（2026-09-06）：「已补过滤」并入 dedup 索引——以前经监控/早期版本/其它
-    # author 名补过的视频不在 fetch_results 里，按旧逻辑会被重新抓字幕（每条 ~3
-    # 请求），dedup 检查只在入队层（抓取之后）才发生，只省落盘不省请求。
-    # 批量查索引一次 IO；命中者在抓取前就剔除。
-    from articles import dedup as _dedup_mod
-    all_range_urls = [f"https://www.bilibili.com/video/{it['bvid']}"
-                      for it in items if args.start <= it["idx"] <= args.end]
-    dedup_done = _dedup_mod.batch_is_summarized(all_range_urls)
-    if dedup_done:
-        _log(f"[dedup] dedup 索引命中 {len(dedup_done)} 条已总结，本次不重抓")
-        todo = [it for it in todo
-                if f"https://www.bilibili.com/video/{it['bvid']}" not in dedup_done]
+    # 登记表预查（PLAN-20260908 阶段3.3，承接 V4「已补过滤」并入 dedup 索引）：
+    # 已补过的视频在 dedup 登记表里，抓取前批量剔除，字幕请求一个不发（每条 ~3 请求）。
+    todo, _reg_hits = filter_by_registry(todo)
     n_chunks = (len(todo) + args.batch_size - 1) // args.batch_size
     _log(f"[plan] 范围 [{args.start},{args.end}] {args.author}({args.uid})，待抓 {len(todo)} 条"
          f" → {n_chunks} 个批次（每批 {args.batch_size} 条共 1 进程）"
@@ -382,57 +353,10 @@ def main():
     aborted = None
     env_aborted = False
     empty_fail_streak = 0  # 连续「子进程无输出秒退」批次计数（V6 空转熔断）
-    enqueued = skipped = series_cnt = 0
+    enqueued = skipped = 0
     consec_risk = 0       # 连续 412 计数（成功条目重置）
     risk_skipped = 0      # 本次因 412 被跳过记录的条数
     video_outcomes = []   # 逐条结果（结构化日志用）
-
-    # ---- 按系列去重(B 配套, 2026-09-06): 同系列多集 URL 只喂一个代表, 避免整季重抓 ----
-    # 预扫每个待抓 URL 的 ugc_season 归属(一次廉价 view 调用, 远低于整季字幕请求),
-    # 同系列归并后只保留 idx 最小者作为代表喂给 videos/run.py(一次整季抓取覆盖全系列);
-    # 其余同系列集由代表调用顺带抓全, 运行结束统一标记完成(写入 fetch_results.json)。
-    def _dedupe_series(items):
-        groups = {}          # series_title -> [items]
-        standalone = []
-        # V3（2026-09-06）：预扫即逐条打 view 请求——0903 实测 194 请求/分钟、
-        # min_gap 0.04s 的「机器脉冲」正是这里裸奔造成的。加 0.5~1.5s 抖动间隔；
-        # 命中 412 立即熔断整次运行（预扫连发是最易触发风控的形态，继续跑只会更糟）。
-        for k, it in enumerate(items):
-            if k > 0:
-                time.sleep(random.uniform(0.5, 1.5))
-            if bfetch.risk_412_hit():
-                _log("🛑 [dedup] 预扫命中B站风控(412)，熔断本次运行。冷却 30~60 分钟后重跑（幂等续抓）。")
-                sys.exit(87)
-            try:
-                info = bfetch._bili_get_video_info(it["bvid"])
-            except Exception:
-                info = None
-            us = (info or {}).get("ugc_season") if info else None
-            if us and us.get("sections"):
-                st = us.get("title") or it["title"]
-                groups.setdefault(st, []).append(it)
-            else:
-                standalone.append(it)
-        reps = []
-        covered_map = {}     # rep_idx -> [被覆盖的同系列其它集]
-        for st, grp in groups.items():
-            grp.sort(key=lambda x: x["idx"])
-            rep = grp[0]
-            reps.append(rep)
-            covered_map[rep["idx"]] = grp[1:]
-        fetch_list = sorted(standalone + reps, key=lambda x: x["idx"])
-        return fetch_list, covered_map
-
-    if args.dedup_series:
-        _log(f"[dedup] 按系列去重预扫 {len(todo)} 个待抓 URL…")
-        todo, covered_map = _dedupe_series(todo)
-        n_covered = sum(len(v) for v in covered_map.values())
-        _log(f"[dedup] 归并后实际抓取 {len(todo)} 个代表 URL"
-             f"（涵盖 {n_covered} 个同系列集，避免整季重抓）")
-    else:
-        covered_map = {}
-        _log("⚠️ [dedup] 已关闭按系列去重（--no-dedup-series）：同系列多集 URL 将各自触发整季抓取，"
-             "可能重现请求爆炸/段错误。仅调试时临时使用。")
 
     chunks = [todo[i:i + args.batch_size] for i in range(0, len(todo), args.batch_size)]
 
@@ -538,7 +462,7 @@ def main():
 
                 # 抓到真字幕 → 入待总结队列（scys_batch_fetch 同款闭环）
                 raw_file = rec.get("raw_file") or ""
-                if (args.enqueue and rec.get("ok") and not rec.get("series")
+                if (args.enqueue and rec.get("ok")
                         and raw_file and os.path.exists(raw_file)):
                     status = enqueue_pending(url, title, args.author,
                                              pub_by_idx.get(idx, 0), raw_file)
@@ -548,16 +472,6 @@ def main():
                     else:
                         skipped += 1
                         _log(f"[queue] 跳过入队（{status}）: {title[:36]}")
-                elif rec.get("ok") and rec.get("series"):
-                    series_cnt += 1
-                    _log(f"[series] #{idx} 走系列课管线（写 notes/<系列>/，不入单篇队列）")
-                    # V2：系列降级 raw 登记 pending_series，由 apply_pending_series 接管总结，
-                    # 不再「抓了没人总结」。
-                    dr = rec.get("degraded_raws") or []
-                    if dr and rec.get("series_title"):
-                        enqueue_pending_series(rec["series_title"], rec.get("series_dir", ""),
-                                               url, args.author, dr)
-                        _log(f"[series] #{idx} 系列「{rec['series_title']}」{len(dr)} 集 raw 已入待总结队列")
                 elif rec.get("ok") and not raw_file:
                     skipped += 1
                     _log("[queue] 未解析到 raw 文件路径，跳过入队")
@@ -596,30 +510,6 @@ def main():
         if any(v.get("outcome") == "risk412" for v in video_outcomes[-len(chunk):] if v):
             _ensure_cookie("after_risk412")
 
-    # ---- B 配套：被代表集覆盖的同系列集，若代表成功，统一标记完成 ----
-    # 代表集(rep)触发整季抓取会顺带抓回同系列所有集字幕；代表 rc==0 即意味着
-    # 这些被覆盖集字幕已落盘，无需再次请求。写 fetch_results.json 让下次运行不算进 todo。
-    if covered_map:
-        done_idx = {r["idx"] for r in results if r.get("rc") == 0}
-        covered_done = 0
-        for rep_idx, covered in covered_map.items():
-            if rep_idx not in done_idx:
-                continue  # 代表失败 → 覆盖集留待下轮重抓（幂等）
-            for it in covered:
-                url = f"https://www.bilibili.com/video/{it['bvid']}"
-                # V1（2026-09-06）：完成凭证改为结构化 JSON（_is_really_done 按
-                # covered_by 字段识别），不再依赖「>100 字符」长度启发式。
-                note = json.dumps({"covered_by": rep_idx,
-                                   "note": "同系列整季抓取已被代表集覆盖，字幕已落盘，无需重抓",
-                                   "bvid": it["bvid"]}, ensure_ascii=False)
-                results.append({"idx": it["idx"], "url": url, "title": it["title"],
-                                "rc": 0, "stdout_tail": note, "stderr_tail": ""})
-                covered_done += 1
-        if covered_done:
-            with open(out_path, "w", encoding="utf-8") as f:
-                json.dump(results, f, ensure_ascii=False, indent=1)
-            _log(f"[dedup] 代表集成功 → {covered_done} 个同系列集已标记完成（跳过重复抓取）")
-
     # ---- 结构化运行日志（.log 人读 + .json 机读：请求密度/错误分布/逐条结果）----
     trace_summary = _summarize_trace(all_trace)
     duration_s = round(time.time() - started_at, 1)
@@ -638,7 +528,6 @@ def main():
         "summary": {
             "total": len(video_outcomes),
             "done": sum(1 for v in video_outcomes if v["outcome"] == "done"),
-            "series": series_cnt,
             "enqueued": enqueued, "enqueue_skipped": skipped,
             "risk_skip": risk_skipped,
             "aborted_at": aborted,
@@ -674,7 +563,7 @@ def main():
          f"{sum(trace_summary['errors'].values())} 次 {trace_summary['errors']}")
     _log(f"   📋 运行日志：{run_logf}\n            {run_json}")
     if args.enqueue:
-        _log(f"   队列：新入队 {enqueued} 条，跳过 {skipped} 条，系列 {series_cnt} 条。"
+        _log(f"   队列：新入队 {enqueued} 条，跳过 {skipped} 条。"
              f"消费：python scripts/filter_pending.py 清洗后派子 Agent 总结。")
 
 

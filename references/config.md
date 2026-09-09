@@ -302,22 +302,19 @@ python scripts/filter_pending.py
 - 入队条目：url/title/author/note_type（分类器）/tags/publish_time/folder（统一路由器预计算）/raw_file/prompt（`get_note_prompt + QUALITY_GATE_SELFCHECK`）/queued_at；
 - 已在队列或已总结过（dedup 闸门）→ 自动跳过；`--no-enqueue` 可退回纯抓取；
 - 队列路径可被 `MON_PENDING_SUMMARY_PATH` 覆盖（与 monitors 并行模式约定一致）；
-- **系列课降级 raw 自动接管（2026-09-06，V2）**：代表集触发的系列管线在 FORCE_AGENT_MODE
-  下降级产出的 `notes/<系列>/*_raw.md`，由编排层登记进 `monitors/pending_series.json`
-  （与 monitors.run 同 schema 同合并语义），由 `apply_pending_series.py` 统一总结落地——
-  补齐路径不再出现「字幕已抓（series_state.fetched）却无人总结」的悬挂；
 - **待抓过滤三合一（2026-09-06，V4）**：todo = 列表切片 − fetch_results 真完成条目 −
   dedup 索引批量命中（`batch_is_summarized`）− risk_skip。以前经监控/其它路径补过的
   视频在**抓取前**就被剔除，不再浪费字幕请求；
 - **系列去重预扫（`--dedup-series` 默认开）**：预扫逐条 view 归并同系列（0.5~1.5s 抖动，
-  412 即熔断 exit 87），同系列只喂 idx 最小代表触发整季抓取；被覆盖集写**结构化 JSON
-  凭证**（`{"covered_by":…}`）进 fetch_results，`_is_really_done` 按 `covered_by` 字段
-  识别（2026-09-06 修复 V1：旧凭证仅 54 字符，被「>100 字符」门槛误判为超时误记，
-  导致被覆盖集每轮重进 todo → 回退单视频重抓 + 重复入队成单篇）；
+  412 即熔断 exit 87），归并后**逐集独立入队**（PLAN-20260908：不再喂 idx 最小代表触发
+  整季抓取，该机制已退役）；被覆盖集写**结构化 JSON 凭证**（`{"covered_by":…}`）进
+  fetch_results，`_is_really_done` 按 `covered_by` 字段识别（2026-09-06 修复 V1：旧凭证
+  仅 54 字符，被「>100 字符」门槛误判为超时误记，导致被覆盖集每轮重进 todo → 回退单
+  视频重抓 + 重复入队成单篇）；
 - **环境异常熔断（2026-09-06，V6）**：连续 2 批子进程「无输出秒退且 0 请求」（rc=1）
   → 判运行环境异常熔断（exit 88），不再空转烧完批间延迟；
 - **重置工具**：`scripts/reset_up_backfill.py --uid <uid> --author <名> [--apply]`——
-  用户清空某 UP 的 Obsidian 内容后成套清 fetch_results/dedup/series_state/本地系列
+  用户清空某 UP 的 Obsidian 内容后成套清 fetch_results/dedup/本地系列
   文件夹（迁移到备份目录，可回滚）；vault 记录对账与超期文件报告见
   `scripts/vault_lifecycle.py`；
 - **GC 不可再生域白名单（2026-09-07，P2-5）**：`.env` `GC_NONREGEN_HOSTS`（逗号分隔，
@@ -327,14 +324,13 @@ python scripts/filter_pending.py
 
 **限速与风控防护（2026-09-03，两轮迭代）**——教训：零间隔连续抓 2 小时+ 会触发 B站 412 风控，且失败重试 + yt-dlp/ASR 兜底会让每条失败视频反而发出更多请求，越抓越拦：
 
-- **请求级硬顶（2026-09-03 晚，Q2/Q3 落地）**：`BILI_MAX_REQ_PER_HOUR`（默认 **170** 请求/小时），滑动 1h 窗口，挂在 `videos/fetch.py:_bili_urlopen` 这个 HTTP 单一咽喉上——**单视频补齐 / 系列整季 / 监控 / 救回等所有 B站管线自动共用**，不再有「单视频有限流、系列批量零限流」的空洞。预算可算：每视频 ≈3 请求，假设安全上限 200 请求/小时（经验值，用 `<作者>_backfill_*.json` 运行日志里的密度/412 出现点校准），留 15% 余量 ≈ 56 视频/小时。**动态调整**：命中 412 自动降预算 ×0.7（下限 30），本轮内生效。仅靠条间延迟 15~30s 只能压到 ≈440 请求/小时，压不进安全区，必须有请求级硬顶。
+- **请求级硬顶（2026-09-03 晚，Q2/Q3 落地）**：`BILI_MAX_REQ_PER_HOUR`（默认 **170** 请求/小时），滑动 1h 窗口，挂在 `videos/fetch.py:_bili_urlopen` 这个 HTTP 单一咽喉上——**单视频补齐 / 监控等所有 B站管线自动共用**（系列整季批量管线已退役，PLAN-20260908）。预算可算：每视频 ≈3 请求，假设安全上限 200 请求/小时（经验值，用 `<作者>_backfill_*.json` 运行日志里的密度/412 出现点校准），留 15% 余量 ≈ 56 视频/小时。**动态调整**：命中 412 自动降预算 ×0.7（下限 30），本轮内生效。仅靠条间延迟 15~30s 只能压到 ≈440 请求/小时，压不进安全区，必须有请求级硬顶。
 - 条间随机延迟 **15~30s**（`--delay-min/--delay-max`），消除机器脉冲节奏（批内由 `run.py --batch-file` 循环执行，批间由编排层执行）；
 - **批量化进程模型**：每 `--batch-size`（默认 8）条共用 1 个子进程（129 集 ≈ 17 进程，消除每条一次 Python 冷启动）；
 - 单条 412「跳过+记录」进 `<作者>_risk_skip.json`，仅【连续】达 `--risk-threshold`（默认 3）才熔断整批（exit 87）；`--no-stop-on-risk` = 永不熔断；冷却后 `--reset-risk-skip` 重新尝试；
 - cookie 惰性轮换：运行开始/命中 412 后自动 nav 校验，失效则从本机 Chrome 提取（事件记入运行日志；手动 `python scripts/bili_cookie_refresh.py`）；
 - **结构化运行日志**：`notes/_scraped/<作者>_backfill_<ts>.log` + `.json`（请求级追踪：密度 avg/min/max gap、req/min、412/413/429/timeout 计数、逐条 outcome、cookie 事件）；运行开始自动清理超 `--log-ttl-days`（默认 7）且**无异常**的旧日志，有异常的永久保留；
 - 「真成功」判定 = rc==0 且 stdout 含字幕内容（旧版超时条目会误记上一条 rc，重跑即自动修复）；只跳过真成功条目，失败/缺失自动重抓；
-- 系列整季抓取（`_fetch_series_entries`）集间 2~4s 随机间隔（实测曾零间隔跑出 194 请求/分钟）。
 
 批量模式自动注入的子进程环境变量（日常单视频调用不受影响）：
 

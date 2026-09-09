@@ -5,7 +5,6 @@
 
 - B1 migrate_obsidian_vault：plan_one 的 item 补 category（tags 推断）
 - B2 videos._finalize_single：单视频 folder 为空时自动路由（含 tags 补作者）
-- B3/B4 videos._handle_bilibili_series：系列单集与总览都传 folder
 - B5 videos._handle_playlist：playlist 总览传 folder
 - B6 land_scys_batch：folder 走统一路由器（不再手拼「生财有术/<领域>」）
 - B7 series_maintenance：verify 只查不建（防重建根容器）+ reland 传 folder
@@ -136,66 +135,6 @@ def test_series_folder_monoreg_hit_also_routes(monkeypatch):
     got = resolve_folder({"author": "笨笨的韭菜", "series": "千刀千法",
                           "title": "千刀千法", "url": "https://www.bilibili.com/video/BVx"})
     assert got == f"{MONITOR_ROOT}/B站/笨笨的韭菜/千刀千法"
-
-
-# ---------------------------------------------------------------------------
-# D. videos._handle_bilibili_series 传 folder（B3/B4）
-# ---------------------------------------------------------------------------
-
-_FAKE_SERIES = {
-    "kind": "videos",
-    "series_title": "测试系列甲",
-    "entries": [{"page": 1, "part": "开篇", "segments": [{"t": 0, "text": "hello"}], "title": "第1集"}],
-    "author": "某路人UP",
-}
-
-
-@pytest.fixture()
-def mock_series_pipeline(monkeypatch, tmp_path):
-    """mock 系列管线的 IO 面，捕获 _save_series_note / _generate_series_overview 的 folder。"""
-    import articles.main as am
-    import shared.routing as rt
-    import videos.main as vm
-
-    monkeypatch.setattr(rt, "load_account_registry", lambda: {})
-    monkeypatch.setattr(rt, "load_series_patterns", lambda: {})
-    monkeypatch.setattr(vm.articles_main, "NOTES_DIR", str(tmp_path))
-    monkeypatch.setattr(vm.series_state, "get_pending", lambda title, bases: set(bases))
-    monkeypatch.setattr(vm, "_summarize_segments", lambda segs, nt, title, **k: "总结文本")
-    monkeypatch.setattr(vm, "_local_write_enabled", lambda: False)
-
-    captured = {"save": [], "ov": []}
-
-    def fake_save(content, series_dir, base, author, url, tags, note_type,
-                  obsidian=False, folder="", publish_time=0):
-        captured["save"].append({"folder": folder, "base": base})
-        return os.path.join(series_dir, f"{base}.md")
-
-    def fake_ov(series_title, series_dir, url, obsidian=False, folder=""):
-        captured["ov"].append({"folder": folder})
-        return os.path.join(series_dir, "00_系列总览.md")
-
-    monkeypatch.setattr(vm, "_save_series_note", fake_save)
-    monkeypatch.setattr(vm, "_generate_series_overview", fake_ov)
-    return captured
-
-
-def test_bili_series_passes_folder_to_episode_and_overview(mock_series_pipeline):
-    from videos.main import _handle_bilibili_series
-    r = _handle_bilibili_series("https://www.bilibili.com/video/BVtest",
-                                {"tags": ["测试系列甲"]}, series=_FAKE_SERIES)
-    assert r.get("success") is True
-    want = f"{MYNOTES_ROOT}/作者/某路人UP/测试系列甲"
-    assert mock_series_pipeline["save"] and mock_series_pipeline["save"][0]["folder"] == want
-    assert mock_series_pipeline["ov"] and mock_series_pipeline["ov"][0]["folder"] == want
-
-
-def test_bili_series_explicit_folder_wins(mock_series_pipeline):
-    from videos.main import _handle_bilibili_series
-    _handle_bilibili_series("https://www.bilibili.com/video/BVtest",
-                            {"tags": ["测试系列甲"], "folder": "手工/目录"}, series=_FAKE_SERIES)
-    assert mock_series_pipeline["save"][0]["folder"] == "手工/目录"
-    assert mock_series_pipeline["ov"][0]["folder"] == "手工/目录"
 
 
 # ---------------------------------------------------------------------------

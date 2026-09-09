@@ -38,15 +38,15 @@
   - **新会话执行步骤（照做即一帆风顺）**：
     1. 直接运行 `python monitors/run.py --mode auto --apply`。
     2. 公众号 token 失效 → 自动弹二维码（`RELOGIN_QR:` 路径），**本机会话扫码后续期，本次运行即继续抓取公众号**（刷新 token 后重试整轮）；headless/无人看码则本次跳过公众号、B站照跑不受影响。
-    3. 发现 → 抓正文 → 进 `pending_summaries.json` 队列（FORCE_AGENT_MODE 下不自动总结）；系列课降级进 `pending_series.json` 队列；scys 新帖进 `notes/_scraped/scys/pending_summaries.json` 队列。
+    3. 发现 → 抓正文 → 进 `pending_summaries.json` 队列（FORCE_AGENT_MODE 下不自动总结；系列课单集经五步管线与单视频同队列，PLAN-20260908 后无独立系列队列）；scys 新帖进 `notes/_scraped/scys/pending_summaries.json` 队列。
     4. 运行结束后，本会话（执行模型）**必须**在本次会议内闭环两类待总结队列（全自动，无需用户手动命令）：
        - **派单前先跑 `python scripts/filter_pending.py`**（机械清洗两队列：URL 命中 dedup 索引的已总结条目自动出队、scys 队列清 `summarized:true`——多 Agent 接力时已总结内容不再浪费 AI token、不重复落盘）。
        - **跨来源去重（2026-09-03，代码自动）**：生财有术公众号文章在总结管线前会与 scys 归档做标题/正文前缀相似比对，命中直接跳过（日志 `[cross-dedup]`、健康度 `scys重复 N`），无需人工干预（详见 `docs/decisions/DECISION-20260903-cross-source-dedup.md`）。
        - **单篇**：读 `pending_summaries.json`，派**子 Agent** 消费条目已预计算的 prompt 总结并 `save_summary_only` 落盘（默认本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0）。
        - **scys**：读 `notes/_scraped/scys/pending_summaries.json`，派**子 Agent** 按 `references/scys-fetch-sop.md` §9 语义总结并落盘（folder=生财有术/<领域>）-> 出队。⚠️ **三队列统一 prompt 预计算（2026-09-05 起）**：monitors 降级队列 / scys 批量队列 / UP 队列三个入队写点（`monitors/run.py:_queue_pending_summary`、`scripts/scys_batch_fetch.py:build_pending_entry`、`scripts/fetch_up_range.py`）都会按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 把 prompt 算好塞进队列条目（条目缺 note_type 时自动兜底分类），子 Agent 直接消费该 prompt 总结并 `save_summary_only` 落盘，**无需自调任何 CLI**。**不要全部用 structured 模板**（2026-08-22 分类修复，详见 `docs/decisions/DECISION-20260821-scys-classification-fix.md`）。
-       - **系列课**：读 `pending_series.json`，对每个系列按 `notes/<系列名>/*_raw.md` 分片派**子 Agent** 总结成 `.body.md`，再跑 `python monitors/apply_pending_series.py` 落地（run.py 末尾已自动触发一次落地，body 存在时直接落；此处是为「刚总结出的新 body」补一遍落地）。系列课与单篇一致：默认只落本地 Obsidian（2026-09-04 起，见 `RULES.md` §3.0）；用户明确要求写飞书时才写。
-       - ⚠️ 系列课增量语义：每日重跑时，`videos.main` 已按 `monitors/series_state.json` 去重，**只把未总结的集**写入 raw 并排队；UP 更新后自动只抓新增集，已总结的旧集不会重复总结/落盘。
-       - ⚠️ 系列课落盘结构（2026-08-23 修复）：系列容器挂 `【监控】/<平台>/<UP>/<系列名>/` 下（不是根），由统一路由器 `shared/routing.py: resolve_folder` 算路径。`apply_pending_series.py` 传给 `_save_series_note` 的 `folder` **只到账号层**（`rsplit('/',1)[0]`），系列容器由 `ensure_series_node` 单建——否则系列名被建两次造成嵌套。`_read_series_from_feishu` 的 `parent_token` 已是容器 token 时直接用，不再内部 `ensure_series_node`。
+       - **系列课**：单集已随单篇队列消费（五步管线 `summarize_series_episode`，无独立系列队列）；点名补齐整季走 `python scripts/backfill_series.py --series <名>`（登记表自动滤已总结，同集失败 3 次转人工，PLAN-20260908/D8）。默认只落本地 Obsidian（2026-09-04 起，见 `RULES.md` §3.0）；用户明确要求写飞书时才写。
+       - ⚠️ 系列课增量语义（PLAN-20260908 后）：每日重跑时，`videos.main` 按登记表 URL 键去重，**只把未总结的集**入队；UP 更新后自动只抓新增集，已总结的旧集不会重复总结/落盘。
+       - ⚠️ 系列课落盘结构：系列容器挂 `【监控】/<平台>/<UP>/<系列名>/` 下（不是根），由统一路由器 `shared/routing.py: resolve_folder` 算路径；五步管线 `_save_series_note` 收到的 `folder` **只到账号层**（`rsplit('/',1)[0]`），系列容器由 `ensure_series_node` 单建——否则系列名被建两次造成嵌套。`_read_series_from_feishu` 的 `parent_token` 已是容器 token 时直接用，不再内部 `ensure_series_node`。
     5. 末尾看健康度行（视频/动态/文章/跳过/限流待重试/错误）确认是否异常。
     - 内置重试（无需手动）：token 失效弹码等扫码(≤180s) / 401 瞬错 ×3 / 代理空轮退避重试 / 正文限流进 `pending_refetch` 下次重抓。
 - **抓取规则**：按时间窗口（首跑 30 天 / 每日 1 天，断跑自动拉长封顶 30 天）+ 无干货动态屏蔽 + 短动态轻量化 + 新鲜度标签。细节见 `monitors/README.md`。
@@ -80,7 +80,7 @@
 
 - **命令**：`python scripts/migrate_gate.py --vault "$env:OBSIDIAN_VAULT_PATH" --scope=`（dry-run 只读出清单）+ `--apply` 才动文件。五步：dedup → fm_sync → scan（5 类异常+链接指纹分组）→ queue（重抓队列，只生成不执行）→ verify。清单 JSON+MD 写 vault 同级 `_migrate_gate_archive/`。
 - **铁律**：重抓**成功落盘→校验→才删旧文**；失败旧文原地保留停留清单持续重试；B站重传 URL 会变，用队列 `old_titles` 做标题+内容相似度匹配，不能只凭 URL。串位文件也全量重抓（H1 改名机制已删）。
-- **消费队列**：`kind=bili_video` 走 `videos` 管线、`article` 走 `articles.skill_main`、`manual_no_url` 等人工补链接；folder_hint=旧文父目录（重抓产物落同目录）。
+- **消费队列**：一律走 `scripts/consume_migrate_queue.py`（2026-09-09 落地，测试 `tests/test_consume_migrate_queue.py` 20 例）——`--plan`（registered/to_fetch 进度）→ `--fetch --limit 15`（抓正文入 staging `notes/_scraped/migrate/pending_summaries.json`，prompt/note_type 预计算，B站标题 difflib 相似度 <0.55 或失败 3 次转 manual，412 熔断）→ 执行模型派子 Agent 按 staging 内 prompt 总结并 `articles/_save_summary.py` 落盘（自动登记）→ `--clean`（已登记出队 done）→ 循环至清零 → `--cleanup-old --apply`（先 dry-run：登记命中才删旧文）。路由：`bili_video`→`summarize_video`、`article`→`skill_main`（folder=folder_hint 落同目录）、`manual_no_url`→人工补链接。脚本不加载 .env，运行须显式 `--archive-dir "<vault同级>/_migrate_gate_archive"`。
 - **真源**：`docs/decisions/DECISION-20260908-regen-gate-v3.md`；测试 `tests/test_migrate_gate.py`（70 例）。
 
 ---

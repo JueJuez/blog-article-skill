@@ -3,15 +3,16 @@
 按规范化 URL（或正文内容 hash）记录已总结项，重复运行时跳过并提示已存在，
 避免重复消耗 token。
 
-登记表（P0-2）：持久化在 notes/_meta/sync_ledger.json，不再放易失的 .cache/；
-旧 .cache/dedup.json 在首次读取时自动搬家（新档已存在则旧档保留不动）。
+登记表（1.1，PLAN-20260908）：真源升格为 notes/_meta/summary_registry.json；
+两代旧档 .cache/dedup.json（最老）→ notes/_meta/sync_ledger.json 首读时
+自动合并搬家（新档已存在则所有旧档保留不动）。
 记录 schema：{source_url, title, filename, feishu_link, obsidian_link, ts}，
 feishu_link / obsidian_link 是各端最后一次验证成功时写入的指针。
 
 并发安全（P0-3）：写入方（mark_summarized / set_links / clear_links）读-改-写
 全程持有 O_EXCL 文件锁，并以临时文件 + os.replace 原子落盘；读取方不加锁，
 靠原子替换保证不会读到半文件。锁等待超时后放行兜底
-（与 feishu.py/_node_creation_lock、apply_pending_series._drain_lock 同模式）。
+（与 feishu.py/_node_creation_lock 同模式）。
 """
 
 import os
@@ -25,10 +26,12 @@ from urllib.parse import urlsplit, urlunsplit
 # 仓库根（articles/ 上一级）
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CACHE_DIR = os.path.join(_ROOT, ".cache")
-# P0-2：登记表默认落点（tests 断言该常量；conftest 只 patch _INDEX_FILE/_CACHE_DIR）
-_DEFAULT_INDEX_FILE = os.path.join(_ROOT, "notes", "_meta", "sync_ledger.json")
+# 1.1（PLAN-20260908）：登记表真源升格为 summary_registry.json；
+# sync_ledger.json（P0-2）与 .cache/dedup.json（P0 前）为两代旧档，首读自动合并搬家。
+_DEFAULT_INDEX_FILE = os.path.join(_ROOT, "notes", "_meta", "summary_registry.json")
 _INDEX_FILE = _DEFAULT_INDEX_FILE
-_LEGACY_INDEX_FILE = os.path.join(_CACHE_DIR, "dedup.json")
+_LEGACY_INDEX_FILE = os.path.join(_ROOT, "notes", "_meta", "sync_ledger.json")
+_LEGACY_CACHE_FILE = os.path.join(_CACHE_DIR, "dedup.json")
 # P0-3：O_EXCL 锁目录（跨进程；tests 通过 patch _LOCK_DIR 隔离）
 _LOCK_DIR = os.path.join(tempfile.gettempdir(), "blog_article_skill_dedup_locks")
 _LOCK_TIMEOUT = 10.0
@@ -66,18 +69,73 @@ def _ensure_parent(path: str) -> None:
         os.makedirs(parent, exist_ok=True)
 
 
+# 1.4（P1-1）：站点参数白名单——query 只保留稳定键参数，其余为分享/追踪噪声剥离；
+# 分P（bilibili p=）是不同内容必须保留；未列出的 host 维持原全保留行为。
+_QUERY_KEEP_BY_HOST = {
+    "bilibili.com": {"p"},
+    "mp.weixin.qq.com": {"__biz", "mid", "idx", "sn"},
+    "youtube.com": {"v"},
+}
+
+
+def _host_query_keep(netloc: str) -> "set | None":
+    """按域名后缀匹配参数白名单（space.bilibili.com / m.youtube.com 等子域同规则）。"""
+    host = netloc.split("@")[-1].split(":")[0].lower()
+    if host.startswith("www."):
+        host = host[4:]
+    for domain, keep in _QUERY_KEEP_BY_HOST.items():
+        if host == domain or host.endswith("." + domain):
+            return keep
+    return None
+
+
 def _normalize_url(url: str) -> str:
-    """规范化 URL：去 scheme 大小写、去末尾斜杠、去 fragment、排序 query。"""
+    """规范化 URL：去 scheme 大小写、去末尾斜杠、去 fragment、排序 query。
+
+    1.4（P1-1）：白名单 host 只保留稳定键参数（公众号 __biz/mid/idx/sn、
+    B站 p=、YouTube v=），chksm/vd_source 等可变参数剥离避免同源多键。
+    """
     try:
         parts = urlsplit(url.strip())
         scheme = parts.scheme.lower()
         netloc = parts.netloc.lower()
         path = parts.path.rstrip("/")
+        pairs = parts.query.split("&") if parts.query else []
+        keep = _host_query_keep(netloc)
+        if keep is not None:
+            pairs = [p for p in pairs if p.split("=", 1)[0] in keep]
         # query 排序，避免 ?a=1&b=2 与 ?b=2&a=1 视为不同
-        query = "&".join(sorted(parts.query.split("&"))) if parts.query else ""
+        query = "&".join(sorted(pairs))
         return urlunsplit((scheme, netloc, path, query, ""))
     except Exception:
         return url.strip().lower()
+
+
+# 1.4（P1-1）：b23.tv 短链展开（进程内缓存；网络失败降级原样，短链 path 唯一仍可作键）。
+_B23_CACHE: dict = {}
+
+
+def expand_url(url: str) -> str:
+    """b23.tv 短链展开为长链；非短链原样返回，展开失败降级原样。"""
+    u = (url or "").strip()
+    try:
+        netloc = urlsplit(u).netloc.lower()
+    except Exception:
+        return u
+    if netloc.removeprefix("www.") != "b23.tv":
+        return u
+    if u in _B23_CACHE:
+        return _B23_CACHE[u]
+    expanded = u
+    try:
+        import requests
+        resp = requests.head(u, allow_redirects=True, timeout=5)
+        if resp.url and resp.url != u:
+            expanded = resp.url
+    except Exception:
+        pass
+    _B23_CACHE[u] = expanded
+    return expanded
 
 
 def _hash(text: str) -> str:
@@ -110,32 +168,45 @@ def _save_index(index: dict) -> None:
 
 
 def _migrate_legacy() -> None:
-    """P0-2：旧 .cache/dedup.json 自动搬家到新路径；新档已存在则旧档保留不动。
+    """1.1：三代旧档自动合并搬家到 registry（新档已存在则所有旧档保留不动）。
 
-    损坏的旧档视为空表照常搬入并删除（旧档本就是易失缓存，无修复价值）。
+    搬家链：.cache/dedup.json（最老）→ notes/_meta/sync_ledger.json → registry。
+    两代旧档同时存在时按老→新顺序合并、新档覆盖老档；损坏旧档视为空表照常
+    合并并删除（旧档本就是易失缓存，无修复价值）。
     """
-    if os.path.exists(_INDEX_FILE) or not os.path.exists(_LEGACY_INDEX_FILE):
+    if os.path.exists(_INDEX_FILE):
         return
-    try:
-        with open(_LEGACY_INDEX_FILE, "r", encoding="utf-8") as f:
-            legacy = json.load(f)
-        if not isinstance(legacy, dict):
-            legacy = {}
-    except Exception:
-        legacy = {}
-    _save_index(legacy)
-    try:
-        os.remove(_LEGACY_INDEX_FILE)
-    except OSError:
-        pass
+    merged: dict = {}
+    found = False
+    for path in (_LEGACY_CACHE_FILE, _LEGACY_INDEX_FILE):  # 老→新，新覆盖老
+        if not os.path.exists(path):
+            continue
+        found = True
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                legacy = json.load(f)
+            if isinstance(legacy, dict):
+                merged.update(legacy)
+        except Exception:
+            pass
+    if not found:
+        return
+    _save_index(merged)
+    for path in (_LEGACY_CACHE_FILE, _LEGACY_INDEX_FILE):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
-def _key_for(url: str = "", content: str = "") -> (str, str):
-    """返回 (前缀, hash)。url 优先，否则用内容 hash。"""
+def _key_for(url: str = "", content: str = "", title: str = "") -> (str, str):
+    """返回 (键类型, hash)。url 优先，其次内容 hash，最后标题指纹（title_fp）。"""
     if url and url.strip():
-        return "url", _hash(_normalize_url(url))
+        return "url", _hash(_normalize_url(expand_url(url)))
     if content and content.strip():
         return "content", _hash(content)
+    if title and title.strip():
+        return "title_fp", _hash(normalize_title(title))
     return "none", ""
 
 
@@ -147,14 +218,14 @@ def _with_link_defaults(rec: dict) -> dict:
     return out
 
 
-def is_summarized(url: str = "", content: str = "") -> dict:
-    """查询是否已总结过。
+def is_summarized(url: str = "", content: str = "", title: str = "") -> dict:
+    """查询是否已总结过（1.3：无 URL 时可按标题指纹 title_fp 查）。
 
     Returns:
         {} 表示未记录；否则为 {key, source_url, title, filename,
         feishu_link, obsidian_link, ts} 记录
     """
-    prefix, h = _key_for(url, content)
+    prefix, h = _key_for(url, content, title)
     if prefix == "none" or not h:
         return {}
     index = _load_index()
@@ -164,36 +235,83 @@ def is_summarized(url: str = "", content: str = "") -> dict:
     return {}
 
 
-def batch_is_summarized(urls) -> set:
-    """批量查询：返回 urls 中已总结的子集（一次读索引，避免逐条读文件 IO）。
+def batch_is_summarized(urls, titles=None) -> set:
+    """批量查询：返回 urls/titles 中已总结的子集（一次读索引，避免逐条读文件 IO）。
 
     用于需要大量判断的场景——如 `--all-videos` 全量重抓时跳过已总结视频，
     防止 seen 门禁被绕过后又把已总结项重新入队/重复落盘。
+    1.3：titles 批量标题指纹查询；返回命中原文（url 或 title）集合。
     """
-    urls = [u for u in urls if u and u.strip()]
-    if not urls:
+    urls = [u for u in (urls or []) if u and u.strip()]
+    titles = [t for t in (titles or []) if t and t.strip()]
+    if not urls and not titles:
         return set()
     index = _load_index()
-    return {u for u in urls if index.get(_key_for(u)[1])}
+    hits = {u for u in urls if index.get(_key_for(u)[1])}
+    hits |= {t for t in titles if index.get(_key_for(title=t)[1])}
+    return hits
 
 
-def mark_summarized(url: str = "", content: str = "", title: str = "", filename: str = "") -> None:
-    """记录一次成功总结（读-改-写全程锁内；已有记录保留已写 link）。"""
-    prefix, h = _key_for(url, content)
+def mark_summarized(url: str = "", content: str = "", title: str = "",
+                    filename: str = "", folder: str = "", note_type: str = "",
+                    source: str = "") -> None:
+    """记录一次成功总结（读-改-写全程锁内）。
+
+    与 register 同一套 merge 语义（PLAN-20260908 阶段3.4）：已有记录保留
+    已写 link 与未传字段，仅用本次非空字段覆盖；key_type/summarized_at 对齐。
+    url/content 均空时按标题指纹（title_fp）落键，与 is_summarized 查询对称。
+    """
+    prefix, h = _key_for(url, content, title)
     if prefix == "none" or not h:
         return
     with _index_lock():
         index = _load_index()
         old = index.get(h) or {}
         index[h] = {
+            "key_type": prefix,
             "source_url": url or "",
-            "title": title or "",
-            "filename": filename or "",
+            "title": title or old.get("title", ""),
+            "filename": filename or old.get("filename", ""),
+            "folder": folder or old.get("folder", ""),
+            "note_type": note_type or old.get("note_type", ""),
+            "source": source or old.get("source", ""),
+            "summarized_at": time.strftime("%Y-%m-%d"),
             "feishu_link": old.get("feishu_link", ""),
             "obsidian_link": old.get("obsidian_link", ""),
             "ts": int(time.time()),
         }
         _save_index(index)
+
+
+def register(url: str = "", title: str = "", folder: str = "",
+             note_type: str = "", source: str = "") -> dict:
+    """落盘登记（1.2，PLAN-20260908）：统一写入口，扩展 schema §3.2 字段。
+
+    url 与 title 至少给一个：有 url 走 url 键；无 url 用标题指纹键
+    （title_fp，如直播回放）。重复登记幂等——已有记录保留 link 与未传
+    字段，仅用本次非空字段覆盖；summarized_at 刷新为当日。缺参返回 {}。
+    """
+    prefix, h = _key_for(url=url, title=title)
+    if prefix == "none" or not h:
+        return {}
+    with _index_lock():
+        index = _load_index()
+        old = index.get(h) or {}
+        rec = {
+            "key_type": prefix,
+            "source_url": url or "",
+            "title": title or old.get("title", ""),
+            "folder": folder or old.get("folder", ""),
+            "note_type": note_type or old.get("note_type", ""),
+            "source": source or old.get("source", ""),
+            "summarized_at": time.strftime("%Y-%m-%d"),
+            "feishu_link": old.get("feishu_link", ""),
+            "obsidian_link": old.get("obsidian_link", ""),
+            "ts": int(time.time()),
+        }
+        index[h] = rec
+        _save_index(index)
+        return {"key": h, **_with_link_defaults(rec)}
 
 
 def get_entry(url: str = "", content: str = "") -> dict:

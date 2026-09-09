@@ -257,6 +257,18 @@ def _sanitize_folder(folder: str) -> str:
     return "/".join(parts)
 
 
+def _guess_source(url: str) -> str:
+    """从 URL 推断来源站（登记表 source 字段）：bilibili/wechat/scys，未知留空。"""
+    u = url or ""
+    if "bilibili.com" in u or "b23.tv" in u:
+        return "bilibili"
+    if "mp.weixin.qq.com" in u:
+        return "wechat"
+    if "scys.com" in u:
+        return "scys"
+    return ""
+
+
 def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "") -> tuple:
     """保存已总结的文章内容到所有可用目标。
 
@@ -343,7 +355,10 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
             }, f, ensure_ascii=False)
         # 仍标记 dedup，避免重复入队（落盘在 Landing 阶段，不改 dedup 语义）
         if original_url:
-            dedup.mark_summarized(url=original_url, title=original_title, filename=filename)
+            dedup.mark_summarized(url=original_url, title=original_title,
+                                  filename=filename, folder=folder,
+                                  note_type=note_type,
+                                  source=_guess_source(original_url))
         print(f"📝 [draft-only] 已写本地草稿（不落飞书）：{dp}")
         return formatted_note, dp
 
@@ -352,7 +367,9 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
     # mark 收敛（PLAN-20260906 任务2）：登记只发生在本保存点，调用方不再各自 mark。
     # url 优先；粘贴原文（无 url）按 content_key 哈希登记；两者皆无则不登记。
     if original_url or content_key:
-        dedup.mark_summarized(url=original_url, content=content_key, title=title, filename=filename)
+        dedup.mark_summarized(url=original_url, content=content_key, title=title,
+                              filename=filename, folder=folder, note_type=note_type,
+                              source=_guess_source(original_url))
 
     # 总览索引维护（仅监控路径 folder 非空时）：落盘成功后把本篇插入账号容器总览，
     # 解决飞书按创建时间排、补历史数据后顺序乱的问题（用户 2026-08-25 决策）。

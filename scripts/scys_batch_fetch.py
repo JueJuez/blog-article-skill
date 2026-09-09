@@ -214,6 +214,31 @@ def filter_todo(items: list[dict], done_ids: set, since_days: int = 0,
     return todo
 
 
+def registry_filter(items: list[dict]) -> tuple[list[dict], list[dict]]:
+    """filter_todo 之后的登记表预查（PLAN-20260908 阶段3.2）。
+
+    URL 键与 articles.dedup 同源（ARTICLE_URL.format(topic_id)）；已总结帖在
+    「待抓列表」层剔除，请求一个不发。返回 (kept, skipped)；登记表读失败时
+    放行原列表（不阻塞抓取主流程）。
+    """
+    if not items:
+        return [], []
+    try:
+        from articles import dedup
+        urls = [ARTICLE_URL.format(topic_id=str(it["topicId"])) for it in items]
+        hits = dedup.batch_is_summarized(urls)
+        if not hits:
+            return items, []
+        kept, skipped = [], []
+        for it, u in zip(items, urls):
+            (skipped if u in hits else kept).append(it)
+        print(f"[registry] 登记表命中 {len(skipped)} 篇已总结，本次不重抓")
+        return kept, skipped
+    except Exception as e:
+        print(f"[registry-err] 登记表预查失败（放行原列表）：{e}")
+        return items, []
+
+
 class ScysBatchFetcher:
     def __init__(self, name: str, menu_id: int, limit: int, pages: int,
                  since_days: int = 0, digested_only: bool = False,
@@ -575,6 +600,7 @@ class ScysBatchFetcher:
                                    digested_only=self.digested_only,
                                    min_reading=self.min_reading,
                                    engagement=self.engagement)
+                todo, _reg_skipped = registry_filter(todo)
                 if self.limit > 0:
                     todo = todo[: self.limit]
                 print(f"[run] 本次目标 {len(todo)} 篇（已完成 {len(done_ids)} 篇）")

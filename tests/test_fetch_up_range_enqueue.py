@@ -53,3 +53,28 @@ def test_enqueue_skip_if_summarized(queue_env, monkeypatch):
         1700000000, __file__)
     assert status == "summarized"
     assert not queue_env.exists() or json.load(open(queue_env, encoding="utf-8")) == []
+
+
+class TestFilterByRegistry:
+    """3.3 UP 补齐：抓取前批量查登记表，已总结视频在请求字幕之前剔除。"""
+
+    def test_filter_by_registry_hits(self):
+        from articles import dedup
+        hit_url = "https://www.bilibili.com/video/BV1reg"
+        dedup.mark_summarized(url=hit_url, title="已总结", filename="r.md")
+        items = [
+            {"idx": 1, "bvid": "BV1reg", "title": "旧视频"},
+            {"idx": 2, "bvid": "BV1new", "title": "新视频"},
+        ]
+        todo, hits = fur.filter_by_registry(items)
+        assert [it["bvid"] for it in todo] == ["BV1new"]
+        assert hits == {hit_url}
+
+    def test_filter_by_registry_no_hits(self):
+        items = [
+            {"idx": 1, "bvid": "BV1aaa", "title": "甲"},
+            {"idx": 2, "bvid": "BV1bbb", "title": "乙"},
+        ]
+        todo, hits = fur.filter_by_registry(items)
+        assert todo == items
+        assert hits == set()

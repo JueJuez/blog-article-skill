@@ -127,9 +127,6 @@ PENDING_REFETCH_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 # 降级待总结队列：无外部 AI 时抓到的原文（raw 文件）在此排队，由外层执行模型总结后
 # 调 articles.save_summary_only 落盘（含 folder 归档），完成降级闭环
 PENDING_SUMMARY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_summaries.json")
-# 系列课降级待总结队列：monitors/run.py 在发现 B站系列且 AI 不可用时登记，
-# 由执行模型（Agent）串行落盘（避免并发重复节点）。对应 drainer: apply_pending_series.py
-PENDING_SERIES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_series.json")
 # 每类型「安全上限」（防极端 UP 单窗口发几百条刷爆笔记）；真正的内容量由
 # 时间窗口（BILI_FIRST_WINDOW_DAYS / BILI_DAILY_WINDOW_DAYS）约束，不是这个 count。
 FIRST_RUN_LIMIT = int(os.environ.get("FIRST_RUN_LIMIT", "50"))
@@ -417,7 +414,7 @@ def _queue_pending_summary(it: dict, res: dict) -> None:
         "note_type": note_type,
         "tags": res.get("tags") or [],
         "publish_time": it.get("publish_time", 0),
-        "folder": _item_folder(it),
+        "folder": res.get("folder") or _item_folder(it),
         "raw_file": res.get("raw_file", ""),
         "prompt": get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK,
         "queued_at": int(time.time()),
@@ -425,38 +422,6 @@ def _queue_pending_summary(it: dict, res: dict) -> None:
     pending.append(entry)
     _save_json(_path, pending)
     print(f"[need-summary] 已入降级队列（prompt 已预计算）: {entry_title} -> {entry['raw_file']}")
-
-
-def _queue_pending_series(it: dict, res: dict) -> None:
-    """系列课降级时把待总结集登记到 pending_series.json，供执行模型（Agent）串行落盘。
-
-    背景：_handle_bilibili_series 在 AI 不可用（FORCE_AGENT_MODE）时把每集字幕降级成
-    notes/<系列名>/*_raw.md，但原本的返回值没有 need_continue_summary，导致监控落盘闭环
-    （只认 pending_summaries 里的顶级 _raw_*.md）静默丢弃系列 raw，系列课从不被自动总结。
-    此处把系列信息（series_title/series_dir/url/author/各集 raw 路径）登记到专门队列，
-    并让 apply_pending_series.py 接管落盘，形成完整闭环。
-    """
-    data = _load_json(PENDING_SERIES_PATH, [])
-    entry = {
-        "series_title": res.get("series_title", ""),
-        "series_dir": res.get("series_dir", ""),
-        "url": res.get("url", it.get("url", "")),
-        "author": res.get("author", it.get("sub_name", "")),
-        "degraded_raws": res.get("degraded_raws", []),
-        "queued_at": int(time.time()),
-    }
-    # 同系列不重复登记：已存在则合并 raw 列表（按相对路径去重）
-    for d in data:
-        if d.get("series_title") == entry["series_title"]:
-            merged = set(d.get("degraded_raws", [])) | set(entry["degraded_raws"])
-            d["degraded_raws"] = sorted(merged)
-            break
-    else:
-        data.append(entry)
-    _save_json(PENDING_SERIES_PATH, data)
-    n = len(entry["degraded_raws"])
-    print(f"   🤖 NEED_AGENT_SERIES_SUMMARY: 系列「{entry['series_title']}」{n} 集待总结，"
-          f"详见 {os.path.basename(PENDING_SERIES_PATH)}")
 
 
 def _promote_empty_summaries() -> int:
@@ -824,26 +789,24 @@ def _summarize_article(it: dict, title: str, content: str, obsidian: bool, stats
 def _summarize_video_item(it: dict, obsidian: bool, stats: dict, transcript: str = None) -> None:
     """把一条 B站视频送进总结管线（供「CC 内联」与「ASR 批量成功」两处复用）。
 
-    transcript 非空时直接喂转写文本走 P1 路径（避免二次下载音频）；为空则走
-    summarize_video 完整路径（含系列课降级 / 字幕探测）。逻辑单一事实源。
+    统一走 summarize_series_episode 五步管线（PLAN-20260908 阶段4.2）：登记表
+    闸门 → 1 次 view API 拿系列名/全局集号 → 委托单视频管线；系列单集路由到
+    【监控】/<平台>/<账号>/<系列> 容器，非系列单视频落日更，不再触碰贪婪整季抓取
+    （该机制已退役，PLAN-20260908）。transcript 非空时直接喂转写文本
+    （避免二次下载音频）；不预置 folder，落盘路由由管线内统一计算。
     """
     _inp = {"url": it["url"], "publish_time": it.get("publish_time", 0),
-            "folder": _item_folder(it), "obsidian": obsidian}
+            "obsidian": obsidian}
     if transcript is not None:
         _inp["transcript"] = transcript
         _inp["original_title"] = it.get("title", "")
         _inp["author"] = it.get("author", "")
         _inp["tags"] = [c for c in [it.get("category", "")] if c]
     try:
-        from videos import summarize_video
-        res = summarize_video(_inp)
+        from videos import summarize_series_episode
+        res = summarize_series_episode(_inp["url"], _inp)
         msg = res.get("message", "") if isinstance(res, dict) else str(res)
         print(f"[bilibili] {it['title']}: {msg}")
-        # 系列课降级：把待总结的集字幕登记到系列待总结队列，由 Agent 串行落盘（避免漏接）
-        if isinstance(res, dict) and res.get("degraded_any") and res.get("degraded_raws"):
-            _queue_pending_series(it, res)
-            stats["video"] += 1
-            return
         _queue_pending_summary(it, res if isinstance(res, dict) else {})
         stats["video"] += 1
     except Exception as e:
@@ -914,6 +877,18 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
     asr_deferred = []  # 无 CC 字幕、留待本轮末尾「有界 ASR 池批量转写」的 B站视频
     dropped = []  # 连续多次抓不到（墙文/已删除/持续限流），移出队列待上报
     _first_article = True
+    # 登记表批量闸门（PLAN-20260908 阶段3.1）：遍历前一次 IO 批量查 dedup 登记表，
+    # 已总结条目在「抓取/总结」之前剔除，省 AI token 与重复落盘；失败放行原列表。
+    try:
+        from articles import dedup as _dedup_gate
+        _reg_hits = _dedup_gate.batch_is_summarized([it.get("url", "") for it in items])
+        if _reg_hits:
+            kept = [it for it in items if it.get("url", "") not in _reg_hits]
+            stats["registry_skip"] = len(items) - len(kept)
+            print(f"[registry-gate] 登记表命中 {len(_reg_hits)} 条已总结，抓取/总结前剔除")
+            items = kept
+    except Exception as _reg_err:
+        print(f"[registry-err] 登记表批量预查失败（放行原列表）：{_reg_err}")
     for it in items:
         if it["route"] in ("article", "cv"):
             # 逐篇间隔（硬保护）：无间隔连抓会触发微信限流返回空正文页
@@ -1133,6 +1108,7 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
         f" / 文章 {stats['article']}"
         f" | 广告跳过 {stats['ad_skip']} · 过短跳过 {stats['short_skip']}"
         f" · scys重复 {stats.get('cross_dup_skip', 0)}"
+        f" · 登记表跳过 {stats.get('registry_skip', 0)}"
         f" · 限流待重试 {len(refetch_next)} · 墙文移除 {len(dropped)} · 错误 {stats['error']}"
     )
 
@@ -1148,26 +1124,6 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
             f"{{summarized_content, original_url, author, tags, original_title, publish_time, folder}}) "
             f"落盘 → 从队列移除该条。"
         )
-
-    # 系列课降级待总结队列提示（与单篇队列对称）
-    series_pending = _load_json(PENDING_SERIES_PATH, [])
-    if series_pending:
-        total_ep = sum(len(s.get("degraded_raws", [])) for s in series_pending)
-        print(
-            f"\n🤖 NEED_AGENT_SERIES_SUMMARY: {len(series_pending)} 个系列课、共 {total_ep} 集待总结。"
-            f"清单见 {PENDING_SERIES_PATH}\n"
-            f"   处理路径：执行模型按 notes/<系列名>/*_raw.md 分片总结成 body → 串行调"
-            f" videos.main._save_series_note 落飞书（避免并发重复节点）→ 跑 apply_pending_series.py 收尾。"
-        )
-
-    # 自动落地：若已有 .body.md（Agent 此前已总结 / 本次会话稍后总结），直接落飞书。
-    # 系列课的「总结」由执行模型在收尾例程里完成（与单篇对称），本调用负责「落地」闭环，
-    # 使系列课与单篇一样全自动：检测 →（Agent 总结 raws→bodies）→ 落地，无需手动命令。
-    try:
-        from apply_pending_series import drain_series_pending
-        drain_series_pending(obsidian=obsidian)
-    except Exception as e:
-        print(f"  ⚠️ 系列课自动落地异常（非致命）：{e}")
 
     # P0 Ledger：把限流待重试篇数并入 stats，供 main 聚合记录
     stats["refetch_pending"] = len(refetch_next)

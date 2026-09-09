@@ -375,7 +375,6 @@ blog-article-skill/
 │   ├── asr.py                # 本地语音识别（P3：faster-whisper，无字幕自动兜底 + 环境自动处理 + 转写缓存）
 │   ├── multimodal.py         # 多模态理解（P4：Gemini）
 │   ├── yt_bridge.py          # YouTube 抓取桥接
-│   ├── rescue_episode.py     # 单集抢救（系列课某集字幕抓取失败时补抓）
 │   ├── set_cookie.py         # 写入 B 站 Cookie（BILI_COOKIE 辅助）
 │   ├── build_bookmarklet_html.py  # 生成字幕抓取书签小工具（诊断用）
 │   ├── main.py               # 视频总结主流程（分块两段式 P2.2/P3 兜底/P2.3）
@@ -387,9 +386,6 @@ blog-article-skill/
 │   ├── cdp_session.py        # SharedCdpSession：需登录态抓取的唯一路径（profile 克隆 + 调试端口接管）
 │   ├── title_norm.py         # 标题归一化（ASCII 元字符→全角，飞书读回比对的必备前置）
 │   ├── subtitle_clean.py     # 字幕清洗（填充词/近重合并/长句去重）
-│   ├── series_state.py       # 系列课增量去重状态
-│   ├── series_manifest.py    # 系列课 manifest 读写（状态字段为 state：raw_ready/landed/verified）
-│   ├── series_naming.py      # 系列课集名规范化
 │   ├── feishu_overview.py    # 系列总览生成
 │   ├── fetch_title.py        # 标题抓取
 │   └── __init__.py
@@ -406,7 +402,6 @@ blog-article-skill/
 │   ├── backfill.py           # 公众号历史回溯（续批）
 │   ├── state.py              # 每源去重状态 + 防膨胀裁剪
 │   ├── ad_filter.py          # 广告过滤（整篇纯广告 skip / 干货夹广告净化）
-│   ├── apply_pending_series.py  # 系列课待总结队列 drainer（落盘到飞书，--regenerate/--batch）
 │   ├── subscriptions.example.json  # 订阅配置模板（subscriptions.json 本体已 gitignore）
 │   ├── PROXY_NOTES.md        # weread 代理的坑（乱序分片/空窗/publishTime 伪造）——回溯前必读
 │   └── README.md             # 监控运营文档 + 已知坑
@@ -426,8 +421,7 @@ blog-article-skill/
 ├── docs/
 │   ├── decisions/            # grill_rules 产出 A：决策清单（≤15 行/篇）
 │   ├── plans/                # 执行计划
-│   ├── parallel-monitor-runbook.md  # 并行监控运维手册
-│   └── RUNBOOK-series-rescue.md     # 系列课抢救手册
+│   └── parallel-monitor-runbook.md  # 并行监控运维手册
 ├── _archive/                 # 已归档的过期文档与废弃脚本（PRD.md / scys-cdp-lessons-learned.md / decisions）
 ├── audit_sync.py             # Obsidian 主库 → 飞书镜像 一致性审计 + 幂等补传（手动/定时运行；绕开 DISABLE_FEISHU_SYNC 把整库镜像到飞书，只推新增、绝不重复/删除）
 ├── tests/                    # 回归测试（可直接 `python tests/test_xxx.py` 跑，无需 pytest）

@@ -11,10 +11,8 @@
 | `wechat.py` | 公众号源（经 `weread.111965.xyz` 转发发现新文）；token 数小时失效，交互式弹码续期、headless 跳过 |
 | `bilibili.py` | B站UP主源（官方 API + WBI 签名，带登录 Cookie） |
 | `ad_filter.py` | 广告过滤：整篇纯广告 skip / 干货夹广告净化保留 |
-| `run.py` | CLI + 调度入口（`--apply` 直接调总结管线）；末尾自动调 `drain_series_pending` 收尾系列课；`--apply` 时按 `subscriptions.json` 的 `scys` 列表逐领域子进程跑 `scripts/scys_batch_fetch.py` 增量抓新帖（见下方「scys 新帖监控」） |
+| `run.py` | CLI + 调度入口（`--apply` 直接调总结管线）；`--apply` 时按 `subscriptions.json` 的 `scys` 列表逐领域子进程跑 `scripts/scys_batch_fetch.py` 增量抓新帖（见下方「scys 新帖监控」） |
 | `_auth.py` | 公众号扫码登录 / 轮询换 JWT（落盘 `.wechat_auth.json`，日志 `.poll_daemon.YYYYMMDD.log`，按天滚动） |
-| `apply_pending_series.py` | 系列课降级待总结队列 drainer：`drain_series_pending` 被 `run.py` 自动调用，把 `pending_series.json` 里已有 `.body.md` 的集串行落盘 + 重生成总览（详见下方「系列课全自动闭环」） |
-| `../shared/series_state.py` | 系列课增量去重状态（`monitors/series_state.json`）：记录每集 base/URL 是否已总结，每日增量只抓未总结的集 |
 
 ## 抓取规则（当前版本 · 暂定）
 
@@ -125,34 +123,27 @@
 - 不变量：`pending_summaries` 里的条目**必须携带真实正文**；若某条 raw 缺失 / 过短（限流空壳），`--refetch-only` 会自动把它**提升回 `pending_refetch`** 重抓。故 `--refetch-only` 是唯一抓取重试入口，`scripts/refetch_recover.py` 已删除（其职责被该提升逻辑吸收）。
 - 频率保护：`--refetch-only` 逐篇 `WECHAT_GAP=6s` + 抖动，避免再被限流。
 
-## 系列课全自动闭环（2026-08 新增）
+## 系列课（2026-09-08 起去流程化）
 
-B站系列课（多集连续内容）走一套独立的「全系列一次性总结 + 后续增量只抓新集」闭环，与单篇降级队列并存。
+B站系列课（多集连续内容）不再走独立闭环：**单集与散文一样逐 URL 走通用五步管线**（`summarize_series_episode`，PLAN-20260908），防重靠登记表 URL 键，不主动回溯旧集。
 
-**核心语义（用户决策 · 2026-08）**：
-- **首抓**：订阅的 UP / 公众号若含系列课，默认把**全系列**总结一次（默认落本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0）。
-- **增量（每日 `auto`）**：UP 更新后，按 `series_state.json` 跳过已总结的集，**只抓取未总结的新集**，避免重复总结。
-- **落地全自动**：`monitors/run.py --apply` 末尾自动调 `drain_series_pending()`，无需再手动跑命令。
+**核心语义（用户决策 · D6/D8）**：
+- **增量（每日 `auto`）**：UP 更新后，登记表按 URL 键过滤已总结的集，**只把未总结的新集**入队，避免重复总结。
+- **点名才补**：不主动回溯旧集、不抓整季；点名补齐整季走 `python scripts/backfill_series.py --series <名>`（登记表自动滤已总结，同集失败 3 次转人工）。
+- **落地与单篇同路**：子 Agent 消费 `pending_summaries.json` 预计算 prompt 总结并 `save_summary_only` 落盘（默认本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0），无独立系列队列。
 
-**三队列 / 三状态文件（务必分清）**：
+**两队列 / 一登记表（务必分清）**：
 
 | 文件 | 含义 | 去重/重试入口 |
 |------|------|------|
 | `pending_refetch.json` | **抓取失败**：正文被限流成空 / fetch 报错 | `python monitors/run.py --refetch-only` |
-| `pending_summaries.json` | **单篇有正文但无 AI**：等外层派子 Agent 总结 | 外层派子 Agent 读 raw → `persist_summary.py` |
-| `pending_series.json` | **系列课降级待落盘**：`run.py` 发现系列且降级时登记（含每集 `degraded_raws`）；`drain_series_pending` 把已产出 `.body.md` 的集落盘后出队 | 被 `run.py` 自动 drain；也可手动 `python monitors/apply_pending_series.py [--regenerate] [--obsidian]` |
-| `series_state.json` | **系列课增量去重状态**（运行时生成）：记录每系列已总结的集 `base`/`url`/`author`，每日增量据此跳过 | 代码内部读取；`python scripts/series_maintenance.py forget --series <名>` 可清空某系列记录重抓 |
-
-**闭环链路**（`run.py --apply` 一次跑完）：
-1. discover → 抓到系列课（`fetch_bilibili_series` 拿全集字幕）。
-2. 降级（无外部 AI）：每集产出 `notes/<系列名>/*_raw.md`；`run.py` 把系列登记进 `pending_series.json`。
-3. 本会话（执行模型）派子 Agent 把 raw → `.body.md` 总结正文。
-4. `run.py` 末尾自动 `drain_series_pending()`：串行调 `_save_series_note` 落盘 → `series_state.mark_done`（增量去重关键）→ 删本地 raw/body → 重生成「00_系列总览」（upsert：删旧节点 + 建新，**不重复**）。
+| `pending_summaries.json` | **单篇有正文但无 AI**：等外层派子 Agent 总结（系列课单集同队列） | 外层派子 Agent 读 raw → `persist_summary.py` |
+| `notes/_meta/summary_registry.json` | **登记表（真源）**：vault 已总结内容登记，URL 键防重；落盘自动追加 | 初次 `python scripts/rebuild_registry.py --vault <路径> --apply`；日常落盘自动 |
 
 **关键工程纪律**：
 - 系列课与单篇一致：默认只落本地 Obsidian（2026-09-04 起，见 `RULES.md` §3.0）；用户明确要求写飞书时才写。
 - 飞书侧落盘用「删旧节点 + 建新」而非 `docs +update --command overwrite`——后者会把文档标题改写成正文首行，破坏标题去重、产生重复节点（2026-08 踩坑修复）。
-- 增量靠 `series_state.json`，**不依赖本地 `notes/` 文件**；本地中间文件（`.body.md` / `_raw.md` / `*.manifest`）属冗余副本，可安全删除（`.gitignore` 已忽略，删除不可逆）。
+- 旧六件套（整季贪婪抓取 / `series_state.json` / `pending_series.json` / manifest 状态机 / fetched·done 索引 / 集数一致性校验）已退役（PLAN-20260908）；旧数据文件按缓存语义废弃，无需迁移。
 - 维护工具：`scripts/series_maintenance.py`（`verify` 校验飞书节点一致性 / `regen-overview` 重生成总览 / `reland` 重落地），用于飞书侧系列运维（仅双写/镜像模式下需要）。
 
 ## 用法

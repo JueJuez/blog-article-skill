@@ -33,8 +33,6 @@ from prompts.templates import (
 from prompts.classify import classify_note_type
 from prompts.verifier import verify_note_mechanical
 from shared.chunking import chunk_segments, chunk_text, two_stage_summarize, segments_to_text
-from shared import series_state
-from shared import series_naming as sn
 
 from . import fetch, asr, multimodal
 
@@ -553,183 +551,68 @@ def series_folder(input_data: dict, author: str, series_title: str, url: str) ->
     })
 
 
-def _collect_landed_series_names(series_dir: str, folder: str, series_title: str) -> list:
-    """汇总系列已落盘成稿名：本地 notes 目录 + vault 容器（只读探测，零副作用）。
+def summarize_series_episode(url: str, input_data: dict = None) -> dict:
+    """系列课单集入口（PLAN-20260908 阶段4.1 五步管线，逐 URL 走通用流程）。
 
-    集数一致性校验（拍板3）基线：folder 形态有两种——
-    直连含系列名（parts[-1] == 系列名 sanitize 版）与账号层级（drain rsplit），
-    后者需追加系列名再定位容器。只 listdir 扫描，绝不 mkdir。
+    ①登记表闸门：is_summarized 命中即跳过（与单视频同构，force 可绕过）；
+    ②1 次 view API 拿系列名 + 全局集号（与 scripts/backfill_series.py 点名补齐
+      同口径：跨 section 递增），仅用于落盘路由与文件名「第NN集_」装饰前缀
+      （D4：不校验冲突），顺带把单集发布时间显式传入；
+    ③④⑤字幕抓取（无 CC 自动 ASR 兜底）→ 分类器总结 → 落盘+登记，全部委托
+      _handle_single_video（其保存点 save_summarized_article 自动登记）。
+    input_data 已带 transcript/content（监控 ASR 批量场景）→ 跳过字幕抓取，
+      直接走 P1 总结（阶段4.2），落盘路由与文件名前缀逻辑不变。
+
+    非 ugc_season（无系列名）或 view API 失败 → 退化为普通单视频路由，不阻塞
+    总结。登记表 source 为站点口径（bilibili，由 _guess_source 统一推断），
+    与阶段 3 全管线一致；plan §5.1 的 "series" 内容口径弃用，见 DECISION-20260908。
     """
-    vault = os.getenv("OBSIDIAN_VAULT_PATH", "")
-    names = list(sn.scan_landed_names([series_dir]))
-    if not vault or not folder:
-        return names
-    parts = [d for d in folder.split("/") if d]
-    if not parts:
-        return names
-    if parts[-1] != _sanitize_filename(series_title):
-        parts.append(_sanitize_filename(series_title))
-    container = os.path.join(vault, *parts)
-    for n in sn.scan_landed_names([container]):
-        if n not in names:
-            names.append(n)
-    return names
-
-
-def _handle_bilibili_series(url: str, input_data: dict, series: dict = None):
-    """B站系列课处理：Phase1 全抓取（已由 fetch 完成）→ Phase2 逐集总结。
-
-    用户明确：先把所有集字幕一次性抓完，再逐集做总结（避免逐集重复建连浪费）。
-    每集笔记存到 notes/<系列名>/ 文件夹下，文件名以「第XX集_分P标题」开头。
-
-    Args:
-        series: 已由 fetch.fetch_bilibili_series 抓好字幕的系列结构；为 None 时内部再抓一次。
-    """
-    if series is None:
-        series = fetch.fetch_bilibili_series(url, lang=input_data.get("lang", "zh"),
-                                            force=input_data.get("force", False))
-    if not series:
-        # 实际是单P，退回单视频逻辑
-        return _handle_single_video(url, input_data)
-
-    print(f"\n📚 识别为 B站系列课（{series.get('kind', '')}）「{series['series_title']}」，"
-          f"已完成全部字幕抓取，开始逐集总结：{url}")
-    series_title = series["series_title"]
-    entries = series["entries"]
-    # 优先用字幕抓取阶段提取到的 UP主（fetch_bilibili_series 已带 author），
-    # 其次回退到调用方显式传入的 author
-    author = series.get("author", "") or input_data.get("author", "")
-    base_tags = input_data.get("tags", []) or [series_title]
-    note_type_arg = input_data.get("note_type", "")
-    force = input_data.get("force", False)
-    obsidian = input_data.get("obsidian", False)
-    # B3 修复（2026-09-05）：系列容器不再默认挂 wiki 根——统一由路由器决定
-    # （显式 folder > 监控UP > 非监控作者 > 独立系列）。
-    folder = series_folder(input_data, author, series_title, url)
-
-    # 系列发布时间（2026-09-07 生成侧发布时间链路）：全系列 pubdate 唯一时采用，
-    # 多值/缺失诚实置 0，不用处理时间冒充发布时间；每集落盘也统一用该值。
-    pubs = {int(e.get("pubdate") or 0) for e in entries if e.get("pubdate")}
-    series_publish_time = pubs.pop() if len(pubs) == 1 else 0
-
-    # 增量去重：只把「尚未总结的集」列为 pending，避免每日重跑全量重总结。
-    # 首跑 done 为空 → 全系列待总结；UP 更新后 done 含旧集 → 只列新增集。
-    all_bases = [f"第{e['page']:02d}集_{_sanitize_filename(e['part'] or '未命名')}" for e in entries]
-    pending_bases = set(series_state.get_pending(series_title, all_bases))
-    if not pending_bases:
-        print(f"\n✅ 系列「{series_title}」已是最新，无新集待总结"
-              f"（{len(all_bases)} 集均在已总结记录中），仅重生成总览。")
-        series_dir = os.path.join(articles_main.NOTES_DIR, _sanitize_filename(series_title))
-        overview_path = _generate_series_overview(series_title, series_dir, url,
-                                                  obsidian=obsidian, folder=folder)
-        return {
-            "success": True,
-            "need_continue_summary": False,
-            "message": f"系列课「{series_title}」无更新，跳过（{len(all_bases)} 集已总结）。",
-            "series_title": series_title, "series_dir": series_dir, "url": url,
-            "author": author, "degraded_raws": [], "results": [],
-            "overview": overview_path, "degraded_any": False,
-            "publish_time": series_publish_time,
-        }
-
-    print(f"\n📁 建立系列文件夹：notes/{_sanitize_filename(series_title)}/")
-    series_dir = os.path.join(articles_main.NOTES_DIR, _sanitize_filename(series_title))
-    os.makedirs(series_dir, exist_ok=True)
-    # 集数一致性（拍板3）：扫本地 notes + vault 容器已有成稿名，作为页码冲突检测基线
-    landed_names = _collect_landed_series_names(series_dir, folder, series_title)
-
-    print(f"🧠 Phase 2：逐集总结（共 {len(entries)} 集，其中 {len(pending_bases)} 集待总结）...")
-    results: List[Dict] = []
-    degraded_any = False
-    for idx, entry in enumerate(entries, 1):
-        page = entry["page"]
-        part = entry["part"]
-        segs = entry["segments"]
-        ep_title = entry["title"]
-        base = f"第{page:02d}集_{_sanitize_filename(part or '未命名')}"
-
-        # 增量去重：已总结过的集直接跳过，不重写 raw、不排队
-        if base not in pending_bases:
-            results.append({"page": page, "part": part, "done": True})
-            continue
-
-        # 集数一致性（拍板3）：同页码已有「不同标题」成稿 → 跳过本集，保留原标题。
-        # 病灶：Penny-Weight 类条目换标题重抓后整集重复落盘；此处确定性防护，force 也绕不过。
-        conflict = sn.find_page_conflict(landed_names, page, part or "未命名")
-        if conflict:
-            print(f"   ⏭️ 第{page}集已有不同标题成稿「{conflict}」，跳过本集（保留原标题）。")
-            series_state.mark_done(series_title, base, url=url, author=author)
-            results.append({"page": page, "part": part, "done": True, "conflict": conflict})
-            continue
-
-        print(f"\n[{idx}/{len(entries)}] 第{page}集：{part or '(无标题)'}")
-
-        note_type = note_type_arg or classify_note_type(ep_title, segments_to_text(segs))
-        final = _summarize_segments(segs, note_type, ep_title)
-
-        if final is None:
-            # AI 不可用：暂存原始字幕，交外层总结（不中断其他集）
-            degraded_any = True
-            raw_text = segments_to_text(segs)
-            raw_path = os.path.join(series_dir, base + "_raw.md")
-            with open(raw_path, "w", encoding="utf-8") as f:
-                f.write(
-                    f"> 原始字幕（AI 不可用，待外层总结）\n"
-                    f"> 系列：{series_title}\n> 分P：第{page}集 {part}\n"
-                    f"> 作者：{author}\n> 链接：{url}\n\n---\n\n"
-                    + raw_text
-                )
-            results.append({"page": page, "part": part, "raw": os.path.relpath(raw_path, articles_main.NOTES_DIR), "degraded": True})
-            print(f"   ⚠️ AI 不可用，原始字幕已暂存：{raw_path}")
-            continue
-
-        ep_tags = list(base_tags) + [_NOTE_TYPE_TAG.get(note_type, "视频笔记")]
-        try:
-            path = _save_series_note(final, series_dir, base, author, url, ep_tags, note_type,
-                                     obsidian=obsidian, folder=folder,
-                                     publish_time=series_publish_time)
-        except ValueError as e:
-            # 机械门禁拦截（VERIFIER_FAILED）：不落盘不 mark_done，下轮重跑自动重试本集
-            results.append({"page": page, "part": part, "error": str(e)})
-            print(f"   ❌ 机械门禁拦截，本集跳过待重试：{base}：{e}")
-            continue
-        # 自愈：若此前降级留下 raw，成功总结后清除，避免半成品残留
-        raw_path = os.path.join(series_dir, base + "_raw.md")
-        if os.path.exists(raw_path):
-            try:
-                os.remove(raw_path)
-            except Exception:
-                pass
-        results.append({"page": page, "part": part, "filename": os.path.relpath(path, articles_main.NOTES_DIR)})
-        print(f"   ✅ 已保存：{path}")
-        # 直连路径此前漏 mark_done → 每日重跑会重复总结本集；补齐与 drain 落盘路径对齐
-        series_state.mark_done(series_title, base, url=url, author=author)
-
-    # 系列总览大纲（用户规则：系列课总结必生成，含各集导航 + 一句话核心结论）
-    overview_path = _generate_series_overview(series_title, series_dir, url,
-                                              obsidian=obsidian, folder=folder)
-    print(f"   🧭 系列总览已生成：{overview_path}")
-
-    # 降级时显式告知外层「有待总结的集」，否则监控落盘闭环（只认 need_continue_summary）
-    # 会静默丢弃系列 raw，导致像「中国好公司」75 集那样无人接管的事故。
-    degraded_raws = [r["raw"] for r in results if r.get("degraded")]
-
-    return {
-        "success": True,
-        "need_continue_summary": degraded_any,  # 关键：让 monitors/run.py 感知系列降级待总结
-        "message": (f"系列课「{series_title}」处理完成：{len(entries)} 集"
-                    f"（{len([r for r in results if 'filename' in r])} 篇笔记"
-                    f"{'，'+str(len(degraded_raws))+' 集待外层总结' if degraded_any else ''}）"),
-        "series_title": series_title,
-        "series_dir": series_dir,
-        "url": url,
-        "author": author,
-        "degraded_raws": degraded_raws,
-        "results": results,
-        "overview": overview_path,
-        "degraded_any": degraded_any,
-        "publish_time": series_publish_time,
-    }
+    input_data = dict(input_data or {})
+    # ①登记表闸门
+    if url and not input_data.get("force", False):
+        rec = is_summarized(url=url)
+        if rec:
+            fname = rec.get("filename", "")
+            print(f"⏭️ 该系列集已总结过，跳过：{fname}（如需重跑请加 force=True）")
+            return {
+                "success": True,
+                "skipped": True,
+                "filename": fname,
+                "message": f"该系列集已总结过，跳过（{fname}）。",
+            }
+    # ②view API：系列名 + 全局集号 + 发布时间（一次请求；失败/无系列名退化）
+    bvid = fetch._bili_extract_bvid(url)
+    season_title, ep_index = "", 0
+    if bvid:
+        info = fetch._bili_get_video_info(bvid) or {}
+        if not (input_data.get("author") or "").strip():
+            input_data["author"] = info.get("author", "")
+        if info.get("pubdate") and not input_data.get("publish_time"):
+            input_data["publish_time"] = int(info["pubdate"])
+        us = info.get("ugc_season") or {}
+        season_title = (us.get("title") or "").strip()
+        if season_title and us.get("sections"):
+            n = 0
+            for sec in us["sections"]:
+                for ep in sec.get("episodes", []):
+                    n += 1
+                    if ep.get("bvid") == bvid:
+                        ep_index = n
+    if season_title:
+        input_data["folder"] = series_folder(input_data, input_data.get("author", ""),
+                                             season_title, url)
+        if ep_index:
+            input_data["title_prefix"] = f"第{ep_index:02d}集_"
+    # transcript 直喂（阶段4.2：监控 ASR 批量已持转写文本，不重复抓字幕）
+    transcript = (input_data.get("transcript", "") or input_data.get("content", "")).strip()
+    if transcript:
+        prefix = input_data.get("title_prefix", "")
+        original_title = input_data.get("original_title") or ""
+        if prefix and not original_title.startswith(prefix):
+            input_data["original_title"] = f"{prefix}{original_title}"
+        return _handle_transcript_text(transcript, url, input_data)
+    # ③④⑤委托单视频管线（suppress=True：批量/编排场景静默逐集日志）
+    return _handle_single_video(url, input_data, suppress=True)
 
 
 # ---------------------------------------------------------------------------
@@ -770,6 +653,11 @@ def _handle_single_video(url: str, input_data: dict, suppress: bool = False):
         input_data = {**input_data, "author": author}
         return _finalize_single(title, segments, url, input_data)
     title, segments, fetched_author = result
+    # 系列单集命名（PLAN-20260908 阶段4.1 / D4）：title_prefix 为页码装饰前缀，
+    # 只影响文件名与 H1，不校验冲突；标题已带前缀时不重复拼。
+    prefix = input_data.get("title_prefix", "")
+    if prefix and not title.startswith(prefix):
+        title = f"{prefix}{title}"
     # 生成侧发布时间（2026-09-07）：fetch_subtitle_only 已把 view API 的 pubdate
     # 存入 fetch.LAST_PUBDATE；调用方未显式传入时注入保存链路。
     if not input_data.get("publish_time") and getattr(fetch, "LAST_PUBDATE", 0):
@@ -935,11 +823,8 @@ def summarize_video(input_data: dict) -> dict:
         return _handle_playlist(url, input_data)
 
     if url and fetch.is_bilibili(url):
-        # 系列课（ugc_season 或 多P）：先批量抓取再逐集总结；单P 走单视频逻辑
-        force = input_data.get("force", False)
-        series = fetch.fetch_bilibili_series(url, lang=input_data.get("lang", "zh"), force=force)
-        if series:
-            return _handle_bilibili_series(url, input_data, series)
+        # 系列课已去流程化（PLAN-20260908）：逐 URL 走单视频管线，
+        # 整季抓取/点名补齐由 scripts/backfill_series.py 负责。
         return _handle_single_video(url, input_data)
 
     if url and fetch.is_youtube(url):

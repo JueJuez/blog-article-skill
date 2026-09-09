@@ -15,3 +15,7 @@
 ## 首扫结果（2026-09-08 dry-run，全 vault 652 文件）
 
 异常 457 文件：来源块重复 103 / 残留行 291 / 缺fm链接 175 / 多链接 26 / 集数串位 14；链接重复组 18 组（86 文件，17 组为B站，单链最多 ×16）；重抓队列 426 条（article 258 / bili_video 167 / manual_no_url 1）。
+
+## 消费实现（2026-09-09，PLAN-20260908 阶段 5）
+
+`scripts/consume_migrate_queue.py`（测试 `tests/test_consume_migrate_queue.py` 20 例）：`--plan/--fetch/--clean/--cleanup-old` 四命令。消费循环 = fetch 入队（prompt 预计算、B站标题 difflib ratio≥0.55 匹配、失败 3 次转人工、412 熔断）→ 执行模型派子 Agent 总结落盘（save_summary 自动登记）→ clean 出队 → 全清后 cleanup-old 删旧文（登记命中才删）。风险 4「匹配逻辑等真实触发再写」已兑现：首轮即触发 6 例 `url_changed`（B站重传 URL 指向不同视频），标题匹配拦截按设计工作。顺带修复 `dedup.mark_summarized` 漏传 title 的缺口（title-only 登记此前被静默丢弃）。

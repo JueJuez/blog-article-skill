@@ -2,7 +2,7 @@
 """scripts/vault_lifecycle.py — vault 生命周期工具（2026-09-06，本地保留机制的对账半边）。
 
 架构决策（用户 2026-09-06 拍板由 AI 定）：
-- **记录 = 真源**：dedup 索引（.cache/dedup.json）+ series_state + manifest 记录
+- **记录 = 真源**：dedup 索引（.cache/dedup.json）+ summary_registry 登记表记录
   「是否已总结」，**永不清理**——本地/vault 文件删了它也知道哪些总结过。
 - **vault 文件 = 上传载荷**：Obsidian vault 本身就是本地 markdown（即"本地保留"），
   audit_sync.py 负责 vault→飞书镜像（本地→云单向）。
@@ -184,7 +184,7 @@ def collect_gc_targets(notes_dir: str, transcripts_dir: str, index,
     records = list(index.values()) if isinstance(index, dict) else list(index)
     targets = []
 
-    # ① 系列分片（P1-6：与 apply_pending_series.py 的 .body.md 存在性判定一致）
+    # ① 系列分片（P1-6：系列课 raw 分片按 .body.md 是否存在判定产物完整）
     if os.path.isdir(notes_dir):
         for name in sorted(os.listdir(notes_dir)):
             sub = os.path.join(notes_dir, name)

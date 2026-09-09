@@ -24,12 +24,17 @@ def _isolate_dedup(monkeypatch, tmp_path):
     2026-09-07（P0-2）：登记表迁往 notes/_meta/sync_ledger.json 后，旧档
     _LEGACY_INDEX_FILE 也必须一并隔离——否则测试内首次读索引会把真实旧档
     搬进 tmp 并删除真档（数据丢失）。
+    2026-09-08（PLAN-20260908 1.1）：真源升格为 notes/_meta/summary_registry.json，
+    搬家链三代 .cache/dedup.json → sync_ledger.json → summary_registry.json，
+    全部重定向；_LEGACY_CACHE_FILE 用 raising=False 兼容 RED 阶段常量未定义。
     """
     from articles import dedup
-    monkeypatch.setattr(dedup, "_INDEX_FILE", str(tmp_path / "dedup.json"))
-    monkeypatch.setattr(dedup, "_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(dedup, "_INDEX_FILE", str(tmp_path / "summary_registry.json"))
     monkeypatch.setattr(dedup, "_LEGACY_INDEX_FILE",
-                        str(tmp_path / "cache" / "dedup.json"))
+                        str(tmp_path / "notes_meta" / "sync_ledger.json"))
+    monkeypatch.setattr(dedup, "_LEGACY_CACHE_FILE",
+                        str(tmp_path / "cache" / "dedup.json"), raising=False)
+    monkeypatch.setattr(dedup, "_CACHE_DIR", str(tmp_path))
 
 
 @pytest.fixture(autouse=True)

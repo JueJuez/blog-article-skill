@@ -28,11 +28,11 @@
 | `AGENTS.md` | **平台无关真源入口**（跨 WorkBuddy / Cursor / Claude / Codex / Copilot / 裸 API 通用） | 能力清单 + 接口速查 + 配置引导 + 各平台加载方式，指向本文件 |
 | `references/` | 专项详细文档。现行 7 篇：`config.md`（全部环境变量）/ `login-required-cdp-workflow.md`（需登录态抓取唯一路径 + 故障表）/ `scys-fetch-sop.md`（scys 抓取 SOP）/ `youtube-cdp-workflow.md`（YouTube CDP 抓取）/ `feishu-cli.md`（飞书 CLI 4 坑）/ `glossary.md`（术语表，新 Agent 先读）/ `testing_rules.md`（TDD 流程） | ✅ 放深入细节 |
 | `references/PRD.md`、`references/scys-cdp-lessons-learned.md` | **已归档桩文件**：原处仅留「已归档 + 指向 `_archive/`」的 5 行指针，正文在 `_archive/PRD.md` / `_archive/scys-cdp-lessons-learned.md`。**勿照做**（PRD 是 pre-监控时期；lessons 已 SUPERSEDED） | — |
-| `monitors/README.md` | 订阅监控的运营文档 + 已知坑（三源机制 / 双队列 / 系列课闭环 / 公众号回溯） | ✅ 放运营细节 |
+| `monitors/README.md` | 订阅监控的运营文档 + 已知坑（三源机制 / 双队列 / 系列课 / 公众号回溯） | ✅ 放运营细节 |
 | `monitors/PROXY_NOTES.md` | weread 代理的坑（乱序分片 / 空窗 / publishTime 伪造）——做公众号回溯前必读 | ✅ 放细节 |
 | `tools/project_import/SKILL.md` | **能力 4（开源项目归档）的真源**：激活条件 + 完整流程 + 子代理工作流 | ✅ 放细节 |
 | `docs/decisions/` | grill_rules 的「产出 A：决策清单」存放地（`DECISION-YYYYMMDD-{slug}.md`，≤15 行） | ✅ 极轻量 |
-| `docs/plans/`、`docs/*.md` | 执行计划与运维手册（并行监控 runbook、系列课抢救 RUNBOOK 等） | ✅ 放细节 |
+| `docs/plans/`、`docs/*.md` | 执行计划与运维手册（并行监控 runbook 等） | ✅ 放细节 |
 | `_archive/` | 已归档的过期文档与废弃脚本。**只进不出**——新文档不要在现役目录重复它们的内容 | — |
 | `articles/` `videos/` `prompts/` `shared/` `monitors/` `scripts/` `tools/` | 实现细节的唯一真相 | ✅ 代码即文档 |
 | `.workbuddy/memory/MEMORY.md` | 长期要点 + 「规则摘要」（会话开始注入） | ❌ 只摘要点 |
@@ -118,7 +118,7 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
 - **循环 → 一次性查询后筛选**：循环内逐条查询/抓取/请求，优先改为「一次批量查询/抓取，再在内存里筛选」，**避免 N 次往返**。
 - **串行 → 并行**：多个独立任务（多视频 / 多文件 / 多链接）评估并行（`asyncio.gather` / 线程池），注意限流与去重，避免无意义串行等待。
 - **复用入口，不重复造轮子**：统一走 `fetch_transcript` / `skill_main` / `summarize_video` / `OutputManager` 等既有入口，禁止在多处复制抓取/保存逻辑。
-- **已总结内容机械拦截（三层前置 · 2026-08-25；跨来源去重 · 2026-09-03）**：AI 只交总结，「要不要总结 / 写不写」由代码决定——①入队：`run.py` 查 dedup 索引，已总结 URL 不入队；②派单前：`python scripts/filter_pending.py` 清洗 monitors + scys 两队列（已总结条目出队，不浪费总结 token）；③落盘：`save_summary_only` / `_save_summary.py` 查索引，命中返回 `skipped` 并按成功出队（`force` / `--force` 强制重写）。多 Agent 接力（前一个积分耗尽/中断）不重复总结、不重复落盘。决策见 `docs/decisions/DECISION-20260825-dedup-frontload-and-lock-release.md`。**④跨来源（2026-09-03）**：生财有术双渠道订阅（公众号 + scys 站内），同一篇帖子两边 URL 不同，URL 去重挡不住——公众号抓取侧在总结前与 `notes/_scraped/scys/` 归档做标题（规范化相似≥0.85 / 截断前缀）/正文前 300 字相似比对，命中直接跳过（`articles/dedup.py: find_cross_duplicate`，健康度行计 `scys重复`）。**⑤视频入口闸门（2026-09-07）**：`videos.main._handle_single_video` 开头查 `is_summarized(url=url)`，已总结视频直接返回 `skipped`（`force=True` 绕过）——重复喂链接不再产生重复文件；⑥**系列集数一致性（2026-09-07）**：`shared/series_naming.find_page_conflict` 以「本地 notes + vault 容器已有成稿」为基线，同页码已有**不同标题**成稿 → 新条目跳过（保留原标题，`force` 也绕不过），直连路径与 drain 落盘后均回写 `mark_done`（增量闭环）。测试 `tests/test_patch_trio.py`。
+- **已总结内容机械拦截（三层前置 · 2026-08-25；跨来源去重 · 2026-09-03）**：AI 只交总结，「要不要总结 / 写不写」由代码决定——①入队：`run.py` 查 dedup 索引，已总结 URL 不入队；②派单前：`python scripts/filter_pending.py` 清洗 monitors + scys 两队列（已总结条目出队，不浪费总结 token）；③落盘：`save_summary_only` / `_save_summary.py` 查索引，命中返回 `skipped` 并按成功出队（`force` / `--force` 强制重写）。多 Agent 接力（前一个积分耗尽/中断）不重复总结、不重复落盘。决策见 `docs/decisions/DECISION-20260825-dedup-frontload-and-lock-release.md`。**④跨来源（2026-09-03）**：生财有术双渠道订阅（公众号 + scys 站内），同一篇帖子两边 URL 不同，URL 去重挡不住——公众号抓取侧在总结前与 `notes/_scraped/scys/` 归档做标题（规范化相似≥0.85 / 截断前缀）/正文前 300 字相似比对，命中直接跳过（`articles/dedup.py: find_cross_duplicate`，健康度行计 `scys重复`）。**⑤视频入口闸门（2026-09-07）**：`videos.main._handle_single_video` 开头查 `is_summarized(url=url)`，已总结视频直接返回 `skipped`（`force=True` 绕过）——重复喂链接不再产生重复文件（系列集数一致性拦截 `find_page_conflict`/`mark_done` 已随系列课去流程化退役，PLAN-20260908；系列集防重由登记表 URL 键承担）。
 - **长内容必走两段式分块**：超过单模型上下文的内容，先经 `shared.chunking` 分块再总结，禁止整篇直接喂模型。
 - **大批量 → 子 Agent 隔离主线程（防上下文胀爆）**：当待处理内容达到批量阈值（如 >3 条笔记/视频，或单批原文大到会撑爆主会话上下文）时，**必须**用 Agent 工具派发子 Agent 并行处理，勿把全部原文/中间稿堆在主线程。注意：① 子 Agent 上下文是空白的，派发 prompt 必须**自包含**（嵌入输出契约：落盘闸门＝默认本地 Obsidian（2026-09-04 起）、飞书仅 `DISABLE_FEISHU_SYNC=0` 时追加；入口函数 `videos/run.py --url` 或 `skill_main`、`note_type`、YouTube/无字幕规则按需）；② **飞书并发重复坑**：多子 Agent 同时 `save_series` 写飞书会因集级无查重建重复节点（见 §4.7）；**安全模式**＝子 Agent 只**返回成品 Markdown 文本＋元数据**（标题/作者/url/tags/note_type），由编排方**串行**调保存入口（`_save_series_note` / `save_all`）落盘，绝不让多子 Agent 并发各自调 `save_series`。
 
@@ -160,7 +160,7 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
 > 目标：笔记作者栏**永远显示真实作者/UP主**，不再出现【作者未知】。
 
 - **作者必须自动从源元数据提取**，禁止无端输出【作者未知】。`KEY_POINTS_PROMPT` 已写明「作者必须提取真实名字，除非源确实无任何作者信息，否则禁止输出【作者未知】」。
-- **视频（B站）链路**：`videos.fetch._bili_get_video_info` 取 `owner.name`；`fetch_bilibili_series` 的 `ugc_season` / 多P 两分支返回带 `author`；`videos.main._handle_bilibili_series` 用 `author = series.get("author","") or input_data.get("author","")` 兜底——**调用方无需手传 author**。
+- **视频（B站）链路**：`videos.fetch._bili_get_video_info` 取 `owner.name`；系列课五步管线 `summarize_series_episode` 经 1 次 view API 拿系列名/作者兜底——**调用方无需手传 author**。
 - **文章链路**：`articles` 抓取/总结时同理取作者字段，调用方无需手传。
 - **唯一例外**：源元数据确实为空（真无作者信息）时，才允许标【作者未知】。
 

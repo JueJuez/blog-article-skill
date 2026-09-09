@@ -8,7 +8,7 @@ articles 的抓取/保存能力。
 - multimodal: P4 —— 可选 Gemini 多模态理解
 - main:    编排（P2.2 分块两段式 + P2.3 分集/playlist）
 """
-from .main import summarize_video
+from .main import summarize_video, summarize_series_episode
 from . import fetch, asr, multimodal
 
-__all__ = ["summarize_video", "fetch", "asr", "multimodal"]
+__all__ = ["summarize_video", "summarize_series_episode", "fetch", "asr", "multimodal"]

@@ -40,10 +40,10 @@ def _write_legacy(ledger, records: dict):
 
 
 class TestLedgerLocation:
-    """P0-2：登记表默认落点必须是 notes/_meta/sync_ledger.json。"""
+    """1.1（PLAN-20260908）：登记表默认落点必须是 notes/_meta/summary_registry.json。"""
 
     def test_default_index_file_in_notes_meta(self):
-        expect = os.path.join("notes", "_meta", "sync_ledger.json")
+        expect = os.path.join("notes", "_meta", "summary_registry.json")
         assert dedup._DEFAULT_INDEX_FILE.endswith(expect)
 
     def test_load_without_any_file_creates_nothing(self, ledger):
@@ -96,12 +96,14 @@ class TestLedgerSchema:
         assert rec["feishu_link"] == ""
         assert rec["obsidian_link"] == ""
         assert rec["ts"]
+        assert rec["key_type"] == "url"
 
     def test_mark_content_only_has_empty_source_url(self, ledger):
         ledger.mark_summarized(content="纯粘贴正文", title="粘贴")
         rec = ledger.get_entry(content="纯粘贴正文")
         assert rec["source_url"] == ""
         assert rec["title"] == "粘贴"
+        assert rec["key_type"] == "content"
 
     def test_remark_keeps_links(self, ledger):
         ledger.mark_summarized(url="https://s.com/2", title="一", filename="a.md")
@@ -111,6 +113,28 @@ class TestLedgerSchema:
         assert rec["title"] == "二"
         assert rec["filename"] == "b.md"
         assert rec["feishu_link"] == "feishu://n1"
+
+    def test_mark_extended_fields_roundtrip(self, ledger):
+        ledger.mark_summarized(url="https://s.com/3", title="标题",
+                               filename="f.md", folder="生财有术/AI",
+                               note_type="structured", source="bilibili")
+        rec = ledger.get_entry(url="https://s.com/3")
+        assert rec["folder"] == "生财有术/AI"
+        assert rec["note_type"] == "structured"
+        assert rec["source"] == "bilibili"
+        assert rec["summarized_at"]
+
+    def test_remark_keeps_extended_fields(self, ledger):
+        ledger.mark_summarized(url="https://s.com/4", title="一",
+                               filename="a.md", folder="生财有术/AI",
+                               note_type="structured", source="bilibili")
+        ledger.mark_summarized(url="https://s.com/4", title="二", filename="b.md")
+        rec = ledger.get_entry(url="https://s.com/4")
+        assert rec["title"] == "二"
+        assert rec["filename"] == "b.md"
+        assert rec["folder"] == "生财有术/AI"
+        assert rec["note_type"] == "structured"
+        assert rec["source"] == "bilibili"
 
 
 class TestLinkAPI:

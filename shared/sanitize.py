@@ -1,8 +1,7 @@
 """shared/sanitize.py — 文件名安全化（单一真源）。
 
-系列课去重依赖 base 字符串精确匹配（抓取层 mark_fetched / 总结层 mark_done /
-series_state.get_pending 都用同一 base）。故 sanitize 必须全项目只用这一份实现，
-任何地方改了都要同步，否则去重失效、整季重抓。
+系列课笔记文件名依赖 base 字符串稳定（「第NN集_标题」装饰前缀由调用方拼接）。
+故 sanitize 必须全项目只用这一份实现，任何地方改了都要同步，否则同名文件互相覆盖。
 """
 import re
 

@@ -5,7 +5,6 @@
 面板连接器连接状态**不是落盘判据，无需关注**。
 
 - 链路：写入方 -> articles.feishu.FeishuOutput -> lark-cli(subprocess)。
-    系列课批量入口：monitors/apply_pending_series.py
     单篇入口：OutputManager.save_all / skill_main / videos/run.py
 - lark-cli 路径：shutil.which("lark-cli")（WorkBuddy cli-connector 包内），由 WorkBuddy 安装并托管认证。
 - 可用性判据（is_available）：① .env 配了 FEISHU_WIKI_SPACE；② lark-cli --version 能执行（CLI 已装且认证有效）。

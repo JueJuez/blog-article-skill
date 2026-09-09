@@ -10,9 +10,9 @@
      （fetch_results / risk_skip / backfill 运行日志）。
   B. 清 dedup 索引：按 URL hash（列表规范 URL）+ 标题双向包含匹配，双保险
      （URL 形态变体靠标题兜底；index 只存 hash 不可反查，故两路都做）。
-  C. 识别该 UP 的系列：扫描 notes/<系列>/*_raw.md 头部「> 作者：」行命中作者名。
-  D. series_state 清这些系列的条目（done+fetched 一起清，否则抓取层跳过网络）。
-  E. 迁移 notes/<系列> 文件夹到备份目录（raw/body/manifest 整体走，重抓重新生成）。
+  C. 识别该 UP 的系列：扫描 notes/ 根目录系列文件夹内 *_raw.md 头部命中作者名
+     （series_state 已随系列课去流程化退役，PLAN-20260908）。
+  E. 迁移 notes/<系列> 文件夹到备份目录（raw/body 整体走，重抓重新生成）。
 
 用法：
   python scripts/reset_up_backfill.py --uid 1750569201 --author 趋势浪子 --dry   # 预览
@@ -32,7 +32,6 @@ if ROOT not in sys.path:
 
 SCRAPED = os.path.join(ROOT, "notes", "_scraped")
 DEDUP_INDEX = os.path.join(ROOT, ".cache", "dedup.json")
-SERIES_STATE = os.path.join(ROOT, "monitors", "series_state.json")
 
 
 def _norm_title(s: str) -> str:
@@ -80,34 +79,30 @@ def main():
     print(f"[B] dedup 索引共 {len(index)} 条：URL 命中 {len(by_url)}，标题兜底命中 {len(by_title)}"
           f"，将清除 {len(by_url) + len(by_title)} 条")
 
-    # ---- C. 识别该 UP 的系列 ----
-    from shared.sanitize import sanitize_filename
-    state = {}
-    if os.path.exists(SERIES_STATE):
-        state = json.load(open(SERIES_STATE, encoding="utf-8"))
+    # ---- C. 识别该 UP 的系列（扫 notes/ 根目录系列文件夹；series_state 已退役）----
     hit_series = []
-    for st in state:
-        sdir = os.path.join(ROOT, "notes", sanitize_filename(st))
-        if not os.path.isdir(sdir):
-            continue
-        hit = False
-        for fn in os.listdir(sdir):
-            if not fn.endswith("_raw.md"):
+    notes_root = os.path.join(ROOT, "notes")
+    if os.path.isdir(notes_root):
+        for name in sorted(os.listdir(notes_root)):
+            sdir = os.path.join(notes_root, name)
+            if not os.path.isdir(sdir) or name.startswith("_"):
                 continue
-            try:
-                head = "".join(open(os.path.join(sdir, fn), encoding="utf-8").readlines()[:8])
-            except Exception:
-                continue
-            if args.author in head:
-                hit = True
-                break
-        if hit:
-            hit_series.append((st, sdir))
+            hit = False
+            for fn in os.listdir(sdir):
+                if not fn.endswith("_raw.md"):
+                    continue
+                try:
+                    head = "".join(open(os.path.join(sdir, fn), encoding="utf-8").readlines()[:8])
+                except Exception:
+                    continue
+                if args.author in head:
+                    hit = True
+                    break
+            if hit:
+                hit_series.append((name, sdir))
     print(f"[C] 命中作者「{args.author}」的系列 {len(hit_series)} 个：")
     for st, _ in hit_series:
-        n = len(state.get(st, {}).get("fetched", []))
-        d = len(state.get(st, {}).get("done", []))
-        print(f"    - {st}（fetched={n} done={d}）")
+        print(f"    - {st}")
 
     # ---- D/E. 执行 ----
     if not args.apply:
@@ -119,16 +114,12 @@ def main():
     for h in by_url + by_title:
         index.pop(h, None)
     dedup._save_index(index)
-    for st, _ in hit_series:
-        state.pop(st, None)
-    with open(SERIES_STATE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
     for st, sdir in hit_series:
-        dst = os.path.join(backup, "series_" + sanitize_filename(st))
+        dst = os.path.join(backup, "series_" + st)
         shutil.move(sdir, dst)
-        print(f"[E] notes/{sanitize_filename(st)} → 备份")
+        print(f"[E] notes/{st} → 备份")
     print(f"\n✅ 重置完成。备份目录（可回滚）：{backup}")
-    print(f"   dedup 索引剩 {len(index)} 条；series_state 剩 {len(state)} 个系列。")
+    print(f"   dedup 索引剩 {len(index)} 条。")
 
 
 if __name__ == "__main__":

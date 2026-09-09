@@ -261,12 +261,6 @@ def run_parallel_main(mode: str = "auto", obsidian: bool = False,
         print(f"  📥 Landing 已从本地草稿落盘 {n} 篇（串行，避免并发飞书竞态）")
     except Exception as e:
         print(f"  ⚠️ Landing 落盘异常（非致命）：{e}")
-    # 系列课 drain 幂等补齐（沿用 series 级 drain 锁）
-    try:
-        from monitors.apply_pending_series import drain_series_pending
-        drain_series_pending(obsidian=obsidian)
-    except Exception as e:
-        print(f"  ⚠️ 系列课落地异常（非致命）：{e}")
 
     finalize_run(run_id, started_ts=started, overall_status="ok", notes="parallel")
     print(f"\n📋 Ledger：monitors/run_status/{run_id}.*.tasks.jsonl"
