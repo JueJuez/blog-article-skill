@@ -3,7 +3,7 @@
 子 Agent 流程：
   1. 读 raw_file 原文 -> 按 note_type 模板写结构化总结 markdown 到 _closeout/<safe>.md
   2. 调用本脚本：把 md 内容交给 articles.main.save_summary_only 落盘
-     （飞书走 lark-cli，不可用时回退本地 notes/，dedup 写索引防重复）
+     （默认本地 Obsidian，2026-09-04 起；去重/质量门禁/autoroute/发布时间统一由 save_summary_only 处理）
 
 用法：
   python closeout_one.py <md_path> <url> <author> <title> <note_type> <folder> <publish_time>

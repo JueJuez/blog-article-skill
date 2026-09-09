@@ -1,5 +1,7 @@
 # 决策记录：旁路保存入口收编 autoroute + 测试隔离真实 dedup 索引（守卫补全）
 
+> ⚠️ 2026-09-09 终局收口：四个旁路入口已改为一行委托 `save_summary_only`（不再逐入口补闸门），本篇守卫方案被取代，见 `DECISION-20260909-save-bypass-consolidation.md`；autoroute_folder() 辅助与 conftest 去重隔离仍有效。
+
 > 日期：2026-09-05 | 关联：`articles/main.py` + `articles/_save_summary.py` + `tests/conftest.py` + DECISION-20260903（L8 autoroute）
 
 ## 现象（两个独立泄漏口）
