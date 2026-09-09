@@ -38,6 +38,8 @@ def main():
     parser.add_argument('--tags', '-t', type=str, default='', help='标签，逗号分隔')
     parser.add_argument('--title', type=str, default='', help='原始文章标题（可选，用于文件名）')
     parser.add_argument('--folder', type=str, default='', help='归档目录（不传则按作者/链接自动路由，不落【待归类】）')
+    parser.add_argument('--publish-time', type=int, default=0, dest='publish_time',
+                        help='原文发布时间（epoch 秒；驱动文件名日期前缀/正文发布时间行/新鲜度标签）')
     parser.add_argument('--force', action='store_true', help='强制重写（跳过已总结去重闸门）')
 
     args = parser.parse_args()
@@ -64,34 +66,34 @@ def main():
 
     tags = [t.strip() for t in args.tags.split(',')] if args.tags else []
 
-    # 机械去重闸门（DECISION-20260825）：URL 已总结过 → 跳过写入（子 Agent 可安全标记队列条目完成）
-    from articles import dedup
-    if args.url and not args.force:
-        rec = dedup.is_summarized(url=args.url)
-        if rec:
-            print(f"⏭️ 该链接已总结过，机械跳过写入（{rec.get('filename', '')}）。如需重写加 --force")
-            return 0
-
-    from articles.main import save_summarized_article, autoroute_folder
+    # 收口（2026-09-09）：去重/质量门禁/autoroute/publish_time 四件事统一由 save_summary_only
+    # 一处维护（DECISION-20260905 同族缺口的补完），本脚本不再自带去重闸门与 mark
+    # （登记在 save_summarized_article 保存点统一发生，PLAN-20260906 任务2）。
+    from articles.main import save_summary_only
 
     try:
-        # 旁路收编（2026-09-05）：folder 未传时按作者/链接自动路由，堵住落【待归类】的通道
-        folder, tags = autoroute_folder(args.folder, args.author, args.url, args.title, tags)
-        formatted_note, filename = save_summarized_article(
-            summarized_content=summarized_content,
-            original_url=args.url,
-            author=args.author,
-            tags=tags,
-            original_title=args.title,
-            folder=folder
-        )
-        dedup.mark_summarized(url=args.url, title=args.title, filename=filename)
-        print(f"\n✅ 文章总结保存完成！")
-        print(f"   文件名: {filename}")
-        return 0
+        result = save_summary_only({
+            'summarized_content': summarized_content,
+            'original_url': args.url,
+            'author': args.author,
+            'tags': tags,
+            'original_title': args.title,
+            'folder': args.folder,
+            'publish_time': args.publish_time,
+            'force': args.force,
+        })
     except Exception as e:
         print(f"\n❌ 保存失败: {e}")
         return 1
+    if result.get('skipped'):
+        print(f"⏭️ 该链接已总结过，机械跳过写入（{result.get('filename', '')}）。如需重写加 --force")
+        return 0
+    if not result.get('success'):
+        print(f"\n❌ 保存失败: {result.get('message', '未知错误')}")
+        return 1
+    print("\n✅ 文章总结保存完成！")
+    print(f"   文件名: {result.get('filename', '')}")
+    return 0
 
 
 if __name__ == "__main__":

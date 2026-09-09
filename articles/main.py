@@ -209,16 +209,24 @@ def save_raw_content_to_file(content: str, title: str = "", prefix: str = "_raw_
     return os.path.abspath(filepath)
 
 
-def save_summarized_from_file(filepath: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", obsidian: bool = False, folder: str = "", category: str = "") -> tuple:
+def save_summarized_from_file(filepath: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", obsidian: bool = False, folder: str = "", category: str = "", publish_time: int = 0) -> tuple:
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"总结内容文件不存在: {filepath}")
     with open(filepath, 'r', encoding='utf-8') as f:
         content = f.read()
     if not content.strip():
         raise ValueError(f"总结内容文件为空: {filepath}")
-    folder, tags = autoroute_folder(folder, author, original_url, original_title, tags,
-                                    category=category)
-    return save_summarized_article(content, original_url=original_url, author=author, tags=tags, original_title=original_title, obsidian=obsidian, folder=folder)
+    # 收口（2026-09-09）：去重/质量门禁/autoroute/publish_time 四件事统一由 save_summary_only
+    # 一处维护，本函数不再自带 autoroute（save_summary_only 内部幂等处理）。
+    result = save_summary_only({
+        'summarized_content': content, 'original_url': original_url,
+        'author': author, 'tags': tags, 'original_title': original_title,
+        'obsidian': obsidian, 'folder': folder, 'category': category,
+        'publish_time': publish_time,
+    })
+    if not result.get('success'):
+        raise RuntimeError(result.get('message', '保存失败'))
+    return (result.get('content') or result.get('message', ''), result.get('filename', ''))
 
 
 def _extract_title_from_summary(summarized_content: str) -> str:
@@ -729,11 +737,12 @@ async def async_fetch_web_content(url: str):
     return await asyncio.to_thread(fetch_web_content, url)
 
 
-async def async_save_summarized_from_file(filepath: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", obsidian: bool = False, folder: str = "") -> tuple:
-    """委托同步版 save_summarized_from_file（线程池执行），自动继承 folder 路由。"""
+async def async_save_summarized_from_file(filepath: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", obsidian: bool = False, folder: str = "", publish_time: int = 0) -> tuple:
+    """委托同步版 save_summarized_from_file（线程池执行），自动继承 folder 路由与全套闸门。"""
     return await asyncio.to_thread(
         save_summarized_from_file, filepath, original_url=original_url, author=author,
-        tags=tags, original_title=original_title, obsidian=obsidian, folder=folder
+        tags=tags, original_title=original_title, obsidian=obsidian, folder=folder,
+        publish_time=publish_time
     )
 
 

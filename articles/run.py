@@ -102,6 +102,8 @@ def main():
     parser.add_argument('--summarized', '-s', type=str, help='已总结好的内容（跳过AI总结，直接保存）')
     parser.add_argument('--note-type', '-n', type=str, default='', help='笔记类型：structured / key_points（留空自动分类）')
     parser.add_argument('--batch', '-b', type=str, default='', help='批量目录模式：对该目录下所有 .md/.txt 原文逐篇总结')
+    parser.add_argument('--publish-time', type=int, default=0, dest='publish_time',
+                        help='原文发布时间（epoch 秒；驱动文件名日期前缀/正文发布时间行/新鲜度标签）')
     parser.add_argument('--force', action='store_true', help='A2 去重：强制重新总结已处理过的内容')
     parser.add_argument('--obsidian', action='store_true', help='同时写入 Obsidian（默认只写飞书）')
 
@@ -144,6 +146,7 @@ def main():
             'note_type': args.note_type,
             'force': args.force,
             'obsidian': args.obsidian,
+            'publish_time': args.publish_time,
         }
         if args.url_arg or args.url:
             input_data['original_url'] = args.url_arg or args.url
@@ -165,7 +168,8 @@ def main():
                 filepath=content,
                 original_url=args.url_arg or "",
                 author=args.author,
-                tags=tags
+                tags=tags,
+                publish_time=args.publish_time
             )
             print("\n✅ 文章总结保存完成！")
             return 0
