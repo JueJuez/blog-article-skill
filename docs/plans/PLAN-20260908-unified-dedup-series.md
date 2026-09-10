@@ -190,7 +190,7 @@
 
 **实施（2026-09-09 完成）**：`scripts/consume_migrate_queue.py`（TDD，`tests/test_consume_migrate_queue.py` 20 例，全量 720 passed）。四命令：`--plan` / `--fetch --limit N` / `--clean` / `--cleanup-old [--apply]`。跳过序：registry 命中（url 或 old_titles 批查）→ staging 已有 url → manual 已有 url → fails≥3 → limit 截断。B站重传标题匹配 difflib ratio≥0.55，失配/失败 3 次/无 URL → manual。412 熔断立即中止。顺带修复 `dedup.mark_summarized` 漏传 title 缺口（title-only 落键此前被静默丢弃，与查询侧对称，无回归）。
 
-**扩展（2026-09-10）**：新增**无 CC 暂缓机制**（消费队列从 4 命令扩到 6）——`--fetch` 探测到无字幕即标 `deferred`（不重试、不占 `--limit` 配额），`--defer-failed` 批量收敛历史无CC失败，`--classify-deferred` 三分类（误标回队 / `no_cc_confirmed` / `removed_video`）。测试 20 → **40 例**。详见 `docs/decisions/DECISION-20260910-nocc-deferred.md`。
+**扩展（2026-09-10）**：新增**无 CC 暂缓机制**（消费队列从 4 命令扩到 6）——`--fetch` 探测到无字幕即标 `deferred`（不重试、不占 `--limit` 配额），`--defer-failed` 批量收敛历史无CC失败，`--classify-deferred` 三分类（误标回队 / `no_cc_confirmed` / `removed_video`）；同日 **v2 修熔断盲点**（`fetch_transcript` 吞异常返 None，412 到不了外层熔断——classify 改 view API 先行：连续 2 次请求层异常=熔断 abort、删除码直接定档、环境健康才探测字幕）。测试 20 → **43 例**。详见 `docs/decisions/DECISION-20260910-nocc-deferred.md`。
 
 **进度（2026-09-09）**：--plan 426 条中 registered 81 → 消费 12 条后 **93**；两轮 fetch 共入队 23 条、转 manual 6 条（全部 `url_changed`：B站重传 URL 指向不同视频，风险 4 按设计拦截）；staging 存 11 条待消费；manual 清单累计 7 条（6 url_changed + 1 manual_no_url）。
 

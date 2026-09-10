@@ -66,11 +66,14 @@ def iso(tmp_path, monkeypatch):
     monkeypatch.setattr(cmq, "STATE_PATH", str(tmp_path / "state.json"))
     monkeypatch.setattr(cmq, "MANUAL_PATH", str(tmp_path / "manual.json"))
     monkeypatch.setattr(cmq, "_sleep", lambda *_: None)
+    monkeypatch.setenv("BILI_COOKIE", "test_cookie")  # classify ASR 探测硬依赖；无 cookie 场景单独 delenv
 
     def _unmocked_probe(url):
         raise RuntimeError("probe_unmocked")  # 兜底：未显式 mock 探测时禁真网，probe_error 交原管线
 
-    monkeypatch.setattr(cmq, "_fetch_transcript_probe", _unmocked_probe)
+    monkeypatch.setattr(cmq, "_fetch_transcript_probe", _unmocked_probe)  # --fetch 字幕探测仍用此点
+    monkeypatch.setattr(cmq, "_asr_probe", _unmocked_probe, raising=False)  # classify ASR 直转写探测
+    monkeypatch.setattr(cmq, "_check_asr_deps", lambda: (True, []), raising=False)  # 默认依赖齐备
     monkeypatch.setattr(cmq, "_bili_view_code", lambda url: 0, raising=False)  # 默认环境健康
     return tmp_path
 
@@ -589,3 +592,60 @@ def test_classify_sleeps_between_probes(iso, monkeypatch):
     _mock_transcript(monkeypatch, None)
     cmq.cmd_classify_deferred(apply=True)
     assert len(sleeps) == 2
+
+
+def test_classify_view_api_error_twice_aborts(iso, monkeypatch):
+    """v2 主熔断：view API 请求层异常（None）连续 2 次 → abort，且不烧字幕探测。"""
+    calls = []
+
+    def probe(url):
+        calls.append(url)
+        return None
+
+    urls = {BILI["url"]: {"deferred": True},
+            "https://www.bilibili.com/video/BV22p3t6nEPM": {"deferred": True},
+            "https://www.bilibili.com/video/BV33p3t6nEPM": {"deferred": True}}
+    _write_state_file(urls)
+    monkeypatch.setattr(cmq, "_bili_view_code", lambda url: None)
+    monkeypatch.setattr(cmq, "_fetch_transcript_probe", probe)
+    r = cmq.cmd_classify_deferred(apply=True)
+    assert r["aborted"] is True
+    assert r["probe_error"] == 2
+    assert r["risk_streak"] == 2
+    assert calls == []  # view 异常时不触发字幕探测（省重请求）
+    st = _read(cmq.STATE_PATH)
+    assert "classify" not in st[BILI["url"]]  # 异常条目不打标签
+
+
+def test_classify_view_api_error_once_skips_entry(iso, monkeypatch):
+    """view 异常仅 1 次（未达熔断）→ 该条跳过继续，下一条环境健康正常分类。"""
+    codes = {BILI["url"]: None,
+             "https://www.bilibili.com/video/BV22p3t6nEPM": 0}
+    _write_state_file({u: {"deferred": True} for u in codes})
+    monkeypatch.setattr(cmq, "_bili_view_code", lambda url: codes[url])
+    _mock_transcript(monkeypatch, None)
+    r = cmq.cmd_classify_deferred(apply=True)
+    assert r["aborted"] is False
+    assert r["probe_error"] == 1
+    assert r["no_cc_confirmed"] == 1
+    st = _read(cmq.STATE_PATH)
+    assert "classify" not in st[BILI["url"]]
+    assert st["https://www.bilibili.com/video/BV22p3t6nEPM"]["classify"] == "no_cc_confirmed"
+
+
+def test_classify_removed_video_skips_transcript_probe(iso, monkeypatch):
+    """v2 提前定档：view 删除码直接 removed_video，不调字幕探测（省重请求）。"""
+    calls = []
+
+    def probe(url):
+        calls.append(url)
+        return None
+
+    _write_state_file({BILI["url"]: {"deferred": True}})
+    monkeypatch.setattr(cmq, "_bili_view_code", lambda url: 62002)
+    monkeypatch.setattr(cmq, "_fetch_transcript_probe", probe)
+    r = cmq.cmd_classify_deferred(apply=True)
+    assert r["removed_video"] == 1
+    assert calls == []  # 字幕探测未被触发
+    st = _read(cmq.STATE_PATH)
+    assert st[BILI["url"]]["classify"] == "removed_video"

@@ -10,8 +10,9 @@
 
 无 CC 暂缓维护（2026-09-10 加，见 DECISION-20260910-nocc-deferred）：
   5. --defer-failed       把 state 里带无CC指纹的历史失败批量暂缓（幂等）
-  6. --classify-deferred  deferred 三分类（默认 dry-run，--apply 落盘）：探测到字幕=误标→回队；
-                          探测 None + 视频在 → no_cc_confirmed；探测 None + 视频删 → removed_video
+  6. --classify-deferred  deferred 三分类（默认 dry-run，--apply 落盘）：view API 先行
+                          （连续 2 次请求层异常=风控熔断 abort；删除码 → removed_video
+                          跳过探测；健康才探测字幕）→ 探测到字幕=误标回队 / None=no_cc_confirmed
 
 断点续跑：registry（url + old_titles 双键）命中、staging/manual 已有 url、deferred、
 同条失败 3 次转人工（D8）全部自动跳过，可反复执行直至队列清空。manual_no_url 条目
@@ -66,16 +67,18 @@ def _is_no_cc_error(msg: str) -> bool:
     return any(m in msg for m in NO_CC_MARKERS)
 
 
-def _video_removed(url: str) -> bool:
-    """B站 view API 判定视频是否已删除/不可见（code -404=不存在 / 62002=稿件不可见）。
+def _bili_view_code(url: str) -> Optional[int]:
+    """B站 view API 返回 code（0=正常，-404/62002=删除/不可见）；请求层异常返回 None。
 
-    自包含实现：不复用 videos.fetch 私有函数（asr.py 断裂教训：跨模块引私有名，
-    重构改名即断，已由 tests/test_asr_fetch_refs.py 守卫）。探测失败保守返回
-    False（不当删除定档，留给 no_cc 分支，两态均保持 deferred 无行为差异）。
+    独立轻请求信号源（v2 熔断盲点修复）：fetch_transcript 内部吞异常返回 None，
+    412 永远到不了外层熔断（2026-09-10 dry-run 实测盲点）——view API 同源 IP，
+    连续 None 视为 IP 级风控/网络异常信号，由 risk_streak>=2 熔断裁决。
+    BV 抽取失败返回 0（非 B站链接视为环境健康，交字幕探测权威裁决）。
+    自包含实现：不复用 videos.fetch 私有函数（asr.py 断裂教训）。
     """
     m = re.search(r"BV[0-9A-Za-z]{10}", url or "")
     if not m:
-        return False
+        return 0
     api = f"https://api.bilibili.com/x/web-interface/view?bvid={m.group(0)}"
     try:
         req = urllib.request.Request(api, headers={
@@ -84,9 +87,9 @@ def _video_removed(url: str) -> bool:
         })
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
-        return data.get("code") in REMOVED_CODES
-    except Exception:  # 网络/风控异常：保守视为视频仍在
-        return False
+        return int(data.get("code", 0))
+    except Exception:  # 网络/风控异常：None = 信号缺失（非删除定档），交 risk_streak 熔断
+        return None
 
 
 def _defer_entry(state: dict, url: str, reason: str) -> bool:
@@ -308,16 +311,19 @@ def cmd_defer_failed() -> dict:
 def cmd_classify_deferred(apply: bool = False) -> dict:
     """deferred 三分类：真无CC确认 / 视频删除定档 / 风控误标回队（默认 dry-run）。
 
-    - 探测到字幕 → misclassified（当初误标）：清 deferred + fails 清零回重抓队列
-    - 探测 None + 视频在 → no_cc_confirmed：deferred 保留 + 打 classify 标签
-    - 探测 None + 视频删 → removed_video：deferred 保留 + 打 classify 标签
-    - 探测异常 → 不动（412 指纹则熔断停轮）；已打标签条目跳过不重复探测
+    v2（2026-09-10 熔断盲点修复）：探测前先调 view API（独立轻请求信号源）：
+    - view 请求层异常（None）→ risk_streak+1，连续 2 次 abort（fetch_transcript
+      内部吞异常返回 None，412 到不了外层熔断——dry-run 实测盲点，v1 全漏判）
+    - view code ∈ REMOVED_CODES → removed_video 定档（跳过字幕探测省重请求）
+    - view 其他 code（环境健康）→ 才探测字幕，此时 no_cc_confirmed 才可信
+    残余风险：view API 健康但仅 yt-dlp 音频链路被 412 的条目仍可能误标
+    no_cc_confirmed（幂等可重跑纠偏，注释备案）。
     """
     state = _read_json(STATE_PATH, {})
     deferred_urls = [u for u, r in state.items() if isinstance(r, dict) and r.get("deferred")]
     result = {"total": len(deferred_urls), "misclassified": 0, "requeued": 0,
               "no_cc_confirmed": 0, "removed_video": 0, "probe_error": 0,
-              "skipped": 0, "aborted": False}
+              "skipped": 0, "risk_streak": 0, "aborted": False}
     changed = False
     for i, url in enumerate(deferred_urls):
         rec = state[url]
@@ -327,30 +333,40 @@ def cmd_classify_deferred(apply: bool = False) -> dict:
         if _fetch_transcript_probe is None:  # 探测不可用：不猜，保持原状
             result["probe_error"] += 1
             continue
-        try:
-            ts = _fetch_transcript_probe(url)
-            err = ""
-        except Exception as e:  # noqa: BLE001
-            ts, err = None, str(e)
-        if err:
+        code = _bili_view_code(url)  # v2：先 view API 确认环境，再烧重请求
+        if code is None:
             result["probe_error"] += 1
-            if any(m in err for m in RISK_412_MARKERS):
+            result["risk_streak"] += 1
+            if result["risk_streak"] >= 2:
                 result["aborted"] = True
                 break
             continue
-        if ts is not None:
-            rec.pop("deferred", None)
-            rec["fails"] = 0
-            rec["last_error"] = "requeued_by_classify"
-            rec["ts"] = _now()
-            result["misclassified"] += 1
-            result["requeued"] += 1
-        elif _video_removed(url):
+        result["risk_streak"] = 0
+        if code in REMOVED_CODES:
             rec["classify"] = "removed_video"
             result["removed_video"] += 1
         else:
-            rec["classify"] = "no_cc_confirmed"
-            result["no_cc_confirmed"] += 1
+            try:
+                ts = _fetch_transcript_probe(url)
+                err = ""
+            except Exception as e:  # noqa: BLE001
+                ts, err = None, str(e)
+            if err:
+                result["probe_error"] += 1
+                if any(m in err for m in RISK_412_MARKERS):  # probe 层兜底熔断（保留）
+                    result["aborted"] = True
+                    break
+                continue
+            if ts is not None:
+                rec.pop("deferred", None)
+                rec["fails"] = 0
+                rec["last_error"] = "requeued_by_classify"
+                rec["ts"] = _now()
+                result["misclassified"] += 1
+                result["requeued"] += 1
+            else:
+                rec["classify"] = "no_cc_confirmed"
+                result["no_cc_confirmed"] += 1
         changed = True
         if i < len(deferred_urls) - 1:
             _sleep(8.0)
