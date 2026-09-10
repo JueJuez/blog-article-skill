@@ -16,6 +16,8 @@ monitors/login_qr*.svg
 monitors/login_qr*.png
 monitors/_test_state.json
 monitors/*.log
+# 门禁拦截台账（运行时数据，7 天滚动自清理）
+monitors/gate_blockers.*.jsonl
 monitors/.mp_cache.json
 monitors/.poll_daemon.pid
 monitors/.relogin.lock
