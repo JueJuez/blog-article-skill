@@ -99,8 +99,13 @@ def _mock_video(monkeypatch, res=None, calls=None, raw=""):
 
 
 def _mock_transcript(monkeypatch, result):
-    """mock 字幕探测（fetch_transcript）：result 为 None 即无CC。"""
+    """mock 字幕探测（fetch 阶段试抓 CC 字幕）：result 为 None 即无CC → fetch 暂缓。"""
     monkeypatch.setattr(cmq, "_fetch_transcript_probe", lambda url: result)
+
+
+def _mock_asr(monkeypatch, result):
+    """mock ASR 直转写探测（classify 阶段 transcribe_video）：truthy=ASR 出文本（误标回队），None=ASR 失败（no_cc_confirmed）。"""
+    monkeypatch.setattr(cmq, "_asr_probe", lambda url: result)
 
 
 # ---------------------------------------------------------------------------
@@ -472,9 +477,9 @@ def _write_state_file(state):
 
 
 def test_classify_misclassified_requeues(iso, monkeypatch):
-    """探测到字幕 + 视频在 → 风控/断裂误标：清 deferred + fails 清零回重抓队列。"""
+    """ASR 出文本 + 视频在 → 当初误标：清 deferred + fails 清零回重抓队列。"""
     _write_state_file({BILI["url"]: {"fails": 2, "last_error": "该视频无可用字幕", "deferred": True}})
-    _mock_transcript(monkeypatch, ("t", [], "a"))
+    _mock_asr(monkeypatch, ("t", [], "a"))
     r = cmq.cmd_classify_deferred(apply=True)
     assert r["misclassified"] == 1
     assert r["requeued"] == 1
@@ -484,9 +489,9 @@ def test_classify_misclassified_requeues(iso, monkeypatch):
 
 
 def test_classify_no_cc_confirmed_keeps_deferred(iso, monkeypatch):
-    """探测 None + 视频在 → 真无CC确认：deferred 保留 + 打 classify 标签。"""
+    """ASR 返回 None + 视频在 → 真无CC确认：deferred 保留 + 打 classify 标签。"""
     _write_state_file({BILI["url"]: {"fails": 1, "last_error": "no_cc_transcript", "deferred": True}})
-    _mock_transcript(monkeypatch, None)
+    _mock_asr(monkeypatch, None)
     r = cmq.cmd_classify_deferred(apply=True)
     assert r["no_cc_confirmed"] == 1
     st = _read(cmq.STATE_PATH)
@@ -497,7 +502,7 @@ def test_classify_no_cc_confirmed_keeps_deferred(iso, monkeypatch):
 def test_classify_removed_video_keeps_deferred(iso, monkeypatch):
     """view API 返回删除码（-404）→ 删除定档：deferred 保留 + 打 classify 标签。"""
     _write_state_file({BILI["url"]: {"fails": 1, "last_error": "x", "deferred": True}})
-    _mock_transcript(monkeypatch, None)
+    _mock_asr(monkeypatch, None)
     monkeypatch.setattr(cmq, "_bili_view_code", lambda url: -404)
     r = cmq.cmd_classify_deferred(apply=True)
     assert r["removed_video"] == 1
@@ -507,12 +512,12 @@ def test_classify_removed_video_keeps_deferred(iso, monkeypatch):
 
 
 def test_classify_probe_error_untouched(iso, monkeypatch):
-    """探测异常（非412）→ probe_error：状态不动、不打标签、不计入任何定档类。"""
+    """ASR 探测异常 → probe_error：状态不动、不打标签、不计入任何定档类。"""
     def boom(url):
         raise RuntimeError("网络抖动")
 
     _write_state_file({BILI["url"]: {"fails": 1, "last_error": "x", "deferred": True}})
-    monkeypatch.setattr(cmq, "_fetch_transcript_probe", boom)
+    monkeypatch.setattr(cmq, "_asr_probe", boom)
     r = cmq.cmd_classify_deferred(apply=True)
     assert r["probe_error"] == 1
     st = _read(cmq.STATE_PATH)
@@ -520,23 +525,28 @@ def test_classify_probe_error_untouched(iso, monkeypatch):
     assert "classify" not in st[BILI["url"]]
 
 
-def test_classify_412_aborts(iso, monkeypatch):
-    """探测异常含 412 指纹 → 立即停轮，后续条目不处理。"""
+def test_classify_asr_probe_error_continues(iso, monkeypatch):
+    """ASR 探测异常逐条 probe_error 不断轮：下载失败被 asr 层吞掉，
+    探测层无 412 信号，熔断唯一依赖 view 前置（v3 备案）。"""
     def boom(url):
-        raise RuntimeError("HTTP 412 Precondition Failed")
+        raise RuntimeError("下载失败")
 
-    _write_state_file({BILI["url"]: {"deferred": True},
-                       "https://www.bilibili.com/video/BVnext": {"deferred": True}})
-    monkeypatch.setattr(cmq, "_fetch_transcript_probe", boom)
+    urls = {BILI["url"]: {"deferred": True},
+            "https://www.bilibili.com/video/BVnext": {"deferred": True}}
+    _write_state_file(urls)
+    monkeypatch.setattr(cmq, "_asr_probe", boom)
     r = cmq.cmd_classify_deferred(apply=True)
-    assert r["aborted"] is True
-    assert r["probe_error"] == 1
+    assert r["aborted"] is False
+    assert r["probe_error"] == 2
+    st = _read(cmq.STATE_PATH)
+    assert "classify" not in st[BILI["url"]]
+    assert "classify" not in st["https://www.bilibili.com/video/BVnext"]
 
 
 def test_classify_dry_run_default_no_write(iso, monkeypatch):
     """默认 dry-run：探测照跑出分类结果，但 state 落盘不变。"""
     _write_state_file({BILI["url"]: {"fails": 1, "last_error": "x", "deferred": True}})
-    _mock_transcript(monkeypatch, ("t", [], "a"))
+    _mock_asr(monkeypatch, ("t", [], "a"))
     r = cmq.cmd_classify_deferred()
     assert r["misclassified"] == 1
     st = _read(cmq.STATE_PATH)
@@ -546,7 +556,7 @@ def test_classify_dry_run_default_no_write(iso, monkeypatch):
 def test_classify_apply_writes_state(iso, monkeypatch):
     """apply=True 才把分类结果落盘。"""
     _write_state_file({BILI["url"]: {"fails": 1, "last_error": "x", "deferred": True}})
-    _mock_transcript(monkeypatch, None)
+    _mock_asr(monkeypatch, None)
     cmq.cmd_classify_deferred(apply=True)
     st = _read(cmq.STATE_PATH)
     assert st[BILI["url"]]["classify"] == "no_cc_confirmed"
@@ -563,7 +573,7 @@ def test_classify_skips_already_labeled(iso, monkeypatch):
     other = "https://www.bilibili.com/video/BVother"
     _write_state_file({BILI["url"]: {"deferred": True, "classify": "no_cc_confirmed"},
                        other: {"deferred": True}})
-    monkeypatch.setattr(cmq, "_fetch_transcript_probe", probe)
+    monkeypatch.setattr(cmq, "_asr_probe", probe)
     r = cmq.cmd_classify_deferred(apply=True)
     assert calls == [other]
     assert r["skipped"] == 1
@@ -573,7 +583,7 @@ def test_classify_skips_already_labeled(iso, monkeypatch):
 def test_classify_misclassified_fails_reset_enables_refetch(iso, monkeypatch):
     """端到端：误标回队后（fails 清零、deferred 清除），fetch 轮能重新处理该条。"""
     _write_state_file({BILI["url"]: {"fails": 3, "last_error": "该视频无可用字幕", "deferred": True}})
-    _mock_transcript(monkeypatch, ("t", [], "a"))
+    _mock_asr(monkeypatch, ("t", [], "a"))
     cmq.cmd_classify_deferred(apply=True)
     scan = _write_scan(iso, [BILI])
     _mock_video(monkeypatch, res=_degrade(BILI["url"], title="小猪仔拆公司第3期", raw_file="r.md"))
@@ -582,20 +592,22 @@ def test_classify_misclassified_fails_reset_enables_refetch(iso, monkeypatch):
 
 
 def test_classify_sleeps_between_probes(iso, monkeypatch):
-    """限速：N 条分类只 sleep N-1 次，避免连发触发风控。"""
+    """限速：N 条分类只 sleep N-1 次，且间隔落在 60-180s 随机区间（ASR 重请求降密）。"""
     sleeps = []
     monkeypatch.setattr(cmq, "_sleep", lambda s: sleeps.append(s))
     urls = {BILI["url"]: {"deferred": True},
             "https://www.bilibili.com/video/BVa": {"deferred": True},
             "https://www.bilibili.com/video/BVb": {"deferred": True}}
     _write_state_file(urls)
-    _mock_transcript(monkeypatch, None)
+    _mock_asr(monkeypatch, None)
     cmq.cmd_classify_deferred(apply=True)
     assert len(sleeps) == 2
+    lo, hi = cmq.CLASSIFY_SLEEP_RANGE
+    assert all(lo <= s <= hi for s in sleeps)
 
 
 def test_classify_view_api_error_twice_aborts(iso, monkeypatch):
-    """v2 主熔断：view API 请求层异常（None）连续 2 次 → abort，且不烧字幕探测。"""
+    """v2 主熔断：view API 请求层异常（None）连续 2 次 → abort，且不烧 ASR 探测。"""
     calls = []
 
     def probe(url):
@@ -607,12 +619,12 @@ def test_classify_view_api_error_twice_aborts(iso, monkeypatch):
             "https://www.bilibili.com/video/BV33p3t6nEPM": {"deferred": True}}
     _write_state_file(urls)
     monkeypatch.setattr(cmq, "_bili_view_code", lambda url: None)
-    monkeypatch.setattr(cmq, "_fetch_transcript_probe", probe)
+    monkeypatch.setattr(cmq, "_asr_probe", probe)
     r = cmq.cmd_classify_deferred(apply=True)
     assert r["aborted"] is True
     assert r["probe_error"] == 2
     assert r["risk_streak"] == 2
-    assert calls == []  # view 异常时不触发字幕探测（省重请求）
+    assert calls == []  # view 异常时不触发 ASR 探测（省重请求）
     st = _read(cmq.STATE_PATH)
     assert "classify" not in st[BILI["url"]]  # 异常条目不打标签
 
@@ -623,7 +635,7 @@ def test_classify_view_api_error_once_skips_entry(iso, monkeypatch):
              "https://www.bilibili.com/video/BV22p3t6nEPM": 0}
     _write_state_file({u: {"deferred": True} for u in codes})
     monkeypatch.setattr(cmq, "_bili_view_code", lambda url: codes[url])
-    _mock_transcript(monkeypatch, None)
+    _mock_asr(monkeypatch, None)
     r = cmq.cmd_classify_deferred(apply=True)
     assert r["aborted"] is False
     assert r["probe_error"] == 1
@@ -633,8 +645,8 @@ def test_classify_view_api_error_once_skips_entry(iso, monkeypatch):
     assert st["https://www.bilibili.com/video/BV22p3t6nEPM"]["classify"] == "no_cc_confirmed"
 
 
-def test_classify_removed_video_skips_transcript_probe(iso, monkeypatch):
-    """v2 提前定档：view 删除码直接 removed_video，不调字幕探测（省重请求）。"""
+def test_classify_removed_video_skips_asr_probe(iso, monkeypatch):
+    """v2 提前定档：view 删除码直接 removed_video，不调 ASR 探测（省重请求）。"""
     calls = []
 
     def probe(url):
@@ -643,9 +655,38 @@ def test_classify_removed_video_skips_transcript_probe(iso, monkeypatch):
 
     _write_state_file({BILI["url"]: {"deferred": True}})
     monkeypatch.setattr(cmq, "_bili_view_code", lambda url: 62002)
-    monkeypatch.setattr(cmq, "_fetch_transcript_probe", probe)
+    monkeypatch.setattr(cmq, "_asr_probe", probe)
     r = cmq.cmd_classify_deferred(apply=True)
     assert r["removed_video"] == 1
-    assert calls == []  # 字幕探测未被触发
+    assert calls == []  # ASR 探测未被触发
     st = _read(cmq.STATE_PATH)
     assert st[BILI["url"]]["classify"] == "removed_video"
+
+
+def test_classify_asr_deps_missing_all_probe_error(iso, monkeypatch):
+    """ASR 依赖（whisper 等）缺失 → 整批 probe_error 保持原状，不猜不写盘。"""
+    urls = {BILI["url"]: {"deferred": True},
+            "https://www.bilibili.com/video/BVnext": {"deferred": True}}
+    _write_state_file(urls)
+    monkeypatch.setattr(cmq, "_check_asr_deps", lambda: (False, ["whisper 未安装"]))
+    r = cmq.cmd_classify_deferred(apply=True)
+    assert r["probe_error"] == 2
+    assert r["aborted"] is False
+    st = _read(cmq.STATE_PATH)
+    assert "classify" not in st[BILI["url"]]
+    assert "classify" not in st["https://www.bilibili.com/video/BVnext"]
+
+
+def test_classify_bili_no_cookie_probe_error(iso, monkeypatch):
+    """B站条目缺 BILI_COOKIE → ASR 会静默失败误判 no_cc，拦截为 probe_error；
+    非 B站条目（YouTube）不受影响正常分类。"""
+    yt = "https://www.youtube.com/watch?v=abc"
+    _write_state_file({BILI["url"]: {"deferred": True}, yt: {"deferred": True}})
+    monkeypatch.delenv("BILI_COOKIE", raising=False)
+    _mock_asr(monkeypatch, ("t", [], "a"))
+    r = cmq.cmd_classify_deferred(apply=True)
+    assert r["probe_error"] == 1
+    assert r["misclassified"] == 1
+    st = _read(cmq.STATE_PATH)
+    assert "classify" not in st[BILI["url"]]
+    assert "deferred" not in st[yt]

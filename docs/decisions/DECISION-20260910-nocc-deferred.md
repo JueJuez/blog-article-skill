@@ -13,6 +13,7 @@
 - **删除判定自包含**：`_bili_view_code` 自带 urllib 调 view API，**不复用 `videos.fetch` 私有函数**（asr.py 跨模块引私有名被重构改名断裂的教训，见 RULES.md §4.7）。
 - **历史失败批量收敛**：`--defer-failed` 把 state 里已带无CC指纹的旧失败一次性暂缓（幂等，只统计新标记数）。
 - **v2 熔断盲点修复（2026-09-10 dry-run 实测）**：`fetch_transcript` 内部吞异常返回 None，412 到不了外层熔断——79 条风控期全被误判 `no_cc_confirmed` 且熔断永不触发。修复：探测前先调 view API（同源 IP 的独立轻请求信号源）——连续 2 次请求层异常（None）=风控熔断 abort；code∈`REMOVED_CODES` 直接 `removed_video` 定档（跳过字幕探测省重请求）；环境健康才探测字幕，此时 `no_cc_confirmed` 才可信。残余风险：view 健康但仅 yt-dlp 音频链路被 412 的条目仍可能误标（幂等可重跑纠偏）。
+- **v3 跳过字幕层直调 ASR（2026-09-10，用户方案）**：deferred 入场语义即「字幕层上次已确认空」，重探不再重复问字幕 API——view 健康后直接调 `videos.asr.transcribe_video`：出文本=误标回队（ASR 缓存可被回队后正式管线复用）/ None=`no_cc_confirmed` 终局。B站活视频缺 `BILI_COOKIE` 拦截为 probe_error（否则 ASR 静默失败大面积误判）；ASR 依赖缺失整批 probe_error 不猜；探测层 412 检查删除（ASR 层吞下载异常无指纹），熔断唯一靠 view 前置；间隔 8-15s → `CLASSIFY_SLEEP_RANGE=(60,180)` 随机终版（先 60-120 再拉长；音频下载是重请求，Whisper 转写每条数分钟，拉长不伤吞吐）。
 
 ## 不做什么
 

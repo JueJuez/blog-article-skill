@@ -12,7 +12,9 @@
   5. --defer-failed       把 state 里带无CC指纹的历史失败批量暂缓（幂等）
   6. --classify-deferred  deferred 三分类（默认 dry-run，--apply 落盘）：view API 先行
                           （连续 2 次请求层异常=风控熔断 abort；删除码 → removed_video
-                          跳过探测；健康才探测字幕）→ 探测到字幕=误标回队 / None=no_cc_confirmed
+                          提前定档）→ 环境健康再直调 ASR 转写（v3 2026-09-10：deferred
+                          入场即「字幕层上次已确认空」，跳过字幕层不重复问已知答案，
+                          ASR 出文本=误标回队 / None=no_cc_confirmed；间隔 60-180s 随机）
 
 断点续跑：registry（url + old_titles 双键）命中、staging/manual 已有 url、deferred、
 同条失败 3 次转人工（D8）全部自动跳过，可反复执行直至队列清空。manual_no_url 条目
@@ -22,6 +24,7 @@ import argparse
 import difflib
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -42,10 +45,17 @@ from prompts.templates import (  # noqa: E402
     get_note_prompt,
 )
 
-try:  # 字幕探测（无CC暂缓用）；导入失败时探测降级为不可用，走原管线
+try:  # 字幕探测（--fetch 无CC暂缓用）；导入失败时探测降级为不可用，走原管线
     from videos.fetch import fetch_transcript as _fetch_transcript_probe
 except Exception:  # pragma: no cover
     _fetch_transcript_probe = None
+
+try:  # ASR 直转写（--classify-deferred 终局裁决用）；导入失败时 classify 全批 probe_error
+    from videos.asr import check_asr_deps as _check_asr_deps
+    from videos.asr import transcribe_video as _asr_probe
+except Exception:  # pragma: no cover
+    _asr_probe = None
+    _check_asr_deps = None
 
 STAGING_PATH = ROOT / "notes" / "_scraped" / "migrate" / "pending_summaries.json"
 DONE_PATH = ROOT / "notes" / "_scraped" / "migrate" / "done_queue.json"
@@ -58,6 +68,9 @@ FAIL_LIMIT = 3
 RISK_412_MARKERS = ("412", "Precondition Failed")
 NO_CC_MARKERS = ("无可用字幕", "no_cc")
 REMOVED_CODES = (-404, 62002)  # B站 view API：-404=不存在（删除），62002=稿件不可见
+# classify 探测间隔随机区间（秒）：ASR 音频下载是重请求，且 Whisper 转写每条需数分钟，
+# 拉长间隔摊在处理时间里不伤吞吐但降请求密度（2026-09-10 用户定版 8-15 → 60-120 → 60-180）
+CLASSIFY_SLEEP_RANGE = (60.0, 180.0)
 
 _sleep = time.sleep
 
@@ -309,18 +322,26 @@ def cmd_defer_failed() -> dict:
 
 
 def cmd_classify_deferred(apply: bool = False) -> dict:
-    """deferred 三分类：真无CC确认 / 视频删除定档 / 风控误标回队（默认 dry-run）。
+    """deferred 三分类：真无CC确认 / 视频删除定档 / 误标回队（默认 dry-run）。
 
     v2（2026-09-10 熔断盲点修复）：探测前先调 view API（独立轻请求信号源）：
-    - view 请求层异常（None）→ risk_streak+1，连续 2 次 abort（fetch_transcript
-      内部吞异常返回 None，412 到不了外层熔断——dry-run 实测盲点，v1 全漏判）
-    - view code ∈ REMOVED_CODES → removed_video 定档（跳过字幕探测省重请求）
-    - view 其他 code（环境健康）→ 才探测字幕，此时 no_cc_confirmed 才可信
-    残余风险：view API 健康但仅 yt-dlp 音频链路被 412 的条目仍可能误标
-    no_cc_confirmed（幂等可重跑纠偏，注释备案）。
+    - view 请求层异常（None）→ risk_streak+1，连续 2 次 abort（下载层异常被
+      asr 内部吞掉，412 到不了外层熔断——dry-run 实测盲点，v1 全漏判）
+    - view code ∈ REMOVED_CODES → removed_video 定档（跳过 ASR 省重请求）
+    v3（2026-09-10，用户方案）：deferred 入场语义即「字幕层上次已确认空」→
+    跳过字幕层直调 transcribe_video（不重复问已知答案）：ASR 出文本=当初误标
+    回队 / None=no_cc_confirmed 终局。B站活视频缺 BILI_COOKIE 拦截为 probe_error
+    （否则 ASR 静默失败会大面积误判 no_cc）；ASR 依赖缺失整批 probe_error 不猜。
+    熔断唯一信号源=view 前置（ASR 层吞下载异常、无 412 指纹，探测层 412 检查已删）。
+    残余风险：view 健康但音频 CDN 侧限流静默失败 → 误判 no_cc_confirmed
+    （幂等可重跑纠偏，备案）；ASR 命中缓存跳过下载转写，成果可被回队后正式管线复用。
     """
     state = _read_json(STATE_PATH, {})
     deferred_urls = [u for u, r in state.items() if isinstance(r, dict) and r.get("deferred")]
+    asr_ready = False
+    if _asr_probe is not None and _check_asr_deps is not None:
+        deps_ok, _missing = _check_asr_deps()
+        asr_ready = deps_ok
     result = {"total": len(deferred_urls), "misclassified": 0, "requeued": 0,
               "no_cc_confirmed": 0, "removed_video": 0, "probe_error": 0,
               "skipped": 0, "risk_streak": 0, "aborted": False}
@@ -330,7 +351,7 @@ def cmd_classify_deferred(apply: bool = False) -> dict:
         if rec.get("classify"):
             result["skipped"] += 1
             continue
-        if _fetch_transcript_probe is None:  # 探测不可用：不猜，保持原状
+        if not asr_ready:  # ASR 不可用/依赖缺失：不猜，保持原状
             result["probe_error"] += 1
             continue
         code = _bili_view_code(url)  # v2：先 view API 确认环境，再烧重请求
@@ -345,17 +366,15 @@ def cmd_classify_deferred(apply: bool = False) -> dict:
         if code in REMOVED_CODES:
             rec["classify"] = "removed_video"
             result["removed_video"] += 1
+        elif re.search(r"BV[0-9A-Za-z]{10}", url) and not os.environ.get("BILI_COOKIE"):
+            # B站活视频缺 cookie：ASR 层会静默失败 return None，直接判会大面积误标 no_cc
+            result["probe_error"] += 1
+            continue
         else:
             try:
-                ts = _fetch_transcript_probe(url)
-                err = ""
-            except Exception as e:  # noqa: BLE001
-                ts, err = None, str(e)
-            if err:
+                ts = _asr_probe(url)
+            except Exception:  # noqa: BLE001  ASR 层意外异常逐条跳过不断轮（熔断唯一靠 view 前置）
                 result["probe_error"] += 1
-                if any(m in err for m in RISK_412_MARKERS):  # probe 层兜底熔断（保留）
-                    result["aborted"] = True
-                    break
                 continue
             if ts is not None:
                 rec.pop("deferred", None)
@@ -369,7 +388,7 @@ def cmd_classify_deferred(apply: bool = False) -> dict:
                 result["no_cc_confirmed"] += 1
         changed = True
         if i < len(deferred_urls) - 1:
-            _sleep(8.0)
+            _sleep(random.uniform(*CLASSIFY_SLEEP_RANGE))
     if apply and changed:
         _write_json(STATE_PATH, state)
     return result
