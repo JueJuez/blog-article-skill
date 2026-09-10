@@ -2,7 +2,8 @@
 
 > 🔴 **2026-09-02 架构收敛 · 本文档机制部分已过时**
 > 原「路径 A（junction 接管活 Chrome）/ 路径 B（headless 克隆）」双路径框架**已删除**，代码现只有一条路径（见 `shared/cdp_session.py` 的 `SharedCdpSession`）：
-> **关掉用户 Chrome → 复制 profile 到非默认 `CdpAutomationProfile\Chrome` 目录 → 该目录以调试端口启动 Chrome → `connect_over_cdp` 接管**。
+> **健康复用（2026-09-10）→ 按需关 Chrome → 按需全量复制 → 非默认 `CdpAutomationProfile\Chrome` 目录以调试端口启动 → `connect_over_cdp` 接管**。
+> - **健康复用（2026-09-10 起）**：克隆目录已有活调试 Chrome（`DevToolsActivePort` 端口可探测）→ 直接 `connect_over_cdp` 复用（`_own_browser=False`，close 只断开不杀），跳过杀 Chrome / 复制 / 重启；复用失败按旧端口精准清僵尸（`_kill_chrome_on_port`）再重建；仅 clone 陈旧/缺失（`clone_is_fresh()` 为 False，3 天 marker 机制）才关日常 Chrome 并全量复制。多 Agent 并发不再互杀。登录墙兜底：`restart_fresh()` 重建全新会话。测试：`tests/test_cdp_session_reuse.py`（32 例）。
 > - junction 方案永久废弃（会触发扩展垃圾回收，实测删 22 个扩展）。
 > - 活 Chrome 接管（默认 profile 开调试端口）在 Chrome 151+ 不可用（端口写了但不监听）。
 > - `login_cdp_fetch.py` 现为**端口探测诊断工具**，不再自动回退抓取；需登录态抓取走监控流水线 `monitors/run.py`。
@@ -136,7 +137,7 @@ python scripts/login_cdp_fetch.py "<任意URL>" smoke.md
 
 ---
 
-## 3. 架构（2026-09-02 收敛为单路径）
+## 3. 架构（2026-09-02 收敛为单路径 · 2026-09-10 加健康复用）
 
 ```
 用户给「需登录 URL」
@@ -144,7 +145,14 @@ python scripts/login_cdp_fetch.py "<任意URL>" smoke.md
       ▼
 监控流水线 / scys_batch_fetch.py  →  SharedCdpSession（唯一路径）
       │
-      ├─ ① 确保用户 Chrome 完全关闭（taskkill，释放 cookie 独占锁）
+      ├─ ⓪ 健康复用判定（2026-09-10）：克隆目录 DevToolsActivePort 端口可探测？
+      │     ├─ 是 → connect_over_cdp 直接接管（_own_browser=False，close 只断开不杀）
+      │     │      → 跳过 ①②③，多 Agent 并发不再互杀；失败（探测不通/connect 异常）
+      │     │        → 按旧端口精准清僵尸（_kill_chrome_on_port）→ 落到 ①
+      │     └─ 否 → 落到 ①
+      │
+      ├─ ① 条件化杀 Chrome：仅 clone 陈旧/缺失（clone_is_fresh()=False，3 天 marker）
+      │     才 taskkill 释放 cookie 独占锁；clone 新鲜时跳过（重启克隆浏览器用不到源锁）
       │
       ├─ ② 一次性全量复制真实 profile → 非默认目录（默认 `CdpAutomationProfile\Chrome`，可用 `CDP_PROFILE_DIR` 覆盖）
       │     · 复制时 Chrome 已关 → cookie 锁释放 → 完整 profile（含 cookie/扩展/Secure Preferences）完整拷入
@@ -157,7 +165,7 @@ python scripts/login_cdp_fetch.py "<任意URL>" smoke.md
       ├─ ⑤ ctx.new_page() → page.goto(URL, wait_until='domcontentloaded')
       │     · SPA 等待 5–10s；取 title / 正文（selector 链或 body.innerText）
       │
-      └─ ⑥ 抓取完成 → 退出克隆浏览器（用户重开原 Chrome 即可）
+      └─ ⑥ 抓取完成 → 复用态只断开连接（浏览器留给后续会话复用）；自启态退出克隆浏览器
 ```
 
 ---
@@ -227,6 +235,7 @@ with sync_playwright() as p:
 | 页面空白 / 长白雪 | SPA 还在 render | `page.wait_for_timeout` 增加；或显式等某 selector：`page.wait_for_selector(".article-body", timeout=15000)` |
 | 抓到的正文混着广告 / 推荐区 | 选择器取得不准 | 用脚本里 selector 链：`.article-content / .topic-content / article / main / body`，按长度取最长一段 |
 | TRAE 沙箱内跑 CDP 验证脚本 → Chrome 起不来（端口 ECONNREFUSED、chrome alive=False） | 沙箱按路径拦 Chrome **启动期写盘**（`lockfile` / `Crashpad\settings.dat` / `BrowserMetrics` / 安装目录 debug.log），lockfile 写不进进程就死；与 profile 复制代码无关（只读复用同样被拦） | 验证实验用「临时目录最小 profile」启动：拷 `Local State` + `Default\Network\Cookies` 到 `%TEMP%` 作 `--user-data-dir`（失败回退整 Default 目录、排除缓存类）；生产路径不受影响，仍走 `SharedCdpSession`（详见 `docs/decisions/DECISION-20260910-cdp-sandbox-bypass.md`） |
+| 健康复用**永远探测失败**、反复拉新实例全灭（真机案例 2026-09-10：文件写 5494，实际健康 Chrome 监听 55873） | `DevToolsActivePort` 文件 **stale**：文件属于上一任 Chrome 实例，进程重启后不保证同步更新（异常退出 / 沙箱拦写 / 多 Agent 竞争都会让文件与实际监听端口脱节）→ `_probe_reuse_endpoint` 拿文件端口探测永远不通 → 兜底拉新实例被 Chrome 单实例机制顶死 → 全部 ECONNREFUSED | 先 `Get-NetTCPConnection -State Listen` 找到调试 Chrome 进程（命令行带 `--remote-debugging-port=...`）的**实际监听端口**，再用编辑工具把 `DevToolsActivePort` 改写为 `实际端口\n/devtools/browser/<uuid>`（uuid 从该端口 `/json/version` 现取）。沙箱只拦 Chrome 进程写盘，不拦 AI 的 Write 工具 |
 
 ### 5.1 ws 握手坑（Chrome 136+）
 
@@ -240,6 +249,8 @@ Chrome 自 132 起对 ws 上 DevTools 加了若干保护：
 ### 5.2 多个并发抓取
 
 Playwright `connect_over_cdp` **可以**创建多个 `page` 并发在同一 context，但 Chrome 自身是单线程渲染。建议并发 ≤3。
+
+> **多 Agent 互杀问题（2026-09-10 已解）**：旧 `__init__` 无条件「杀光所有 Chrome → 全量复制 → 重启」，双 Agent 并发时互相杀掉对方的调试 Chrome（connect ECONNREFUSED）。现健康复用路径下：后起会话直接接管既有调试 Chrome（`_own_browser=False`），close 只断开自己的连接；仅 clone 陈旧（>3 天）才会关一次 Chrome 做全量复制。
 
 ---
 

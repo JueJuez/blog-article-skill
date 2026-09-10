@@ -4,7 +4,7 @@
 
 唯一路径（2026-09-02 塌缩，删除路径1/路径3）：
   关掉用户的 Chrome（释放 Network/Cookies 独占锁）
-  → 复制真实 profile 到非默认目录（ensure_profile_clone，默认 CdpAutomationProfile\Chrome，
+  → 复制真实 profile 到非默认目录（ensure_profile_clone，默认 CdpAutomationProfile\\Chrome，
      可用 CDP_PROFILE_DIR 覆盖；旧 ProfileClone 目录已弃用）
   → 以该目录 + --remote-debugging-port 启动系统 Chrome（Chrome 151+ 仅在非默认 dir 放行调试）
   → connect_over_cdp 接管（导航/DOM/请求可读，登录态+扩展天然保留）。
@@ -17,6 +17,14 @@ CdpAutomationProfile\\Chrome 是非默认目录的真实副本，Chrome 151+ 放
 2026-09-04 修正：ensure_profile_clone 不再做增量同步（会破坏 Secure Preferences 一致性，
 导致扩展/Google 登录态丢失），改为「首次/缺失/陈旧时全量复制，否则直接复用」。
 
+2026-09-10 健康复用（以 cdp-automation-profile 的 3 天 marker 机制为准）：
+  __init__ 先探测克隆调试 Chrome（读克隆目录 DevToolsActivePort 端口 + /json/version）——
+  健康 → connect_over_cdp 直接接管（_own_browser=False，close 只断开不杀），跳过
+  杀 Chrome / 复制 / 重启：多 Agent 不再互杀对方浏览器，每次会话省 ~30s+。
+  不健康 → 按旧端口精准清僵尸（不误伤日常 Chrome）→ 重建；重建仅在 clone 陈旧/
+  缺失（要全量复制、需释放源 cookie 独占锁）时才关日常 Chrome（clone_is_fresh）。
+  复用会话撞登录墙（克隆登录态过期）→ restart_fresh() 重建全新会话。
+
 用法：
   A. 单次取标题（公众号）：
         with SharedCdpSession() as s:
@@ -28,6 +36,7 @@ CdpAutomationProfile\\Chrome 是非默认目录的真实副本，Chrome 151+ 放
             html = s.get_html(url)
 """
 import os
+import re
 import sys
 import time
 import random
@@ -50,8 +59,14 @@ def _free_port() -> int:
     return p
 
 
-def _probe_endpoint(port: int, retries: int = 20, delay: float = 0.25) -> str:
-    """回退克隆浏览器启动后，探测其 DevTools websocket 端点（供并行 worker 复用）。"""
+def _probe_endpoint(port: int, retries: int = 20, delay: float = 0.25,
+                    fallback: bool = True) -> str | None:
+    """回退克隆浏览器启动后，探测其 DevTools websocket 端点（供并行 worker 复用）。
+
+    fallback=True（默认，启动路径）：重试耗尽返回拼接假地址（部分 Chrome 版本只在
+    /devtools/browser/<uuid> 暴露）；fallback=False（复用探测）：快速失败返回 None，
+    绝不返回假地址（否则启动失败被延迟成 connect ECONNREFUSED）。
+    """
     from login_cdp_fetch import probe_chrome_devtools
     for _ in range(retries):
         try:
@@ -61,8 +76,45 @@ def _probe_endpoint(port: int, retries: int = 20, delay: float = 0.25) -> str:
         except Exception:
             pass
         time.sleep(delay)
-    # 兜底：直接拼浏览器级 ws（部分 Chrome 版本只在 /devtools/browser/<uuid> 暴露）
-    return f"ws://127.0.0.1:{port}"
+    if fallback:
+        return f"ws://127.0.0.1:{port}"
+    return None
+
+
+def _read_devtools_port(clone_dir: Path) -> int | None:
+    """从克隆目录的 DevToolsActivePort 文件读调试端口（Chrome 启动时写入，第一行是端口）。"""
+    try:
+        first = (clone_dir / "DevToolsActivePort").read_text(encoding="utf-8").strip().splitlines()[0]
+        return int(first)
+    except Exception:
+        return None
+
+
+def _probe_reuse_endpoint(port: int, retries: int = 2, delay: float = 0.5) -> str | None:
+    """复用探测：既有调试 Chrome 是否健康（快速失败，~1s；失败返回 None 而非假地址）。"""
+    return _probe_endpoint(port, retries=retries, delay=delay, fallback=False)
+
+
+def _kill_chrome_on_port(port: int) -> None:
+    """按调试端口定位监听进程并杀掉（netstat 找 PID → taskkill）。
+
+    只杀监听该端口的进程，不误伤日常 Chrome——用于清理半死/僵尸的克隆调试
+    Chrome（探测失败≠进程已死：可能还握着克隆目录单实例锁，直接重启会报
+    profile in use）。进程已死时 netstat 无监听 → no-op。
+    """
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True,
+                             encoding="utf-8", errors="ignore", timeout=15)
+        pids = set()
+        for line in out.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and parts[3] == "LISTENING" and parts[1].endswith(f":{port}"):
+                pids.add(parts[4])
+        for pid in pids:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", pid], capture_output=True,
+                           text=True, encoding="utf-8", errors="ignore", timeout=10)
+    except Exception:
+        pass
 
 
 def _find_system_chrome() -> str | None:
@@ -115,14 +167,15 @@ def _ensure_chrome_closed() -> None:
 
 
 def _launch_cloned_logged_in_browser(p) -> tuple:
-    """可靠兜底（带登录态）：关 Chrome → 全量复制真实 profile 到非默认目录 → 该目录开调试端口启动。
+    """可靠兜底（带登录态）：按需关 Chrome → 按需全量复制 → 非默认 dir 开调试端口启动。
 
     为什么这条能同时保住「登录态 + CDP 控制」：
       - Chrome 151+ 在【默认 user-data-dir】上禁调试端口（实测 DevToolsActivePort 写了但不监听）；
         在【非默认目录】上放行（实测 5599 正常响应 /json/version）。
       - 故启动用 CdpAutomationProfile\\Chrome（或 CDP_PROFILE_DIR 指定的非默认 dir）→ CDP 控得住。
       - 登录态+扩展靠一次性「全量复制」整个真实 profile；运行期 cookie 被独占锁，
-        因此调用方必须先关 Chrome 再复制（ensure_profile_clone 会处理）。
+        因此只有【确实要复制】时才需要先关 Chrome（2026-09-10 条件化：clone_is_fresh()
+        为真时 ensure_profile_clone 是 no-op，重启克隆浏览器用不到源锁，不杀日常 Chrome）。
       - 2026-09-04 已验证：全量复制能完整保留书签、cookies、扩展、Google 登录态；
         而只同步部分文件（增量）会破坏 Secure Preferences，导致扩展/Google 登录态丢失。
     启动方式是「直接拉起系统 Chrome + --remote-debugging-port」再 connect_over_cdp，
@@ -131,9 +184,10 @@ def _launch_cloned_logged_in_browser(p) -> tuple:
     Returns:
         (context, cdp_endpoint, proc) —— proc 为拉起的 Chrome 进程，close() 时杀掉进程树。
     """
-    from profile_clone_fetch import ensure_profile_clone, CLONE_DIR
-    _ensure_chrome_closed()                 # 先释放 cookie 锁
-    clone_dir = ensure_profile_clone()       # 关 Chrome 释放锁后，全量复制/复用副本（无增量同步）
+    from profile_clone_fetch import ensure_profile_clone, clone_is_fresh
+    if not clone_is_fresh():
+        _ensure_chrome_closed()                 # 仅当要全量复制（需释放源 cookie 锁）才关 Chrome
+    clone_dir = ensure_profile_clone()          # 新鲜时是 no-op（3 天 marker 机制）
     chrome_exe = _find_system_chrome()
     if not chrome_exe:
         raise RuntimeError("找不到系统 Chrome 可执行文件")
@@ -170,14 +224,45 @@ class SharedCdpSession:
         self.cdp_endpoint = None     # 供并行 worker 经 from_endpoint 复用的 ws 端点
 
         # 唯一路径（2026-09-02 塌缩，删路径1/路径3）：
-        # 关 Chrome → 全量复制真实 profile 到非默认 dir → 该 dir 开调试端口启动
-        # → connect_over_cdp 接管（CDP 控得住 + 登录态/扩展保留；Chrome 151+ 仅非默认 dir 放行调试）。
-        # 2026-09-04：不再增量同步 cookie，改为「首次/缺失/陈旧时全量复制，否则直接复用」。
-        self._ctx, self.cdp_endpoint, self._proc = _launch_cloned_logged_in_browser(self._p)
-        print(f"[CDP] 关 Chrome→全量复制 profile→非默认 dir 开调试端口启动（登录态+扩展+CDP 控制）")
+        # 健康复用（2026-09-10）→ 按需关 Chrome → 按需全量复制 → 非默认 dir 开调试端口启动。
+        # ① 克隆目录有活调试 Chrome（DevToolsActivePort 可探测）→ connect_over_cdp 直接接管
+        #   （_own_browser=False，close 只断开不杀），跳过杀 Chrome/复制/重启，多 Agent 不再互杀；
+        # ② 复用失败（无端口文件/探测不通/connect 异常）→ 按旧端口精准清僵尸后走重建；
+        # ③ 重建：仅 clone 陈旧/缺失（要全量复制、需释放源 cookie 独占锁）才关日常 Chrome。
+        # 失败回滚（2026-09-10）：__init__ 任一步失败必须 stop 已启动的 playwright，
+        # 否则其事件循环在本线程永久 running，同线程后续每次构造都报
+        # "using Playwright Sync API inside the asyncio loop"（loop 泄漏 → 整批全灭）。
+        try:
+            from profile_clone_fetch import CLONE_DIR
+            reuse_port = _read_devtools_port(CLONE_DIR)
+            endpoint = _probe_reuse_endpoint(reuse_port) if reuse_port else None
+            if endpoint:
+                try:
+                    self._browser = self._p.chromium.connect_over_cdp(endpoint)
+                    self._ctx = self._browser.contexts[0] if self._browser.contexts else self._browser.new_context()
+                    self._own_browser = False
+                    self._proc = None
+                    self.cdp_endpoint = endpoint
+                    self._page = self._ctx.new_page()   # 共享 context 开自己的页，避免误关别人的页
+                    print("[CDP] 复用既有调试 Chrome（跳过杀 Chrome/复制/重启）")
+                    return
+                except Exception as e:
+                    print(f"[CDP] 复用既有调试 Chrome 失败（{e}）→ 回退重建")
+                    self._browser = None
+            if reuse_port:
+                _kill_chrome_on_port(reuse_port)        # 探测失败的半死实例可能还握着克隆目录锁
 
-        # 复用同一 page 取标题，避免泄漏
-        self._page = self._ctx.pages[0] if getattr(self._ctx, "pages", None) else self._ctx.new_page()
+            self._ctx, self.cdp_endpoint, self._proc = _launch_cloned_logged_in_browser(self._p)
+            print("[CDP] 重建调试 Chrome（按需关 Chrome→按需全量复制→非默认 dir 开调试端口启动）")
+
+            # 重建路径独占浏览器，沿用 pages[0]
+            self._page = self._ctx.pages[0] if getattr(self._ctx, "pages", None) else self._ctx.new_page()
+        except Exception:
+            try:
+                self._p.stop()
+            except Exception:
+                pass
+            raise
 
     # ── 公众号：取单篇原文标题 ──
     @classmethod
@@ -191,16 +276,43 @@ class SharedCdpSession:
         self = cls.__new__(cls)
         from playwright.sync_api import sync_playwright
         self._p = sync_playwright().start()
-        self._use_cdp = True
-        self._live = True
-        self._headless = True
-        self._own_browser = False   # worker 不拥有共享浏览器，close() 不杀进程
-        self._proc = None
-        self.cdp_endpoint = endpoint
-        self._browser = self._p.chromium.connect_over_cdp(endpoint)
-        self._ctx = self._browser.contexts[0] if self._browser.contexts else self._browser.new_context()
+        try:
+            self._use_cdp = True
+            self._live = True
+            self._headless = True
+            self._own_browser = False   # worker 不拥有共享浏览器，close() 不杀进程
+            self._proc = None
+            self.cdp_endpoint = endpoint
+            self._browser = self._p.chromium.connect_over_cdp(endpoint)
+            self._ctx = self._browser.contexts[0] if self._browser.contexts else self._browser.new_context()
+            self._page = self._ctx.pages[0] if getattr(self._ctx, "pages", None) else self._ctx.new_page()
+            return self
+        except Exception:
+            try:
+                self._p.stop()
+            except Exception:
+                pass
+            raise
+
+    def restart_fresh(self) -> bool:
+        """复用会话（_own_browser=False）撞登录墙等异常时的兜底：按旧端口精准清掉
+        当前调试 Chrome，重建全新会话并接管（转为 _own_browser=True）。
+        自启动会话本身就是全量克隆，直接返回 False（调用方自行走其他兜底）。"""
+        if self._own_browser:
+            return False
+        port_m = re.search(r":(\d+)", self.cdp_endpoint or "")
+        try:
+            self._p.stop()
+        except Exception:
+            pass
+        if port_m:
+            _kill_chrome_on_port(int(port_m.group(1)))
+        from playwright.sync_api import sync_playwright
+        self._p = sync_playwright().start()
+        self._ctx, self.cdp_endpoint, self._proc = _launch_cloned_logged_in_browser(self._p)
         self._page = self._ctx.pages[0] if getattr(self._ctx, "pages", None) else self._ctx.new_page()
-        return self
+        self._own_browser = True
+        return True
 
     def get_title(self, url: str, wait_min: int = 6000, wait_max: int = 14000) -> str:
         """每篇等待 wait_min~wait_max 毫秒的随机区间（默认 6~14s），

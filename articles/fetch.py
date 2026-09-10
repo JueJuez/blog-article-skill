@@ -7,6 +7,7 @@
 绝不因某个解析库不可用而整体失败。
 """
 
+import atexit
 import json
 import os
 import re
@@ -244,17 +245,99 @@ def fetch_wechat_batch(urls: list, out_dir: str = "wechat_cdp_batch", session=No
         return results
 
 
-def _scys_cdp_fetch(url: str, out_path=None, **kwargs) -> dict:
-    """接管用户主 Chrome 抓 scys 正文（scripts/login_cdp_fetch.fetch 的薄包装）。"""
-    scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
-    if str(scripts_dir) not in sys.path:
-        sys.path.insert(0, str(scripts_dir))
-    from login_cdp_fetch import fetch as cdp_fetch
+# ── scys 专用 CDP 会话（进程内单例，全批复用同一 Chrome）─────────────────
+# Chrome 151+ 默认 user-data-dir 禁调试端口，login_cdp_fetch 已降为只探测原语；
+# 可靠路径是 shared.cdp_session.SharedCdpSession（关 Chrome→克隆 profile→非默认 dir 开调试端口）。
+# 缓存到模块级：consume_migrate_queue --fetch 一轮内逐篇调 skill_main，复用同一会话避免 62 次重启 Chrome。
+_SCYS_SESSION = None
+_SCYS_LOGIN_MARKERS = ["立即登录", "登录后查看", "请登录", "扫码登录",
+                       "您还未登录", "成为会员", "开通会员", "订阅后"]
 
+
+def _get_scys_session():
+    """惰性创建并缓存 SharedCdpSession（进程内单例）。退出时自动关 Chrome。"""
+    global _SCYS_SESSION
+    if _SCYS_SESSION is None:
+        from shared.cdp_session import SharedCdpSession
+        _SCYS_SESSION = SharedCdpSession()
+        atexit.register(_close_scys_session)
+    return _SCYS_SESSION
+
+
+def _close_scys_session():
+    global _SCYS_SESSION
+    if _SCYS_SESSION is not None:
+        try:
+            _SCYS_SESSION.close()
+        except Exception:
+            pass
+        _SCYS_SESSION = None
+
+
+def _extract_body_scys(page) -> str:
+    """从已渲染 scys 页面抽取正文（与 scys_batch_fetch.ScysClient._extract_body 同款选择器）。"""
+    body = ""
+    for sel in [".article-content", ".article-detail", "#articleContent",
+                ".topic-content", ".post-content", ".markdown-body",
+                "article", "main", "body"]:
+        try:
+            el = page.query_selector(sel)
+            if el:
+                t = el.inner_text().strip()
+                if len(t) > len(body):
+                    body = t
+        except Exception:
+            continue
+    if not body:
+        try:
+            body = page.evaluate("() => document.body.innerText")
+        except Exception:
+            body = ""
+    return body or ""
+
+
+def _scys_cdp_fetch(url: str, out_path=None, **kwargs) -> dict:
+    """用 SharedCdpSession（关 Chrome→克隆 profile→非默认 dir 开调试端口）带登录态抓 scys 正文。
+
+    取代已废弃的 login_cdp_fetch（Chrome 151+ 默认 profile 无调试端口，login_cdp_fetch 仅剩探测原语）。
+    会话进程内单例缓存：一轮 --fetch 内 62 篇复用同一 Chrome，避免反复 kill/重启。
+    """
     if out_path is None:
         out_path = (Path(__file__).resolve().parent.parent / "notes" / "_scraped"
                     / "scys_single" / "latest.md")
-    return cdp_fetch(url, Path(out_path), **kwargs)
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    last_err = None
+    for _attempt in range(2):  # 第1次用缓存会话；浏览器运行期崩溃则重置会话重试1次
+        try:
+            sess = _get_scys_session()
+            page = sess.new_page()
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                page.wait_for_timeout(8000)
+                title = page.title()
+                body = _extract_body_scys(page)
+            finally:
+                try:
+                    page.close()
+                except Exception:
+                    pass
+
+            hit = [m for m in _SCYS_LOGIN_MARKERS if m in body]
+            out_path.write_text(body, encoding="utf-8")
+            return {
+                "title": title, "url": url, "chars": len(body),
+                "login_wall_hit": hit, "output": str(out_path),
+            }
+        except Exception as e:
+            last_err = e
+            # 浏览器运行期中止（"Target page, context or browser has been closed" 等）→
+            # 丢弃死会话，下一轮 attempt 用全新 Chrome 重建继续，本篇最多丢1次
+            _close_scys_session()
+            if _attempt == 0:
+                continue
+    raise last_err
 
 
 
@@ -519,7 +602,8 @@ def fetch_web_content(url: str, cdp_on_fail: bool = True):
             result = _scys_cdp_fetch(url)
         except Exception as e:
             print(f"❌ scys CDP 抓取失败: {e}")
-            print("💡 login_cdp_fetch 会自动回退到 profile_clone_fetch（见 references/scys-fetch-sop.md）")
+            print("💡 已改用 SharedCdpSession（关 Chrome→克隆 profile→非默认 dir 开调试端口）；"
+                  "若仍失败检查系统 Chrome 是否安装 / scys 登录态是否过期。")
             return None
         body = (Path(result["output"]).read_text(encoding="utf-8")
                 if Path(result["output"]).exists() else "")

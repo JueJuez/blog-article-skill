@@ -75,6 +75,37 @@ def _touch_marker(path: Path) -> None:
     path.write_text(str(time.time()), encoding="utf-8")
 
 
+def clone_is_fresh() -> bool:
+    """克隆副本是否新鲜（3 天 marker 机制内且 cookie db 完整）。
+
+    SharedCdpSession 用它决定是否需要杀 Chrome：fresh 时重启克隆浏览器不复制、
+    用不到源 profile 的 cookie 独占锁 → 无需杀日常 Chrome；陈旧/缺失才需要。
+    与 ensure_cdp_profile.py（跨项目 SKILL）同判定：ISO 日期 marker（兼容旧
+    timestamp 格式）、CDP_SYNC_INTERVAL_DAYS（默认 3）、Default/Network/Cookies 存在。
+    """
+    cookie_check = CLONE_DIR / "Default" / "Network" / "Cookies"
+    marker = CLONE_DIR / MARKER_DATE
+    if not CLONE_DIR.exists() or not cookie_check.exists():
+        return False
+    try:
+        raw = marker.read_text(encoding="utf-8").strip()
+    except Exception:
+        return False
+    md = None
+    try:
+        md = date.fromisoformat(raw)
+    except Exception:
+        try:
+            md = date.fromtimestamp(float(raw))
+        except Exception:
+            return False
+    try:
+        interval = int(os.environ.get("CDP_SYNC_INTERVAL_DAYS", "3"))
+    except Exception:
+        interval = 3
+    return (date.today() - md).days < interval
+
+
 def _resolve_skill_py() -> str | None:
     """定位跨项目共享 SKILL 的 ensure_cdp_profile.py（优先 CDP_SKILL_PY，否则标准路径）。"""
     cand_env = os.environ.get("CDP_SKILL_PY")
