@@ -226,6 +226,7 @@ with sync_playwright() as p:
 | 抓到的是「请登录 / 扫码登录 / 订阅解锁」之类内容 | Cookie 未发送 = 用户实际在该域名未登录 | 让用户在浏览器手工登录一次，再让 AI 抓 |
 | 页面空白 / 长白雪 | SPA 还在 render | `page.wait_for_timeout` 增加；或显式等某 selector：`page.wait_for_selector(".article-body", timeout=15000)` |
 | 抓到的正文混着广告 / 推荐区 | 选择器取得不准 | 用脚本里 selector 链：`.article-content / .topic-content / article / main / body`，按长度取最长一段 |
+| TRAE 沙箱内跑 CDP 验证脚本 → Chrome 起不来（端口 ECONNREFUSED、chrome alive=False） | 沙箱按路径拦 Chrome **启动期写盘**（`lockfile` / `Crashpad\settings.dat` / `BrowserMetrics` / 安装目录 debug.log），lockfile 写不进进程就死；与 profile 复制代码无关（只读复用同样被拦） | 验证实验用「临时目录最小 profile」启动：拷 `Local State` + `Default\Network\Cookies` 到 `%TEMP%` 作 `--user-data-dir`（失败回退整 Default 目录、排除缓存类）；生产路径不受影响，仍走 `SharedCdpSession`（详见 `docs/decisions/DECISION-20260910-cdp-sandbox-bypass.md`） |
 
 ### 5.1 ws 握手坑（Chrome 136+）
 
