@@ -117,6 +117,95 @@ def _kill_chrome_on_port(port: int) -> None:
         pass
 
 
+def _get_chrome_cmdlines() -> list:
+    """枚举本机所有 chrome.exe 进程的 (pid, 命令行)（PowerShell CIM）。
+
+    wmic 在 Win11 24H2+ 已被移除 → 统一走 Get-CimInstance；输出用 TAB 分隔，
+    无 TAB 的行按空白切兜底。非 Windows / 调用失败一律返回 []。
+    """
+    if sys.platform != "win32":
+        return []
+    ps = ("Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+          "ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }")
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+        ).stdout
+    except Exception:
+        return []
+    rows = []
+    for line in out.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        parts = s.split("\t", 1)
+        if len(parts) < 2:
+            parts = s.split(None, 1)
+        if len(parts) < 2 or not parts[0].strip().isdigit():
+            continue
+        rows.append((int(parts[0].strip()), parts[1].strip()))
+    return rows
+
+
+def _find_clone_chrome_port(clone_dir: Path) -> int | None:
+    """从活进程命令行里找以 clone_dir 为 user-data-dir 的调试端口。
+
+    crashpad-handler 等子进程匹配目录但无端口 flag → continue 继续找，不误判。
+    """
+    dir_s = str(clone_dir).lower()
+    for _pid, cmd in _get_chrome_cmdlines():
+        c = cmd.lower()
+        if f"--user-data-dir={dir_s}" not in c and f'--user-data-dir="{dir_s}"' not in c:
+            continue
+        m = re.search(r"--remote-debugging-port=(\d+)", cmd)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _rewrite_devtools_port_file(clone_dir: Path, ws_endpoint: str) -> bool:
+    """把恢复出来的真实端点回写 DevToolsActivePort（下次 __init__ 直读即中）。
+
+    Chrome 原生格式「端口\\n/devtools/browser/<uuid>」；无 browser path 只写端口行。
+    任何失败静默返回 False（回写只是优化，不是必须）。
+    """
+    try:
+        m = re.search(r":(\d+)", ws_endpoint or "")
+        if not m:
+            return False
+        path_m = re.search(r"(/devtools/.*)$", ws_endpoint)
+        content = f"{m.group(1)}\n{path_m.group(1)}" if path_m else m.group(1)
+        (clone_dir / "DevToolsActivePort").write_text(content, encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def _kill_clone_chrome(clone_dir: Path) -> int:
+    """按克隆目录精准清掉所有 user-data-dir=clone_dir 的 chrome 进程，返回尝试数。
+
+    覆盖「文件端口无监听 → _kill_chrome_on_port 是 no-op → 僵尸仍握克隆目录锁」。
+    """
+    dir_s = str(clone_dir).lower()
+    killed = 0
+    try:
+        for pid, cmd in _get_chrome_cmdlines():
+            c = cmd.lower()
+            if f"--user-data-dir={dir_s}" not in c and f'--user-data-dir="{dir_s}"' not in c:
+                continue
+            try:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                               capture_output=True, text=True, encoding="utf-8",
+                               errors="ignore", timeout=10)
+            except Exception:
+                pass
+            killed += 1
+    except Exception:
+        pass
+    return killed
+
+
 def _find_system_chrome() -> str | None:
     """定位系统 Chrome 可执行文件（用于以真实 profile 启动带调试的浏览器）。"""
     candidates = [
@@ -227,7 +316,8 @@ class SharedCdpSession:
         # 健康复用（2026-09-10）→ 按需关 Chrome → 按需全量复制 → 非默认 dir 开调试端口启动。
         # ① 克隆目录有活调试 Chrome（DevToolsActivePort 可探测）→ connect_over_cdp 直接接管
         #   （_own_browser=False，close 只断开不杀），跳过杀 Chrome/复制/重启，多 Agent 不再互杀；
-        # ② 复用失败（无端口文件/探测不通/connect 异常）→ 按旧端口精准清僵尸后走重建；
+        # ② 文件端口探测不通 → 先按活进程命令行自愈 stale 端口文件（2026-09-10 代码化），
+        #    命中真实端口即回写直接复用；自愈失败 → 按旧端口 + 按克隆目录双重清僵尸后走重建；
         # ③ 重建：仅 clone 陈旧/缺失（要全量复制、需释放源 cookie 独占锁）才关日常 Chrome。
         # 失败回滚（2026-09-10）：__init__ 任一步失败必须 stop 已启动的 playwright，
         # 否则其事件循环在本线程永久 running，同线程后续每次构造都报
@@ -236,6 +326,16 @@ class SharedCdpSession:
             from profile_clone_fetch import CLONE_DIR
             reuse_port = _read_devtools_port(CLONE_DIR)
             endpoint = _probe_reuse_endpoint(reuse_port) if reuse_port else None
+            if not endpoint:
+                # stale 端口恢复（2026-09-10 真机案例）：DevToolsActivePort 属于上一任实例，
+                # 文件端口可能无监听而活实例实际在别的端口 → 从活进程命令行找真实端口再探测。
+                real_port = _find_clone_chrome_port(CLONE_DIR)
+                if real_port and real_port != reuse_port:
+                    endpoint = _probe_reuse_endpoint(real_port)
+                    if endpoint:
+                        _rewrite_devtools_port_file(CLONE_DIR, endpoint)
+                        print(f"[CDP] DevToolsActivePort 文件端口 {reuse_port or '无'} ≠ "
+                              f"实际监听 {real_port} → 按命令行恢复复用（文件已回写）")
             if endpoint:
                 try:
                     self._browser = self._p.chromium.connect_over_cdp(endpoint)
@@ -251,6 +351,7 @@ class SharedCdpSession:
                     self._browser = None
             if reuse_port:
                 _kill_chrome_on_port(reuse_port)        # 探测失败的半死实例可能还握着克隆目录锁
+            _kill_clone_chrome(CLONE_DIR)               # 文件端口无监听时按端口杀是 no-op → 按克隆目录兜底清
 
             self._ctx, self.cdp_endpoint, self._proc = _launch_cloned_logged_in_browser(self._p)
             print("[CDP] 重建调试 Chrome（按需关 Chrome→按需全量复制→非默认 dir 开调试端口启动）")

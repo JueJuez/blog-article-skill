@@ -147,9 +147,12 @@ python scripts/login_cdp_fetch.py "<任意URL>" smoke.md
       │
       ├─ ⓪ 健康复用判定（2026-09-10）：克隆目录 DevToolsActivePort 端口可探测？
       │     ├─ 是 → connect_over_cdp 直接接管（_own_browser=False，close 只断开不杀）
-      │     │      → 跳过 ①②③，多 Agent 并发不再互杀；失败（探测不通/connect 异常）
-      │     │        → 按旧端口精准清僵尸（_kill_chrome_on_port）→ 落到 ①
-      │     └─ 否 → 落到 ①
+      │     │      → 跳过 ①②③，多 Agent 并发不再互杀
+      │     ├─ 否/探测不通 → stale 端口自愈（2026-09-10 代码化）：从活进程命令行
+      │     │   （PowerShell CIM）找 --user-data-dir=克隆目录 的真实调试端口再探测；
+      │     │   命中 → 回写 DevToolsActivePort（_rewrite_devtools_port_file）直接复用
+      │     └─ 自愈失败 → 双重清僵尸（按旧端口 _kill_chrome_on_port + 按克隆目录
+      │         _kill_clone_chrome）→ 落到 ①
       │
       ├─ ① 条件化杀 Chrome：仅 clone 陈旧/缺失（clone_is_fresh()=False，3 天 marker）
       │     才 taskkill 释放 cookie 独占锁；clone 新鲜时跳过（重启克隆浏览器用不到源锁）
@@ -235,7 +238,7 @@ with sync_playwright() as p:
 | 页面空白 / 长白雪 | SPA 还在 render | `page.wait_for_timeout` 增加；或显式等某 selector：`page.wait_for_selector(".article-body", timeout=15000)` |
 | 抓到的正文混着广告 / 推荐区 | 选择器取得不准 | 用脚本里 selector 链：`.article-content / .topic-content / article / main / body`，按长度取最长一段 |
 | TRAE 沙箱内跑 CDP 验证脚本 → Chrome 起不来（端口 ECONNREFUSED、chrome alive=False） | 沙箱按路径拦 Chrome **启动期写盘**（`lockfile` / `Crashpad\settings.dat` / `BrowserMetrics` / 安装目录 debug.log），lockfile 写不进进程就死；与 profile 复制代码无关（只读复用同样被拦） | 验证实验用「临时目录最小 profile」启动：拷 `Local State` + `Default\Network\Cookies` 到 `%TEMP%` 作 `--user-data-dir`（失败回退整 Default 目录、排除缓存类）；生产路径不受影响，仍走 `SharedCdpSession`（详见 `docs/decisions/DECISION-20260910-cdp-sandbox-bypass.md`） |
-| 健康复用**永远探测失败**、反复拉新实例全灭（真机案例 2026-09-10：文件写 5494，实际健康 Chrome 监听 55873） | `DevToolsActivePort` 文件 **stale**：文件属于上一任 Chrome 实例，进程重启后不保证同步更新（异常退出 / 沙箱拦写 / 多 Agent 竞争都会让文件与实际监听端口脱节）→ `_probe_reuse_endpoint` 拿文件端口探测永远不通 → 兜底拉新实例被 Chrome 单实例机制顶死 → 全部 ECONNREFUSED | 先 `Get-NetTCPConnection -State Listen` 找到调试 Chrome 进程（命令行带 `--remote-debugging-port=...`）的**实际监听端口**，再用编辑工具把 `DevToolsActivePort` 改写为 `实际端口\n/devtools/browser/<uuid>`（uuid 从该端口 `/json/version` 现取）。沙箱只拦 Chrome 进程写盘，不拦 AI 的 Write 工具 |
+| 健康复用**永远探测失败**、反复拉新实例全灭（真机案例 2026-09-10：文件写 5494，实际健康 Chrome 监听 55873） | `DevToolsActivePort` 文件 **stale**：文件属于上一任 Chrome 实例，进程重启后不保证同步更新（异常退出 / 沙箱拦写 / 多 Agent 竞争都会让文件与实际监听端口脱节）→ `_probe_reuse_endpoint` 拿文件端口探测永远不通 → 兜底拉新实例被 Chrome 单实例机制顶死 → 全部 ECONNREFUSED | **已代码化（2026-09-10，`SharedCdpSession.__init__` stale 恢复块）**：探测失败自动按活进程命令行（PowerShell CIM）找真实端口 → 再探测 → 命中回写直接复用；自愈失败双重清僵尸后重建，无需人工介入。手动处置仅作历史参考：先 `Get-NetTCPConnection -State Listen` 找到调试 Chrome 进程（命令行带 `--remote-debugging-port=...`）的**实际监听端口**，再用编辑工具把 `DevToolsActivePort` 改写为 `实际端口\n/devtools/browser/<uuid>`（uuid 从该端口 `/json/version` 现取）。沙箱只拦 Chrome 进程写盘，不拦 AI 的 Write 工具 |
 
 ### 5.1 ws 握手坑（Chrome 136+）
 
