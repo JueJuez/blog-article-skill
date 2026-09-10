@@ -86,6 +86,66 @@ EXTERNAL_DOC_HOSTS = (
     "feishu.cn", "larksuite.com", "yuque.com", "notion.so", "docs.qq.com",
     "shimo.im", "wolai.com", "flowus.cn", "kdocs.cn",
 )
+
+# 跨标签去重账本（2026-09-10 用户要求）：同一篇可能横跨多个标签（如「垂直小号」∩「虚拟产品」），
+# 先抓到的标签认领，其余标签跳过，避免重复抓取。认领来源 = cross_tag_seen.json（实时账本）
+# + 两个待总结队列（migrate / scys）中已有的 url→project 归属。
+CROSS_TAG_SEEN_PATH = BASE / "cross_tag_seen.json"
+MIGRATE_PENDING_PATH = (Path(__file__).resolve().parent.parent / "notes"
+                         / "_scraped" / "migrate" / "pending_summaries.json")
+
+
+def _project_from_folder(folder: str | None) -> str | None:
+    """从 folder（形如 【监控】/生财有术/<project>/日更）提取 project 名。"""
+    if not folder:
+        return None
+    parts = [p for p in folder.split("/") if p]
+    try:
+        i = parts.index("生财有术")
+        return parts[i + 1] if i + 1 < len(parts) else None
+    except ValueError:
+        return None
+
+
+def _claimed_owners() -> dict[str, str]:
+    """扫描 cross_tag_seen.json + migrate/scys 两个待总结队列，返回 {url: owner_project}。
+    用于跨标签去重：先抓到的标签认领，其余标签跳过（不重复抓）。"""
+    claimed: dict[str, str] = {}
+    if CROSS_TAG_SEEN_PATH.exists():
+        try:
+            claimed.update(json.loads(CROSS_TAG_SEEN_PATH.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    for p in (BASE / "pending_summaries.json", MIGRATE_PENDING_PATH):
+        if not p.exists():
+            continue
+        try:
+            arr = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for e in arr:
+            u = e.get("url")
+            if not u:
+                continue
+            owner = e.get("project") or _project_from_folder(e.get("folder"))
+            if owner:
+                claimed.setdefault(u, owner)
+    return claimed
+
+
+def _record_owner(url: str, project: str) -> None:
+    """抓到并入队后回写 url→project 到 cross_tag_seen.json（跨标签认领账本）。"""
+    d: dict[str, str] = {}
+    if CROSS_TAG_SEEN_PATH.exists():
+        try:
+            d = json.loads(CROSS_TAG_SEEN_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            d = {}
+    if d.get(url) != project:
+        d[url] = project
+        CROSS_TAG_SEEN_PATH.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 LOGIN_MARKERS = ["立即登录", "登录后查看", "请登录", "成为会员", "开通会员", "订阅后"]
 
 # 列表为空（疑似登录墙/临时空）后：保持当前页面打开、让用户扫码，间隔重试
@@ -240,6 +300,30 @@ def registry_filter(items: list[dict]) -> tuple[list[dict], list[dict]]:
 
 
 class ScysBatchFetcher:
+    def cross_tag_filter(self, todo: list[dict]) -> tuple[list[dict], list[dict]]:
+        """跨标签去重（2026-09-10）：同一篇横跨多个标签时，先抓到的标签认领，其余跳过。
+        扫描 cross_tag_seen.json + 两个待总结队列已有的 url→owner，命中且 owner≠本标签则剔除。
+        返回 (kept, skipped)；认领账本读失败不阻塞主流程。"""
+        if not todo:
+            return [], []
+        try:
+            claimed = _claimed_owners()
+        except Exception as e:  # noqa: BLE001
+            print(f"[cross-tag-err] 认领账本读取失败（放行原列表）：{e}")
+            return todo, []
+        kept, skipped, owners_seen = [], [], set()
+        for it in todo:
+            url = ARTICLE_URL.format(topic_id=str(it["topicId"]))
+            owner = claimed.get(url)
+            if owner and owner != self.name:
+                skipped.append(it)
+                owners_seen.add(owner)
+            else:
+                kept.append(it)
+        if skipped:
+            print(f"[cross-tag] 跨标签去重：跳过 {len(skipped)} 篇（已被 {sorted(owners_seen)} 认领）")
+        return kept, skipped
+
     def __init__(self, name: str, menu_id: int, limit: int, pages: int,
                  since_days: int = 0, digested_only: bool = False,
                  min_reading: int = 0, engagement: dict = None) -> None:
@@ -601,6 +685,7 @@ class ScysBatchFetcher:
                                    min_reading=self.min_reading,
                                    engagement=self.engagement)
                 todo, _reg_skipped = registry_filter(todo)
+                todo, _ct_skipped = self.cross_tag_filter(todo)
                 if self.limit > 0:
                     todo = todo[: self.limit]
                 print(f"[run] 本次目标 {len(todo)} 篇（已完成 {len(done_ids)} 篇）")
@@ -624,6 +709,7 @@ class ScysBatchFetcher:
                     pending.append(build_pending_entry(r, self.name, it))
                     self.pending_path.write_text(
                         json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
+                    _record_owner(r["url"], self.name)
                     fetched += 1
 
                     if fetched >= batch_at:
