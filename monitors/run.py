@@ -142,6 +142,9 @@ WECHAT_GAP = float(os.environ.get("WECHAT_GAP", "6"))
 WECHAT_RELOGIN_WAIT = int(os.environ.get("WECHAT_RELOGIN_WAIT", "180"))
 # 正文短于此值视为「限流空页/无正文」，不落 raw、进重试队列（下次运行优先重抓）
 MIN_CONTENT_LEN = int(os.environ.get("WECHAT_MIN_CONTENT_LEN", "100"))
+# 正文极短（低于此值）才疑似「限流/空壳」值得重试；介于 EMPTY_SHELL_LEN 与 MIN_CONTENT_LEN
+# 之间的是「真短文」（确已抓到、有内容），不再当限流重试，归类为短文跳过（见 empty-retry 拆分）。
+EMPTY_SHELL_LEN = int(os.environ.get("WECHAT_EMPTY_SHELL_LEN", "15"))
 # 监控产出默认归档分类（Obsidian/飞书目录第一级）；订阅条目可用 "category" 字段覆盖
 DEFAULT_CATEGORY = os.environ.get("MONITOR_DEFAULT_CATEGORY", "投资交易")
 # 公众号文章连续抓取正文为空（限流空页 / 微信扫码墙 / 文章已删除）达到此次数，
@@ -869,7 +872,7 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
         "video": 0, "video_charging_skip": 0,
         "dynamic_full": 0, "dynamic_light": 0,
         "article": 0, "ad_skip": 0, "short_skip": 0, "error": 0,
-        "empty_retry": 0,
+        "empty_retry": 0, "short_content": 0,
     }
     # session_holder 由调用方提供时（串行 apply 块 / 并行 worker），会话所有权归调用方；
     # 未提供（refetch-only / backfill 等单进程模式）则用本地 holder 兜底，函数末尾负责关闭。
@@ -947,20 +950,29 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
                     stats["error"] += 1
                     refetch_next.append({k: it[k] for k in it if k != "content"})
                     continue
-                decision, payload = _decide_retry_or_drop(it, WECHAT_MAX_REFETCH)
-                stats["empty_retry"] += 1
-                if decision == "drop":
-                    dropped.append({
-                        "title": it.get("title", ""),
-                        "mp_name": it.get("mp_name", "") or it.get("sub_name", ""),
-                        "url": it.get("url", ""),
-                        "reason": payload,
-                    })
-                    print(f"[drop-gate] {it['title']}（{payload}）")
-                else:
-                    refetch_next.append(payload)
-                    print(f"[empty-retry] {it['title']}（正文 {len((content or '').strip())} 字，"
-                          f"疑似限流/无正文，已入重试队列 {payload.get('refetch_count')}/{WECHAT_MAX_REFETCH}）")
+                # 正文过短：区分「真·空壳（疑似限流返回空）」与「真·短文（确已抓到、有内容）」
+                clen = len((content or "").strip())
+                if clen < EMPTY_SHELL_LEN:
+                    # 极短 → 疑似限流/空壳，继续重试（原 empty-retry 语义）
+                    decision, payload = _decide_retry_or_drop(it, WECHAT_MAX_REFETCH)
+                    stats["empty_retry"] += 1
+                    if decision == "drop":
+                        dropped.append({
+                            "title": it.get("title", ""),
+                            "mp_name": it.get("mp_name", "") or it.get("sub_name", ""),
+                            "url": it.get("url", ""),
+                            "reason": payload,
+                        })
+                        print(f"[drop-gate] {it['title']}（{payload}）")
+                    else:
+                        refetch_next.append(payload)
+                        print(f"[empty-retry] {it['title']}（正文 {clen} 字，"
+                              f"疑似限流/空壳，已入重试队列 {payload.get('refetch_count')}/{WECHAT_MAX_REFETCH}）")
+                    continue
+                # EMPTY_SHELL_LEN <= 字数 < MIN_CONTENT_LEN：确为短文（已抓到、非限流），
+                # 无总结价值，不再当限流重试，归类为短文跳过（不落盘）。
+                stats["short_content"] += 1
+                print(f"[short-content] {it['title']}（正文 {clen} 字，确为短文非限流，跳过不落盘）")
                 continue
             _summarize_article(it, title, content, obsidian, stats)
         elif it["route"] == "video":
@@ -1055,21 +1067,45 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
             for it in cdp_deferred:
                 res = _batch.get(it["url"])
                 if not res or len((res[1] or "").strip()) < MIN_CONTENT_LEN:
-                    # CDP 也失败/仍撞墙 → 走原有跨轮重试/丢弃逻辑
-                    decision, payload = _decide_retry_or_drop(it, WECHAT_MAX_REFETCH)
-                    stats["empty_retry"] += 1
-                    if decision == "drop":
-                        dropped.append({
-                            "title": it.get("title", ""),
-                            "mp_name": it.get("mp_name", "") or it.get("sub_name", ""),
-                            "url": it.get("url", ""),
-                            "reason": payload,
-                        })
-                        print(f"[drop-gate] {it['title']}（{payload}）")
-                    else:
-                        refetch_next.append(payload)
-                        print(f"[empty-retry] {it['title']}（CDP 批量仍抓空，已入重试队列"
-                              f"{payload.get('refetch_count')}/{WECHAT_MAX_REFETCH}）")
+                    if not res:
+                        # CDP 连接/抓取失败（撞墙）→ 真失败，继续重试
+                        decision, payload = _decide_retry_or_drop(it, WECHAT_MAX_REFETCH)
+                        stats["empty_retry"] += 1
+                        if decision == "drop":
+                            dropped.append({
+                                "title": it.get("title", ""),
+                                "mp_name": it.get("mp_name", "") or it.get("sub_name", ""),
+                                "url": it.get("url", ""),
+                                "reason": payload,
+                            })
+                            print(f"[drop-gate] {it['title']}（{payload}）")
+                        else:
+                            refetch_next.append(payload)
+                            print(f"[empty-retry] {it['title']}（CDP 批量仍撞墙，已入重试队列"
+                                  f"{payload.get('refetch_count')}/{WECHAT_MAX_REFETCH}）")
+                        continue
+                    # CDP 抓到但正文过短：区分空壳 vs 短文
+                    clen = len((res[1] or "").strip())
+                    if clen < EMPTY_SHELL_LEN:
+                        # 极短 → 疑似限流/空壳，继续重试
+                        decision, payload = _decide_retry_or_drop(it, WECHAT_MAX_REFETCH)
+                        stats["empty_retry"] += 1
+                        if decision == "drop":
+                            dropped.append({
+                                "title": it.get("title", ""),
+                                "mp_name": it.get("mp_name", "") or it.get("sub_name", ""),
+                                "url": it.get("url", ""),
+                                "reason": payload,
+                            })
+                            print(f"[drop-gate] {it['title']}（{payload}）")
+                        else:
+                            refetch_next.append(payload)
+                            print(f"[empty-retry] {it['title']}（CDP 抓到 {clen} 字，"
+                                  f"疑似限流/空壳，已入重试队列 {payload.get('refetch_count')}/{WECHAT_MAX_REFETCH}）")
+                        continue
+                    # 真短文：跳过不落盘（非限流）
+                    stats["short_content"] += 1
+                    print(f"[short-content] {it['title']}（CDP 抓到 {clen} 字短文，确为短文非限流，跳过不落盘）")
                     continue
                 # CDP 成功 → 走常规总结管线
                 _summarize_article(it, res[0], res[1], obsidian, stats)
@@ -1124,6 +1160,7 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
         f"（速览 {stats['dynamic_light']} · 完整 {stats['dynamic_full']}）"
         f" / 文章 {stats['article']}"
         f" | 广告跳过 {stats['ad_skip']} · 过短跳过 {stats['short_skip']}"
+        f" · 短文跳过 {stats.get('short_content', 0)}"
         f" · scys重复 {stats.get('cross_dup_skip', 0)}"
         f" · 登记表跳过 {stats.get('registry_skip', 0)}"
         f" · 限流待重试 {len(refetch_next)} · 墙文移除 {len(dropped)} · 错误 {stats['error']}"
