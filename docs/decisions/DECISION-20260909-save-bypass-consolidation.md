@@ -1,6 +1,6 @@
 # 决策记录：保存入口终局收口 + publish_time 全链路透传（含 12 篇存量回补）
 
-> 日期：2026-09-09 | 关联：DECISION-20260905-bypass-autoroute-guard（守卫方案被取代）| 测试 `tests/test_bypass_consolidation.py`
+> 日期：2026-09-09 | 关联：DECISION-20260905-bypass-autoroute-guard（守卫方案被取代，已归档至 `_archive/decisions/`）| 测试 `tests/test_bypass_consolidation.py`
 
 ## 背景
 L8/L9 逐个给旁路入口补闸门仍是「打补丁」：`save_summarized_from_file`(+async) / `run.py --summarized` / `_save_summary.py` CLI 依旧缺质量门禁与 publish_time 透传——publish_time=0 时发布时间三处表达（文件名日期前缀 / 正文发布时间行 / 新鲜度标签）全部静默失效。

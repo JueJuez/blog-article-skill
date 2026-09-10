@@ -75,19 +75,16 @@ python scripts/login_cdp_fetch.py "<需登录的URL>" [out.md]
 >
 > </details>
 
-### 1.3 验证抓取能力
+### 1.3 验证抓取能力（仅诊断）
 
 ```bash
 python scripts/login_cdp_fetch.py smoke
-# 期望：[OK] port ... devtools-bridge alive（CDP 可用时）
-# 或：[FAIL]... → 自动回退到 persistent_fetch（正常行为，Chrome 151+ 默认走这条）
+# 期望：[OK] port ... devtools-bridge alive（有活 CDP 端口时）
+# 或：[FAIL]... → 本机无可用调试端口；抓取一律走统一入口
+#     （SharedCdpSession 会自动健康复用 / 克隆 profile，已无 persistent_fetch 自动回退）
 ```
 
-或直接跑：
-```bash
-python scripts/login_cdp_fetch.py "<任意URL>" smoke.md
-# 脚本会打印 [OK]/[FAIL] 和原因
-```
+> ⚠️ 传 URL 给本脚本（`python scripts/login_cdp_fetch.py "<URL>" [out.md]`）仅在恰好有活 CDP 端口时才能抓到，且不再自动克隆/回退——**生产抓取不要依赖它**，一律走 `articles/run.py` / `monitors/run.py` / `scripts/scys_batch_fetch.py`。
 
 ---
 
@@ -286,11 +283,9 @@ Playwright `connect_over_cdp` **可以**创建多个 `page` 并发在同一 cont
 
 1. 读本文件。
 2. 让用户提供一个「需登录的 URL」。
-3. 跑 `python scripts/login_cdp_fetch.py <URL>`。
-4. 若输出 `chrome debug not ready`：
-   - 把错误原样贴回用户
-   - **无需用户手动启调试端口**：当前需登录态抓取统一走 `monitors/run.py`（公众号/B站）或 `scripts/scys_batch_fetch.py`（scys），由 `SharedCdpSession` 自动克隆非默认 `CdpAutomationProfile\Chrome` 目录 + 调试端口接管（见 §1.1）；`login_cdp_fetch.py` 仅作端口探测诊断、不再回退抓取
-5. 若脚本成功输出文件 → 读取正文（或读取 `out.md`），按 `articles/skill_main` 的模板（`structured` / `key_points` 等）总结，然后调 `OutputManager.save_all` 写入飞书。
+3. 走统一入口（不要手搓抓取）：单篇 → `articles/run.py "<URL>"` 或 `articles.skill_main`（scys 链接自动分流）；订阅/批量 → `monitors/run.py --mode auto --apply` / `scripts/scys_batch_fetch.py`；scys 补跑单源 → `python monitors/run_source.py --source scys`。
+4. 需要诊断登录态环境时，跑 `python scripts/login_cdp_fetch.py smoke`（仅端口探测，不抓取）。若 `[FAIL]`：把错误原样贴回用户——**无需用户手动启调试端口**，`SharedCdpSession` 会自动健康复用 / 按需克隆非默认 `CdpAutomationProfile\Chrome` 目录 + 调试端口接管（见 §1.1）。
+5. 抓到正文后按 `articles/skill_main` 的模板（`structured` / `key_points` 等）总结，调 `save_summary_only` 落盘（**默认本地 Obsidian**，2026-09-04 起；恢复飞书双写设 `DISABLE_FEISHU_SYNC=0`）。
 
 ---
 
@@ -543,22 +538,22 @@ URL 是否需登录？
 ├─ 公开 URL ─→ articles/run.py 或 articles/skill_main（§13 RULES.md）
 ├─ 视频 ─→ videos/run.py --url（含 ASR 兜底）
 ├─ 需登录（cookie 依赖）
-│   ├─ 第一步：python scripts/login_cdp_fetch.py smoke
-│   │   ├─ [OK] → 直接抓：python scripts/login_cdp_fetch.py "<URL>" [out.md]
-│   │   └─ [FAIL] → 按报错信息处理：
-│   │       ├─ "文件过期/非调试实例" → 用户 Chrome 需重启（快捷方式已焊好 flags，
-│   │       │   正常重开 Chrome 即可；若仍失败按 §1.2 junction 命令恢复）
-│   │       └─ "没找到任何端口" → 同上，先确认用户从正确快捷方式启动了 Chrome
-│   └─ 抓到后：按 articles/skill_main 模板总结 → OutputManager.save_all 落盘（默认本地 Obsidian）
+│   ├─ 一律走统一入口（内部自动经 SharedCdpSession 拿登录态，勿手动抓）：
+│   │   · scys 单篇/批量 → articles.skill_main（自动分流）/ scripts/scys_batch_fetch.py
+│   │   · 订阅监控（公众号/B站）→ monitors/run.py --mode auto --apply
+│   │   · scys 补跑单源 → monitors/run_source.py --source scys
+│   ├─ 抓到后：按 articles/skill_main 模板总结 → save_summary_only 落盘（默认本地 Obsidian）
+│   └─ 仅诊断时：python scripts/login_cdp_fetch.py smoke（端口探测，不抓取）
 └─ 拿不准 → 默认走 articles/skill_main，非登录墙报错再升级
 
-关键事实（2026-09-04 修正）：
+关键事实（2026-09-04 修正 · 2026-09-10 健康复用）：
   • Chrome 151+ 禁止默认目录开调试 → 一次性全量复制真实 profile 到非默认目录 + 调试端口（§1.1）；默认 `CdpAutomationProfile\Chrome`，可用 `CDP_PROFILE_DIR` 覆盖
-  • 登录态+扩展 = 全量复制的完整 profile；复制前必须先关 Chrome 释放 cookie 独占锁
+  • 登录态+扩展 = 全量复制的完整 profile；仅在全量复制（clone 陈旧/缺失）前才需关 Chrome 释放 cookie 独占锁，健康复用态全程不动用户 Chrome
+  • 健康复用优先（2026-09-10）：克隆目录有活调试 Chrome 直接 connect_over_cdp 复用（close 只断开不杀，多 Agent 不互杀）；探测失败先自愈 stale 端口文件；仅 clone_is_fresh()=False（3 天 marker）才关 Chrome 全量复制
   • 已废弃：只同步部分文件（增量）会破坏 Secure Preferences，导致扩展/Google 登录态丢失
-  • 单路径：关 Chrome → 一次性全量克隆 → 调试端口启动 → `connect_over_cdp` 接管（见 `shared/cdp_session.py`）
-  • `login_cdp_fetch.py` 仅端口探测诊断，不再自动回退；抓取走 `monitors/run.py`
-  • junction 永久废弃（会删扩展）
+  • 单路径：健康复用 → 按需关 Chrome → 按需全量克隆 → 调试端口启动 → `connect_over_cdp` 接管（见 `shared/cdp_session.py`）
+  • `login_cdp_fetch.py` 仅端口探测诊断，不抓取、不再自动回退；抓取走统一入口
+  • junction 永久废弃（会删扩展）；§1.2 折叠块与 §12~§14 仅作历史参考
 ```
 
 > **2026-08-12 前的旧结论已作废**：「用户主 Chrome 当前没启 debug = 路径 A 用不了」「本次会话做不到访问 scys.com」——这些在 2026-08-20 已全部解决（Chrome 151 根因定位 + junction 解法 + 快捷方式永久化）。

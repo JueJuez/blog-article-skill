@@ -727,7 +727,7 @@ class ScysBatchFetcher:
             if own_session and sess is not None:
                 sess.__exit__(None, None, None)
 
-        # CdpAutomationProfile\Chrome 是持久化的全量副本，不删除（由 ensure_cdp_profile.py 每天首跑全量、当天复用）
+        # CdpAutomationProfile\Chrome 是持久化的全量副本，不删除；复制/复用逻辑统一在用户级 SKILL cdp-automation-profile（健康复用优先，仅 clone_is_fresh()=False 即 3 天 marker 才关 Chrome 全量复制）
 
         print(f"[done] 本次抓取 {fetched} 篇，累计 {len(done_ids)} 篇，队列 {len(pending)} 待总结")
         return 0

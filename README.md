@@ -421,7 +421,7 @@ blog-article-skill/
 ├── docs/
 │   ├── decisions/            # grill_rules 产出 A：决策清单（≤15 行/篇）
 │   ├── plans/                # 执行计划
-│   └── parallel-monitor-runbook.md  # 并行监控运维手册
+│   └── parallel-monitor-runbook.md  # 并行监控过程档案（2026-09-02 实跑记录，非日常运维手册）
 ├── _archive/                 # 已归档的过期文档与废弃脚本（PRD.md / scys-cdp-lessons-learned.md / decisions）
 ├── audit_sync.py             # Obsidian 主库 → 飞书镜像 一致性审计 + 幂等补传（手动/定时运行；绕开 DISABLE_FEISHU_SYNC 把整库镜像到飞书，只推新增、绝不重复/删除）
 ├── tests/                    # 回归测试（可直接 `python tests/test_xxx.py` 跑，无需 pytest）

@@ -1,7 +1,8 @@
 """shared/title_norm.py — 飞书节点标题确定性规范化（机械层，零 AI）。
 
 问题根因（用户 2026-08-25）：飞书总结文章标题大部分错/乱。
-定位：monitors/drain_pending.py 旧逻辑 `node_title = _extract_h1(content) or title`
+定位：旧 monitors/drain_pending.py（已随 2026-09-11 清理归档至 `_archive/code/`）
+逻辑 `node_title = _extract_h1(content) or title`
 把「总结文件首个 # 标题」当节点标题，而该 H1 是子 Agent（模型）写的，
 常是「# 总结」「# 要点提炼」「# 【XXX】复盘」这类模型自创的"段标题"，
 并非真实内容标题 → 飞书里一堆乱/错标题。
@@ -102,6 +103,6 @@ def choose_node_title(source_title: str, summary_h1: str = "", max_len: int = 50
     h1 = _clean(summary_h1)
     if h1 and not is_generic_section_header(h1):
         return normalize_title(h1, max_len)
-    # 来源 / H1 都不可用（空或都是模型段标题）→ 返回空，
-    # 由上游 L1 门禁（drain_pending 标题为空直接跳过）处理，绝不把"总结"当标题。
+    # 来源 / H1 都不可用（空或都是模型段标题）→ 返回空，由调用方兜底
+    # （如 videos/main.py 的 `or "视频总结"`），绝不把"总结"当标题。
     return ""

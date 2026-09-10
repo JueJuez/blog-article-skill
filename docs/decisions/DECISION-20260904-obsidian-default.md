@@ -1,6 +1,6 @@
 # DECISION-20260904-obsidian-default
 
-> **取代 `DECISION-20260808-obsidian-optin.md`**（2026-09-04 起生效）
+> **取代 `DECISION-20260808-obsidian-optin.md`**（2026-09-04 起生效；被取代文已归档至 `_archive/decisions/`）
 
 ## 背景
 2026-08-08 的规则是「默认只写飞书，Obsidian 按需开启」——理由是写两遍浪费。

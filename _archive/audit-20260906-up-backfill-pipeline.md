@@ -1,5 +1,7 @@
 # UP 补齐管道排查报告（2026-09-06）
 
+> ⚠️ 本报告的机制结论部分已被 `docs/plans/PLAN-20260908-unified-dedup-series.md` 取代（系列课六件套整删、三队列统一 prompt 预计算）；现存为排查过程档案，归档至 `_archive/`。
+
 排查对象：`scripts/list_up_videos.py` → `scripts/fetch_up_range.py` → `scripts/filter_pending.py`
 → 子 Agent 消费队列，及系列课侧 `videos/fetch.py` / `videos/main.py` / `shared/series_state.py`。
 证据来源：全量代码走读 + `notes/_scraped/趋势浪子_*` 六次真实运行日志 + `monitors/series_state.json` / `pending_series.json` / `pending_summaries.json` 实测。

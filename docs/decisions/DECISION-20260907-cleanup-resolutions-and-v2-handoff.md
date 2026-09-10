@@ -21,7 +21,7 @@
 ## 归 V2 范围、无需单独处理
 
 - 飞书镜像端的重复文档与杂物行：push/reconcile 以 Obsidian 真源重建时自动对齐。
-- frontmatter 停产 + 写入端 strip：随 V2 重写 PLAN 落地（见 DECISION-20260906-feishu-clutter-frontmatter-deferred.md）。
+- frontmatter 停产 + 写入端 strip：随 V2 重写 PLAN 落地（见 `DECISION-20260906-feishu-clutter-frontmatter-deferred.md`，已归档至 `_archive/decisions/`）。
 - scys 20 条 CDP 登录态重抓补日期前缀（见已拍板 4）。
 
 ## 本轮教训（V2 实施时注意）

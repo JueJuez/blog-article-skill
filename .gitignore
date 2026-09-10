@@ -49,4 +49,7 @@ scripts/_*
 scripts/feishu_to_obsidian_log.json
 scripts/migrate_watchdog.log
 scripts/migrate_watchdog_status.json
+scripts/migration_obsidian_log.json
+# B站 Cookie 轮换运行时状态（现行机制使用，非源码）
+scripts/bili_cookie_rotation.json
 

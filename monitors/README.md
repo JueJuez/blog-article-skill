@@ -65,7 +65,7 @@
   - 为什么放大：新帖常在发布数日后才被标精华，窗口太窄会永久漏「晚精华」帖；窗口放大只多翻列表页（便宜），done 去重兜底不会重复抓正文。
   - 已知局限：发布超过当前窗口（35 天）才标精华的帖会漏，靠半年一次的「补齐scys」兜底。
   - ⚠️ 另有一个**不同路径**的默认值 182：`scripts/scys_projects.json` 的 `defaults.since_days`，那是「补齐scys」批量抓取用的，与日常增量无关，别混为一谈。
-- **前提**：用户已在 Chrome 登录 scys.com。登录态抓取由 `scripts/scys_batch_fetch.py` 经 `SharedCdpSession` 自动完成（唯一路径：关 Chrome → 全量复制 profile 到非默认 `CdpAutomationProfile\Chrome` 目录 → 该目录调试端口启动 → `connect_over_cdp` 接管；登录态由复制的 cookie 继承），不影响公众号/B站。
+- **前提**：用户已在 Chrome 登录 scys.com。登录态抓取由 `scripts/scys_batch_fetch.py` 经 `SharedCdpSession` 自动完成（**健康复用优先（2026-09-10）**：克隆目录有活调试 Chrome 直接 `connect_over_cdp` 复用；仅 clone 陈旧/缺失（`clone_is_fresh()` 3 天 marker）才关 Chrome → 全量复制 profile 到非默认 `CdpAutomationProfile\Chrome` 目录 → 该目录调试端口启动 → `connect_over_cdp` 接管；登录态由复制的 cookie 继承），不影响公众号/B站。
 - **互斥**：`notes/_scraped/scys/.lock` 进程锁——「跑一下」的 scys 增量与「补齐scys」批量不会并发写坏 state/pending；**2026-08-25 起残留自动释放**（锁内记录 PID：持有进程已死 → 自动接管；PID 读不出/无 psutil → 锁龄超 6 小时接管），无需再手动删锁。
 - **临时停用**：把 `subscriptions.json` 的 `scys` 列表清空即可，其他源照跑。
 

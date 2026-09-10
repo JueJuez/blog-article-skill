@@ -570,7 +570,7 @@ def autoroute_folder(folder: str, author: str, original_url: str, original_title
     """folder 为空时按 author/url 走统一路由器兜底（L8 语义，2026-09-05 收编全部旁路入口）。
 
     「落哪」由代码决定，不靠调用方记性。返回 (folder, tags)；author 会补进 tags。
-    显式传了 folder 的调用方（monitors 管线 / land_scys_batch / drain_pending 等）原样返回。
+    显式传了 folder 的调用方（monitors 管线 / land_scys_batch 等）原样返回。
     category：手贴散文的分类（B9 修复）。显式参数优先，缺省时从 tags 推断——
     无作者但有分类的内容落【我的总结】/<分类>，而不是被兜进【待归类】。
     """

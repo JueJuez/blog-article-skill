@@ -2,7 +2,7 @@
 
 保护的需求（背景：批量总结曾有 78 篇因调用方漏传 folder 全部落进【待归类】）：
 - save_summary_only 未传 folder 时，按 author/url 经 shared.routing.resolve_folder 自动归档；
-- 显式传了 folder 的调用方（monitors 管线 / land_scys_batch / drain_pending 等）行为不变；
+- 显式传了 folder 的调用方（monitors 管线 / land_scys_batch 等）行为不变；
 - author 会补进 tags（与 skill_main L7 手贴路径一致）。
 
 2026-09-05 增补（旁路入口收编）：save_summarized_from_file / skill_continue_summary /
