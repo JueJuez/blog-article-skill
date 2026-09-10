@@ -613,21 +613,33 @@ def save_summary_only(input_data: dict) -> dict:
                     'filename': rec.get('filename', '')}
     # 机械质量门禁（DECISION-20260905，零 AI 依赖）：主标题唯一 / 来源链接卫生 / 字数区间。
     # 接入顺序硬约束：在 dedup 闸门之后（已总结条目机械出队优先于质量拦截），
-    # 在 folder 自动路由之前（违规内容不触发路由副作用）。拦截不落盘、不 dedup——
-    # 子 Agent 可按返回的 issues 修复后重试；force 只豁免 dedup，不豁免质量底线。
+    # 在 folder 自动路由之前（违规内容不触发路由副作用）。首次拦截不落盘、不 dedup，
+    # 子 Agent 按返回的 issues 修复后重试；同 URL 再次仍纯字数违规则重试放行落盘
+    # （2026-09-10：重改仍越界说明压缩已到头——干货密度高或原文本身撑不起区间）。
+    # H1/来源链接等确定性可修复问题永不放行；force 只豁免 dedup，不豁免质量底线。
     from prompts.verifier import verify_note_mechanical
-    from shared.gate_blockers import log_gate_block
+    from shared.gate_blockers import log_gate_block, count_blocks
     _gate = verify_note_mechanical(summarized_content, input_data.get('note_type', ''),
                                    source_url=original_url)
     if not _gate["passed"]:
-        print("⛔ 机械门禁拦截：" + "；".join(_gate["issues"]))
-        # 拦截事件持久化（gate_blockers 台账）：队列路径此前无拦截记录，无法区分
-        # 「未消费」与「被拦」，观测缺口由此补齐；台账失败不影响主流程。
-        log_gate_block(source="queue", note_type=input_data.get('note_type', ''),
-                       url=original_url or "", title=original_title or "",
-                       issues=_gate["issues"], warnings=_gate.get("warnings", []))
-        return {'success': False, 'message': 'VERIFIER_FAILED:' + '；'.join(_gate["issues"]),
-                'issues': _gate["issues"]}
+        _non_word_issues = [i for i in _gate["issues"] if not i.startswith("字数")]
+        _blocked_before = count_blocks(original_url or "")
+        if not _non_word_issues and _blocked_before >= 1:
+            print(f"↩️ 字数门禁重试放行：该 URL 已拦截 {_blocked_before} 次，重改后仍越界，"
+                  "按内容密度/原文长度实情放行落盘")
+            log_gate_block(source="queue", note_type=input_data.get('note_type', ''),
+                           url=original_url or "", title=original_title or "",
+                           issues=_gate["issues"], warnings=_gate.get("warnings", []),
+                           action="bypassed_retry")
+        else:
+            print("⛔ 机械门禁拦截：" + "；".join(_gate["issues"]))
+            # 拦截事件持久化（gate_blockers 台账）：队列路径此前无拦截记录，无法区分
+            # 「未消费」与「被拦」，观测缺口由此补齐；台账失败不影响主流程。
+            log_gate_block(source="queue", note_type=input_data.get('note_type', ''),
+                           url=original_url or "", title=original_title or "",
+                           issues=_gate["issues"], warnings=_gate.get("warnings", []))
+            return {'success': False, 'message': 'VERIFIER_FAILED:' + '；'.join(_gate["issues"]),
+                    'issues': _gate["issues"]}
     # L8 修复（2026-09-03）：自带总结的保存路径 folder 为空时自动走统一路由器，
     # 与 skill_main 的 L7 手贴 URL 路径对齐——「落哪」由代码决定，不靠调用方记性。
     # 背景：批量总结曾有 78 篇因调用方漏传 folder 全部落进【待归类】。

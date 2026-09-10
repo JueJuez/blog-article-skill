@@ -219,7 +219,7 @@ NOTE_GATE_THRESHOLD=85     # 评分阈值，默认 85；低于此分触发重试
 - [ ] YouTube 字幕抓取返回 None 且页面已加载、`captionTracks` 为空 → `videos/main` 自动走 ASR 兜底；ASR 也失败才回终态文案「【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】」并停止（§4.4）。
 - [ ] 笔记作者栏**必须显示真实作者/UP主**；视频链路 `series.get("author","") or input_data.get("author","")` 已兜底，调用方无需手传，禁止无端输出【作者未知】（§4.5）。
 - [ ] **质量闸门（可选 · 默认关）**：要更严质检时在 `.env` 设 `NOTE_QUALITY_GATE=1`（阈值 `NOTE_GATE_THRESHOLD` 默认 85）；降级无外部 AI 时闸门自动转自检段，按三条专项自检（思维模型深挖 + 固定结构合规 + 篇幅区间）自核对，无需手动开。详见 `references/config.md` §九 与 §4.6。
-- [ ] **机械落盘门禁（默认生效 · 2026-09-05）**：`save_summary_only` 落盘前自动过 `verify_note_mechanical`（主标题唯一 / 来源链接卫生 / 字数硬阈值），不受 `NOTE_QUALITY_GATE` 开关控制；被拦返回 `VERIFIER_FAILED:<issues>` 时子 Agent 应按 issues 修复后重试同一入口，禁止绕门禁手写文件（§4.6 A2）。
+- [ ] **机械落盘门禁（默认生效 · 2026-09-05，重试放行 · 2026-09-11）**：`save_summary_only` 落盘前自动过 `verify_note_mechanical`（主标题唯一 / 来源链接卫生 / 字数硬阈值），不受 `NOTE_QUALITY_GATE` 开关控制；被拦返回 `VERIFIER_FAILED:<issues>` 时子 Agent 应按 issues 修复后重试同一入口；**同 URL 首次拦截→重改，重交后仅剩字数类违规→自动放行**（重试仍越界=干货密度/原文长度实情，台账记 `bypassed_retry`；主标题/来源链接卫生永不放行），禁止绕门禁手写文件（§4.6 A2，见 `docs/decisions/DECISION-20260911-gate-retry-bypass.md`）。
 - [ ] **涉及架构级改动 / 新功能链路 / 跨多模块改动** → 先按 §6 grill_rules 拷问拉齐认知，再动手。
 
 ---

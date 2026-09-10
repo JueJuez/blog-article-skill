@@ -6,6 +6,7 @@
 FORCE_AGENT_MODE=1 主路径（save_summary_only）上无任何校验环节——AI 审核员
 默认关且无外部 AI 时返回 None，兜不住，必须机械拦截。
 """
+import json
 import re
 import sys
 from pathlib import Path
@@ -20,6 +21,7 @@ from articles import dedup
 from articles import main as articles_main
 from prompts import templates as templates_mod
 from prompts.verifier import NOTE_WORD_LIMITS, count_note_words, verify_note_mechanical
+from shared import gate_blockers as gate_blockers_mod
 
 
 def _body(n: int) -> str:
@@ -234,4 +236,130 @@ class TestSaveSummaryOnlyGate:
             "note_type": "key_points"})
         assert res.get("success") is False
         assert res.get("message", "").startswith("VERIFIER_FAILED")
+        assert self.save_calls == []
+
+
+class TestCountBlocks:
+    """count_blocks：跨滚动台账文件统计同 URL 历史拦截次数（重试放行的判定依据）。"""
+
+    def _write_ledger(self, tmp_path, name, records):
+        (tmp_path / name).write_text(
+            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records),
+            encoding="utf-8")
+
+    def test_counts_across_rolling_files(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gate_blockers_mod, "GATE_BLOCKERS_BASE",
+                            str(tmp_path / "gate_blockers.jsonl"))
+        self._write_ledger(tmp_path, "gate_blockers.20260910.jsonl",
+                           [{"url": "https://a.com"}, {"url": "https://b.com"}])
+        self._write_ledger(tmp_path, "gate_blockers.20260911.jsonl",
+                           [{"url": "https://a.com"}])
+        assert gate_blockers_mod.count_blocks("https://a.com") == 2
+
+    def test_no_ledger_returns_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gate_blockers_mod, "GATE_BLOCKERS_BASE",
+                            str(tmp_path / "gate_blockers.jsonl"))
+        assert gate_blockers_mod.count_blocks("https://a.com") == 0
+
+    def test_bad_lines_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gate_blockers_mod, "GATE_BLOCKERS_BASE",
+                            str(tmp_path / "gate_blockers.jsonl"))
+        (tmp_path / "gate_blockers.20260910.jsonl").write_text(
+            "not-json\n" + json.dumps({"url": "https://a.com"}, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+        assert gate_blockers_mod.count_blocks("https://a.com") == 1
+
+    def test_empty_url_returns_zero(self, tmp_path, monkeypatch):
+        # 无 URL 输入直接返 0：防止无主内容借空串匹配台账记录绕过门禁
+        monkeypatch.setattr(gate_blockers_mod, "GATE_BLOCKERS_BASE",
+                            str(tmp_path / "gate_blockers.jsonl"))
+        self._write_ledger(tmp_path, "gate_blockers.20260910.jsonl", [{"url": ""}])
+        assert gate_blockers_mod.count_blocks("") == 0
+
+
+class TestRetryBypassGate:
+    """重试放行语义（2026-09-10）：同 URL 首次字数违规拦截让模型重改；再次重交
+    仍纯字数违规 → 放行落盘（重改仍越界说明压缩已到头：干货密度高或原文本身
+    撑不起模板区间）。H1/来源链接等确定性可修复问题永不放行；
+    放行记台账 action=bypassed_retry 保持审计闭环。"""
+
+    @pytest.fixture(autouse=True)
+    def _stub_env(self, monkeypatch, tmp_path):
+        self.save_calls = []
+        self.log_calls = []
+        monkeypatch.setattr(articles_main, "save_summarized_article",
+                            lambda *a, **k: (self.save_calls.append(1), ("fmt", "f.md"))[1])
+        monkeypatch.setattr(dedup, "mark_summarized", lambda *a, **k: None)
+        monkeypatch.setattr(dedup, "_CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(dedup, "_INDEX_FILE", str(tmp_path / "dedup.json"))
+        # 台账指向 tmp：count_blocks / log_gate_block 走真实实现，行为随台账文件变化
+        monkeypatch.setattr(gate_blockers_mod, "GATE_BLOCKERS_BASE",
+                            str(tmp_path / "gate_blockers.jsonl"))
+        real_log = gate_blockers_mod.log_gate_block
+
+        def _spy(*a, **k):
+            self.log_calls.append(k.get("action", "blocked"))
+            return real_log(*a, **k)
+
+        monkeypatch.setattr(gate_blockers_mod, "log_gate_block", _spy)
+
+    def _seed_block(self, url):
+        gate_blockers_mod.log_gate_block(source="queue", note_type="key_points",
+                                         url=url, title="旧标题", issues=["字数 400 低于硬下限"])
+
+    def test_first_word_violation_blocked(self):
+        # 首次（台账无记录）：字数硬拦 → 返回 issues 让模型重改，不落盘
+        res = articles_main.save_summary_only({
+            "summarized_content": _body(400), "original_url": "https://g.com/r1",
+            "note_type": "key_points"})
+        assert res.get("success") is False
+        assert res.get("message", "").startswith("VERIFIER_FAILED")
+        assert res.get("issues")
+        assert self.save_calls == []
+        assert self.log_calls == ["blocked"]
+
+    def test_second_word_violation_bypassed(self, tmp_path):
+        # 首次拦截已留台账 → 再次重交仍纯字数违规 → 放行落盘
+        self._seed_block("https://g.com/r2")
+        res = articles_main.save_summary_only({
+            "summarized_content": _body(400), "original_url": "https://g.com/r2",
+            "note_type": "key_points"})
+        assert res.get("success") is True
+        assert self.save_calls == [1]
+        assert self.log_calls == ["blocked", "bypassed_retry"]
+        # 台账文件中 action=bypassed_retry 可追溯
+        lines = []
+        for f in tmp_path.glob("gate_blockers*.jsonl"):
+            lines += [json.loads(x) for x in f.read_text(encoding="utf-8").splitlines() if x.strip()]
+        assert any(r.get("action") == "bypassed_retry" for r in lines)
+
+    def test_h1_never_bypassed(self):
+        # H1 是确定性可修复问题：即使该 URL 已被拦 3 次，仍拦截不落盘
+        for _ in range(3):
+            gate_blockers_mod.log_gate_block(source="queue", note_type="",
+                                             url="https://g.com/r3", title="t", issues=["一级标题"])
+        res = articles_main.save_summary_only({
+            "summarized_content": "# 标题\n\n正文若干", "original_url": "https://g.com/r3",
+            "note_type": ""})
+        assert res.get("success") is False
+        assert res.get("message", "").startswith("VERIFIER_FAILED")
+        assert self.save_calls == []
+        assert self.log_calls[-1] == "blocked"
+
+    def test_mixed_issues_never_bypassed(self):
+        # 混合 issues（H1 + 字数）：存在非字数 issue → 不放行
+        self._seed_block("https://g.com/r4")
+        res = articles_main.save_summary_only({
+            "summarized_content": "# 标题\n\n" + _body(400),
+            "original_url": "https://g.com/r4", "note_type": "key_points"})
+        assert res.get("success") is False
+        assert self.save_calls == []
+        assert self.log_calls[-1] == "blocked"
+
+    def test_no_url_never_bypassed(self):
+        # 无 URL 无法定位台账 → 字数违规照拦（防无主内容绕过门禁）
+        res = articles_main.save_summary_only({
+            "summarized_content": _body(400), "original_url": "",
+            "note_type": "key_points"})
+        assert res.get("success") is False
         assert self.save_calls == []
