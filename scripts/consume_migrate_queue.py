@@ -1,22 +1,30 @@
 """消费 migrate_gate v3 重抓队列（PLAN-20260908 阶段 5，D5）。
 
-四步闭环：
-  1. --plan        统计队列（total / kinds / registered / to_fetch）
+主循环四步：
+  1. --plan        统计队列（total / kinds / registered / deferred / to_fetch）
   2. --fetch       逐条抓取未登记条目 → 降级产物入 staging（folder=folder_hint 落同目录，
-                   prompt 预计算）；B站重传标题失配转 manual（风险 4）；412 熔断停轮
+                   prompt 预计算）；B站重传标题失配转 manual（风险 4）；412 熔断停轮；
+                   无 CC 字幕条目暂缓（deferred）不重试、不占 limit 配额
   3. --clean       机械清洗 staging：已总结移 done、raw 缺失/过短回重抓态（fails+1）
   4. --cleanup-old v3 铁律：新文已登记才删旧文（默认 dry-run，--apply 才真删）
 
-断点续跑：registry（url + old_titles 双键）命中、staging/manual 已有 url、同条失败
-3 次转人工（D8）全部自动跳过，可反复执行直至队列清空。manual_no_url 条目直接进
-人工清单，等待人工补链接后重跑。
+无 CC 暂缓维护（2026-09-10 加，见 DECISION-20260910-nocc-deferred）：
+  5. --defer-failed       把 state 里带无CC指纹的历史失败批量暂缓（幂等）
+  6. --classify-deferred  deferred 三分类（默认 dry-run，--apply 落盘）：探测到字幕=误标→回队；
+                          探测 None + 视频在 → no_cc_confirmed；探测 None + 视频删 → removed_video
+
+断点续跑：registry（url + old_titles 双键）命中、staging/manual 已有 url、deferred、
+同条失败 3 次转人工（D8）全部自动跳过，可反复执行直至队列清空。manual_no_url 条目
+直接进人工清单，等待人工补链接后重跑。
 """
 import argparse
 import difflib
 import json
 import os
+import re
 import sys
 import time
+import urllib.request
 from collections import Counter
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -33,6 +41,11 @@ from prompts.templates import (  # noqa: E402
     get_note_prompt,
 )
 
+try:  # 字幕探测（无CC暂缓用）；导入失败时探测降级为不可用，走原管线
+    from videos.fetch import fetch_transcript as _fetch_transcript_probe
+except Exception:  # pragma: no cover
+    _fetch_transcript_probe = None
+
 STAGING_PATH = ROOT / "notes" / "_scraped" / "migrate" / "pending_summaries.json"
 DONE_PATH = ROOT / "notes" / "_scraped" / "migrate" / "done_queue.json"
 STATE_PATH = ROOT / "notes" / "_scraped" / "migrate" / "consume_state.json"
@@ -42,8 +55,49 @@ TITLE_MATCH_RATIO = 0.55
 RAW_MIN_CHARS = 200
 FAIL_LIMIT = 3
 RISK_412_MARKERS = ("412", "Precondition Failed")
+NO_CC_MARKERS = ("无可用字幕", "no_cc")
+REMOVED_CODES = (-404, 62002)  # B站 view API：-404=不存在（删除），62002=稿件不可见
 
 _sleep = time.sleep
+
+
+def _is_no_cc_error(msg: str) -> bool:
+    """无CC指纹：字幕缺失且 ASR 兜底失败（或探测标记），此类条目暂缓不重试。"""
+    return any(m in msg for m in NO_CC_MARKERS)
+
+
+def _video_removed(url: str) -> bool:
+    """B站 view API 判定视频是否已删除/不可见（code -404=不存在 / 62002=稿件不可见）。
+
+    自包含实现：不复用 videos.fetch 私有函数（asr.py 断裂教训：跨模块引私有名，
+    重构改名即断，已由 tests/test_asr_fetch_refs.py 守卫）。探测失败保守返回
+    False（不当删除定档，留给 no_cc 分支，两态均保持 deferred 无行为差异）。
+    """
+    m = re.search(r"BV[0-9A-Za-z]{10}", url or "")
+    if not m:
+        return False
+    api = f"https://api.bilibili.com/x/web-interface/view?bvid={m.group(0)}"
+    try:
+        req = urllib.request.Request(api, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.bilibili.com/",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+        return data.get("code") in REMOVED_CODES
+    except Exception:  # 网络/风控异常：保守视为视频仍在
+        return False
+
+
+def _defer_entry(state: dict, url: str, reason: str) -> bool:
+    """标记条目暂缓（deferred=True），返回是否为新标记。"""
+    rec = state.setdefault(url, {})
+    if rec.get("deferred"):
+        return False
+    rec["deferred"] = True
+    rec["last_error"] = reason
+    rec["ts"] = _now()
+    return True
 
 
 def _now() -> str:
@@ -132,13 +186,20 @@ def _build_staging_entry(entry: dict, res: dict) -> dict:
 def cmd_plan(scan_path: Union[str, Path]) -> dict:
     queue = load_queue(scan_path)
     hits = _registry_hits(queue)
+    state = _read_json(STATE_PATH, {})
     registered = sum(1 for e in queue if _is_registered(e, hits))
+    deferred = sum(
+        1 for e in queue
+        if e.get("url") and state.get(e["url"], {}).get("deferred") and not _is_registered(e, hits))
     to_fetch = sum(
-        1 for e in queue if not _is_registered(e, hits) and e.get("kind") != "manual_no_url")
+        1 for e in queue if not _is_registered(e, hits)
+        and e.get("kind") != "manual_no_url"
+        and not (e.get("url") and state.get(e["url"], {}).get("deferred")))
     return {
         "total": len(queue),
         "kinds": dict(Counter(e.get("kind", "?") for e in queue)),
         "registered": registered,
+        "deferred": deferred,
         "to_fetch": to_fetch,
     }
 
@@ -160,7 +221,7 @@ def cmd_fetch(scan_path: Union[str, Path], limit: int = 15, sleep_s: float = 8.0
     hits = _registry_hits(queue)
     staged_urls = {e.get("url", "") for e in staging if e.get("url")}
     manual_urls = {e.get("url", "") for e in manual if e.get("url")}
-    result = {"enqueued": 0, "to_manual": 0, "aborted": False}
+    result = {"enqueued": 0, "to_manual": 0, "deferred": 0, "aborted": False}
     processed = 0
 
     for entry in queue:
@@ -171,15 +232,30 @@ def cmd_fetch(scan_path: Union[str, Path], limit: int = 15, sleep_s: float = 8.0
             continue
         if url and url in manual_urls:
             continue
+        if url and state.get(url, {}).get("deferred"):
+            continue  # 无CC暂缓条目：最后统一处理，不占 limit 配额
         if url and state.get(url, {}).get("fails", 0) >= FAIL_LIMIT:
             continue
         if entry.get("kind") == "manual_no_url" or not url:
             _to_manual(manual, manual_urls, entry, "no_url", result)
             continue
+        probed = False
+        if entry.get("kind") == "bili_video" and _fetch_transcript_probe is not None:
+            probed = True  # 探测暂缓不占 limit 配额，不让无CC视频拖累本轮进度
+            _sleep(sleep_s)
+            try:
+                probe = _fetch_transcript_probe(url)
+            except Exception:
+                probe = "probe_error"  # 探测异常不标记，交原管线正常处理
+            if probe is None:
+                if _defer_entry(state, url, "no_cc_transcript"):
+                    result["deferred"] += 1
+                continue
         if processed >= limit:
             break
         processed += 1
-        _sleep(sleep_s)
+        if not probed:
+            _sleep(sleep_s)  # 探测分支已限速，此处仅补 article/无探测路径
         if entry.get("kind") == "bili_video":
             res = _fetch_video(url, entry.get("folder_hint", ""))
         else:
@@ -190,6 +266,10 @@ def cmd_fetch(scan_path: Union[str, Path], limit: int = 15, sleep_s: float = 8.0
             if any(m in msg for m in RISK_412_MARKERS):
                 result["aborted"] = True
                 break
+            if _is_no_cc_error(msg):
+                if _defer_entry(state, url, msg):
+                    result["deferred"] += 1
+                continue
             rec = state.setdefault(url, {})
             rec["fails"] = rec.get("fails", 0) + 1
             rec["last_error"] = msg
@@ -211,6 +291,71 @@ def cmd_fetch(scan_path: Union[str, Path], limit: int = 15, sleep_s: float = 8.0
     _write_json(STAGING_PATH, staging)
     _write_json(MANUAL_PATH, manual)
     _write_json(STATE_PATH, state)
+    return result
+
+
+def cmd_defer_failed() -> dict:
+    """把 state 里带无CC指纹的历史失败记录批量暂缓（幂等，只统计新标记数）。"""
+    state = _read_json(STATE_PATH, {})
+    n = 0
+    for url, rec in state.items():
+        if _is_no_cc_error(str(rec.get("last_error", ""))) and _defer_entry(state, url, str(rec.get("last_error", ""))):
+            n += 1
+    _write_json(STATE_PATH, state)
+    return {"deferred": n}
+
+
+def cmd_classify_deferred(apply: bool = False) -> dict:
+    """deferred 三分类：真无CC确认 / 视频删除定档 / 风控误标回队（默认 dry-run）。
+
+    - 探测到字幕 → misclassified（当初误标）：清 deferred + fails 清零回重抓队列
+    - 探测 None + 视频在 → no_cc_confirmed：deferred 保留 + 打 classify 标签
+    - 探测 None + 视频删 → removed_video：deferred 保留 + 打 classify 标签
+    - 探测异常 → 不动（412 指纹则熔断停轮）；已打标签条目跳过不重复探测
+    """
+    state = _read_json(STATE_PATH, {})
+    deferred_urls = [u for u, r in state.items() if isinstance(r, dict) and r.get("deferred")]
+    result = {"total": len(deferred_urls), "misclassified": 0, "requeued": 0,
+              "no_cc_confirmed": 0, "removed_video": 0, "probe_error": 0,
+              "skipped": 0, "aborted": False}
+    changed = False
+    for i, url in enumerate(deferred_urls):
+        rec = state[url]
+        if rec.get("classify"):
+            result["skipped"] += 1
+            continue
+        if _fetch_transcript_probe is None:  # 探测不可用：不猜，保持原状
+            result["probe_error"] += 1
+            continue
+        try:
+            ts = _fetch_transcript_probe(url)
+            err = ""
+        except Exception as e:  # noqa: BLE001
+            ts, err = None, str(e)
+        if err:
+            result["probe_error"] += 1
+            if any(m in err for m in RISK_412_MARKERS):
+                result["aborted"] = True
+                break
+            continue
+        if ts is not None:
+            rec.pop("deferred", None)
+            rec["fails"] = 0
+            rec["last_error"] = "requeued_by_classify"
+            rec["ts"] = _now()
+            result["misclassified"] += 1
+            result["requeued"] += 1
+        elif _video_removed(url):
+            rec["classify"] = "removed_video"
+            result["removed_video"] += 1
+        else:
+            rec["classify"] = "no_cc_confirmed"
+            result["no_cc_confirmed"] += 1
+        changed = True
+        if i < len(deferred_urls) - 1:
+            _sleep(8.0)
+    if apply and changed:
+        _write_json(STATE_PATH, state)
     return result
 
 
@@ -308,6 +453,9 @@ def main() -> None:
     ap.add_argument("--fetch", action="store_true", help="抓取未登记条目入 staging/manual")
     ap.add_argument("--clean", action="store_true", help="清洗 staging（已总结移 done / raw 缺失回重抓）")
     ap.add_argument("--cleanup-old", action="store_true", help="删除已登记重抓条目的旧文（默认 dry-run）")
+    ap.add_argument("--defer-failed", action="store_true", help="把 state 里无CC指纹的失败记录批量暂缓（幂等）")
+    ap.add_argument("--classify-deferred", action="store_true",
+                    help="deferred 三分类：真无CC确认/视频删除定档/误标回队（默认 dry-run）")
     ap.add_argument("--apply", action="store_true", help="配合 --cleanup-old 真正删除旧文")
     ap.add_argument("--scan", default="", help="重抓队列 JSON 路径（默认取 archive 目录最新）")
     ap.add_argument("--limit", type=int, default=15, help="本轮最多抓取条数")
@@ -332,6 +480,12 @@ def main() -> None:
         return
     if args.clean:
         print(json.dumps(cmd_clean(), ensure_ascii=False, indent=1))
+        return
+    if args.defer_failed:
+        print(json.dumps(cmd_defer_failed(), ensure_ascii=False, indent=1))
+        return
+    if args.classify_deferred:
+        print(json.dumps(cmd_classify_deferred(apply=args.apply), ensure_ascii=False, indent=1))
         return
     if args.cleanup_old:
         print(json.dumps(cmd_cleanup_old(apply=args.apply), ensure_ascii=False, indent=1))

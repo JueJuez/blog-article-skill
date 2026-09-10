@@ -557,8 +557,10 @@ def transcribe_video(url: str, lang: str = "zh",
                 else:
                     # Q4：412 / 下载失败可能源于 cookie 过期或被挤下线 →
                     # 尝试从本机 Chrome 刷新一次再试，避免"过期 cookie 直接 412"卡死。
+                    # （2026-09-03 重构后唯一方法是 _bili_extract_cookies_cdp，旧
+                    #   同义函数已删除；引用断裂由 tests/test_asr_fetch_refs.py 守住）
                     try:
-                        fresh = fetch._bili_auto_extract_cookies()
+                        fresh = fetch._bili_extract_cookies_cdp()
                         if fresh and fresh != cookie_str:
                             print("   ♻️ 当前 cookie 可能已失效，已从本机 Chrome 刷新，重试音频下载一次")
                             if extract_audio(url, wav, cookie_str=fresh, ffmpeg_exe=ffmpeg_exe):

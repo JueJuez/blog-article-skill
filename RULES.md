@@ -204,6 +204,7 @@ NOTE_GATE_THRESHOLD=85     # 评分阈值，默认 85；低于此分触发重试
 - **文档归档 2 坑（2026-09-03 实踩）**：
   1. **归档 ≠ 把桩文件复制到 `_archive/`**：正确顺序是「先把**完整正文**写入 `_archive/xxx.md`」→「再把 `references/xxx.md` 改成指向 `_archive/` 的指针桩」。反了会导致两处都变成桩、正文彻底丢失（只能从 git 历史 `git show <rev>:<path>` 抢救）。**归档后必须 `wc -c` 校验 `_archive/` 里的文件不是几百字节的桩。**
   2. **归档前先 grep 被引用点**：删/改任何文档前 `grep -rn "<文件名>" --include="*.md" .`，把指向它的引用一并改掉，否则留下坏链（2026-08-27 已踩过一次）。
+- **跨模块引私有名 = 定时炸弹（2026-09-10 实踩）**：`videos/asr.py` 调 `fetch._bili_auto_extract_cookies()`，2026-09-03 cookie 重构把该函数删除改名（唯一方法 = `_bili_extract_cookies_cdp`）后**调用点未同步**，`AttributeError` 被 `except` 吞掉 → **ASR cookie 刷新兜底链长期静默死亡**（无 CC 视频的 ASR 兜底全失败却无人察觉）。**守则**：跨模块尽量不引私有函数；确需引用时必须有机械守卫——`tests/test_asr_fetch_refs.py` 断言「asr.py 引用的每个 `fetch._bili_*` 都真实存在」，重构改名即红。
 
 ---
 
