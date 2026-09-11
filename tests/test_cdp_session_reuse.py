@@ -181,6 +181,36 @@ class TestInitOrchestration:
         assert s._own_browser is True
         assert p.stop.call_count == 1
 
+    def test_connect_failure_rebuilds_playwright_driver(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        """内层恢复前必须重建 _p（PLAN §13 隐患）：_pw_stop 后旧 driver 已死，
+        复用它二次 _attach 真实 playwright 下必失败；对齐 restart_fresh 的重建写法。"""
+        from playwright import sync_api
+
+        p_first, p_second = MagicMock(), MagicMock()
+        starts: list = []
+
+        def _counting_sp():
+            holder = MagicMock()
+            holder.start.return_value = p_second if starts else p_first
+            starts.append(1)
+            return holder
+
+        monkeypatch.setattr(sync_api, "sync_playwright", _counting_sp)
+        endpoint = "ws://127.0.0.1:59222/devtools/browser/abc"
+        monkeypatch.setattr(cdp._skill, "ensure_endpoint",
+                            lambda pd=None: _result("reused", endpoint))
+        p_first.chromium.connect_over_cdp.side_effect = RuntimeError("stale endpoint")
+        p_second.chromium.connect_over_cdp.return_value = MagicMock()
+        monkeypatch.setattr(cdp._skill, "_kill_chrome_on_port", lambda port: None)
+        monkeypatch.setattr(cdp._skill, "_kill_clone_chrome", lambda d: 0)
+        monkeypatch.setattr(cdp._skill, "_launch_cloned_logged_in_browser",
+                            lambda d, source=None: (MagicMock(), "ws://127.0.0.1:5599/devtools/browser/x"))
+
+        s = cdp._skill.CdpSession(profile_dir=str(tmp_path))
+
+        assert starts == [1, 1]  # 初次 start + 内层恢复重建
+        assert s._p is p_second
+
 
 # ---------------------------------------------------------------------------
 # D · close() D6 契约（只关灯不 taskkill）
