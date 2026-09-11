@@ -243,7 +243,7 @@ def fetch_youtube_transcript_cdp(url: str, port: int | None = None, wait: int = 
 | D6 退出机制 | close = 断开 + 自注销持有者；最后持有者关灯（`.cdp_holders` 注册表 + PID 存活探测 + 锁内原子判定，`CDP_IDLE_SHUTDOWN` 默认开）；配 0 = 纯常驻 fallback | 用户拍板（2026-09-11） |
 | §6 观察期 | cdp_launch 标弃用后观察 **7 天** | 用户拍板（2026-09-11） |
 
-**下一步**：S1-S5 已完成（见 §13）；剩余 S6（技能副本同步 brain，用户指令触发）；S1-S6 每步独立 commit、独立验证。
+**下一步**：S1-S6 全部完成（见 §13），计划收官；无剩余执行项。
 
 ## 13 执行进度（2026-09-12 更新）
 
@@ -256,6 +256,7 @@ def fetch_youtube_transcript_cdp(url: str, port: int | None = None, wait: int = 
 | S3 ✅ | §5 YouTube 迁移：`cdp_capture.py`（模块级 `_ENDPOINT_CACHE` + `_ensure_endpoint()` helper、`capture_transcript` 与 CLI `--port` 均改 default None、docstring 改指共享克隆目录/D5-D6 契约、直跑 CLI 补 sys.path 引导）+ `fetch.py`（`fetch_youtube_transcript_cdp` 改 `ensure_endpoint()` 编排、L622 注释改条件化关 Chrome + 持有者关灯语义）+ `cdp_launch.py` 文件头 DeprecationWarning；顺带修内核 `__init__` 内层恢复隐患（`_pw_stop()` 后重建 `_p` 对齐 `restart_fresh`）；新增 `tests/test_youtube_cdp_endpoint.py`（8 例，含防真实 Chrome 安全网）+ 内核重建用例 1 例 | 目标 9 例绿；项目全量 876 例绿；§5.3 实抓 `aircAruvnKk` 成功（冷启动实例端口 12139 复用直连，字幕 18430 字落盘 `.cache/yt_transcript_aircAruvnKk.txt`） |
 | S4 ✅ | §10 六项文档对齐（2026-09-12，一次 commit）：① AGENTS.md L18 实例层上移注记 + 统一「实例常驻、连接只断开、marker 过期才清理」表述；② RULES.md §4.4 两处（9222→CDP 端点、cdp_launch 自修复→ensure_endpoint 三段式 + 技能 CLI `--probe-only`；最短路径①同步改写）；③ `references/youtube-cdp-workflow.md` 整篇重写（共享克隆目录/动态端口/EnsureResult 契约/D4 iGuge 背景注记/D6 关灯/TRAE 沙箱排查行；降级保存 API 更正 `skill_continue_summary`→`save_summary_only`）；④ 技能 SKILL.md §3.5 两节 + iGuge 注记核对通过（S1 产物，`.trae-cn` 工作副本）；⑤ README.md L373 cdp_launch 行改弃用注记；⑥ DECISION-20260910「回收子进程」表述核对通过（现文已是「按路径拦截启动期写盘」，全仓无残留，零改动）；另顺带对齐项目侧 SKILL.md 两处旧表述（该文件实际被 git 跟踪，AGENTS「已 gitignore」说法与事实不符，本次仍不提交、改动留工作区）；顺带修 `references/login-required-cdp-workflow.md` §7 三处过时交叉引用（重写连带漂移：共享克隆实例/同一实例/结论句） | 逐条核对 + 全量 grep 复核（旧关键词仅剩计划描述/弃用对照语境，零业务命中）；commit 含 AGENTS/RULES/README/两份工作流文档/PLAN 六文件 |
 | S5 ✅ | 删除 `videos/cdp_launch.py`（235 行弃用启动器）；清引用：README 目录树删该行、workflow 头注/模块表/§7 旧方案表三处改「已删除」措辞、tests 删 `_guard_no_real_chrome` 绊线 helper（含四处调用）与 `TestCdpLaunchDeprecation` 弃用测试类（连带清理未使用 importlib/sys/MagicMock） | 全量 pytest **923 passed** 全绿（弃用测试随类移除）；grep `cdp_launch\|9222` 零业务命中（剩余命中均为 PLAN 历史记录 / workflow「已删除」措辞 / `login_cdp_fetch.py` 通用端口探测常量 / tests 显式端口输入值）；用户 2026-09-12 二次批准提前于观察期（原定至 09-18）执行 |
+| S6 ✅ | 技能副本同步 brain（skill-installer 流程）：brain `skills/universal/cdp-automation-profile` 补 S1 两文件 + SKILL.md 两节（commit `2b773a2`，+827/-15，`cdp-proxy.mjs` 被 git 识别为 R100 重命名归档 `_archive/`，pre-commit 门禁全过）并单独 push Gitee 成功；推后回拷两平台副本（`.trae-cn` 已一致零操作、`.workbuddy` 补齐 S1 两文件 + SKILL.md），三端 diff（忽略行尾）零差异；顺带解除项目 `.workbuddy/skills/blog-article-skill/SKILL.md` 的 git 跟踪（`.gitignore` L35 已有 `.workbuddy/` 规则，历史跟踪项走 `git rm --cached`，工作区文件保留） | brain→`.workbuddy` 忽略行尾 diff exit 0；`skill_reconcile.py` 两平台均「通过（无阻断项）」（`.trae-cn` 需 `--ignore` 豁免 8 个 TRAE 平台内置技能 docx/pdf/pptx/xlsx/git-commit/design-taste-frontend/skill-map-traework/batch_link_import——孤儿阻断为既有状态，与本次 S6 无关）；⚠️ 执行偏差：robocopy /MIR 被 TRAE 沙箱拦截写盘（ERROR 5 无限重试，同 DECISION-20260910 先例），改用 PowerShell 原生 `Copy-Item` 逐文件镜像成功 |
 
 ### 偏差与已知隐患（记录，不阻塞 S3）
 
@@ -263,11 +264,11 @@ def fetch_youtube_transcript_cdp(url: str, port: int | None = None, wait: int = 
 - **S2 的「monitors 实跑一轮」未执行**（需登录态与网络写盘，TRAE 沙箱受限同下条）：随用户日常触发覆盖（说「跑一次」即跑，见项目规则）。
 - **内核 `__init__` 内层恢复隐患 ✅ 已随 S3 修复（2026-09-12）**：`_pw_stop()` 后先重建 `self._p` 再 `_attach`（对齐 `restart_fresh` 写法），新增用例 `test_connect_failure_rebuilds_playwright_driver` 锁行为。
 - **TRAE 沙箱下 `ensure_endpoint()` 自动编排无法闭环（2026-09-12 实测，环境限制非代码缺陷）**：Chrome 冷启动写自身 profile 文件（Crashpad/BrowserMetrics/lockfile）被沙箱拦截 → 30s 内端口未就绪；端口文件状态机读写受扰，每轮重新冷启动不复用。规避：实抓用 `--port <显式端口>` 直连活实例（已验证）；端口编排逻辑由 8 例单测覆盖；沙箱外真实场景（用户日常跑 monitors / `videos/run.py`）不受影响。
-- **技能 SKILL.md 双副本漂移（S4 核对发现）**：`.trae-cn` 工作副本含 S1 产物（「内核会话」「共用契约」两节 + iGuge 注记）✅；`.workbuddy` 副本缺这些节，但其两处旧表述（§3.5 开头 + cdp_launch 行）已随 S4 顺带对齐（2026-09-12）。⚠️ 该文件实际被 git 跟踪（AGENTS「已 gitignore」说法与事实不符），S4 改动留工作区未提交；是否解除跟踪 + brain 同步由 S6 一并处理。
+- **技能 SKILL.md 双副本漂移（S4 核对发现）✅ 已随 S6 收敛（2026-09-12）**：`.trae-cn` 工作副本含 S1 产物（「内核会话」「共用契约」两节 + iGuge 注记）✅；`.workbuddy` 副本原缺这些节，S6 经 brain 推送 + 推后回拷对齐（三端忽略行尾 diff 零差异）；项目 `.workbuddy/skills/blog-article-skill/SKILL.md` 已 `git rm --cached` 解除跟踪（`.gitignore` 规则自此真正生效）。
 
 ### 下一步（新会话执行）
 
 | 步骤 | 内容 | 前置 |
 |---|---|---|
 | S5 | §6 观察期 7 天后删 `cdp_launch.py`（第二次审批点） | ✅ 已完成（2026-09-12，用户二次批准提前执行） |
-| S6 | 技能副本同步 brain（skill-installer 流程；一并对齐 .workbuddy 副本漂移） | 用户指令触发 |
+| S6 | 技能副本同步 brain（skill-installer 流程；一并对齐 .workbuddy 副本漂移） | ✅ 已完成（2026-09-12：brain commit `2b773a2` 已 push；两平台副本回拷对齐零差异；reconcile 两平台无阻断；项目 SKILL.md 解除跟踪） |
