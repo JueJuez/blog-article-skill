@@ -1,7 +1,7 @@
 # YouTube 字幕抓取 · CDP 方案（共享克隆实例 + ensure_endpoint 编排）
 
 > **这是 YouTube 字幕问题的「终极解法」文档。换会话、换 AI，只要照此执行，即可一次性走通「给链接 → 抓字幕 → 总结 → 存档」全流程。**
-> **2026-09-12 S3/S4 架构升级（PLAN-20260911）**：Chrome 实例层已上移用户级技能 `cdp-automation-profile`——共享克隆目录 + 动态端口 + `ensure_endpoint` 三段式编排；`videos/cdp_launch.py` 已弃用（S5 删）。本文档已全面对齐新架构。
+> **2026-09-12 S3/S4 架构升级（PLAN-20260911）**：Chrome 实例层已上移用户级技能 `cdp-automation-profile`——共享克隆目录 + 动态端口 + `ensure_endpoint` 三段式编排；`videos/cdp_launch.py` 已删除（S5，2026-09-12 用户二次批准提前执行）。本文档已全面对齐新架构。
 
 ---
 
@@ -111,7 +111,6 @@ videos.main._summarize_and_save → 分段两段式总结 → 存档(Obsidian/no
 | 项目薄子类 | `shared/cdp_session.py` | 加载技能内核 + re-export，消费方零改动 | `SharedCdpSession`、`ensure_endpoint`、`CdpSession`、`EnsureResult`、`probe_endpoint` |
 | 字幕拦截 | `videos/cdp_capture.py` | 经 CDP 拦截字幕响应体，转纯文本并落盘；已迁移 `ensure_endpoint` 编排（模块级 `_ENDPOINT_CACHE`） | `capture_transcript(url, port=None, wait)`；CLI `--port`（default None = 自动编排） |
 | 获取层 | `videos/fetch.py` | `fetch_youtube_transcript` 先试 API(超时 25s) 再 CDP 回退；已迁移 `ensure_endpoint` 编排 | `fetch_transcript(url)`、`fetch_youtube_transcript_cdp(url)` |
-| ⚠️ 已弃用 | `videos/cdp_launch.py` | 旧「Chrome-CDP 独立副本 + 固定 9222」方案的启动器；文件头已 DeprecationWarning，S5 删除 | 勿新增调用 |
 | 编排 | `videos/main.py` | 获取 → 分段两段式总结 → 存档 | `summarize_video(dict)` |
 | CLI | `videos/run.py` | 命令行入口 | `python videos/run.py --url "..."` |
 
@@ -197,7 +196,7 @@ python videos/run.py --url "https://www.youtube.com/watch?v=XXXX"
 |------|------|------|
 | `youtube-transcript-api` 直连 | ✅ 保留，沙箱首选 | 沙箱内直连成功，无过期问题。 |
 | CDP 拦截（本文档：共享克隆实例 + ensure_endpoint） | ✅ **本机首选，已自动化** | 本机无 YouTube 出口时的终极解法，集成进 `fetch_transcript`。 |
-| 旧 `cdp_launch.py`（Chrome-CDP 独立副本 + 固定 9222 + 每次强制同步） | ❌ **已弃用（S5 删）** | 被 `ensure_endpoint` 三段式取代：共享克隆目录、动态端口、健康复用优先、marker 过期才全量复制。 |
+| 旧 `cdp_launch.py`（Chrome-CDP 独立副本 + 固定 9222 + 每次强制同步） | ❌ **已删除（2026-09-12 S5）** | 被 `ensure_endpoint` 三段式取代：共享克隆目录、动态端口、健康复用优先、marker 过期才全量复制。 |
 | bookmarklet → 本地桥 8899 | 🟡 仍可用但已非必需 | 纯浏览器方案，需用户点书签；CDP 全自动后一般不再需要。 |
 | 手搓 timedtext curl | ❌ 废弃 | 签名/会话过期，无法复用。 |
 | `YT_PROXY` 系统代理 | ❌ 本机无效 | 用户的代理只认浏览器扩展客户端，系统代理端口对 Python 拒连（SSL EOF）。仅沙箱或真有可复用端口时有意义。 |
