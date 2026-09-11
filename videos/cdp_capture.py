@@ -8,9 +8,10 @@
     本脚本用 CDP Network 域监听并抓取那条响应体（等于在 F12 Network 抓包）。
 
 前置：
-    Chrome 需以  --remote-debugging-port=9222 --remote-allow-origins=*
-    并使用【非默认】的 user-data-dir（副本，含代理插件）启动。
-    可用 videos.cdp_launch.ensure_chrome_running() 自动保证这一前提。
+    CDP 端点就绪即可（共享克隆 profile + 调试端口，机制见用户级技能
+    cdp-automation-profile）。port=None（默认）时经 shared.cdp_session.ensure_endpoint()
+    自动编排：探测复用 → 端口自愈 → 必要时冷启动；仅 clone 陈旧需复制时才关 Chrome，
+    会话结束只注销持有者、最后持有者才关灯（D5/D6 契约）。
 
 用法（CLI）：
     python videos/cdp_capture.py --url "https://www.youtube.com/watch?v=XXXX"
@@ -31,6 +32,20 @@ import urllib.parse
 import websocket
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)  # 直跑 CLI 时保证 shared/ 可导入（同 yt_bridge.py 惯例）
+
+_ENDPOINT_CACHE = None  # 模块级端点缓存：多消费方同轮共享一次三段式编排
+
+
+def _ensure_endpoint() -> "EnsureResult":
+    """经技能 ensure_endpoint() 解析 CDP 端点（三段式编排），结果跨调用缓存。"""
+    global _ENDPOINT_CACHE
+    if _ENDPOINT_CACHE is None:
+        from shared.cdp_session import ensure_endpoint
+
+        _ENDPOINT_CACHE = ensure_endpoint()
+    return _ENDPOINT_CACHE
 
 
 def hj(url, method="GET"):
@@ -69,12 +84,14 @@ def parse_body(text):
     return " ".join(out)
 
 
-def capture_transcript(url, port=9222, wait=40, out=None):
+def capture_transcript(url, port=None, wait=40, out=None):
     """抓取给定 YouTube 链接的字幕，返回 (title, text)。
 
-    前提：9222 调试端口已就绪（用 videos.cdp_launch.ensure_chrome_running() 保证）。
+    前提：CDP 端点已就绪；port=None 时经 _ensure_endpoint() 自动解析（结果跨调用缓存）。
     失败返回 ("", "") 。
     """
+    if port is None:
+        port = _ensure_endpoint().port
     base = f"http://127.0.0.1:{port}"
     vid = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("v", [""])[0]
 
@@ -208,18 +225,18 @@ def capture_transcript(url, port=9222, wait=40, out=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required=True)
-    ap.add_argument("--port", type=int, default=9222)
+    ap.add_argument("--port", type=int, default=None,
+                    help="调试端口；缺省经 ensure_endpoint 自动编排")
     ap.add_argument("--out", default=None)
     ap.add_argument("--wait", type=int, default=40, help="最长等待秒数")
     args = ap.parse_args()
 
-    try:
-        from videos.cdp_launch import ensure_chrome_running
-        if not ensure_chrome_running(port=args.port):
+    if args.port is None:
+        try:
+            args.port = _ensure_endpoint().port
+        except Exception as e:
+            print(f"[cdp] 端点编排失败: {e}", flush=True)
             sys.exit(2)
-    except Exception as e:
-        print(f"[cdp] 无法确保 Chrome 就绪: {e}", flush=True)
-        sys.exit(2)
 
     title, text = capture_transcript(args.url, port=args.port, wait=args.wait, out=args.out)
     if not text:

@@ -244,21 +244,26 @@ def _ts_to_sec(hms: str, ms: str) -> float:
 # YouTube
 # ---------------------------------------------------------------------------
 
-def fetch_youtube_transcript_cdp(url: str, port: int = 9222, wait: int = 45) -> Optional[Tuple[str, str]]:
+def fetch_youtube_transcript_cdp(url: str, port: Optional[int] = None,
+                                 wait: int = 45) -> Optional[Tuple[str, str]]:
     """CDP 方案：驱动本机带代理插件的 Chrome 抓字幕（绕过 API 的网络限制）。
 
     返回 (title, transcript_text)；失败返回 None。
-    自动确保 Chrome(CDP 副本) 调试端口就绪（见 videos.cdp_launch）。
+    port=None 时经 shared.cdp_session.ensure_endpoint() 自动编排端点
+    （共享克隆目录 + 随机端口 + 端口文件；仅 clone 陈旧需复制时才关 Chrome）。
     """
     try:
-        from videos.cdp_launch import ensure_chrome_running
         from videos.cdp_capture import capture_transcript
+        from shared.cdp_session import ensure_endpoint
     except Exception as e:
         print(f"   ⚠️ CDP 依赖不可用: {e}")
         return None
-    if not ensure_chrome_running(port=port):
-        print("   ⚠️ 无法启动/连接 Chrome(CDP)，CDP 字幕抓取跳过")
-        return None
+    if port is None:
+        try:
+            port = ensure_endpoint().port
+        except Exception as e:
+            print(f"   ⚠️ CDP 端点编排失败（Chrome 未就绪？）: {e}")
+            return None
     try:
         title, text = capture_transcript(url, port=port, wait=wait)
         if text:
@@ -619,7 +624,8 @@ def _bili_extract_cookies_cdp(wait_s: float = None) -> Optional[str]:
       登录，最长 wait_s（默认 BILI_COOKIE_WAIT_S=300，即 5 分钟）。
     - Chrome 151+ 默认 dir 禁用一切远程调试（含 --remote-debugging-pipe），Playwright
       挂真实 profile 的老路已死（实测 TimeoutError），故删除、不再保留。
-    代价：会杀掉当前 Chrome 进程（与监控登录态抓取同款行为）。
+    代价：仅 clone 陈旧需复制时才关 Chrome（2026-09-10 条件化）；会话结束只注销持有者，
+    最后持有者才关灯（见 shared/cdp_session.py D5/D6 契约）。
     """
     if wait_s is None:
         try:

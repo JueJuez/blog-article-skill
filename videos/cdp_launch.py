@@ -22,6 +22,17 @@ import json
 import shutil
 import subprocess
 import urllib.request
+import warnings
+
+# PLAN-20260911 §6 第一步：实例生命周期编排已上移用户级技能 cdp-automation-profile，
+# 本模块进入观察期（7 天，S5 删除前有第二次审批点）。新代码一律改用
+# shared.cdp_session.ensure_endpoint()（共享克隆目录 + 随机端口 + 端口文件）。
+warnings.warn(
+    "videos.cdp_launch 已弃用：请改用 shared.cdp_session.ensure_endpoint()"
+    "（PLAN-20260911，S5 将删除本模块）",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 # --- 路径常量（Windows） ---
 _CHROME_CANDIDATES = [
