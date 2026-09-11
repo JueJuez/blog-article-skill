@@ -1,23 +1,25 @@
-"""SharedCdpSession 健康复用路径 TDD（2026-09-10 优化）。
+# -*- coding: utf-8 -*-
+"""S2-⑤：内核命名空间迁移版复用测试（2026-09-12）。
 
-背景：原 __init__ 无条件「杀光所有 Chrome → 全量复制 → 重启克隆浏览器」，
-双 Agent 并发时互杀对方调试 Chrome（connect ECONNREFUSED），叠加 Playwright
-失败泄漏后一次被杀即整批全废。优化以 cdp-automation-profile 的 3 天 clone
-marker 机制为准：
+背景（PLAN-20260911 S2）：连接语义（D5 实例常驻 / D6 最后持有者关灯 / 文件锁）
+已上移用户级技能 `cdp-automation-profile` 的 `cdp_session.py` 内核；项目侧
+`shared/cdp_session.py` 只剩薄子类。本文件将旧 44+ 用例迁移至内核命名空间
+（`cdp._skill`），新增 2026-09-10 微修回归（kill_clone 计数）与 2026-09-11
+实踩坑（netstat/taskkill/PowerShell CIM/tasklist 一律 list 形式）回归。
 
-  1. 克隆调试 Chrome 健康（DevToolsActivePort 端口可探测）→ 直接 connect_over_cdp
-     复用（_own_browser=False，close 只断开不杀），跳过杀 Chrome / 复制 / 重启。
-  2. 重建路径条件化杀：仅 clone 陈旧/缺失（要全量复制、需释放源 cookie 独占锁）
-     时才关 Chrome；clone 新鲜时重启克隆浏览器用不到源锁，不杀日常 Chrome。
-  3. 复用探测失败时按旧端口精准清僵尸（不误伤日常 Chrome）。
-  4. 登录墙兜底 restart_fresh()：复用会话撞登录墙标记时重建全新会话。
-  5. stale 端口恢复（2026-09-10 真机案例）：DevToolsActivePort 属于上一任实例，
-     文件端口 ≠ 实际监听（5494 vs 55873）时从活进程命令行找真实端口再探测，
-     命中则回写文件直接复用；重建路径追加按克隆目录精准清僵尸（覆盖「文件
-     端口无监听 → 按端口杀是 no-op → 僵尸握锁」的场景）。
+设计要点：
+- 内核顶层无 playwright import；`sync_playwright` 为方法内 import（__init__ /
+  restart_fresh）→ patch `playwright.sync_api.sync_playwright` 模块属性对所有
+  路径生效。
+- 内核 subprocess 一律 list 形式 → fake 先 join 再分发。
+- Magic Mock 陷阱：`_attach` 的 `ctx.pages[0] if getattr(ctx, "pages", None) else
+  ctx.new_page()` → reused 场景需显式 `ctx.pages = []`。
 """
+
+import time as _time_mod
 from datetime import date, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -26,635 +28,607 @@ from shared import cdp_session as cdp
 import profile_clone_fetch as pcf
 
 
-# ── 公共 mock 基建 ────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# 通用 fake / 工具
+# ---------------------------------------------------------------------------
 
-def _fake_playwright(monkeypatch):
-    """替换 playwright.sync_api.sync_playwright，避免测试真启 driver。返回 mock p。"""
-    from playwright import sync_api
+
+def _fake_playwright(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """patch playwright.sync_api.sync_playwright（方法内 import 从 sys.modules 取）。"""
     p = MagicMock()
     holder = MagicMock()
     holder.start.return_value = p
+    from playwright import sync_api
+
     monkeypatch.setattr(sync_api, "sync_playwright", lambda: holder)
     return p
 
 
-def _sentinel_raise(name):
-    def _boom(*args, **kwargs):
-        raise AssertionError(f"不应被调用：{name}")
-    return _boom
+def _sentinel_raise(name: str):
+    def _f(*args, **kwargs):
+        raise AssertionError(f"不应调用 {name}")
+    return _f
 
 
-def _make_clone(tmp_path: Path, marker: str | None = "2026-09-10",
-                with_cookies: bool = True) -> Path:
-    """在 tmp_path 造一个克隆目录形态（cookie db + marker）。"""
+def _make_clone(tmp_path: Path, marker: str = "2026-09-10", with_cookies: bool = True) -> None:
     if with_cookies:
-        cookie = tmp_path / "Default" / "Network"
-        cookie.mkdir(parents=True, exist_ok=True)
-        (cookie / "Cookies").write_text("db", encoding="utf-8")
-    if marker is not None:
-        tmp_path.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "Default" / "Network").mkdir(parents=True)
+        (tmp_path / "Default" / "Network" / "Cookies").write_text("cookie", encoding="utf-8")
+    if marker:
         (tmp_path / pcf.MARKER_DATE).write_text(marker, encoding="utf-8")
-    return tmp_path
 
 
-def _reused_session(endpoint="ws://127.0.0.1:59222/devtools/browser/abc"):
-    """绕过 __init__ 直接构造「复用态」会话（_own_browser=False）。"""
-    s = cdp.SharedCdpSession.__new__(cdp.SharedCdpSession)
-    s._p = MagicMock()
+def _reused_session(endpoint: str = "ws://127.0.0.1:59222/devtools/browser/abc",
+                    clone_dir: str = "C:/fake/clone") -> cdp._skill.CdpSession:
+    s = cdp._skill.CdpSession.__new__(cdp._skill.CdpSession)
+    s._headless = False
+    s._use_cdp = True
+    s._live = True
     s._own_browser = False
-    s._ctx = MagicMock()
-    s._page = MagicMock()
-    s._browser = MagicMock()
+    s._ctx = None
+    s._page = None
+    s._browser = None
     s._proc = None
     s.cdp_endpoint = endpoint
-    s._headless = True
-    s._live = True
-    s._use_cdp = True
+    s._clone_dir = Path(clone_dir)
+    s._holder = None
+    s._p = MagicMock()
     return s
 
 
-# ── A. _read_devtools_port ────────────────────────────────────
+def _result(action: str, endpoint: str, proc=None) -> cdp._skill.EnsureResult:
+    return cdp._skill.EnsureResult(
+        endpoint=endpoint,
+        port=cdp._skill._endpoint_port(endpoint) or 0,
+        profile_dir=Path("C:/fake/clone"),
+        action=action,
+        proc=proc,
+    )
+
+
+# ---------------------------------------------------------------------------
+# A · 端口文件读取
+# ---------------------------------------------------------------------------
+
 
 class TestReadDevtoolsPort:
-    def test_reads_port_from_first_line(self, tmp_path):
-        (tmp_path / "DevToolsActivePort").write_text("59222\n/devtools/browser/abc", encoding="utf-8")
-        assert cdp._read_devtools_port(tmp_path) == 59222
+    def test_normal_two_lines(self, tmp_path: Path):
+        (tmp_path / "DevToolsActivePort").write_text("55873\n/devtools/browser/abc", encoding="utf-8")
+        assert cdp._skill._read_devtools_port(tmp_path) == 55873
 
-    def test_missing_file_returns_none(self, tmp_path):
-        assert cdp._read_devtools_port(tmp_path) is None
+    def test_missing_file_returns_none(self, tmp_path: Path):
+        assert cdp._skill._read_devtools_port(tmp_path) is None
 
-    def test_invalid_content_returns_none(self, tmp_path):
+    def test_bad_port_text_returns_none(self, tmp_path: Path):
         (tmp_path / "DevToolsActivePort").write_text("not-a-port", encoding="utf-8")
-        assert cdp._read_devtools_port(tmp_path) is None
+        assert cdp._skill._read_devtools_port(tmp_path) is None
 
-    def test_empty_file_returns_none(self, tmp_path):
-        (tmp_path / "DevToolsActivePort").write_text("", encoding="utf-8")
-        assert cdp._read_devtools_port(tmp_path) is None
-
-
-# ── B. _probe_reuse_endpoint（复用探测：快速失败、无假地址兜底） ──
-
-class TestProbeReuseEndpoint:
-    def test_returns_ws_on_first_success(self, monkeypatch):
-        import login_cdp_fetch
-        monkeypatch.setattr(login_cdp_fetch, "probe_chrome_devtools",
-                            lambda port, timeout=2.0: {"webSocketDebuggerUrl": "ws://x/devtools/browser/1"})
-        monkeypatch.setattr(cdp.time, "sleep", lambda *_: None)
-        assert cdp._probe_reuse_endpoint(9222) == "ws://x/devtools/browser/1"
-
-    def test_returns_none_when_all_fail(self, monkeypatch):
-        import login_cdp_fetch
-        monkeypatch.setattr(login_cdp_fetch, "probe_chrome_devtools", lambda port, timeout=2.0: None)
-        monkeypatch.setattr(cdp.time, "sleep", lambda *_: None)
-        assert cdp._probe_reuse_endpoint(9222) is None
-
-    def test_returns_none_when_probe_raises(self, monkeypatch):
-        import login_cdp_fetch
-        def _boom(port, timeout=2.0):
-            raise RuntimeError("net down")
-        monkeypatch.setattr(login_cdp_fetch, "probe_chrome_devtools", _boom)
-        monkeypatch.setattr(cdp.time, "sleep", lambda *_: None)
-        assert cdp._probe_reuse_endpoint(9222) is None
+    def test_only_port_line(self, tmp_path: Path):
+        (tmp_path / "DevToolsActivePort").write_text("55873", encoding="utf-8")
+        assert cdp._skill._read_devtools_port(tmp_path) == 55873
 
 
-# ── C. __init__ 健康复用路径 ──────────────────────────────────
+# ---------------------------------------------------------------------------
+# C · __init__ 编排（健康复用 / 复用开新页 / 重建回退 / 连接失败重试）
+# ---------------------------------------------------------------------------
 
-class TestInitReuse:
-    def test_healthy_browser_is_reused_without_launch(self, monkeypatch):
-        _fake_playwright(monkeypatch)
-        monkeypatch.setattr(cdp, "_read_devtools_port", lambda d: 59222)
-        monkeypatch.setattr(cdp, "_probe_reuse_endpoint",
-                            lambda port: "ws://127.0.0.1:59222/devtools/browser/x")
-        monkeypatch.setattr(cdp, "_launch_cloned_logged_in_browser", _sentinel_raise("_launch"))
-        monkeypatch.setattr(cdp, "_kill_chrome_on_port", _sentinel_raise("_kill_chrome_on_port"))
-        s = cdp.SharedCdpSession()
+
+class TestInitOrchestration:
+    def test_healthy_reuse(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        """clone 健康 → reused → 不杀 Chrome、不 Popen、不 stop。"""
+        p = _fake_playwright(monkeypatch)
+        endpoint = "ws://127.0.0.1:59222/devtools/browser/abc"
+        monkeypatch.setattr(cdp._skill, "ensure_endpoint",
+                            lambda pd=None: _result("reused", endpoint))
+        registered: list = []
+        monkeypatch.setattr(cdp._skill, "_register_holder",
+                            lambda d, ep: registered.append((d, ep)) or MagicMock())
+
+        s = cdp._skill.CdpSession(profile_dir=str(tmp_path))
+
         assert s._own_browser is False
         assert s._proc is None
-        assert s.cdp_endpoint == "ws://127.0.0.1:59222/devtools/browser/x"
+        assert s.cdp_endpoint == endpoint
+        assert registered == [(s._clone_dir, endpoint)]
+        p.stop.assert_not_called()
 
-    def test_reuse_opens_own_page_not_pages0(self, monkeypatch):
-        """共享 context 下复用会话必须开自己的新页（pages[0] 可能是别人的页面，close 会误关）。"""
+    def test_reuse_opens_own_page(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        """复用场景 _attach 走 new_page（own page）。"""
         _fake_playwright(monkeypatch)
-        monkeypatch.setattr(cdp, "_read_devtools_port", lambda d: 59222)
-        monkeypatch.setattr(cdp, "_probe_reuse_endpoint", lambda port: "ws://x")
-        monkeypatch.setattr(cdp, "_launch_cloned_logged_in_browser", _sentinel_raise("_launch"))
-        p = _fake_playwright(monkeypatch)
+        endpoint = "ws://127.0.0.1:59222/devtools/browser/abc"
+        monkeypatch.setattr(cdp._skill, "ensure_endpoint",
+                            lambda pd=None: _result("reused", endpoint))
         own_page = MagicMock()
-        p.chromium.connect_over_cdp.return_value.contexts[0].new_page.return_value = own_page
-        s = cdp.SharedCdpSession()
+        ctx = MagicMock()
+        ctx.new_page.return_value = own_page
+        monkeypatch.setattr(cdp._skill.CdpSession, "_attach",
+                            lambda self, ep, action="reused": setattr(self, "_page", own_page))
+
+        s = cdp._skill.CdpSession(profile_dir=str(tmp_path))
         assert s._page is own_page
 
-    def test_no_existing_browser_falls_back_to_launch(self, monkeypatch):
+    def test_rebuilt_fallback(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        """probe 不健康 → rebuilt → own_browser True、接管 proc。"""
         _fake_playwright(monkeypatch)
-        monkeypatch.setattr(cdp, "_read_devtools_port", lambda d: None)
-        monkeypatch.setattr(cdp, "_find_clone_chrome_port", lambda d: None)   # stale 恢复不触发
-        monkeypatch.setattr(cdp, "_launch_cloned_logged_in_browser",
-                            lambda p: (MagicMock(), "ws://127.0.0.1:5599", "PROC"))
-        killed = []
-        monkeypatch.setattr(cdp, "_kill_chrome_on_port", lambda port: killed.append(port))
-        monkeypatch.setattr(cdp, "_kill_clone_chrome", lambda d: 1)           # 重建兜底清理
-        s = cdp.SharedCdpSession()
+        endpoint = "ws://127.0.0.1:59222/devtools/browser/abc"
+        monkeypatch.setattr(cdp._skill, "ensure_endpoint",
+                            lambda pd=None: _result("rebuilt", endpoint, proc="PROC"))
+
+        s = cdp._skill.CdpSession(profile_dir=str(tmp_path))
         assert s._own_browser is True
         assert s._proc == "PROC"
-        assert s.cdp_endpoint == "ws://127.0.0.1:5599"
-        assert killed == []   # 端口未知 → 无从按端口清理
 
-    def test_unhealthy_listener_is_killed_by_port_before_relaunch(self, monkeypatch):
-        """探测失败但端口文件在（僵尸/半死实例握着克隆目录锁）→ 按端口精准清理后重建。"""
-        _fake_playwright(monkeypatch)
-        monkeypatch.setattr(cdp, "_read_devtools_port", lambda d: 59222)
-        monkeypatch.setattr(cdp, "_probe_reuse_endpoint", lambda port: None)
-        monkeypatch.setattr(cdp, "_launch_cloned_logged_in_browser",
-                            lambda p: (MagicMock(), "ws://127.0.0.1:5599", "PROC"))
-        killed = []
-        monkeypatch.setattr(cdp, "_kill_chrome_on_port", lambda port: killed.append(port))
-        s = cdp.SharedCdpSession()
-        assert killed == [59222]
-        assert s._own_browser is True
-
-    def test_connect_failure_falls_back_to_launch(self, monkeypatch):
-        _fake_playwright(monkeypatch)
+    def test_connect_failure_rebuilds(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        """connect 失败 → 杀端口 + 杀 clone → _launch 重建 → stop 一次。"""
         p = _fake_playwright(monkeypatch)
-        p.chromium.connect_over_cdp.side_effect = RuntimeError("ECONNREFUSED")
-        monkeypatch.setattr(cdp, "_read_devtools_port", lambda d: 59222)
-        monkeypatch.setattr(cdp, "_probe_reuse_endpoint", lambda port: "ws://x")
-        monkeypatch.setattr(cdp, "_launch_cloned_logged_in_browser",
-                            lambda p: (MagicMock(), "ws://127.0.0.1:5599", "PROC"))
-        killed = []
-        monkeypatch.setattr(cdp, "_kill_chrome_on_port", lambda port: killed.append(port))
-        s = cdp.SharedCdpSession()
+        endpoint = "ws://127.0.0.1:59222/devtools/browser/abc"
+        monkeypatch.setattr(cdp._skill, "ensure_endpoint",
+                            lambda pd=None: _result("reused", endpoint))
+        p.chromium.connect_over_cdp.side_effect = [RuntimeError("boom"), MagicMock()]
+        killed_ports: list = []
+        killed_dirs: list = []
+        monkeypatch.setattr(cdp._skill, "_kill_chrome_on_port",
+                            lambda port: killed_ports.append(port))
+        monkeypatch.setattr(cdp._skill, "_kill_clone_chrome",
+                            lambda d: killed_dirs.append(d) or 0)
+        monkeypatch.setattr(cdp._skill, "_launch_cloned_logged_in_browser",
+                            lambda d, source=None: (MagicMock(), "ws://127.0.0.1:5599/devtools/browser/x"))
+
+        s = cdp._skill.CdpSession(profile_dir=str(tmp_path))
+
+        assert killed_ports == [59222]
+        assert killed_dirs == [s._clone_dir]
         assert s._own_browser is True
-        assert s._proc == "PROC"
-        assert killed == [59222]   # connect 失败但实例可能还活着 → 按端口清
+        assert p.stop.call_count == 1
 
 
-# ── D. close() 所有权语义 ─────────────────────────────────────
+# ---------------------------------------------------------------------------
+# D · close() D6 契约（只关灯不 taskkill）
+# ---------------------------------------------------------------------------
 
-class TestCloseOwnership:
-    def test_reused_session_close_does_not_kill_browser(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(cdp.subprocess, "run", lambda *a, **k: calls.append(a))
+
+class TestCloseD6Contract:
+    def test_reused_close_only_disconnects(self, monkeypatch: pytest.MonkeyPatch):
         s = _reused_session()
-        s.close()
-        assert calls == []   # 复用共享浏览器：只断开，绝不 taskkill
+        holder = MagicMock()
+        s._holder = holder
+        calls: list = []
+        monkeypatch.setattr(cdp._skill, "_shutdown_if_last_holder",
+                            lambda d, ep, h: calls.append((d, ep, h)))
+        monkeypatch.setattr(cdp._skill, "_kill_chrome_on_port", _sentinel_raise("_kill_chrome_on_port"))
 
-    def test_owned_session_close_kills_process_tree(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(cdp.subprocess, "run", lambda *a, **k: calls.append(a))
-        s = _reused_session()
-        s._own_browser = True
-        s._proc = MagicMock()
-        s._proc.poll.return_value = None
-        s._proc.pid = 4321
         s.close()
-        assert any("taskkill" in " ".join(map(str, a)) and "4321" in " ".join(map(str, a))
-                   for a in calls)
 
-    def test_owned_session_close_skips_dead_proc(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(cdp.subprocess, "run", lambda *a, **k: calls.append(a))
+        assert calls == [(s._clone_dir, s.cdp_endpoint, holder)]
+        assert s._holder is None
+
+    def test_owned_close_no_direct_taskkill(self, monkeypatch: pytest.MonkeyPatch):
         s = _reused_session()
         s._own_browser = True
-        s._proc = MagicMock()
-        s._proc.poll.return_value = 1   # 已退出
+        s._holder = MagicMock()
+        calls: list = []
+        monkeypatch.setattr(cdp._skill, "_shutdown_if_last_holder",
+                            lambda d, ep, h: calls.append((d, ep, h)))
+        monkeypatch.setattr(cdp._skill, "_kill_chrome_on_port", _sentinel_raise("_kill_chrome_on_port"))
+
         s.close()
-        assert not any("taskkill" in " ".join(map(str, a)) for a in calls)
+
+        assert len(calls) == 1
+        assert s._live is False
+
+    def test_close_clears_holder_and_live(self, monkeypatch: pytest.MonkeyPatch):
+        s = _reused_session()
+        s._holder = MagicMock()
+        monkeypatch.setattr(cdp._skill, "_shutdown_if_last_holder", lambda d, ep, h: None)
+
+        s.close()
+
+        assert s._holder is None
+        assert s._live is False
 
 
-# ── E. _launch_cloned_logged_in_browser 条件化杀 ──────────────
-
-class TestConditionalKill:
-    def _patch_launch_env(self, monkeypatch, fresh: bool):
-        monkeypatch.setattr(pcf, "clone_is_fresh", lambda: fresh)
-        monkeypatch.setattr(pcf, "ensure_profile_clone", lambda src=None: Path("C:/fake/clone"))
-        monkeypatch.setattr(cdp, "_find_system_chrome", lambda: "C:/fake/chrome.exe")
-        monkeypatch.setattr(cdp.subprocess, "Popen", lambda *a, **k: MagicMock())
-        monkeypatch.setattr(cdp, "_probe_endpoint",
-                            lambda port, **k: "ws://127.0.0.1:9222/devtools/browser/x")
-        return []
-
-    def test_fresh_clone_skips_kill_chrome(self, monkeypatch):
-        killed = self._patch_launch_env(monkeypatch, fresh=True)
-        monkeypatch.setattr(cdp, "_ensure_chrome_closed", lambda: killed.append("kill"))
-        cdp._launch_cloned_logged_in_browser(MagicMock())
-        assert killed == []   # clone 新鲜 → 重启克隆浏览器无需释放源 cookie 锁
-
-    def test_stale_clone_kills_chrome_before_copy(self, monkeypatch):
-        killed = self._patch_launch_env(monkeypatch, fresh=False)
-        monkeypatch.setattr(cdp, "_ensure_chrome_closed", lambda: killed.append("kill"))
-        cdp._launch_cloned_logged_in_browser(MagicMock())
-        assert killed == ["kill"]   # 要全量复制 → 必须先释放独占锁
-
-    def test_missing_chrome_exe_raises(self, monkeypatch):
-        self._patch_launch_env(monkeypatch, fresh=True)
-        monkeypatch.setattr(cdp, "_find_system_chrome", lambda: None)
-        with pytest.raises(RuntimeError):
-            cdp._launch_cloned_logged_in_browser(MagicMock())
+# ---------------------------------------------------------------------------
+# E · _launch 条件杀 Chrome（fresh 不杀 / stale 才杀 / 缺 Chrome 报错）
+# ---------------------------------------------------------------------------
 
 
-# ── F. clone_is_fresh（3 天 marker 判定，与 SKILL 同约定） ────
+class TestLaunchConditionalKill:
+    def _patch_common(self, monkeypatch: pytest.MonkeyPatch, closed: list) -> None:
+        monkeypatch.setattr(cdp._skill, "_clone_is_fresh", lambda d: True)
+        monkeypatch.setattr(cdp._skill, "_ensure_chrome_closed", lambda: closed.append("kill"))
+        monkeypatch.setattr(cdp._skill.ens, "ensure_profile", lambda *a, **k: None)
+        monkeypatch.setattr(cdp._skill, "_find_system_chrome", lambda: "C:/fake/chrome.exe")
+        monkeypatch.setattr(cdp._skill, "subprocess",
+                            SimpleNamespace(Popen=MagicMock(), DEVNULL=-3))
+        monkeypatch.setattr(cdp._skill, "_free_port", lambda: 59222)
+        monkeypatch.setattr(cdp._skill, "_read_devtools_port", lambda d: 59222)
+        monkeypatch.setattr(cdp._skill, "_probe_chrome_devtools",
+                            lambda port: {"Browser": "Chrome/122"})
+
+    def test_fresh_no_kill(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        closed: list = []
+        self._patch_common(monkeypatch, closed)
+
+        proc, endpoint = cdp._skill._launch_cloned_logged_in_browser(tmp_path)
+
+        assert closed == []
+        assert endpoint == "ws://127.0.0.1:59222"
+        assert proc is not None
+
+    def test_stale_kills_chrome(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        closed: list = []
+        self._patch_common(monkeypatch, closed)
+        monkeypatch.setattr(cdp._skill, "_clone_is_fresh", lambda d: False)
+
+        cdp._skill._launch_cloned_logged_in_browser(tmp_path)
+
+        assert closed == ["kill"]
+
+    def test_missing_chrome_raises(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        closed: list = []
+        self._patch_common(monkeypatch, closed)
+        monkeypatch.setattr(cdp._skill, "_find_system_chrome", lambda: None)
+
+        with pytest.raises(RuntimeError, match="Chrome"):
+            cdp._skill._launch_cloned_logged_in_browser(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# F · clone_is_fresh（项目侧无参版）
+# ---------------------------------------------------------------------------
+
 
 class TestCloneIsFresh:
-    def _patch(self, monkeypatch, tmp_path):
+    def _patch(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setattr(pcf, "CLONE_DIR", tmp_path)
         monkeypatch.delenv("CDP_SYNC_INTERVAL_DAYS", raising=False)
 
-    def test_fresh_marker_today(self, monkeypatch, tmp_path):
+    def test_fresh_today(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         self._patch(monkeypatch, tmp_path)
         _make_clone(tmp_path, marker=date.today().isoformat())
         assert pcf.clone_is_fresh() is True
 
-    def test_stale_marker_beyond_interval(self, monkeypatch, tmp_path):
+    def test_stale_3days(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         self._patch(monkeypatch, tmp_path)
-        old = (date.today() - timedelta(days=3)).isoformat()
-        _make_clone(tmp_path, marker=old)
+        _make_clone(tmp_path, marker=(date.today() - timedelta(days=3)).isoformat())
         assert pcf.clone_is_fresh() is False
 
-    def test_missing_marker_is_stale(self, monkeypatch, tmp_path):
+    def test_missing_marker(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         self._patch(monkeypatch, tmp_path)
         _make_clone(tmp_path, marker=None)
         assert pcf.clone_is_fresh() is False
 
-    def test_missing_cookie_db_is_stale(self, monkeypatch, tmp_path):
+    def test_missing_cookie(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         self._patch(monkeypatch, tmp_path)
         _make_clone(tmp_path, with_cookies=False)
         assert pcf.clone_is_fresh() is False
 
-    def test_corrupted_marker_is_stale(self, monkeypatch, tmp_path):
+    def test_corrupted_marker(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         self._patch(monkeypatch, tmp_path)
         _make_clone(tmp_path, marker="garbage!!")
         assert pcf.clone_is_fresh() is False
 
-    def test_timestamp_marker_accepted(self, monkeypatch, tmp_path):
-        """兼容 _touch_marker 旧格式（unix timestamp）：解析为今天 → fresh。"""
+    def test_timestamp_marker(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         self._patch(monkeypatch, tmp_path)
-        import time as _t
-        ts = int(_t.mktime(date.today().timetuple()))
-        _make_clone(tmp_path, marker=str(ts))
+        _make_clone(tmp_path, marker=str(int(_time_mod.mktime(date.today().timetuple()))))
         assert pcf.clone_is_fresh() is True
 
-    def test_interval_env_respected(self, monkeypatch, tmp_path):
+    def test_interval_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         self._patch(monkeypatch, tmp_path)
         monkeypatch.setenv("CDP_SYNC_INTERVAL_DAYS", "30")
-        old = (date.today() - timedelta(days=7)).isoformat()
-        _make_clone(tmp_path, marker=old)
+        _make_clone(tmp_path, marker=(date.today() - timedelta(days=7)).isoformat())
         assert pcf.clone_is_fresh() is True
 
 
-# ── G. _probe_endpoint 的 fallback 开关（修假地址兜底） ───────
+# ---------------------------------------------------------------------------
+# H · kill_chrome_on_port（2026-09-11 实踩回归：list 形式）
+# ---------------------------------------------------------------------------
 
-class TestProbeEndpointFallback:
-    def _mock_dead_probe(self, monkeypatch):
-        import login_cdp_fetch
-        monkeypatch.setattr(login_cdp_fetch, "probe_chrome_devtools", lambda port, timeout=2.0: None)
-        monkeypatch.setattr(cdp.time, "sleep", lambda *_: None)
-
-    def test_default_fallback_returns_synthetic_ws(self, monkeypatch):
-        """现有启动路径行为回归：默认失败仍返回拼接假地址（重试耗尽后的兜底）。"""
-        self._mock_dead_probe(monkeypatch)
-        assert cdp._probe_endpoint(9222) == "ws://127.0.0.1:9222"
-
-    def test_fallback_false_returns_none(self, monkeypatch):
-        self._mock_dead_probe(monkeypatch)
-        assert cdp._probe_endpoint(9222, fallback=False) is None
-
-
-# ── H. _kill_chrome_on_port（按端口精准清理） ─────────────────
 
 class TestKillChromeOnPort:
-    def _patch_run(self, monkeypatch, netstat_line):
-        """按命令分发 mock：netstat 返回指定输出，taskkill 记录调用。返回 calls 列表。"""
-        calls = []
+    def _fake_run(self, calls: list, line: str | None):
+        def _run(cmd, *args, **kwargs):
+            cmd_s = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+            if "netstat" in cmd_s:
+                if line is None:
+                    raise RuntimeError("netstat fail")
+                return MagicMock(stdout=line)
+            calls.append(cmd)
+            return MagicMock()
+        return _run
 
-        def fake_run(args, **kw):
-            cmd = " ".join(map(str, args))
-            if cmd.startswith("netstat"):
-                return MagicMock(stdout=netstat_line)
-            calls.append(args)
-            return MagicMock(stdout="")
+    def _patch_subprocess(self, monkeypatch: pytest.MonkeyPatch, calls: list, line: str | None):
+        monkeypatch.setattr(cdp._skill, "subprocess",
+                            SimpleNamespace(run=self._fake_run(calls, line)))
 
-        monkeypatch.setattr(cdp.subprocess, "run", fake_run)
-        return calls
+    def test_kills_listener_pid(self, monkeypatch: pytest.MonkeyPatch):
+        calls: list = []
+        self._patch_subprocess(monkeypatch, calls,
+                               "  TCP    127.0.0.1:59222    0.0.0.0:0    LISTENING    4321\n")
+        cdp._skill._kill_chrome_on_port(59222)
+        assert len(calls) == 1
+        assert "4321" in " ".join(calls[0])
 
-    def test_kills_listener_pid(self, monkeypatch):
-        line = "  TCP    127.0.0.1:59222    0.0.0.0:0    LISTENING    4321"
-        calls = self._patch_run(monkeypatch, line)
-        cdp._kill_chrome_on_port(59222)
-        assert any("4321" in " ".join(map(str, a)) for a in calls)
-
-    def test_no_listener_no_kill(self, monkeypatch):
-        calls = self._patch_run(monkeypatch, "")
-        cdp._kill_chrome_on_port(59222)
+    def test_no_listener_no_kill(self, monkeypatch: pytest.MonkeyPatch):
+        calls: list = []
+        self._patch_subprocess(monkeypatch, calls,
+                               "  TCP    127.0.0.1:99999    0.0.0.0:0    LISTENING    4321\n")
+        cdp._skill._kill_chrome_on_port(59222)
         assert calls == []
 
-    def test_netstat_failure_swallowed(self, monkeypatch):
-        def fake_run(args, **kw):
-            raise RuntimeError("netstat broken")
-        monkeypatch.setattr(cdp.subprocess, "run", fake_run)
-        cdp._kill_chrome_on_port(59222)   # 不应抛出
+    def test_netstat_failure_swallowed(self, monkeypatch: pytest.MonkeyPatch):
+        calls: list = []
+        self._patch_subprocess(monkeypatch, calls, None)
+        cdp._skill._kill_chrome_on_port(59222)  # 不应抛
+        assert calls == []
 
 
-# ── I. restart_fresh（登录墙兜底） ────────────────────────────
+# ---------------------------------------------------------------------------
+# I · restart_fresh（复用会话重建 / 自有会话拒绝）
+# ---------------------------------------------------------------------------
+
 
 class TestRestartFresh:
-    def test_reused_session_rebuilds_fresh(self, monkeypatch):
-        _fake_playwright(monkeypatch)
+    def test_reused_rebuilds(self, monkeypatch: pytest.MonkeyPatch):
         s = _reused_session()
-        killed = []
-        monkeypatch.setattr(cdp, "_kill_chrome_on_port", lambda port: killed.append(port))
-        monkeypatch.setattr(cdp, "_launch_cloned_logged_in_browser",
-                            lambda p: (MagicMock(), "ws://127.0.0.1:7777", "PROC2"))
-        assert s.restart_fresh() is True
-        assert killed == [59222]
-        assert s._own_browser is True
-        assert s.cdp_endpoint == "ws://127.0.0.1:7777"
-
-    def test_owned_session_returns_false(self, monkeypatch):
+        killed_ports: list = []
+        monkeypatch.setattr(cdp._skill, "_kill_chrome_on_port",
+                            lambda port: killed_ports.append(port))
+        monkeypatch.setattr(cdp._skill, "_kill_clone_chrome", lambda d: 0)
+        monkeypatch.setattr(cdp._skill, "_launch_cloned_logged_in_browser",
+                            lambda d, source=None: (MagicMock(), "ws://127.0.0.1:7777/devtools/browser/y"))
+        registered: list = []
+        monkeypatch.setattr(cdp._skill, "_register_holder",
+                            lambda d, ep: registered.append((d, ep)) or MagicMock())
         _fake_playwright(monkeypatch)
+
+        ok = s.restart_fresh()
+
+        assert ok is True
+        assert killed_ports == [59222]
+        assert s._own_browser is True
+        assert s.cdp_endpoint == "ws://127.0.0.1:7777/devtools/browser/y"
+        assert s._proc is not None
+
+    def test_owned_refuses(self):
         s = _reused_session()
         s._own_browser = True
-        monkeypatch.setattr(cdp, "_launch_cloned_logged_in_browser", _sentinel_raise("_launch"))
         assert s.restart_fresh() is False
 
 
-# ── J. __init__/from_endpoint 失败回滚（loop 泄漏修复，2026-09-10） ──
+# ---------------------------------------------------------------------------
+# J · __init__ 失败回滚（2026-09-10 真机 loop 泄漏故障背景）
+# ---------------------------------------------------------------------------
+
 
 class TestInitFailureRollback:
-    """__init__ 失败必须回滚已启动的 sync_playwright（stop）。
-
-    真机故障（2026-09-10）：沙箱拦截 Chrome 启动 → 首次构造在重建路径抛异常，
-    已 start() 的 playwright 事件循环在本线程永久 running（泄漏）→ 同线程后续
-    每次构造都报 "using Playwright Sync API inside the asyncio loop"，
-    consume_migrate_queue --fetch 整批 15 篇全灭且 11 条误入 manual。
-    """
-
-    def test_launch_failure_stops_playwright_and_reraises(self, monkeypatch):
+    def test_launch_failure_rollback(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        """ensure_endpoint 抛 → pw stop 一次 + holder 未注册不炸。"""
         p = _fake_playwright(monkeypatch)
-        monkeypatch.setattr(cdp, "_read_devtools_port", lambda d: None)
+        monkeypatch.setattr(cdp._skill, "ensure_endpoint",
+                            MagicMock(side_effect=RuntimeError("no chrome")))
+        with pytest.raises(RuntimeError, match="no chrome"):
+            cdp._skill.CdpSession(profile_dir=str(tmp_path))
+        assert p.stop.call_count == 1
 
-        def _boom(_p):
-            raise RuntimeError("chrome launch blocked")
-
-        monkeypatch.setattr(cdp, "_launch_cloned_logged_in_browser", _boom)
-        with pytest.raises(RuntimeError, match="chrome launch blocked"):
-            cdp.SharedCdpSession()
-        p.stop.assert_called_once()
-
-    def test_reuse_connect_and_relaunch_both_fail_stops_playwright(self, monkeypatch):
+    def test_double_failure_stops_twice(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        """复用 connect 失败 + 重建也失败 → 外层 rollback stop 第二次。"""
         p = _fake_playwright(monkeypatch)
-        p.chromium.connect_over_cdp.side_effect = RuntimeError("ECONNREFUSED")
-        monkeypatch.setattr(cdp, "_read_devtools_port", lambda d: 59222)
-        monkeypatch.setattr(cdp, "_probe_reuse_endpoint", lambda port: "ws://x")
-        monkeypatch.setattr(cdp, "_kill_chrome_on_port", lambda port: None)
-        monkeypatch.setattr(cdp, "_kill_clone_chrome", lambda d: 1)           # 重建兜底清理
+        endpoint = "ws://127.0.0.1:59222/devtools/browser/abc"
+        monkeypatch.setattr(cdp._skill, "ensure_endpoint",
+                            lambda pd=None: _result("reused", endpoint))
+        p.chromium.connect_over_cdp.side_effect = RuntimeError("boom")
+        monkeypatch.setattr(cdp._skill, "_kill_chrome_on_port", lambda port: None)
+        monkeypatch.setattr(cdp._skill, "_kill_clone_chrome", lambda d: 0)
+        monkeypatch.setattr(cdp._skill, "_launch_cloned_logged_in_browser",
+                            MagicMock(side_effect=RuntimeError("relaunch fail")))
 
-        def _boom(_p):
-            raise RuntimeError("relaunch died")
+        with pytest.raises(RuntimeError, match="relaunch fail"):
+            cdp._skill.CdpSession(profile_dir=str(tmp_path))
+        assert p.stop.call_count == 2
 
-        monkeypatch.setattr(cdp, "_launch_cloned_logged_in_browser", _boom)
-        with pytest.raises(RuntimeError, match="relaunch died"):
-            cdp.SharedCdpSession()
-        p.stop.assert_called_once()
-
-    def test_success_does_not_stop_playwright(self, monkeypatch):
+    def test_success_no_stop(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         p = _fake_playwright(monkeypatch)
-        monkeypatch.setattr(cdp, "_read_devtools_port", lambda d: None)
-        monkeypatch.setattr(cdp, "_find_clone_chrome_port", lambda d: None)   # stale 恢复不触发
-        monkeypatch.setattr(cdp, "_kill_clone_chrome", lambda d: 1)           # 重建兜底清理
-        monkeypatch.setattr(cdp, "_launch_cloned_logged_in_browser",
-                            lambda _p: (MagicMock(), "ws://127.0.0.1:5599", "PROC"))
-        cdp.SharedCdpSession()
+        endpoint = "ws://127.0.0.1:59222/devtools/browser/abc"
+        monkeypatch.setattr(cdp._skill, "ensure_endpoint",
+                            lambda pd=None: _result("reused", endpoint))
+        cdp._skill.CdpSession(profile_dir=str(tmp_path))
         p.stop.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# from_endpoint 回滚
+# ---------------------------------------------------------------------------
 
 
 class TestFromEndpointRollback:
-    """from_endpoint 同类泄漏：start() 后 connect 失败也必须回滚。"""
-
-    def test_connect_failure_stops_playwright_and_reraises(self, monkeypatch):
+    def test_connect_failure_stops_playwright(self, monkeypatch: pytest.MonkeyPatch):
         p = _fake_playwright(monkeypatch)
-        p.chromium.connect_over_cdp.side_effect = RuntimeError("bad endpoint")
-        with pytest.raises(RuntimeError, match="bad endpoint"):
-            cdp.SharedCdpSession.from_endpoint("ws://127.0.0.1:1/devtools/browser/x")
+        p.chromium.connect_over_cdp.side_effect = RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            cdp._skill.CdpSession.from_endpoint("ws://127.0.0.1:59222/devtools/browser/abc")
         p.stop.assert_called_once()
 
-    def test_success_keeps_playwright_alive(self, monkeypatch):
+    def test_success_no_stop(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         p = _fake_playwright(monkeypatch)
-        s = cdp.SharedCdpSession.from_endpoint("ws://127.0.0.1:5599/devtools/browser/x")
-        p.stop.assert_not_called()
+        monkeypatch.setattr(cdp._skill, "_find_clone_chrome_port", lambda d: None)
+
+        s = cdp._skill.CdpSession.from_endpoint("ws://127.0.0.1:59222/devtools/browser/abc",
+                                                profile_dir=str(tmp_path))
         assert s._own_browser is False
+        assert s._holder is None
+        p.stop.assert_not_called()
 
 
-# ── K. _get_chrome_cmdlines（PowerShell CIM 枚举，wmic 已被 Win11 24H2+ 移除） ──
+# ---------------------------------------------------------------------------
+# K · _get_chrome_cmdlines（2026-09-11 实踩回归：PowerShell CIM + list）
+# ---------------------------------------------------------------------------
+
 
 class TestGetChromeCmdlines:
-    def test_parses_tab_separated_cmdlines(self, monkeypatch):
-        monkeypatch.setattr(cdp.sys, "platform", "win32")
-        out = ("34220\tchrome.exe --user-data-dir=C:\\clone --remote-debugging-port=55873\n"
-               "11568\tchrome.exe --type=crashpad-handler --user-data-dir=C:\\clone\n")
-        monkeypatch.setattr(cdp.subprocess, "run", lambda *a, **k: MagicMock(stdout=out))
-        assert cdp._get_chrome_cmdlines() == [
+    def _patch_win(self, monkeypatch: pytest.MonkeyPatch, fake_run):
+        monkeypatch.setattr(cdp._skill.sys, "platform", "win32")
+        monkeypatch.setattr(cdp._skill, "subprocess", SimpleNamespace(run=fake_run))
+
+    def test_tab_output_parsed(self, monkeypatch: pytest.MonkeyPatch):
+        out = "ProcessId\tCommandLine\n34220\tchrome.exe --user-data-dir=C:\\clone --remote-debugging-port=55873\n11568\tchrome.exe --type=crashpad-handler --user-data-dir=C:\\clone\n"
+        calls: list = []
+
+        def fake_run(cmd, *a, **k):
+            cmd_s = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+            calls.append(cmd_s)
+            return MagicMock(stdout=out)
+
+        self._patch_win(monkeypatch, fake_run)
+        rows = cdp._skill._get_chrome_cmdlines()
+        assert rows == [
             (34220, "chrome.exe --user-data-dir=C:\\clone --remote-debugging-port=55873"),
             (11568, "chrome.exe --type=crashpad-handler --user-data-dir=C:\\clone"),
         ]
 
-    def test_skips_nonnumeric_and_empty_lines(self, monkeypatch):
-        monkeypatch.setattr(cdp.sys, "platform", "win32")
+    def test_skips_invalid_rows(self, monkeypatch: pytest.MonkeyPatch):
         out = "\nProcessId\tCommandLine\nabc\tnot-pid\n42\tchrome.exe --x\n"
-        monkeypatch.setattr(cdp.subprocess, "run", lambda *a, **k: MagicMock(stdout=out))
-        assert cdp._get_chrome_cmdlines() == [(42, "chrome.exe --x")]
+        self._patch_win(monkeypatch, lambda cmd, *a, **k: MagicMock(stdout=out))
+        rows = cdp._skill._get_chrome_cmdlines()
+        assert rows == [(42, "chrome.exe --x")]
 
-    def test_whitespace_fallback_when_no_tab(self, monkeypatch):
-        monkeypatch.setattr(cdp.sys, "platform", "win32")
-        monkeypatch.setattr(cdp.subprocess, "run",
-                            lambda *a, **k: MagicMock(stdout="34220 chrome.exe --flag\n"))
-        assert cdp._get_chrome_cmdlines() == [(34220, "chrome.exe --flag")]
+    def test_whitespace_fallback(self, monkeypatch: pytest.MonkeyPatch):
+        out = "34220 chrome.exe --flag\n"
+        self._patch_win(monkeypatch, lambda cmd, *a, **k: MagicMock(stdout=out))
+        rows = cdp._skill._get_chrome_cmdlines()
+        assert rows == [(34220, "chrome.exe --flag")]
 
-    def test_subprocess_failure_returns_empty(self, monkeypatch):
-        monkeypatch.setattr(cdp.sys, "platform", "win32")
+    def test_subprocess_failure_returns_empty(self, monkeypatch: pytest.MonkeyPatch):
+        def fake_run(cmd, *a, **k):
+            raise RuntimeError("boom")
+        self._patch_win(monkeypatch, fake_run)
+        assert cdp._skill._get_chrome_cmdlines() == []
 
-        def _boom(*a, **k):
-            raise RuntimeError("powershell broken")
-
-        monkeypatch.setattr(cdp.subprocess, "run", _boom)
-        assert cdp._get_chrome_cmdlines() == []
-
-    def test_non_windows_returns_empty_without_subprocess(self, monkeypatch):
-        monkeypatch.setattr(cdp.sys, "platform", "linux")
-        monkeypatch.setattr(cdp.subprocess, "run", _sentinel_raise("subprocess.run"))
-        assert cdp._get_chrome_cmdlines() == []
+    def test_non_windows_returns_empty(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(cdp._skill.sys, "platform", "linux")
+        monkeypatch.setattr(cdp._skill, "subprocess",
+                            SimpleNamespace(run=_sentinel_raise("subprocess.run")))
+        assert cdp._skill._get_chrome_cmdlines() == []
 
 
-# ── L. _find_clone_chrome_port（从活进程命令行恢复真实调试端口） ──
+# ---------------------------------------------------------------------------
+# L · _find_clone_chrome_port（cmd 不 lower → 测试用小写路径保持一致）
+# ---------------------------------------------------------------------------
+
 
 class TestFindCloneChromePort:
-    def test_extracts_port_of_matching_clone_chrome(self, monkeypatch, tmp_path):
-        clone = str(tmp_path)
-        rows = [(111, f"chrome.exe --user-data-dir={clone} --remote-debugging-port=55873"),
-                (222, "chrome.exe --user-data-dir=C:\\other --remote-debugging-port=1")]
-        monkeypatch.setattr(cdp, "_get_chrome_cmdlines", lambda: rows)
-        assert cdp._find_clone_chrome_port(tmp_path) == 55873
+    def _rows(self, monkeypatch: pytest.MonkeyPatch, rows: list):
+        monkeypatch.setattr(cdp._skill, "_get_chrome_cmdlines", lambda: rows)
 
-    def test_matches_quoted_user_data_dir(self, monkeypatch, tmp_path):
-        clone = str(tmp_path)
-        rows = [(111, f'chrome.exe --user-data-dir="{clone}" --remote-debugging-port=6001')]
-        monkeypatch.setattr(cdp, "_get_chrome_cmdlines", lambda: rows)
-        assert cdp._find_clone_chrome_port(tmp_path) == 6001
+    def test_plain_match(self, monkeypatch: pytest.MonkeyPatch):
+        clone_dir = Path("c:/clone")
+        self._rows(monkeypatch, [(111, "chrome.exe --user-data-dir=c:\\clone --remote-debugging-port=55873")])
+        assert cdp._skill._find_clone_chrome_port(clone_dir) == 55873
 
-    def test_returns_none_when_no_clone_chrome(self, monkeypatch, tmp_path):
-        rows = [(222, "chrome.exe --user-data-dir=C:\\other --remote-debugging-port=1")]
-        monkeypatch.setattr(cdp, "_get_chrome_cmdlines", lambda: rows)
-        assert cdp._find_clone_chrome_port(tmp_path) is None
+    def test_quoted_match(self, monkeypatch: pytest.MonkeyPatch):
+        clone_dir = Path("c:/clone")
+        self._rows(monkeypatch, [(222, 'chrome.exe --user-data-dir="c:\\clone" --remote-debugging-port=6001')])
+        assert cdp._skill._find_clone_chrome_port(clone_dir) == 6001
 
-    def test_skips_portless_match_then_finds_real_port(self, monkeypatch, tmp_path):
-        """crashpad-handler 等子进程匹配目录但无端口 flag → 跳过继续找，不误判为 None。"""
-        clone = str(tmp_path)
-        rows = [(11568, f"chrome.exe --type=crashpad-handler --user-data-dir={clone}"),
-                (111, f"chrome.exe --user-data-dir={clone} --remote-debugging-port=55873")]
-        monkeypatch.setattr(cdp, "_get_chrome_cmdlines", lambda: rows)
-        assert cdp._find_clone_chrome_port(tmp_path) == 55873
+    def test_no_match_returns_none(self, monkeypatch: pytest.MonkeyPatch):
+        clone_dir = Path("c:/clone")
+        self._rows(monkeypatch, [(333, "chrome.exe --user-data-dir=c:\\other --remote-debugging-port=55873")])
+        assert cdp._skill._find_clone_chrome_port(clone_dir) is None
 
-    def test_returns_none_when_only_portless_match(self, monkeypatch, tmp_path):
-        clone = str(tmp_path)
-        rows = [(11568, f"chrome.exe --type=crashpad-handler --user-data-dir={clone}")]
-        monkeypatch.setattr(cdp, "_get_chrome_cmdlines", lambda: rows)
-        assert cdp._find_clone_chrome_port(tmp_path) is None
+    def test_skips_non_match_continue(self, monkeypatch: pytest.MonkeyPatch):
+        clone_dir = Path("c:/clone")
+        self._rows(monkeypatch, [
+            (444, "chrome.exe --type=crashpad-handler --user-data-dir=c:\\clone"),
+            (111, "chrome.exe --user-data-dir=c:\\clone --remote-debugging-port=55873"),
+        ])
+        assert cdp._skill._find_clone_chrome_port(clone_dir) == 55873
 
-    def test_returns_none_on_empty_cmdlines(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(cdp, "_get_chrome_cmdlines", lambda: [])
-        assert cdp._find_clone_chrome_port(tmp_path) is None
+    def test_portless_rows_only(self, monkeypatch: pytest.MonkeyPatch):
+        clone_dir = Path("c:/clone")
+        self._rows(monkeypatch, [(555, "chrome.exe --user-data-dir=c:\\clone")])
+        assert cdp._skill._find_clone_chrome_port(clone_dir) is None
+
+    def test_empty_rows(self, monkeypatch: pytest.MonkeyPatch):
+        self._rows(monkeypatch, [])
+        assert cdp._skill._find_clone_chrome_port(Path("c:/clone")) is None
 
 
-# ── M. _rewrite_devtools_port_file（恢复后回写，下次直读即中） ──
+# ---------------------------------------------------------------------------
+# M · _rewrite_devtools_port_file
+# ---------------------------------------------------------------------------
+
 
 class TestRewriteDevtoolsPortFile:
-    def test_writes_port_and_browser_path(self, tmp_path):
-        ok = cdp._rewrite_devtools_port_file(tmp_path, "ws://127.0.0.1:55873/devtools/browser/abc")
+    def test_success_two_lines(self, tmp_path: Path):
+        ok = cdp._skill._rewrite_devtools_port_file(tmp_path, "ws://127.0.0.1:55873/devtools/browser/abc")
         assert ok is True
-        assert (tmp_path / "DevToolsActivePort").read_text(encoding="utf-8") == "55873\n/devtools/browser/abc"
+        content = (tmp_path / "DevToolsActivePort").read_text(encoding="utf-8")
+        assert content == "55873\n/devtools/browser/abc"
 
-    def test_endpoint_without_port_returns_false(self, tmp_path):
-        assert cdp._rewrite_devtools_port_file(tmp_path, "ws://bad-endpoint") is False
+    def test_bad_endpoint_false(self, tmp_path: Path):
+        ok = cdp._skill._rewrite_devtools_port_file(tmp_path, "ws://bad-endpoint")
+        assert ok is False
         assert not (tmp_path / "DevToolsActivePort").exists()
 
-    def test_endpoint_without_browser_path_writes_port_only(self, tmp_path):
-        ok = cdp._rewrite_devtools_port_file(tmp_path, "ws://127.0.0.1:55873")
+    def test_no_path_only_port(self, tmp_path: Path):
+        ok = cdp._skill._rewrite_devtools_port_file(tmp_path, "ws://127.0.0.1:55873")
         assert ok is True
-        assert (tmp_path / "DevToolsActivePort").read_text(encoding="utf-8") == "55873"
+        content = (tmp_path / "DevToolsActivePort").read_text(encoding="utf-8")
+        assert content == "55873"
 
-    def test_unwritable_target_returns_false(self, tmp_path):
-        blocker = tmp_path / "not-a-dir.txt"
+    def test_unwritable_returns_false(self, tmp_path: Path):
+        blocker = tmp_path / "DevToolsActivePort"
         blocker.write_text("x", encoding="utf-8")
-        ok = cdp._rewrite_devtools_port_file(blocker, "ws://127.0.0.1:55873/devtools/browser/abc")
+        blocker.chmod(0o444)
+        try:
+            ok = cdp._skill._rewrite_devtools_port_file(tmp_path, "ws://127.0.0.1:55873/devtools/browser/abc")
+        finally:
+            blocker.chmod(0o666)
         assert ok is False
 
 
-# ── N. _kill_clone_chrome（按克隆目录精准清僵尸） ──────────────
+# ---------------------------------------------------------------------------
+# N · _kill_clone_chrome（2026-09-10 微修回归：taskkill 抛仍计数）
+# ---------------------------------------------------------------------------
+
 
 class TestKillCloneChrome:
-    def test_kills_only_clone_dir_processes(self, monkeypatch, tmp_path):
-        clone = str(tmp_path)
-        rows = [(111, f"chrome.exe --user-data-dir={clone} --remote-debugging-port=55873"),
-                (222, "chrome.exe --user-data-dir=C:\\other --remote-debugging-port=1"),
-                (333, f"chrome.exe --type=renderer --user-data-dir={clone}")]
-        monkeypatch.setattr(cdp, "_get_chrome_cmdlines", lambda: rows)
-        calls = []
-        monkeypatch.setattr(cdp.subprocess, "run", lambda *a, **k: calls.append(a) or MagicMock())
-        assert cdp._kill_clone_chrome(tmp_path) == 2
-        joined = " ".join(map(str, [arg for call in calls for arg in call]))
+    def test_kills_matching_pids(self, monkeypatch: pytest.MonkeyPatch):
+        rows = [
+            (111, "chrome.exe --user-data-dir=c:\\clone --remote-debugging-port=55873"),
+            (222, "chrome.exe --user-data-dir=c:\\other"),
+            (333, 'chrome.exe --user-data-dir="c:\\clone" --remote-debugging-port=6001'),
+        ]
+        monkeypatch.setattr(cdp._skill, "_get_chrome_cmdlines", lambda: rows)
+        calls: list = []
+
+        def fake_run(cmd, *a, **k):
+            cmd_s = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+            calls.append(cmd_s)
+            return MagicMock()
+
+        monkeypatch.setattr(cdp._skill, "subprocess", SimpleNamespace(run=fake_run))
+
+        killed = cdp._skill._kill_clone_chrome(Path("c:/clone"))
+
+        assert killed == 2
+        joined = " ".join(calls)
         assert "111" in joined and "333" in joined and "222" not in joined
 
-    def test_no_match_kills_nothing(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(cdp, "_get_chrome_cmdlines", lambda: [])
-        calls = []
-        monkeypatch.setattr(cdp.subprocess, "run", lambda *a, **k: calls.append(a))
-        assert cdp._kill_clone_chrome(tmp_path) == 0
-        assert calls == []
+    def test_no_match_zero(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(cdp._skill, "_get_chrome_cmdlines",
+                            lambda: [(222, "chrome.exe --user-data-dir=c:\\other")])
+        assert cdp._skill._kill_clone_chrome(Path("c:/clone")) == 0
 
-    def test_taskkill_failure_swallowed(self, monkeypatch, tmp_path):
-        clone = str(tmp_path)
-        rows = [(111, f"chrome.exe --user-data-dir={clone}")]
-        monkeypatch.setattr(cdp, "_get_chrome_cmdlines", lambda: rows)
+    def test_taskkill_failure_still_counts(self, monkeypatch: pytest.MonkeyPatch):
+        """② 微修回归：per-pid taskkill 抛异常仍计数（外层 try 兜底）。"""
+        monkeypatch.setattr(cdp._skill, "_get_chrome_cmdlines",
+                            lambda: [(111, "chrome.exe --user-data-dir=c:\\clone --remote-debugging-port=55873")])
 
-        def _boom(*a, **k):
-            raise RuntimeError("access denied")
+        def fake_run(cmd, *a, **k):
+            raise RuntimeError("taskkill fail")
 
-        monkeypatch.setattr(cdp.subprocess, "run", _boom)
-        assert cdp._kill_clone_chrome(tmp_path) == 1   # 尝试过即计入，taskkill 异常吞掉不抛
+        monkeypatch.setattr(cdp._skill, "subprocess", SimpleNamespace(run=fake_run))
+        assert cdp._skill._kill_clone_chrome(Path("c:/clone")) == 1
 
-
-# ── O. __init__ stale 端口恢复（2026-09-10 真机案例代码化） ────
-
-class TestInitStalePortRecovery:
-    def test_stale_file_port_recovers_from_cmdline(self, monkeypatch):
-        """文件端口 5494 无监听、活实例实际在 55873 → 按命令行恢复复用并回写文件。"""
-        _fake_playwright(monkeypatch)
-        monkeypatch.setattr(cdp, "_read_devtools_port", lambda d: 5494)
-        probed = []
-
-        def fake_probe(port):
-            probed.append(port)
-            return "ws://127.0.0.1:55873/devtools/browser/live" if port == 55873 else None
-
-        monkeypatch.setattr(cdp, "_probe_reuse_endpoint", fake_probe)
-        monkeypatch.setattr(cdp, "_find_clone_chrome_port", lambda d: 55873)
-        rewritten = []
-        monkeypatch.setattr(cdp, "_rewrite_devtools_port_file",
-                            lambda d, ep: rewritten.append(ep) or True)
-        monkeypatch.setattr(cdp, "_launch_cloned_logged_in_browser", _sentinel_raise("_launch"))
-        monkeypatch.setattr(cdp, "_kill_chrome_on_port", _sentinel_raise("_kill_chrome_on_port"))
-        monkeypatch.setattr(cdp, "_kill_clone_chrome", _sentinel_raise("_kill_clone_chrome"))
-        s = cdp.SharedCdpSession()
-        assert probed == [5494, 55873]           # 先试文件端口，失败后按恢复端口重探
-        assert rewritten == ["ws://127.0.0.1:55873/devtools/browser/live"]
-        assert s._own_browser is False
-        assert s.cdp_endpoint == "ws://127.0.0.1:55873/devtools/browser/live"
-
-    def test_no_port_file_but_live_clone_is_reused(self, monkeypatch):
-        """无端口文件但活实例在跑（文件被删/上一任异常退出）→ 命令行恢复复用 + 回写。"""
-        _fake_playwright(monkeypatch)
-        monkeypatch.setattr(cdp, "_read_devtools_port", lambda d: None)
-        monkeypatch.setattr(cdp, "_probe_reuse_endpoint",
-                            lambda port: "ws://127.0.0.1:55873/devtools/browser/live")
-        monkeypatch.setattr(cdp, "_find_clone_chrome_port", lambda d: 55873)
-        rewritten = []
-        monkeypatch.setattr(cdp, "_rewrite_devtools_port_file",
-                            lambda d, ep: rewritten.append(ep) or True)
-        monkeypatch.setattr(cdp, "_launch_cloned_logged_in_browser", _sentinel_raise("_launch"))
-        monkeypatch.setattr(cdp, "_kill_chrome_on_port", _sentinel_raise("_kill_chrome_on_port"))
-        monkeypatch.setattr(cdp, "_kill_clone_chrome", _sentinel_raise("_kill_clone_chrome"))
-        s = cdp.SharedCdpSession()
-        assert s._own_browser is False
-        assert rewritten == ["ws://127.0.0.1:55873/devtools/browser/live"]
-
-    def test_recovery_dead_too_falls_back_to_double_cleanup_and_launch(self, monkeypatch):
-        """恢复端口也探测失败 → 文件端口与克隆目录双清后重建，绝不回写坏端点。"""
-        _fake_playwright(monkeypatch)
-        monkeypatch.setattr(cdp, "_read_devtools_port", lambda d: 5494)
-        monkeypatch.setattr(cdp, "_probe_reuse_endpoint", lambda port: None)
-        monkeypatch.setattr(cdp, "_find_clone_chrome_port", lambda d: 55873)
-        monkeypatch.setattr(cdp, "_rewrite_devtools_port_file", _sentinel_raise("_rewrite"))
-        monkeypatch.setattr(cdp, "_launch_cloned_logged_in_browser",
-                            lambda p: (MagicMock(), "ws://127.0.0.1:5599", "PROC"))
-        killed_ports = []
-        monkeypatch.setattr(cdp, "_kill_chrome_on_port", lambda port: killed_ports.append(port))
-        killed_dirs = []
-        monkeypatch.setattr(cdp, "_kill_clone_chrome", lambda d: killed_dirs.append(d) or 1)
-        s = cdp.SharedCdpSession()
-        assert killed_ports == [5494]
-        assert killed_dirs == [pcf.CLONE_DIR]
-        assert s._own_browser is True
-
-    def test_real_port_same_as_file_no_extra_probe(self, monkeypatch):
-        """命令行端口与文件端口一致 → 不重复探测，直接按原路径清理重建。"""
-        _fake_playwright(monkeypatch)
-        monkeypatch.setattr(cdp, "_read_devtools_port", lambda d: 59222)
-        probed = []
-        monkeypatch.setattr(cdp, "_probe_reuse_endpoint", lambda port: probed.append(port))
-        monkeypatch.setattr(cdp, "_find_clone_chrome_port", lambda d: 59222)
-        monkeypatch.setattr(cdp, "_launch_cloned_logged_in_browser",
-                            lambda p: (MagicMock(), "ws://127.0.0.1:5599", "PROC"))
-        monkeypatch.setattr(cdp, "_kill_chrome_on_port", lambda port: None)
-        monkeypatch.setattr(cdp, "_kill_clone_chrome", lambda d: 1)
-        s = cdp.SharedCdpSession()
-        assert probed == [59222]
-        assert s._own_browser is True

@@ -107,22 +107,24 @@ def clone_is_fresh() -> bool:
 
 
 def _resolve_skill_py() -> str | None:
-    """定位跨项目共享 SKILL 的 ensure_cdp_profile.py（优先 CDP_SKILL_PY，否则标准路径）。"""
+    """定位跨项目共享 SKILL 的 ensure_cdp_profile.py（$CDP_SKILL_PY 契约定位）。
+
+    2026-09-11（PLAN-20260911 S2）：删除 ~/.workbuddy 死回退（该路径早已不存在，
+    技能真源在 ~/.trae-cn/skills/cdp-automation-profile）；Python 侧统一走
+    shared/cdp_session 的 CDP_SKILL_DIR 三级回退，此处只保留 CLI 委托契约。
+    """
     cand_env = os.environ.get("CDP_SKILL_PY")
     if cand_env and os.path.exists(cand_env):
         return cand_env
-    cand = Path.home() / ".workbuddy" / "skills" / "cdp-automation-profile" / "ensure_cdp_profile.py"
-    if cand.exists():
-        return str(cand)
     return None
 
 
 def ensure_profile_clone(src: Path | None = None) -> Path:
     """确保 CLONE_DIR 副本可用：每 N 天首跑全量、期间复用（委托跨项目 SKILL，单一真源）。
 
-    2026-09-04 末：改为委托 ~/.workbuddy/skills/cdp-automation-profile/ensure_cdp_profile.py
-    （与 steam/buff 同一份代码，避免三处漂移、换机只维护一份）。SKILL 缺失时回退本地逻辑
-    （保持 blog-article-skill 自包含）。
+    2026-09-04 末：改为委托跨项目 SKILL cdp-automation-profile 的 ensure_cdp_profile.py
+    （$CDP_SKILL_PY 契约定位；与 steam/buff 同一份代码，避免三处漂移、换机只维护一份）。
+    SKILL 缺失（未注入 CDP_SKILL_PY）时回退本地逻辑（保持 blog-article-skill 自包含）。
 
     返回 CLONE_DIR 路径。调用方（SharedCdpSession）负责 kill Chrome 释放 cookie 锁后再调用。
     """
