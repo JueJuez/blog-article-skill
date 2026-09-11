@@ -145,10 +145,10 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
   > **【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】**
   - **不要**在 `videos/asr.py` 已提供的兜底之外「自作主张开发新兜底」。环境坑（HF 镜像 / xet / CUDA dll / 沙箱安全删除）已由 `asr.py` 的 `_apply_env_defaults()` 自动处理，**无需手敲 export、不要 diagnose**。
 - **区分「真无字幕」vs「抓取机制故障」（避免误判导致乱调试）**：
-  - 真无字幕：`capture_transcript` 已连上 9222、页面正常加载（能拿到标题）、但 `captionTracks` 为空 → **直接回上面那句话**，不要调试。
-  - 抓取机制故障：9222 连不上 / 页面空白 / 代理失效（YouTube 打不开）→ 这是**基础设施问题**，不是视频没字幕；按 `references/youtube-cdp-workflow.md` §6 排查（重跑 `python videos/cdp_launch.py` 自修复），**不要**把它当成「无字幕」回给用户。
+  - 真无字幕：`capture_transcript` 已连上 CDP 实例、页面正常加载（能拿到标题）、但 `captionTracks` 为空 → **直接回上面那句话**，不要调试。
+  - 抓取机制故障：CDP 端点连不上 / 页面空白 / 代理失效（YouTube 打不开）→ 这是**基础设施问题**，不是视频没字幕；按 `references/youtube-cdp-workflow.md` §6 排查（`ensure_endpoint` 三段式自愈/冷启动自动处理；手动诊断跑技能 CLI `ensure_endpoint.py --probe-only`），**不要**把它当成「无字幕」回给用户。
 - **最短路径（新会话拿到链接即走这条，勿自创）**：`fetch_transcript(url)` → 内部自动完成：
-  ① **复制/同步 Chrome 配置**（代理扩展 iGuge → 独立副本 `Chrome-CDP`，`ensure_chrome_running`）→
+  ① **确保 CDP 端点就绪**（`ensure_endpoint` 三段式：探测复用 → 端口自愈 → 锁内冷启动；共享克隆目录 `CdpAutomationProfile\Chrome`，代理扩展随全量克隆自带）→
   ② **用 CDP 打开视频路径**（PUT 开标签 + ws `suppress_origin=True`）→
   ③ **访问字幕接口**（让播放器自发 `/api/timedtext`，Network 拦截响应体转纯文本）。
   AI 无需关心中间步骤，调**一个函数**即可；不要自己写脚本、手搓 URL、或调试这三步。

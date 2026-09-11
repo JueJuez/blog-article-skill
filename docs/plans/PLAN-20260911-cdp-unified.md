@@ -243,7 +243,7 @@ def fetch_youtube_transcript_cdp(url: str, port: int | None = None, wait: int = 
 | D6 退出机制 | close = 断开 + 自注销持有者；最后持有者关灯（`.cdp_holders` 注册表 + PID 存活探测 + 锁内原子判定，`CDP_IDLE_SHUTDOWN` 默认开）；配 0 = 纯常驻 fallback | 用户拍板（2026-09-11） |
 | §6 观察期 | cdp_launch 标弃用后观察 **7 天** | 用户拍板（2026-09-11） |
 
-**下一步**：S1、S2、S3 已完成（见 §13）；新会话从 §9 **S4（文档对齐）**开始，S1-S6 每步独立 commit、独立验证；S5 删除 `cdp_launch.py` 前保留第二次审批点（§6）。
+**下一步**：S1-S4 已完成（见 §13）；剩余 S5（观察期 7 天后删 `cdp_launch.py`，**用户二次批准**）与 S6（技能副本同步 brain，用户指令触发）；S1-S6 每步独立 commit、独立验证。
 
 ## 13 执行进度（2026-09-12 更新）
 
@@ -254,6 +254,7 @@ def fetch_youtube_transcript_cdp(url: str, port: int | None = None, wait: int = 
 | S1 ✅ | 技能内核 `cdp_session.py`（687 行：连接语义 / §3.2 文件锁 / D6 holder 关灯 / `ensure_endpoint` 三段式）+ CLI `ensure_endpoint.py`（含 `--probe-only` / `--json`）+ SKILL.md「内核会话」「共用契约」两节 + iGuge 注记（D4） | py_compile；`ensure_endpoint.py --probe-only` 冒烟；项目全量 pytest 绿 |
 | S2 ✅ | `shared/cdp_session.py` 瘦身为 205 行薄子类（`_resolve_skill_dir` 回退链加载内核 + 尾部 re-export `CdpSession`/`EnsureResult`/`ensure_endpoint`/`probe_endpoint`，11 处消费方零改动）；`profile_clone_fetch.clone_is_fresh` 无参本地化 + `ensure_profile_clone` subprocess 委托；`.env` 配 `CDP_SKILL_DIR`（`.env.example` 已补说明）；重写 `tests/test_cdp_session_reuse.py`（49 例）+ 新建 `tests/test_ensure_endpoint_orchestration.py`（24 例） | 两文件 73 例绿；项目全量 867 例绿；commit `5ae7b65` |
 | S3 ✅ | §5 YouTube 迁移：`cdp_capture.py`（模块级 `_ENDPOINT_CACHE` + `_ensure_endpoint()` helper、`capture_transcript` 与 CLI `--port` 均改 default None、docstring 改指共享克隆目录/D5-D6 契约、直跑 CLI 补 sys.path 引导）+ `fetch.py`（`fetch_youtube_transcript_cdp` 改 `ensure_endpoint()` 编排、L622 注释改条件化关 Chrome + 持有者关灯语义）+ `cdp_launch.py` 文件头 DeprecationWarning；顺带修内核 `__init__` 内层恢复隐患（`_pw_stop()` 后重建 `_p` 对齐 `restart_fresh`）；新增 `tests/test_youtube_cdp_endpoint.py`（8 例，含防真实 Chrome 安全网）+ 内核重建用例 1 例 | 目标 9 例绿；项目全量 876 例绿；§5.3 实抓 `aircAruvnKk` 成功（冷启动实例端口 12139 复用直连，字幕 18430 字落盘 `.cache/yt_transcript_aircAruvnKk.txt`） |
+| S4 ✅ | §10 六项文档对齐（2026-09-12，一次 commit）：① AGENTS.md L18 实例层上移注记 + 统一「实例常驻、连接只断开、marker 过期才清理」表述；② RULES.md §4.4 两处（9222→CDP 端点、cdp_launch 自修复→ensure_endpoint 三段式 + 技能 CLI `--probe-only`；最短路径①同步改写）；③ `references/youtube-cdp-workflow.md` 整篇重写（共享克隆目录/动态端口/EnsureResult 契约/D4 iGuge 背景注记/D6 关灯/TRAE 沙箱排查行；降级保存 API 更正 `skill_continue_summary`→`save_summary_only`）；④ 技能 SKILL.md §3.5 两节 + iGuge 注记核对通过（S1 产物，`.trae-cn` 工作副本）；⑤ README.md L373 cdp_launch 行改弃用注记；⑥ DECISION-20260910「回收子进程」表述核对通过（现文已是「按路径拦截启动期写盘」，全仓无残留，零改动）；另顺带对齐项目侧 SKILL.md 两处旧表述（该文件实际被 git 跟踪，AGENTS「已 gitignore」说法与事实不符，本次仍不提交、改动留工作区）；顺带修 `references/login-required-cdp-workflow.md` §7 三处过时交叉引用（重写连带漂移：共享克隆实例/同一实例/结论句） | 逐条核对 + 全量 grep 复核（旧关键词仅剩计划描述/弃用对照语境，零业务命中）；commit 含 AGENTS/RULES/README/两份工作流文档/PLAN 六文件 |
 
 ### 偏差与已知隐患（记录，不阻塞 S3）
 
@@ -261,11 +262,11 @@ def fetch_youtube_transcript_cdp(url: str, port: int | None = None, wait: int = 
 - **S2 的「monitors 实跑一轮」未执行**（需登录态与网络写盘，TRAE 沙箱受限同下条）：随用户日常触发覆盖（说「跑一次」即跑，见项目规则）。
 - **内核 `__init__` 内层恢复隐患 ✅ 已随 S3 修复（2026-09-12）**：`_pw_stop()` 后先重建 `self._p` 再 `_attach`（对齐 `restart_fresh` 写法），新增用例 `test_connect_failure_rebuilds_playwright_driver` 锁行为。
 - **TRAE 沙箱下 `ensure_endpoint()` 自动编排无法闭环（2026-09-12 实测，环境限制非代码缺陷）**：Chrome 冷启动写自身 profile 文件（Crashpad/BrowserMetrics/lockfile）被沙箱拦截 → 30s 内端口未就绪；端口文件状态机读写受扰，每轮重新冷启动不复用。规避：实抓用 `--port <显式端口>` 直连活实例（已验证）；端口编排逻辑由 8 例单测覆盖；沙箱外真实场景（用户日常跑 monitors / `videos/run.py`）不受影响。
+- **技能 SKILL.md 双副本漂移（S4 核对发现）**：`.trae-cn` 工作副本含 S1 产物（「内核会话」「共用契约」两节 + iGuge 注记）✅；`.workbuddy` 副本缺这些节，但其两处旧表述（§3.5 开头 + cdp_launch 行）已随 S4 顺带对齐（2026-09-12）。⚠️ 该文件实际被 git 跟踪（AGENTS「已 gitignore」说法与事实不符），S4 改动留工作区未提交；是否解除跟踪 + brain 同步由 S6 一并处理。
 
 ### 下一步（新会话执行）
 
 | 步骤 | 内容 | 前置 |
 |---|---|---|
-| S4 | §10 文档对齐一次 commit | S3 实抓通过（✅ 2026-09-12） |
 | S5 | §6 观察期 7 天后删 `cdp_launch.py`（第二次审批点） | 用户二次批准 |
-| S6 | 技能副本同步 brain（skill-installer 流程） | 用户指令触发 |
+| S6 | 技能副本同步 brain（skill-installer 流程；一并对齐 .workbuddy 副本漂移） | 用户指令触发 |

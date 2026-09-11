@@ -370,7 +370,7 @@ blog-article-skill/
 ├── videos/                   # 视频总结模块（P2.1/P2.2/P2.3/P3/P4）
 │   ├── __init__.py
 │   ├── fetch.py              # 字幕抓取（P2.1：YouTube/Bilibili）
-│   ├── cdp_launch.py         # 确保本机带代理插件的 Chrome(CDP 副本) 调试端口就绪（强制同步配置 + 启动）
+│   ├── cdp_launch.py         # ⚠️ 已弃用（S5 删）：Chrome 就绪已上移用户级技能 cdp-automation-profile 内核（ensure_endpoint 三段式）
 │   ├── cdp_capture.py        # 经 CDP 拦截 YouTube 字幕响应体（本机无 YouTube 出口时的终极解法）
 │   ├── asr.py                # 本地语音识别（P3：faster-whisper，无字幕自动兜底 + 环境自动处理 + 转写缓存）
 │   ├── multimodal.py         # 多模态理解（P4：Gemini）

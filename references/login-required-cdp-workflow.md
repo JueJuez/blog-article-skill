@@ -12,7 +12,7 @@
 > 📜 **历史**：junction 方案的完整兴衰记录在 `.workbuddy/memory/_archive/decisions/DECISION-20260824-chrome151-junction-deprecation.md`（已归档，仅溯源，勿照做）。
 
 > **本文件是「需登录态才能访问」的网站的通用抓取工作流。**
-> 与 `references/youtube-cdp-workflow.md`（独立 Chrome-CDP 副本，仅代理）的关系见 §7。
+> 与 `references/youtube-cdp-workflow.md`（共享克隆实例，仅代理）的关系见 §7。
 
 ---
 
@@ -272,10 +272,10 @@ Playwright `connect_over_cdp` **可以**创建多个 `page` 并发在同一 cont
 
 | 文件 | 接管对象 | user-data-dir | 目的 |
 |---|---|---|---|
-| `references/youtube-cdp-workflow.md` | **独立 Chrome-CDP 副本**（`%LOCALAPPDATA%\Google\Chrome-CDP`）| **非默认**（副本）| 视频字幕抓取（带代理扩展 iGuge，**不需要用户登录态**）|
+| `references/youtube-cdp-workflow.md` | **共享克隆实例**（`CdpAutomationProfile\Chrome`，与登录态抓取同一实例；代理扩展随全量克隆自带）| **非默认**（共享副本）| 视频字幕抓取（**不需要用户登录态**，走字幕 API 或 CDP 拦截）|
 | **`references/login-required-cdp-workflow.md`**（本文件） | **CdpAutomationProfile\Chrome**（持久化副本，非默认 dir，Chrome 151+ 放行；可用 `CDP_PROFILE_DIR` 覆盖）| **非默认**（一次性全量复制完整 profile 继承登录态+扩展）| **任何需登录态的页面**（不带代理，纯靠用户的真实登录态）|
 
-两者**互不干扰**，可以并存。
+两者**共用同一共享实例**（youtube 抓取 2026-09-11 起迁移至 `ensure_endpoint` 统一编排，PLAN-20260911；区别仅在目的：视频字幕代理 vs 登录态页面）。
 
 ---
 
