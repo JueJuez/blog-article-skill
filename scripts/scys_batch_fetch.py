@@ -165,8 +165,38 @@ def human_gap(rng: tuple[float, float]) -> None:
 LOCK_STALE_HOURS = 6
 
 
+def _pid_alive(pid: int) -> bool:
+    """跨平台进程探活，**不依赖 psutil**（真源环境并未安装 psutil——旧的
+    `import psutil` 分支恒被跳过，退化成 6h 年龄阈值，死 PID 的锁会长时间卡住）。
+    Windows 用 OpenProcess/GetExitCodeProcess；POSIX 用 os.kill(pid, 0)。"""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return k32.GetLastError() == 5  # 拒绝访问 => 进程存在
+        try:
+            code = ctypes.c_ulong()
+            if k32.GetExitCodeProcess(h, ctypes.byref(code)):
+                return code.value == 259  # STILL_ACTIVE
+            return True
+        finally:
+            k32.CloseHandle(h)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+
+
 def _lock_is_stale(lock: Path) -> bool:
-    """残留锁判定：持有进程已死（PID 判定）→ True；PID 读不出/无 psutil → 锁龄超 LOCK_STALE_HOURS。"""
+    """残留锁判定：持有者 PID 已死 → True（不依赖 psutil）；PID 读不出 → 锁龄超 LOCK_STALE_HOURS。"""
     try:
         pid_txt = lock.read_text(encoding="utf-8").strip()
     except OSError:
@@ -175,11 +205,7 @@ def _lock_is_stale(lock: Path) -> bool:
         pid = int(pid_txt)
         if pid == os.getpid():
             return True  # 自身持有：允许重入/接管，不当外来进程误杀
-        try:
-            import psutil
-            return not psutil.pid_exists(pid)
-        except ImportError:
-            pass
+        return not _pid_alive(pid)
     try:
         return (time.time() - lock.stat().st_mtime) > LOCK_STALE_HOURS * 3600
     except OSError:

@@ -151,7 +151,7 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 **非精华高价值判定（2026-08-21 用户决策，同日改为默认）**：阅读数和点赞都会被官方指南/运营帖污染（全站推送 → 阅读/赞虚高，如「航海报名倒计时」「课程上线通知」赞均过百），**投锚 coinCount 是真金白银的价值投票，判别力最强**。默认模式（`digested_only=false`）下：精华帖直通；非精华帖需 **锚 ≥ 30，或 赞 ≥ 80 且 锚 ≥ 10**（`coin_floor` 锚下限防官方帖：实测招募/报名/倒计时帖赞 288~343 但锚仅 0~6，没人抛锚的「高赞」就是推送灌出来的）。阈值在 `scys_projects.json` 的 `nondigested_min_coin/min_like/coin_floor`，校准依据：精华锚 P50=61/赞 P50=169，阈值≈中位一半。觉得抓多/抓少改配置即可，无需动代码。
 
 **执行闭环（模型每批照做）**：
-1. 后台跑 `D:\App\anaconda3\python.exe -u scripts/scys_batch_fetch.py --project <领域> --limit 30`（断点续传，重复执行幂等，已抓自动跳过）
+1. **用 detached launcher 跑**（不要用 agent 的 `run_in_background` 跑数小时任务——它只是工具层后台，进程仍在会话进程树里，**轮次结束被回收**，见 `RULES.md` §4.7）：`python scripts/launch_scys_backfill.py [--project <领域>]`（自带进程、脱离会话常驻；缺省补 `scys_projects.json` 全部领域，逐域串行）。单域调试也可直接 `python scripts/scys_batch_fetch.py --project <领域> --limit 30`——断点续传、重复执行幂等、已抓自动跳过。
 2. 每批完成 -> 派**子 Agent**（>3 篇必须拆子 Agent）总结落盘（tags=`生财有术,<领域>`，入口 `articles/_save_summary.py`，详见 §7 总结落盘段）。⚠️ 子 Agent **消费队列中已算好的 prompt**：入队写点 `scripts/scys_batch_fetch.py:build_pending_entry` 已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 把 prompt 算好塞进队列条目，子 Agent 直接按该 prompt 总结，**无需自调任何 CLI**。**不要全部用 structured 模板**。
 3. 总结完把 `pending_summaries.json` 对应条目标 `summarized:true`（防重复落盘）
 4. 向用户汇报累计/剩余进度，然后启动下一批

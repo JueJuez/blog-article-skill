@@ -6,7 +6,6 @@
 import os
 import sys
 import time
-import types
 from pathlib import Path
 
 import pytest
@@ -25,20 +24,14 @@ def lock_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _fake_psutil(monkeypatch, alive: bool):
-    fake = types.ModuleType("psutil")
-    fake.pid_exists = lambda pid: alive
-    monkeypatch.setitem(sys.modules, "psutil", fake)
-
-
-def _no_psutil(monkeypatch):
-    # sys.modules 值为 None 时 import 该模块抛 ImportError，模拟未安装
-    monkeypatch.setitem(sys.modules, "psutil", None)
+def _fake_pid_alive(monkeypatch, alive: bool):
+    """直接控制内核探活：实现已改为不依赖 psutil 的 `_pid_alive`。"""
+    monkeypatch.setattr(sbf, "_pid_alive", lambda pid: alive)
 
 
 class TestLockStaleRelease:
     def test_dead_pid_lock_auto_released(self, lock_dir, monkeypatch):
-        _fake_psutil(monkeypatch, alive=False)
+        _fake_pid_alive(monkeypatch, alive=False)
         (lock_dir / ".lock").write_text("999999", encoding="utf-8")
         lock = sbf._acquire_lock()
         assert lock == lock_dir / ".lock"
@@ -47,21 +40,20 @@ class TestLockStaleRelease:
 
     def test_live_pid_lock_still_blocks(self, lock_dir, monkeypatch):
         # 外来存活进程（非自身 PID）仍须被互斥保护（DECISION-20260825）
-        _fake_psutil(monkeypatch, alive=True)
+        _fake_pid_alive(monkeypatch, alive=True)
         (lock_dir / ".lock").write_text("999999", encoding="utf-8")
         with pytest.raises(SystemExit):
             sbf._acquire_lock()
 
     def test_self_pid_lock_taken_over(self, lock_dir, monkeypatch):
         # 自身 PID 视为 stale：本进程重入允许接管，不再误判互斥（DECISION-20260825）
-        _fake_psutil(monkeypatch, alive=True)
+        _fake_pid_alive(monkeypatch, alive=True)
         (lock_dir / ".lock").write_text(str(os.getpid()), encoding="utf-8")
         lock = sbf._acquire_lock()
         assert lock == lock_dir / ".lock"
         sbf._release_lock(lock)
 
     def test_unreadable_pid_old_lock_released(self, lock_dir, monkeypatch):
-        _no_psutil(monkeypatch)
         p = lock_dir / ".lock"
         p.write_text("garbage", encoding="utf-8")
         old = time.time() - 7 * 3600
@@ -70,7 +62,6 @@ class TestLockStaleRelease:
         sbf._release_lock(lock)
 
     def test_unreadable_pid_fresh_lock_blocks(self, lock_dir, monkeypatch):
-        _no_psutil(monkeypatch)
         (lock_dir / ".lock").write_text("garbage", encoding="utf-8")
         with pytest.raises(SystemExit):
             sbf._acquire_lock()
