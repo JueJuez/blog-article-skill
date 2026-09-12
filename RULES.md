@@ -205,7 +205,7 @@ NOTE_GATE_THRESHOLD=85     # 评分阈值，默认 85；低于此分触发重试
   1. **归档 ≠ 把桩文件复制到 `_archive/`**：正确顺序是「先把**完整正文**写入 `_archive/xxx.md`」→「再把 `references/xxx.md` 改成指向 `_archive/` 的指针桩」。反了会导致两处都变成桩、正文彻底丢失（只能从 git 历史 `git show <rev>:<path>` 抢救）。**归档后必须 `wc -c` 校验 `_archive/` 里的文件不是几百字节的桩。**
   2. **归档前先 grep 被引用点**：删/改任何文档前 `grep -rn "<文件名>" --include="*.md" .`，把指向它的引用一并改掉，否则留下坏链（2026-08-27 已踩过一次）。
 - **跨模块引私有名 = 定时炸弹（2026-09-10 实踩）**：`videos/asr.py` 调 `fetch._bili_auto_extract_cookies()`，2026-09-03 cookie 重构把该函数删除改名（唯一方法 = `_bili_extract_cookies_cdp`）后**调用点未同步**，`AttributeError` 被 `except` 吞掉 → **ASR cookie 刷新兜底链长期静默死亡**（无 CC 视频的 ASR 兜底全失败却无人察觉）。**守则**：跨模块尽量不引私有函数；确需引用时必须有机械守卫——`tests/test_asr_fetch_refs.py` 断言「asr.py 引用的每个 `fetch._bili_*` 都真实存在」，重构改名即红。
-- **长进程「归属」坑 = 长任务被回收（2026-09-12 实踩）**：agent 用 Bash 工具 `run_in_background` 跑长任务**只是工具层后台**（让调用立即返回、不撞 120s 超时），进程仍在**会话进程树**里 → **轮次结束被环境回收**（实测：7 域 scys 补齐只跑完第 1 个域就停）。要「启动即自带进程、脱离会话常驻」必须 **OS 级分离**：Windows `creationflags=DETACHED_PROCESS`。**项目约定 = 薄 launcher `scripts/launch_*.py`**（范例 `launch_watchdog.py`；补齐 = `scripts/launch_scys_backfill.py`）。守则：① 数小时级任务**不要**用 `run_in_background`，走 launcher 或让用户在自带终端跑；② 多域/多目标优先**一次一个**（detached 父进程的链式后续子进程不可靠）；③ 各入口的断点续传（`state.json` / `staged_urls` / `pending_refetch` / 登记表去重）保证被回收只是「暂停」而非丢进度，重跑自动续。
+- **长进程「归属」坑 = 长任务被回收（2026-09-12 实踩）**：agent 用 Bash 工具 `run_in_background` 跑长任务**只是工具层后台**（让调用立即返回、不撞 120s 超时），进程仍在**会话进程树**里 → **轮次结束被环境回收**。要「子进程脱离会话、抗轮次回收」必须 **OS 级分离**：Windows `creationflags=DETACHED_PROCESS`。**项目约定 = 薄 launcher `scripts/launch_*.py`**。**关键架构（2026-09-12 修正）**：launcher **自身非 DETACHED**（保留 spawn 能力），只对每个域 spawn 一个**独立 DETACHED 子进程**并串行 wait——因为「DETACHED 父进程 + 多子」实测会失能（跑完第 1 域后父失去 spawn 能力，第 2 域起 rc=1），而「非 DETACHED 父 + 每域独立 DETACHED 子」既抗回收又避失能（参考 `launch_scys_backfill.py`；watchdog 类 `launch_watchdog.py`/`launch_audit_watchdog.py` 已去 DETACHED，改由用户在自带终端跑）。守则：① 数小时级任务**不要**用 `run_in_background`，走 launcher（每域 DETACHED 子抗回收）或让用户自带终端跑；② 多域任务用「调度器非 DETACHED + 每域独立 DETACHED 子」模式（避免 DETACHED 父链式失能），或一次一个域单独跑；③ 各入口的断点续传（`state.json` / `staged_urls` / `pending_refetch` / 登记表去重）保证被回收只是「暂停」而非丢进度，重跑自动续。
 
 ---
 
@@ -222,7 +222,7 @@ NOTE_GATE_THRESHOLD=85     # 评分阈值，默认 85；低于此分触发重试
 - [ ] **质量闸门（可选 · 默认关）**：要更严质检时在 `.env` 设 `NOTE_QUALITY_GATE=1`（阈值 `NOTE_GATE_THRESHOLD` 默认 85）；降级无外部 AI 时闸门自动转自检段，按三条专项自检（思维模型深挖 + 固定结构合规 + 篇幅区间）自核对，无需手动开。详见 `references/config.md` §九 与 §4.6。
 - [ ] **机械落盘门禁（默认生效 · 2026-09-05，重试放行 · 2026-09-11）**：`save_summary_only` 落盘前自动过 `verify_note_mechanical`（主标题唯一 / 来源链接卫生 / 字数硬阈值），不受 `NOTE_QUALITY_GATE` 开关控制；被拦返回 `VERIFIER_FAILED:<issues>` 时子 Agent 应按 issues 修复后重试同一入口；**同 URL 首次拦截→重改，重交后仅剩字数类违规→自动放行**（重试仍越界=干货密度/原文长度实情，台账记 `bypassed_retry`；主标题/来源链接卫生永不放行），禁止绕门禁手写文件（§4.6 A2，见 `docs/decisions/DECISION-20260911-gate-retry-bypass.md`）。
 - [ ] **涉及架构级改动 / 新功能链路 / 跨多模块改动** → 先按 §6 grill_rules 拷问拉齐认知，再动手。
-- [ ] **长任务（补齐 / 迁移 / 监控多轮，或数小时级）→ 用 detached launcher `scripts/launch_*.py` 或用户自带终端，不要用 `run_in_background` 跑数小时任务**（进程在会话进程树里，轮次结束被回收；见 §4.7）。
+- [ ] **长任务（补齐 / 迁移 / 监控多轮，或数小时级）→ 用 launcher `scripts/launch_*.py`（每域独立 DETACHED 子抗回收）或用户自带终端，不要用 `run_in_background` 跑数小时任务**（进程在会话进程树里，轮次结束被回收；见 §4.7）。⚠️ launcher 自身须**非 DETACHED**，只让每域子进程 DETACHED（DETACHED 父 + 多子会失能）。
 
 ---
 

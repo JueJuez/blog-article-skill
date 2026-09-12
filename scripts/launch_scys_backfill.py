@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""scripts/launch_scys_backfill.py — 以 DETACHED 拉起 scys 补齐，脱离 agent 会话常驻。
+"""scripts/launch_scys_backfill.py — scys 补齐调度器：每域一个独立 DETACHED 子进程。
 
-与 `scripts/launch_watchdog.py` 同构（薄 launcher + 真 worker），区别：本脚本**自我再派生**
-（首次调用即用 `DETACHED_PROCESS` 把自己重开成脱离会话的常驻进程，再跑逐域循环），
-所以只需一个文件、调用即"自带进程"。
+与老实现（单个 DETACHED 父进程内 for 循环 spawn 多域）不同：本脚本**自身非 DETACHED**，
+仅对每个领域 spawn 一个**独立 DETACHED 子进程**并串行 wait。原因：
+  - "DETACHED 父进程 + 多子"实测会失能（跑完第 1 域后父失去 spawn 能力，第 2 域起 rc=1）；
+  - 非 DETACHED 父 spawn 多子正常（参考 monitors/run.py 7 域非 DETACHED 全 rc=0）；
+  - 每域子进程 DETACHED → 脱离 agent 会话树，**抗轮次回收**（即使调度器被收，已 spawn 的子继续跑完）。
+  - 串行 wait → 全局单 Chrome（共享克隆 profile，严禁并行多 Chrome）。
 
 用法：
     python scripts/launch_scys_backfill.py                     # 补齐 scys_projects.json 全部领域
@@ -16,10 +19,9 @@
     notes/_scraped/scys/pending_summaries.json 待总结队列
     notes/_scraped/scys/_backfill_run.log     逐域日志
 
-为什么不用 run_in_background：那只是 **Bash 工具层**的后台（让工具调用立即返回、不撞 120s 超时），
-进程仍是 agent 会话进程树的子进程 → **轮次结束被环境回收**。真正要"自带进程、脱离会话"必须
-**OS 级分离**：Windows `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`（本脚本做法），
-或由用户在自带终端里跑。断点续传：重跑自动只抓 state.json 里没有的。
+为什么调度器自身非 DETACHED：避免"DETACHED 父 spawn 失能"，抗回收由每域子进程的 DETACHED 提供。
+断点续传：scys_batch_fetch 重跑自动只抓 state.json 里没有的；若调度器被轮次收导致部分域未 spawn，
+重跑本脚本即可从断点续（已抓的跳过）。
 """
 import datetime
 import json
@@ -35,7 +37,6 @@ LOG = os.path.join(BASE_DIR, "notes", "_scraped", "scys", "_backfill_run.log")
 
 DETACHED_PROCESS = 0x00000008
 CREATE_NEW_PROCESS_GROUP = 0x00000200
-_REENTRY_FLAG = "--_detached"
 
 
 def _now() -> str:
@@ -56,41 +57,44 @@ def _parse_projects(argv: list) -> list:
 
 
 def _work(projects: list) -> int:
-    # 把本进程 fd1/fd2 指向日志，子进程默认继承（避免给子进程传 python 文件对象当 stdout）。
+    # 日志文件：父（dup2 fd1/2）与每域 DETACHED 子（显式传文件对象）都写入同一日志。
+    # ⚠️ DETACHED 子默认脱离控制台、不继承标准句柄，必须显式传 stdout 文件对象，否则子输出全丢。
     os.makedirs(os.path.dirname(LOG), exist_ok=True)
-    lf = os.open(LOG, os.O_CREAT | os.O_WRONLY | os.O_APPEND)
+    logf = open(LOG, "a", encoding="utf-8", buffering=1)
+    lf = logf.fileno()
     os.dup2(lf, 1)
     os.dup2(lf, 2)
     print(f"\n########## scys 补齐启动 {_now()} domains={projects} ##########", flush=True)
     for d in projects:
         print(f"########## 域: {d} start={_now()} ##########", flush=True)
         try:
-            rc = subprocess.run([sys.executable, SCRIPT, "--project", d], cwd=BASE_DIR).returncode
+            # 每域一个独立 DETACHED 子进程：脱离会话、抗轮次回收；串行 wait 保证全局单 Chrome。
+            # stdout 显式传 logf —— DETACHED 子不继承控制台句柄，必须指定才能写日志。
+            p = subprocess.Popen(
+                [sys.executable, SCRIPT, "--project", d],
+                cwd=BASE_DIR,
+                stdout=logf,
+                stderr=subprocess.STDOUT,
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                close_fds=True,
+            )
+            rc = p.wait()
         except Exception as e:  # noqa: BLE001
             print(f"[launcher] 域 {d} 异常: {e}", flush=True)
             rc = -1
         print(f"---------- 域: {d} end={_now()} rc={rc} ----------", flush=True)
     print(f"ALL DONE {_now()}", flush=True)
+    logf.close()
     return 0
 
 
 def main() -> int:
-    argv = sys.argv[1:]
-    if argv and argv[0] == _REENTRY_FLAG:  # 已在 detached 子进程里：干活
-        return _work(argv[1:] or _all_projects())
-    projects = _parse_projects(argv)
-    p = subprocess.Popen(
-        [sys.executable, SELF, _REENTRY_FLAG] + projects,
-        cwd=BASE_DIR,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-        close_fds=True,
-    )
-    print(f"✓ scys 补齐已 DETACHED 拉起（脱离会话常驻），pid={p.pid}")
+    projects = _parse_projects(sys.argv[1:])
+    rc = _work(projects)
+    print(f"✓ scys 补齐调度完成（每域独立 DETACHED 子进程）。")
     print(f"  领域: {projects}")
     print(f"  进度: notes/_scraped/scys/state.json (done) / _backfill_run.log")
-    return 0
+    return rc
 
 
 if __name__ == "__main__":
