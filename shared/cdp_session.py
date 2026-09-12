@@ -13,16 +13,15 @@
   2026-09-11（PLAN-20260911 S2）瘦身：连接编排 / 进程清理 / 文件锁 / D6 持有者
     注册表等实例机制整体上移技能内核 cdp-automation-profile（跨项目单一真源，
     Python import 与 CLI 同源）。本文件只剩：
-      1. 技能内核定位与加载（_resolve_skill_dir / _import_skill_module，三级回退）；
+      1. 技能内核定位与加载（_resolve_skill_dir / _import_skill_module）；
       2. SharedCdpSession 薄子类：只保留本项目业务方法（微信/scys 抓取），
          实例机制全部继承内核 CdpSession；
       3. re-export 内核公开名（CdpSession/EnsureResult/ensure_endpoint/probe_endpoint），
          消费方继续 `from shared.cdp_session import SharedCdpSession`，零改动。
 
-技能目录解析优先级：
-  $CDP_SKILL_DIR → dirname($CDP_SKILL_PY) → 项目 .env 的 CDP_SKILL_DIR。
-  第三级兜底的原因：tests/conftest.py 与部分入口脚本不加载 .env，读取时动态
-  解析项目 .env 可让 pytest 与所有入口免配置工作。
+技能目录解析优先级（2026-09-12 架构修正：项目 .env 不再参与，技能自包含）：
+  $CDP_SKILL_DIR → dirname($CDP_SKILL_PY，平台安装技能时注入) → 常见平台 skills 目录约定。
+  技能自身的运行参数由内核在导入时从其「自身目录内的 .env」加载，项目完全不感知技能位置与参数。
 
 用法：
   A. 单次取标题（公众号）：
@@ -50,34 +49,40 @@ if _SCRIPTS_DIR not in sys.path:
 _KERNEL_MODULE_NAME = "cdp_automation_profile_kernel"
 
 
-def _read_env_file_cdp_skill_dir() -> str | None:
-    """从项目 .env 解析 CDP_SKILL_DIR（conftest / 部分入口不加载 .env 的兜底）。"""
-    env_file = Path(__file__).resolve().parent.parent / ".env"
-    try:
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line.startswith("CDP_SKILL_DIR="):
-                val = line.split("=", 1)[1].strip().strip("'\"")
-                return val or None
-    except OSError:
-        return None
-    return None
+# 注：项目 .env 不再参与技能路径解析（2026-09-12 架构修正 · 彻底解耦）。
+# 技能路径仅由 ①平台注入 CDP_SKILL_PY 或 ②内核自登记文件定位；消费项目不扫描
+# 任何平台目录（.workbuddy/.trae-cn 等）。技能运行参数由内核从自身目录 .env 加载。
 
 
 def _resolve_skill_dir() -> str:
-    """定位技能内核目录（cdp_session.py / ensure_cdp_profile.py 所在目录）。"""
+    """定位技能内核目录（cdp_session.py / ensure_cdp_profile.py 所在目录）。
+
+    解析优先级（技能自包含，消费项目不扫描任何平台目录）：
+      1) 环境变量 CDP_SKILL_DIR
+      2) dirname(环境变量 CDP_SKILL_PY)   ← 平台安装技能时注入（brain 跨平台契约，首选）
+      3) 内核自登记文件 %LOCALAPPDATA%\\.cdp_automation_profile\\skill_dir.txt
+         （各平台副本在运行 ensure_cdp_profile.py 时写入自身目录，平台未注入时兜底）
+    技能自身的运行参数由内核在导入时从其「自身目录内的 .env」加载，与消费项目无关。
+    """
     candidates = [
         os.environ.get("CDP_SKILL_DIR"),
         os.path.dirname(os.environ["CDP_SKILL_PY"]) if os.environ.get("CDP_SKILL_PY") else None,
-        _read_env_file_cdp_skill_dir(),
     ]
+    # 内核自登记位置（平台无关，由 ensure_cdp_profile.py 在运行时写入；
+    # 消费项目不扫描任何平台目录，彻底解耦）。
+    reg = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) \
+        / ".cdp_automation_profile" / "skill_dir.txt"
+    if reg.is_file():
+        candidates.append(reg.read_text(encoding="utf-8").strip())
     for cand in candidates:
         if cand and os.path.isfile(os.path.join(cand, "cdp_session.py")):
             return cand
     raise RuntimeError(
-        "找不到 cdp-automation-profile 技能内核（目录下需有 cdp_session.py）。"
-        "请设置环境变量 CDP_SKILL_DIR（或 CDP_SKILL_PY），或在项目 .env 中配置 "
-        "CDP_SKILL_DIR=<技能目录>。"
+        "找不到 cdp-automation-profile 技能内核（目录下需有 cdp_session.py）。\n"
+        "彻底解耦模式：消费项目不再扫描平台目录。请二选一：\n"
+        "  1) 平台在加载技能时注入 CDP_SKILL_PY（指向本平台技能副本的 cdp_session.py）；或\n"
+        "  2) 先运行一次该技能内核的 ensure_cdp_profile.py（任意子命令），完成自登记。\n"
+        "三份副本位于 .workbuddy / .trae-cn / brain 的 skills/cdp-automation-profile 下。"
     )
 
 
