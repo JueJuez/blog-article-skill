@@ -4,27 +4,6 @@
   "last_interval_attempt_ts": "2026-09-11T14:06:58",
   "history": [
     {
-      "ts": "2026-09-11T12:59:04",
-      "trigger": "interval",
-      "result": "valid",
-      "method": "none",
-      "note": "当前 cookie 有效，未到轮换周期"
-    },
-    {
-      "ts": "2026-09-11T12:59:06",
-      "trigger": "interval",
-      "result": "valid",
-      "method": "none",
-      "note": "当前 cookie 有效，未到轮换周期"
-    },
-    {
-      "ts": "2026-09-11T12:59:08",
-      "trigger": "interval",
-      "result": "valid",
-      "method": "none",
-      "note": "当前 cookie 有效，未到轮换周期"
-    },
-    {
       "ts": "2026-09-11T13:03:24",
       "trigger": "interval",
       "result": "valid",
@@ -349,6 +328,27 @@
     {
       "ts": "2026-09-11T14:06:58",
       "trigger": "interval",
+      "result": "valid",
+      "method": "none",
+      "note": "当前 cookie 有效，未到轮换周期"
+    },
+    {
+      "ts": "2026-09-12T10:31:47",
+      "trigger": "monitors",
+      "result": "valid",
+      "method": "none",
+      "note": "当前 cookie 有效，未到轮换周期"
+    },
+    {
+      "ts": "2026-09-12T12:57:40",
+      "trigger": "monitors",
+      "result": "valid",
+      "method": "none",
+      "note": "当前 cookie 有效，未到轮换周期"
+    },
+    {
+      "ts": "2026-09-12T14:14:25",
+      "trigger": "monitors",
       "result": "valid",
       "method": "none",
       "note": "当前 cookie 有效，未到轮换周期"
