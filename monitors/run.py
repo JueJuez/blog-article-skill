@@ -254,6 +254,18 @@ def _save_json(path: str, data) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def _stamp_refetch_enqueued_at(items: list, now: int = None) -> list:
+    """给待重试条目补 enqueued_at 入队时间戳（仅对缺字段的条目注入）。
+
+    恢复自历史队列的条目保留最初入队时间，本轮新失败条目统一打本批写入时刻，
+    供下游区分「本轮新增待重试」与历史遗留，避免跨轮误对齐具体条目。原地修改并返回。
+    """
+    enq = now if now is not None else int(time.time())
+    for it in items:
+        it.setdefault("enqueued_at", enq)
+    return items
+
+
 def _item_folder(it: dict) -> str:
     """统一路由器：监控内容归档到 【监控】/<平台>/<账号名>（或系列课子节点）。
 
@@ -1137,6 +1149,7 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
     # 路径可被 env MON_PENDING_REFETCH_PATH 覆盖：并行模式下各 worker 写各自 staging 文件，
     # 由父进程合并，避免多进程并发读写同一 pending_refetch.json 造成覆盖丢失。
     _refetch_out = os.environ.get("MON_PENDING_REFETCH_PATH", PENDING_REFETCH_PATH)
+    _stamp_refetch_enqueued_at(refetch_next)
     _save_json(_refetch_out, refetch_next)
     if refetch_next:
         print(f"\n⏳ {len(refetch_next)} 篇正文未抓到（限流/失败），已存重试队列，下次运行自动重抓")
