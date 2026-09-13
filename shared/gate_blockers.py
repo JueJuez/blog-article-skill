@@ -23,10 +23,12 @@ GATE_BLOCKERS_BASE = os.path.join(_PROJECT_ROOT, "monitors", "gate_blockers.json
 
 def log_gate_block(source: str, note_type: str, url: str, title: str,
                    issues: list, warnings: Optional[list] = None,
-                   action: str = "blocked") -> Optional[str]:
+                   action: str = "blocked",
+                   compression_warnings: Optional[list] = None) -> Optional[str]:
     """记录一次机械门禁拦截/放行事件，返回写入路径；失败返回 None。
 
     action="blocked"（默认，拦截）/ "bypassed_retry"（字数重试放行）。
+    compression_warnings：过度压缩启发式信号（2026-09-13 新增），供父 Agent 决策扩容。
     """
     rec = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -36,6 +38,7 @@ def log_gate_block(source: str, note_type: str, url: str, title: str,
         "title": title,
         "issues": list(issues),
         "warnings": list(warnings or []),
+        "compression_warnings": list(compression_warnings or []),
         "action": action,
     }
     try:

@@ -149,15 +149,29 @@ class TestWordCountHelper:
 
 
 class TestWordLimitsConsistency:
-    """防漂移：NOTE_WORD_LIMITS 必须与各模板「单篇正文 X～Y 字」声明一致。"""
+    """防漂移：NOTE_WORD_LIMITS 必须与各模板字数声明一致。
+
+    - structured / general 走 source-aware 参考值（源长×比例带），模板不声明固定区间，
+      改为声明「参考值（源长×…）」；其余轻模板仍声明固定区间且须与 NOTE_WORD_LIMITS 一致。
+    """
+
+    # 走 source-aware 参考值的类型（无固定区间声明）
+    SOURCE_AWARE_TYPES = {"structured", "general"}
 
     @pytest.mark.parametrize("note_type", sorted(NOTE_WORD_LIMITS))
     def test_limits_match_template_text(self, note_type):
         prompt = templates_mod.NOTE_TEMPLATES[note_type]["prompt"]
-        m = re.search(r"单篇正文(?:软上限)?\s*(\d+)～(\d+)\s*字", prompt)
-        assert m, f"{note_type} 模板缺少「单篇正文 X～Y 字」声明"
-        lo, hi = int(m.group(1)), int(m.group(2))
-        assert NOTE_WORD_LIMITS[note_type] == (lo, hi)
+        if note_type in self.SOURCE_AWARE_TYPES:
+            # 源长感知型：模板须声明参考值（源长×比例带），不得出现固定「单篇正文 X～Y 字」硬区间
+            assert "参考值" in prompt and "源长" in prompt, \
+                f"{note_type} 应声明 source-aware 参考值（含『参考值』『源长』）"
+            assert not re.search(r"单篇正文\s*\d+～\d+\s*字", prompt), \
+                f"{note_type} 不应声明固定字数硬区间（已改为参考值）"
+        else:
+            m = re.search(r"单篇正文(?:软上限)?\s*(\d+)～(\d+)\s*字", prompt)
+            assert m, f"{note_type} 模板缺少「单篇正文 X～Y 字」声明"
+            lo, hi = int(m.group(1)), int(m.group(2))
+            assert NOTE_WORD_LIMITS[note_type] == (lo, hi)
 
     def test_covers_all_templates(self):
         assert set(NOTE_WORD_LIMITS) == set(templates_mod.NOTE_TEMPLATES)
@@ -363,3 +377,64 @@ class TestRetryBypassGate:
             "note_type": "key_points"})
         assert res.get("success") is False
         assert self.save_calls == []
+
+
+class TestSourceAwareReference:
+    """source-aware 参考值（2026-09-13）：有源长时按 源长×比例带 作参考，仅极端畸高/极低硬拦，
+    越出参考带（非畸高）转为 review_flags 供父 Agent 抽检，不拦落盘。"""
+
+    SRC = 10000  # 源长 1 万字符
+    # ref_lo=2500, ref_hi=4500, ceiling=max(8000,7000)=8000, floor=400
+
+    def _v(self, count, src=SRC):
+        return verify_note_mechanical(_body(count), note_type="structured",
+                                      source_url="https://g.com/x", source_chars=src)
+
+    def test_in_reference_band_passes_clean(self):
+        r = self._v(3500)
+        assert r["passed"] is True
+        assert r["issues"] == []
+        assert r["review_flags"] == []
+
+    def test_over_reference_flags_review_not_block(self):
+        # 5000 > ref_hi(4500) 但 < ceiling(8000) → 不拦，置 review_flags（超参考值）
+        r = self._v(5000)
+        assert r["passed"] is True
+        assert any("超参考值" in f for f in r["review_flags"])
+
+    def test_under_reference_but_not_short_ok(self):
+        # 2000 < ref_lo(2500) 但 >= 阈值1500 → 水货源压更短也放行，无 flag
+        r = self._v(2000)
+        assert r["passed"] is True
+        assert r["review_flags"] == []
+
+    def test_under_reference_and_short_flags_review(self):
+        # 1000 < ref_lo(2500) 且 < 1500 → 偏短抽检信号
+        r = self._v(1000)
+        assert r["passed"] is True
+        assert any("偏短" in f for f in r["review_flags"])
+
+    def test_absurdly_high_blocked(self):
+        # 8500 > ceiling(8000) → 畸高照搬，硬拦
+        r = self._v(8500)
+        assert r["passed"] is False
+        assert any("畸高" in i for i in r["issues"])
+
+    def test_extremely_low_blocked(self):
+        # 300 < floor(400) → 内容缺失，硬拦
+        r = self._v(300)
+        assert r["passed"] is False
+        assert any("内容缺失" in i for i in r["issues"])
+
+    def test_review_flags_propagate_to_save_result(self, tmp_path, monkeypatch):
+        # 越参考值落盘后，save_summary_only 结果须带回 review_flags
+        monkeypatch.setattr(articles_main, "save_summarized_article",
+                            lambda *a, **k: ("fmt", "f.md"))
+        monkeypatch.setattr(dedup, "mark_summarized", lambda *a, **k: None)
+        monkeypatch.setattr(dedup, "_CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(dedup, "_INDEX_FILE", str(tmp_path / "dedup.json"))
+        res = articles_main.save_summary_only({
+            "summarized_content": _body(5000), "original_url": "https://g.com/sa",
+            "note_type": "structured", "source_chars": self.SRC})
+        assert res.get("success") is True
+        assert any("超参考值" in f for f in res.get("review_flags", []))

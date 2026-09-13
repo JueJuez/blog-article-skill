@@ -627,6 +627,17 @@ def save_summary_only(input_data: dict) -> dict:
     publish_time = input_data.get('publish_time', 0)
     folder = input_data.get('folder', '')
     obsidian = input_data.get('obsidian', False)
+    max_words = input_data.get('max_words')  # 动态扩容上限覆盖（父 Agent 逐级放宽时传入 4000/5000）
+    # source_chars：原文（转录稿）长度，用于 source-aware 参考值（有则按源长×比例带，无则固定区间兜底）
+    source_chars = input_data.get('source_chars') or 0
+    if not source_chars:
+        _rf = input_data.get('raw_file') or input_data.get('raw_file_path')
+        if _rf and os.path.exists(_rf):
+            try:
+                from prompts.verifier import count_note_words
+                source_chars = count_note_words(open(_rf, encoding='utf-8').read())
+            except Exception:
+                source_chars = 0
     if not summarized_content:
         return {'success': False, 'message': '请提供总结好的内容'}
     # 机械去重闸门（DECISION-20260825）：URL 已总结过 → 不再写飞书，按成功出队；
@@ -647,7 +658,8 @@ def save_summary_only(input_data: dict) -> dict:
     from prompts.verifier import verify_note_mechanical
     from shared.gate_blockers import log_gate_block, count_blocks
     _gate = verify_note_mechanical(summarized_content, input_data.get('note_type', ''),
-                                   source_url=original_url)
+                                   source_url=original_url, max_words=max_words,
+                                   source_chars=source_chars)
     if not _gate["passed"]:
         _non_word_issues = [i for i in _gate["issues"] if not i.startswith("字数")]
         _blocked_before = count_blocks(original_url or "")
@@ -664,9 +676,11 @@ def save_summary_only(input_data: dict) -> dict:
             # 「未消费」与「被拦」，观测缺口由此补齐；台账失败不影响主流程。
             log_gate_block(source="queue", note_type=input_data.get('note_type', ''),
                            url=original_url or "", title=original_title or "",
-                           issues=_gate["issues"], warnings=_gate.get("warnings", []))
+                           issues=_gate["issues"], warnings=_gate.get("warnings", []),
+                           compression_warnings=_gate.get("compression_warnings", []))
             return {'success': False, 'message': 'VERIFIER_FAILED:' + '；'.join(_gate["issues"]),
-                    'issues': _gate["issues"]}
+                    'issues': _gate["issues"],
+                    'compression_warnings': _gate.get("compression_warnings", [])}
     # L8 修复（2026-09-03）：自带总结的保存路径 folder 为空时自动走统一路由器，
     # 与 skill_main 的 L7 手贴 URL 路径对齐——「落哪」由代码决定，不靠调用方记性。
     # 背景：批量总结曾有 78 篇因调用方漏传 folder 全部落进【待归类】。
@@ -680,7 +694,18 @@ def save_summary_only(input_data: dict) -> dict:
             note_type=input_data.get('note_type', ''),
             topics=_topics
         )
-        return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note}
+        # 无人值守降级：落盘命中参考值抽检信号 → 入 needs_review 队列（filename 已知）
+        _review_flags = _gate.get("review_flags", [])
+        if _review_flags:
+            try:
+                from prompts.review_rubric import queue_for_review
+                queue_for_review(filename=filename, note_type=input_data.get('note_type', ''),
+                                 reasons=_review_flags, source_url=original_url)
+            except Exception:
+                pass
+        return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note,
+                'compression_warnings': _gate.get("compression_warnings", []),
+                'review_flags': _review_flags}
     except Exception as e:
         return {'success': False, 'message': f'保存失败: {str(e)}'}
 
