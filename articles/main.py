@@ -119,8 +119,8 @@ _CONTENT_KEYWORDS = [
 
 def suggest_default_tags(note_type: str, title: str = "", content: str = "") -> list:
     """未指定 tags 时，由笔记类型 + 内容关键词生成默认标签。"""
-    # 仅对已知笔记类型补「类型」标签（结构化复盘/观点卡等）；未命中则不补——
-    # #文章总结 这类无信息量的兜底标签不再生成（落地使用无意义，且与 #类型/ 命名空间标签重复）。
+    # 仅对已知笔记类型补「类型」标签（结构化复盘/观点卡等，裸标签）；未命中则不补——
+    # #文章总结 这类无信息量的兜底标签不再生成（落地使用无意义，且与裸化的类型标签重复）。
     tags = [_NOTE_TYPE_TAG[note_type]] if note_type in _NOTE_TYPE_TAG else []
     text = f"{title}\n{content}"
     for kw in _CONTENT_KEYWORDS:
@@ -297,9 +297,9 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
     title = original_title or _extract_title_from_summary(summarized_content) or ""
 
     # 方案 A（2026-09-13 修订·2026-09-13 晚间二次精简）：落盘时复用分类器追加语义标签。
-    # 维度顺序：主题实体（裸） → 用途（裸） → 父/子领域（命名空间） → 类型（命名空间）。
-    # 仅追加、不覆盖调用方传入的 tags；去重。topic 与 用途 为裸标签（用户要求精简），
-    # 领域/类型保留「父/子」命名空间（含 /，被 category 推算跳过，不抢文件夹路由）。
+    # 维度顺序：主题实体（裸） → 用途（裸） → 父/子领域（命名空间） → 类型（裸）。
+    # 仅追加、不覆盖调用方传入的 tags；去重。topic、用途、类型 均为裸标签（用户要求精简），
+    # 仅领域保留「父/子」命名空间（含 /，被 category 推算跳过，不抢文件夹路由）。
     # 主题实体维度由总结 LLM 顺手生成（落盘前已从正文提取并移除『核心主题词』区块），
     # 无 LLM 主题词时退化为代码关键词抽取。
     try:

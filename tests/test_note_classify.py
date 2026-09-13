@@ -79,7 +79,7 @@ class TestInferSemanticTags(unittest.TestCase):
         self.assertIn("投资/公司分析", tags)
         self.assertIn("伊利股份", tags)
         self.assertIn("教学可用", tags)
-        self.assertIn("类型/结构化复盘", tags)
+        self.assertIn("结构化复盘", tags)
         self.assertNotIn("来源/", " ".join(tags))
         for t in tags:
             if t.startswith("投资"):
@@ -95,7 +95,7 @@ class TestInferSemanticTags(unittest.TestCase):
         self.assertIn("虚拟产品", tags)
         self.assertIn("素材可用", tags)
         self.assertIn("方法论可复用", tags)
-        self.assertIn("类型/案例拆解", tags)
+        self.assertIn("案例拆解", tags)
 
     def test_ai_datwhale(self):
         tags = infer_semantic_tags(
@@ -111,12 +111,11 @@ class TestInferSemanticTags(unittest.TestCase):
             author="生财有术", note_type="dissection")
         self.assertIn("内容创作/平台运营", tags)
         self.assertIn("小红书", tags)
-        self.assertIn("类型/创作解剖", tags)
+        self.assertIn("创作解剖", tags)
 
     def test_inbox_fallback_no_domain_when_comprehensive(self):
         tags = infer_semantic_tags(S_PSYCH, folder="【待归类】", author="")
-        domain_tags = [t for t in tags if "/" in t
-                       and not t.startswith("类型/")]
+        domain_tags = [t for t in tags if "/" in t]
         self.assertEqual(domain_tags, ["综合/未分类"])
         self.assertIn("MBTI", tags)
         self.assertIn("心理学", tags)
@@ -126,16 +125,14 @@ class TestInferSemanticTags(unittest.TestCase):
         tags = infer_semantic_tags(
             S_XP_READING, folder="【我的总结】/作者/夏鹏本鹏",
             author="夏鹏本鹏", note_type="reading")
-        domain = [t for t in tags if "/" in t
-                  and not t.startswith("类型/")]
+        domain = [t for t in tags if "/" in t]
         self.assertEqual(domain, ["个人成长/读书方法"])
         self.assertNotIn("投资", [t.split("/", 1)[0] for t in domain])
 
         tags2 = infer_semantic_tags(
             S_XP_OPINION, folder="【我的总结】/作者/夏鹏本鹏",
             author="夏鹏本鹏", note_type="opinion")
-        domain2 = [t for t in tags2 if "/" in t
-                   and not t.startswith("类型/")]
+        domain2 = [t for t in tags2 if "/" in t]
         self.assertEqual(domain2, ["个人成长/职场"])
         self.assertNotIn("来源/", " ".join(tags2))
 
@@ -193,9 +190,9 @@ class TestSaveIntegration(unittest.TestCase):
                 S_INVEST, original_url="http://example.com/x", author="价投小猪仔",
                 tags=["文章总结"], original_title="拆解伊利股份", note_type="structured",
                 folder="【监控】/B站/价投小猪仔/小猪仔拆公司", publish_time=0)
-        # 四个维度标签都进笔记（注意：#文章总结/#转载/#来源/#更早 均已不再生成）
+        # 四个维度标签都进笔记（注意：#文章总结/#转载/#来源/#更早 均已不再生成；类型/用途/topic 均为裸标签）
         for expected in ("#投资/公司分析", "#伊利股份", "#教学可用",
-                         "#类型/结构化复盘"):
+                         "#结构化复盘"):
             self.assertIn(expected, note)
         self.assertNotIn("#更早", note)  # 时效标签已移除
         # 标签行绝不能出现双井号（标签重复加 #）；正文里的 ## 二级标题是合法 Markdown
