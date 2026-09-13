@@ -143,7 +143,8 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
   - ASR 成功 → 继续正常总结并落盘（默认本地 Obsidian，带飞书时双写需 `DISABLE_FEISHU_SYNC=0`）。
   - ASR 也失败（音频下载或本地转写未成功，可能需 B站登录态 / 网络受限 / YouTube 无出口）→ 才回下面这句并停止：
   > **【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】**
-  - **不要**在 `videos/asr.py` 已提供的兜底之外「自作主张开发新兜底」。环境坑（HF 镜像 / xet / CUDA dll / 沙箱安全删除）已由 `asr.py` 的 `_apply_env_defaults()` 自动处理，**无需手敲 export、不要 diagnose**。
+  - **不要**在 `videos/asr.py` 已提供的兜底之外「自作主张开发新兜底」。环境坑（HF 镜像 / xet / CUDA dll / 沙箱安全删除）已由 `asr.py` 的 `_apply_env_defaults()` + `_ensure_cuda_dlls()` 自动处理，**无需手敲 export、不要 diagnose**。
+  - **B站/远程视频 ASR 沙箱专属坑**（B站 CDN 域名轮换致 ffmpeg 直下 `-138` 崩溃、长音频整段塞 GPU 的 CUDA 原生段错误、nvidia dll 路径缺失）已固化进 `videos/asr.py`：urllib 下载抗 host 轮换、>30min 自动 600s 分片转写（`transcribe_audio_chunked`）、`_ensure_cuda_dlls()` 注入 dll。根因、修复与验证见 `references/asr-bilibili-sandbox.md`，**勿在调用层重写兜底**。
 - **区分「真无字幕」vs「抓取机制故障」（避免误判导致乱调试）**：
   - 真无字幕：`capture_transcript` 已连上 CDP 实例、页面正常加载（能拿到标题）、但 `captionTracks` 为空 → **直接回上面那句话**，不要调试。
   - 抓取机制故障：CDP 端点连不上 / 页面空白 / 代理失效（YouTube 打不开）→ 这是**基础设施问题**，不是视频没字幕；按 `references/youtube-cdp-workflow.md` §6 排查（`ensure_endpoint` 三段式自愈/冷启动自动处理；手动诊断跑技能 CLI `ensure_endpoint.py --probe-only`），**不要**把它当成「无字幕」回给用户。

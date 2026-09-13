@@ -3,8 +3,10 @@
 对本地视频文件或无字幕链接，用 ffmpeg 直下音频（yt-dlp 仅取直链，绕开沙箱限流）
 → faster-whisper 本地免费转写。
 作为「抓取不到字幕」时的自动兜底（用户规则 2026-08-06：抓不到字幕即自动走 ASR）。
-下载机制详见 extract_audio 文档：远程链接走「yt-dlp --get-url 取直链 + ffmpeg -headers 直下」，
-不再用 yt-dlp 整段下载客户端（沙箱里会被限流卡 2.5MiB 截断，2026-09-13 修）。
+下载机制详见 extract_audio 文档：远程链接走「yt-dlp --get-url 取直链 + Python urllib 直下
+原始容器 + ffmpeg 本地转码」，不再用 yt-dlp 整段下载客户端（沙箱里会被限流卡 2.5MiB 截断，
+2026-09-13 修），也不用 ffmpeg 直连 CDN（B站 CDN 域名轮换、抽到被沙箱拦截的 host 报 -138
+崩溃，2026-09-13 改 urllib 下载 + 换 host 重试修复）。
 
 依赖（managed venv，已装）：
 - yt-dlp         视频/音频下载与抽取
@@ -18,7 +20,10 @@
 
 注意（PRD 风险边界）：
 - 首次运行会下载 Whisper 模型（medium ~1.5GB / large-v3 ~3GB），需联网。
-- 24h 超长视频不现实，优先 CC 或先裁片。
+- 长音频（>30min）自动分片转写（600s/片，见 transcribe_audio_chunked），规避整段塞爆
+  GPU 的 CUDA 原生段错误崩溃（无 Python traceback，2026-09-13 实踩：2h+ 视频整段转写
+  段错误；分片后 VRAM 有界，稳定跑通两个 2h+ 视频）。可正常处理 2h+ 视频。
+- 24h 超长视频仍不现实，优先 CC 或先裁片。
 - 依赖缺失或下载失败均优雅提示，不阻断主流程。
 """
 
@@ -29,6 +34,8 @@ import subprocess
 import tempfile
 import hashlib
 import threading
+import urllib.request as _urlreq
+import urllib.parse as _urlparse
 from typing import Optional, Tuple, List, Dict
 
 try:
@@ -453,6 +460,53 @@ def _ffmpeg_download_audio(url: str, out_wav: str,
     return os.path.exists(out_wav) and os.path.getsize(out_wav) > 0
 
 
+def _download_audio_urllib(source: str, out_raw: str,
+                           cookie_str: Optional[str] = None,
+                           ffmpeg_exe: Optional[str] = None,
+                           max_retry: int = 8) -> bool:
+    """用 Python urllib 下载音频直链到本地原始容器（m4s 等），绕开 ffmpeg 直连
+    B站 CDN 时抽到被沙箱拦截的 host（如 estgoss）报 -138 崩溃的问题。
+
+    根因（2026-09-13 实踩）：B站音频 CDN 域名会轮换（estgoss 被沙箱网关拦、
+    mirrorali 等可达），ffmpeg 直下抽到坏 host 直接 Error number -138 退出；而
+    yt-dlp 取直链（仅小 API 请求）可达，urllib 直连多数 host 也可达。抽到坏 host
+    时 urlopen 抛错 → 重新取直链（换 host）重试，直到拿到数据。
+
+    下载到本地原始容器后，由调用方用 ffmpeg 本地转码成 wav（无网络依赖，不崩）。
+    返回 True/False。
+    """
+    ffmpeg_exe = ffmpeg_exe or _ffmpeg_exe()
+    if not ffmpeg_exe:
+        return False
+    UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+    ref = "https://www.bilibili.com/"
+    for i in range(max_retry):
+        aurl = _ydl_get_audio_url(source, cookie_str=cookie_str, ffmpeg_exe=ffmpeg_exe)
+        if not aurl:
+            return False
+        host = _urlparse.urlparse(aurl).netloc
+        try:
+            req = _urlreq.Request(aurl, headers={
+                "User-Agent": UA,
+                "Referer": ref,
+                "Cookie": cookie_str or "",
+            })
+            with _urlreq.urlopen(req, timeout=120) as r, open(out_raw, "wb") as f:
+                while True:
+                    chunk = r.read(1 << 20)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+            if os.path.getsize(out_raw) > 0:
+                print(f"   ⬇️ urllib 下载音频 {os.path.getsize(out_raw)} 字节（host={host}, 第 {i+1} 次）")
+                return True
+        except Exception as e:
+            print(f"   ℹ️ urllib 下载失败（host={host}, 第 {i+1} 次）: "
+                  f"{type(e).__name__} {str(e)[:120]}，换 host 重试")
+    return False
+
+
 def _ffmpeg_transcode(local_path: str, out_wav: str,
                       ffmpeg_exe: Optional[str] = None) -> bool:
     """本地文件：直接 ffmpeg 转码成 wav（无网络）。"""
@@ -511,10 +565,25 @@ def extract_audio(source: str, out_wav: str,
     # 1) 本地文件
     if os.path.exists(source):
         return _ffmpeg_transcode(source, out_wav, ffmpeg_exe)
-    # 2) 远程链接：yt-dlp 取直链 + ffmpeg 直下
+    # 2) 远程链接：优先 urllib 下载原始容器 + ffmpeg 本地转码（绕开 ffmpeg 直连
+    #    B站 CDN 抽到被沙箱拦截的 host 报 -138 崩溃；2026-09-13 踩坑修复）。
     url = _ydl_get_audio_url(source, cookie_str=cookie_str, ffmpeg_exe=ffmpeg_exe)
-    if url and _ffmpeg_download_audio(url, out_wav, cookie_str=cookie_str, ffmpeg_exe=ffmpeg_exe):
-        return True
+    if url:
+        raw = out_wav + ".raw"   # 原始容器（m4s 等）临时落盘，转码后删
+        try:
+            if _download_audio_urllib(source, raw, cookie_str=cookie_str,
+                                     ffmpeg_exe=ffmpeg_exe):
+                if _ffmpeg_transcode(raw, out_wav, ffmpeg_exe):
+                    return True
+        finally:
+            try:
+                if os.path.exists(raw):
+                    os.remove(raw)
+            except Exception:
+                pass
+        # 回退：ffmpeg 直下（仍可能抽到坏 host，但作为最后兜底）
+        if _ffmpeg_download_audio(url, out_wav, cookie_str=cookie_str, ffmpeg_exe=ffmpeg_exe):
+            return True
     # 3) 回退：yt-dlp 整段下载
     return _ydl_extract_audio_legacy(source, out_wav, cookie_str=cookie_str, ffmpeg_exe=ffmpeg_exe)
 
@@ -587,6 +656,99 @@ def _run_transcribe(model, wav: str, language: Optional[str]) -> Optional[List[D
         return None
     print(f"   ✅ ASR 完成（{len(segments)} 段，检测语言 {info.language}）")
     return segments
+
+
+# ---------------------------------------------------------------------------
+# 长音频分片转写（规避整段塞 GPU 的 CUDA 原生崩溃）
+# ---------------------------------------------------------------------------
+
+def _wav_duration(wav: str) -> Optional[float]:
+    """读 wav 时长（秒）。16k mono pcm_s16le，优先用 wave 模块只读 header；
+    读不到则按 32000 bytes/s 估算。"""
+    try:
+        import wave
+        with wave.open(wav, "rb") as wf:
+            fr = wf.getframerate()
+            n = wf.getnframes()
+            if fr:
+                return n / fr
+    except Exception:
+        pass
+    try:
+        return os.path.getsize(wav) / 32000.0
+    except Exception:
+        return None
+
+
+def _ffmpeg_segment(wav: str, seg_dir: str, segment_sec: int = 600) -> List[str]:
+    """用 ffmpeg 把 wav 按固定时长切片（-f segment -c copy，无重编码、极快），
+    返回排序后的分片路径列表。
+
+    解决「整段长音频一次性喂给 GPU 推理导致 CUDA 原生段错误（无 Python traceback，
+    无法被 except 捕获）」的问题（2026-09-13 实踩：2h+ 视频整段转写崩溃；切 600s
+    小片后 VRAM 始终有界，稳定跑通两个 2h+ 视频）。"""
+    import glob
+    ffmpeg_exe = _ffmpeg_exe()
+    if not ffmpeg_exe:
+        return []
+    os.makedirs(seg_dir, exist_ok=True)
+    try:
+        rc = subprocess.run([ffmpeg_exe, "-y", "-i", wav,
+                             "-f", "segment", "-segment_time", str(segment_sec),
+                             "-c", "copy", os.path.join(seg_dir, "seg_%03d.wav")],
+                            capture_output=True, text=True, timeout=300)
+    except Exception as e:
+        print(f"   ❌ 音频切片失败: {e}")
+        return []
+    if rc.returncode != 0:
+        print(f"   ❌ 音频切片失败(rc={rc.returncode}): {rc.stderr[-400:]}")
+        return []
+    return sorted(glob.glob(os.path.join(seg_dir, "seg_*.wav")))
+
+
+def transcribe_audio_chunked(wav: str, model_size: str = "medium",
+                            language: Optional[str] = None,
+                            device: str = "auto",
+                            wall_timeout: Optional[float] = None,
+                            segment_sec: int = 600,
+                            auto_threshold: float = 1800.0) -> Optional[List[Dict]]:
+    """长音频安全转写：wav 超过 auto_threshold 秒（默认 30min）自动分片逐段转写
+    并拼接绝对时间戳；短于此则走原整段快路径（transcribe_audio）。
+
+    长音频整段一次性喂给 GPU 推理会在 CUDA 层段错误崩溃（无 Python traceback，
+    无法被 except 捕获、连看门狗都救不了），切片后每段 VRAM 占用有界，彻底规避。
+    2026-09-13 实踩修复（两个 2h+ B站视频）。
+
+    任一片转写失败（返回 None）即整段失败返回 None，由上层走 CPU 降级 / 跳过。
+    """
+    import time
+    dur = _wav_duration(wav)
+    if dur is None or dur <= auto_threshold:
+        return transcribe_audio(wav, model_size, language, device, wall_timeout)
+    seg_dir = tempfile.mkdtemp(prefix="asr_seg_")
+    segs = _ffmpeg_segment(wav, seg_dir, segment_sec)
+    if not segs:
+        print("   ⚠️ 切片为空，回退整段转写")
+        return transcribe_audio(wav, model_size, language, device, wall_timeout)
+    print(f"   ✂️ 长音频 {dur:.0f}s 超过阈值，切 {len(segs)} 片逐段转写")
+    all_segs: List[Dict] = []
+    try:
+        for idx, sg in enumerate(segs):
+            t0 = time.time()
+            # 内层不设硬超时看门狗（避免与外层嵌套 Timer）；单片宽松上限 600s。
+            s = transcribe_audio(sg, model_size, language, device, wall_timeout=None)
+            if not s:
+                print(f"   ❌ 第 {idx+1}/{len(segs)} 片转写失败，整段放弃")
+                return None
+            for x in s:
+                x["start"] = x.get("start", 0) + idx * segment_sec
+            all_segs.extend(s)
+            print(f"   ✅ 第 {idx+1}/{len(segs)} 片完成（{len(s)} 段, {time.time()-t0:.0f}s）")
+    finally:
+        _cleanup(seg_dir)
+    if not all_segs:
+        return None
+    return all_segs
 
 
 # ---------------------------------------------------------------------------
@@ -689,7 +851,7 @@ def transcribe_video(url: str, lang: str = "zh",
                         print(f"   ℹ️ B站音频下载失败且 cookie 刷新异常：{e}，跳过 ASR。")
                         return None
             return None
-        segs = transcribe_audio(wav, model_size, lang, device, wall_timeout=wall_timeout)
+        segs = transcribe_audio_chunked(wav, model_size, lang, device, wall_timeout=wall_timeout)
         if not segs:
             return None
         text = "\n".join(s["text"] for s in segs)
