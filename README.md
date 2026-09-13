@@ -409,7 +409,8 @@ blog-article-skill/
 │   ├── fetch_up_range.py     # UP 主视频批量抓字幕并入队（限速 + 412 熔断）
 │   ├── list_up_videos.py     # 拉 UP 全量视频列表
 │   ├── filter_pending.py     # 派单前机械清洗两队列（已总结自动出队）
-│   ├── land_scys_batch.py    # scys 批量单线程落地
+│   ├── land_scys_by_key.py   # scys 待总结队列落盘+出队（Obsidian版·现役，按 topicId 稳定键）
+│   ├── land_scys_batch.py    # scys 批量单线程落地（飞书版 legacy，obsidian=False，仅恢复飞书同步时用）
 │   ├── persist_summary.py    # 子 Agent 总结后落盘 + 出队
 │   ├── series_maintenance.py # 系列课飞书侧运维（verify/regen-overview/reland/forget）
 │   └── ...                   # 其余见目录
