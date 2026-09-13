@@ -58,6 +58,18 @@ S_PSYCH = (
     "## 一、概念\nMBTI……"
 )
 
+S_XP_READING = (
+    "# 万字拆解《高效能人士的7个习惯》\n\n"
+    "**30秒速览**：本文拆解《高效能人士的7个习惯》这本经典书，讲个人成长与高效习惯养成，属于读书笔记。\n\n"
+    "## 一、书籍背景\n《高效能人士的7个习惯》是史蒂芬·柯维……"
+)
+
+S_XP_OPINION = (
+    "# 节后跳槽指南！如何跳出高薪？\n\n"
+    "**30秒速览**：本文讲职场人节后如何跳槽、谈薪、跳出高薪低成长的陷阱，属于观点随笔。\n\n"
+    "## 一、跳槽时机\n节后跳槽要注意……"
+)
+
 
 class TestInferSemanticTags(unittest.TestCase):
     def test_invest_pig_submap(self):
@@ -109,6 +121,24 @@ class TestInferSemanticTags(unittest.TestCase):
         self.assertEqual(domain_tags, [])
         self.assertIn("topic/MBTI", tags)
         self.assertIn("topic/心理学", tags)
+
+    def test_author_archived_xiapeng_not_invest(self):
+        # 按作者归档的笔记（夏鹏本鹏讲读书/职场）不得被错归投资
+        tags = infer_semantic_tags(
+            S_XP_READING, folder="【我的总结】/作者/夏鹏本鹏",
+            author="夏鹏本鹏", note_type="reading")
+        domain = [t for t in tags if "/" in t
+                  and not t.startswith(("topic/", "用途/", "来源/", "类型/"))]
+        self.assertEqual(domain, ["个人成长/读书方法"])
+        self.assertNotIn("投资", [t.split("/", 1)[0] for t in domain])
+
+        tags2 = infer_semantic_tags(
+            S_XP_OPINION, folder="【我的总结】/作者/夏鹏本鹏",
+            author="夏鹏本鹏", note_type="opinion")
+        domain2 = [t for t in tags2 if "/" in t
+                   and not t.startswith(("topic/", "用途/", "来源/", "类型/"))]
+        self.assertEqual(domain2, ["个人成长/职场"])
+        self.assertIn("来源/夏鹏本鹏", tags2)
 
     def test_no_duplicate_and_no_slash_in_topic(self):
         tags = infer_semantic_tags(S_INVEST, folder="【监控】/B站/价投小猪仔/小猪仔拆公司",
@@ -174,6 +204,26 @@ class TestSaveIntegration(unittest.TestCase):
         self.assertNotIn("##", tag_line)
         # dedup 被调用（登记），确认函数完整跑通
         self.assertTrue(mock_dedup.mark_summarized.called)
+
+    @unittest.skipUnless(_HAS_SAVE, "articles.main 不可导入（依赖缺失）")
+    def test_save_removes_redundant_author_and_adds_base_tag(self):
+        # 模拟消费队列：入队预填 tags=["夏鹏本鹏"]（裸作者），验证落盘后：
+        # ① 裸「夏鹏本鹏」被 来源/夏鹏本鹏 覆盖移除（不重复）② 补 #文章总结 ③ 领域=个人成长
+        with patch("articles.main.OutputManager", FakeManager), \
+             patch("articles.main.dedup") as mock_dedup:
+            mock_dedup.mark_summarized = MagicMock()
+            note, fn = save_summarized_article(
+                S_XP_READING, original_url="http://example.com/xp", author="夏鹏本鹏",
+                tags=["夏鹏本鹏"], original_title="万字拆解高效能人士的7个习惯",
+                note_type="reading",
+                folder="【我的总结】/作者/夏鹏本鹏", publish_time=0)
+        tag_line = note.split("\n", 1)[0].strip()
+        tokens = [t[1:] for t in tag_line.split() if t.startswith("#")]
+        self.assertIn("来源/夏鹏本鹏", tokens)
+        self.assertNotIn("夏鹏本鹏", tokens)          # 裸作者已被移除
+        self.assertIn("文章总结", tokens)              # 基础类型标签补齐
+        self.assertIn("个人成长/读书方法", tokens)    # 领域正确（不再错归投资）
+        self.assertNotIn("投资", [t.split("/")[0] for t in tokens if "/" in t])
 
 
 if __name__ == "__main__":

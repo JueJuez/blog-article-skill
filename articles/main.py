@@ -319,6 +319,16 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
     except Exception as _e:
         print(f"  ⚠️ 语义标签自动生成失败（非致命，跳过）：{_e}")
 
+    # 方案 A 收口：
+    # ① 确保笔记类型基础标签（#文章总结）存在，与存量 1087 篇保持一致；
+    #    （之前仅 tags 为空时才由 suggest_default_tags 补，传了 tags 就漏掉）
+    if not any(t in ("文章总结", "原创", "动态") for t in tags):
+        tags.insert(0, "文章总结")
+    # ② 命名空间标签已编码的信息，移除冗余裸标签（例：已有「来源/夏鹏本鹏」则移除裸「夏鹏本鹏」，避免同义双写）
+    _ns_values = {_t.split("/", 1)[1] for _t in tags if "/" in _t}
+    if _ns_values:
+        tags = [_t for _t in tags if not ("/" not in _t and _t in _ns_values)]
+
     category = ""
     # 跳过「纯元信息/系统标签」与「命名空间标签（含 /）」——这些只作笔记内 #标签检索，
     # 不抢「分类」（分类决定落盘文件夹；命名空间标签如 #投资/公司分析 会被 Obsidian

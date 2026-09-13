@@ -84,7 +84,7 @@ def parent_and_subfolder(parts):
             elif acct in INVEST_UPS:
                 parent = "投资"
             else:
-                parent = "投资"  # 离线粗糙兜底；落盘时由 parent_from_lede 二次校验
+                parent = None  # 不无脑兜底投资；交 parent_from_lede 按导语粗判（命中则 个人成长/商业等，否则 综合→不输出领域标签）
         else:
             # 【我的总结】/<分类>：不硬归，交给 parent_from_lede 校验
             parent = None
@@ -103,6 +103,8 @@ def parent_from_lede(text):
         return "AI科技"
     if re.search(r"小红书|视频号|公众号|抖音|涨粉|选题|账号运营|带货|自媒体|直播", s):
         return "内容创作"
+    if re.search(r"习惯|自律|成长|效率|时间管理|精力管理|复盘|职场|跳槽|求职|面试|晋升|沟通|汇报|情商|认知升级|自我提升|内耗|焦虑|读书|阅读|拆书|书单|笔记法|终身学习|元认知", s):
+        return "个人成长"
     return "综合"
 
 
@@ -168,6 +170,14 @@ def subdomain_from_lede(parent, lede):
         if re.search(r"短视频|直播", s):
             return "短视频/直播"
         return "平台运营"
+    if parent == "个人成长":
+        if re.search(r"读书|阅读|拆书|书单|笔记法", s):
+            return "读书方法"
+        if re.search(r"职场|跳槽|求职|面试|晋升|沟通|汇报", s):
+            return "职场"
+        if re.search(r"习惯|自律|效率|时间管理|精力|复盘", s):
+            return "习惯效率"
+        return "个人成长·综合"
     return "综合"
 
 
@@ -455,8 +465,9 @@ def infer_semantic_tags(content, folder="", author="", note_type="", url="", sou
     zone, source, subfolder, parent = parent_and_subfolder(parts)
     lede = lede_from_text(content)
 
-    # parent 二次校验：【我的总结】/<分类> / 待定 / 通用兜底时，用导语信号覆盖
-    if parent in (None, "待定") or (zone == MYNOTES_ROOT and len(parts) > 1 and parts[1] != "作者"):
+    # parent 二次校验：【我的总结】/<分类> /【我的总结】/作者/<账号> / 待定 / 通用兜底时，用导语信号覆盖
+    # （之前排除 parts[1]=="作者" 导致按作者归档的笔记永不被导语纠正，夏鹏被错归投资）
+    if parent in (None, "待定") or (zone == MYNOTES_ROOT and len(parts) > 1):
         cand = parent_from_lede(content)
         if cand != "综合":
             parent = cand
