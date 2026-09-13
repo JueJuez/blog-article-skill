@@ -279,7 +279,7 @@ def _guess_source(url: str) -> str:
     return ""
 
 
-def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "") -> tuple:
+def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "", topics: list = None) -> tuple:
     """保存已总结的文章内容到所有可用目标。
 
     Args:
@@ -301,14 +301,19 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
 
     title = original_title or _extract_title_from_summary(summarized_content) or ""
 
-    # 方案 A（2026-09-13）：落盘时复用分类器追加命名空间语义标签（#父/子 #topic/… #用途/…
-    # #来源/… #类型/…），与 index 分类器同源。仅追加、不覆盖调用方传入的 tags；去重。
-    # 这些标签只进笔记顶部 #标签 行用于检索，不抢「分类」（category 推算已跳过含 / 的标签）。
+    # 方案 A（2026-09-13 修订）：落盘时复用分类器追加命名空间语义标签
+    # （#父/子 领域 / #topic/… 主题实体 / #用途/… / #类型/…），与 index 分类器同源。
+    # 仅追加、不覆盖调用方传入的 tags；去重。这些标签只进笔记顶部 #标签 行用于检索，
+    # 不抢「分类」（category 推算已跳过含 / 的标签）。
+    # 主题实体维度由总结 LLM 顺手生成（落盘前已从正文提取并移除『核心主题词』区块），
+    # 无 LLM 主题词时退化为代码关键词抽取。
     try:
-        from shared.note_classify import infer_semantic_tags
+        from shared.note_classify import infer_semantic_tags, extract_and_strip_topics
+        summarized_content, _block_topics = extract_and_strip_topics(summarized_content)
+        effective_topics = topics if (topics is not None and len(topics) > 0) else _block_topics
         semantic = infer_semantic_tags(
             summarized_content, folder=folder, author=author,
-            note_type=note_type, url=original_url,
+            note_type=note_type, url=original_url, topics=effective_topics,
         )
         if semantic:
             _seen = set(tags)
@@ -320,10 +325,14 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
         print(f"  ⚠️ 语义标签自动生成失败（非致命，跳过）：{_e}")
 
     # 方案 A 收口：命名空间标签已编码的信息，移除冗余裸标签
-    # （例：已有「来源/夏鹏本鹏」则移除裸「夏鹏本鹏」，避免同义双写）
+    # （例：领域/类型等命名空间值若又作为裸标签出现则移除，避免同义双写；
+    #  作者本身已在文件夹路径 + Obsidian path: 搜索可聚合，裸作者标签纯属重复噪声亦移除）
     _ns_values = {_t.split("/", 1)[1] for _t in tags if "/" in _t}
     if _ns_values:
         tags = [_t for _t in tags if not ("/" not in _t and _t in _ns_values)]
+    _author_norm = (author or "").strip()
+    if _author_norm:
+        tags = [_t for _t in tags if _t != _author_norm]
 
     category = ""
     # 跳过「纯元信息/系统标签」与「命名空间标签（含 /）」——这些只作笔记内 #标签检索，
@@ -465,6 +474,9 @@ def summarize_content(content: str, author: str = "", url: str = "", tags: list 
         return {"summary": None, "usage": None, "model": None, "source": None}
 
     summary = meta["content"]
+    # 提取 LLM 生成的『核心主题词』区块（转为 #topic/ 标签，从正文移除，不让质量门禁误判）
+    from shared.note_classify import extract_and_strip_topics
+    summary, topics = extract_and_strip_topics(summary)
     # A：质量闸门（第二遍把关）——评分<阈值带反馈重试一次
     if note_type:
         gate = verify_note(summary, content[:6000], note_type)
@@ -477,10 +489,11 @@ def summarize_content(content: str, author: str = "", url: str = "", tags: list 
 
     print("   ✅ AI总结完成")
     return {
-        "summary": meta["content"],
+        "summary": summary,
         "usage": meta.get("usage"),
         "model": meta.get("model"),
         "source": meta.get("source"),
+        "topics": topics,
     }
 
 
@@ -582,7 +595,7 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None,
             summarized_content, original_url, author, tags, original_title,
             meta={"usage": usage, "model": model}, note_type=note_type,
             publish_time=publish_time, folder=folder, obsidian=obsidian,
-            content_key=article_content
+            content_key=article_content, topics=ai_result.get("topics")
         )
         print("\n✅ 文章总结与保存流程完成！")
         return summarized_content, formatted_note, filename, original_title, None
@@ -619,6 +632,10 @@ def autoroute_folder(folder: str, author: str, original_url: str, original_title
 def save_summary_only(input_data: dict) -> dict:
     print("💾 执行外层兜底总结后的自动保存...")
     summarized_content = input_data.get('summarized_content', '')
+    # 先从正文提取并移除 LLM 生成的『核心主题词』区块（转为 #topic/ 标签，不让机械门禁误判字数/格式）
+    from shared.note_classify import extract_and_strip_topics
+    summarized_content, _block_topics = extract_and_strip_topics(summarized_content)
+    _topics = input_data.get('topics') or _block_topics
     original_url = input_data.get('original_url', '')
     author = input_data.get('author', '')
     tags = input_data.get('tags', [])
@@ -676,7 +693,8 @@ def save_summary_only(input_data: dict) -> dict:
             summarized_content, original_url=original_url, author=author,
             tags=tags, original_title=original_title, publish_time=publish_time,
             folder=folder, obsidian=obsidian,
-            note_type=input_data.get('note_type', '')
+            note_type=input_data.get('note_type', ''),
+            topics=_topics
         )
         return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note}
     except Exception as e:

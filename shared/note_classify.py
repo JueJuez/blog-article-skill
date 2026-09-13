@@ -7,12 +7,13 @@
 - 不回填存量 1087 篇（靠 index 表覆盖）；本模块只作用于「未来新抓的笔记」。
 
 标签命名约定（见 _tmp/new_template_proposal.md）：
-- 父领域/子领域： `#父/子`  —— 只输出含 `/` 的子领域标签，Obsidian 层级 `#父` 自动命中，
+- 父领域/子领域： `#父/子`  —— 每篇必有（含 `#综合/未分类` 锚点兜底）；Obsidian 层级 `#父` 自动命中，
   且不会抢「分类」（category 推算跳过含 `/` 的标签）。
-- 主题实体：       `#topic/...`
+- 主题实体：       `#topic/...`  —— **唯一交由总结 LLM 生成的维度**（强相关 3–5，可少于3，不可多于5）；
+  代码路径（无 LLM 主题词时）退化为关键词正则抽取。
 - 用途：           `#用途/...`
-- 来源账号：       `#来源/...`
 - 笔记类型：       `#类型/...`
+（已移除 #来源/：文件夹路径 + Obsidian `path:` 搜索已能按作者/来源聚合，标签内再放纯属重复噪声。）
 
 纯函数模块，不 import 任何笔记落盘/IO 代码，避免循环依赖。
 """
@@ -454,17 +455,54 @@ def title_from_text_and_path(fn, text):
 
 
 # ---------------------------------------------------------------------------
+# LLM 主题词区块（总结时顺手生成，落盘时提取并移除）
+# ---------------------------------------------------------------------------
+TOPIC_BLOCK_RE = re.compile(r"【核心主题词】\s*[:：]?\s*(.+?)\s*$", re.M)
+
+
+def extract_and_strip_topics(content):
+    """从正文提取 LLM 输出的『核心主题词』区块，返回 (cleaned_content, topics_list)。
+
+    - 区块格式（UNIVERSAL_RULES 约定）：笔记末尾独占一行
+      ``【核心主题词】复利 | 护城河 | 价值投资``
+    - 多个词用 顿号/竖线/逗号 分隔，保留含空格的词（如「Claude Code」）。
+    - 返回前对 content 原地移除该行（系统会转成 #topic/ 标签，不留在正文）。
+    - 截断到 5 个（硬上限），并去空/去重。
+    """
+    topics = []
+    m = TOPIC_BLOCK_RE.search(content)
+    if m:
+        raw = m.group(1).strip().strip("`").strip()
+        for part in re.split(r"[、，,\|｜]+", raw):
+            t = part.strip().strip("`\"'（）()【】[]")
+            if t:
+                topics.append(t)
+        content = content.replace(m.group(0), "").rstrip("\n").strip()
+    seen = set()
+    out = []
+    for t in topics:
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return content, out[:5]
+
+
+# ---------------------------------------------------------------------------
 # 对外单一入口
 # ---------------------------------------------------------------------------
-def infer_semantic_tags(content, folder="", author="", note_type="", url="", source_account=""):
+def infer_semantic_tags(content, folder="", author="", note_type="", url="", source_account="", topics=None):
     """返回新笔记应追加的命名空间语义标签列表（不含 # 前缀，不含 #文章总结/#转载 等遗留标签）。
 
-    维度：父/子领域、主题实体、用途、来源账号、笔记类型。
-    返回值形如 ``投资/公司分析``、``topic/伊利股份``、``用途/教学可用``、``来源/价投小猪仔``、
-    ``类型/结构化复盘``——**不带 # 前缀**，由落盘模板 format_note_with_prompt 统一加 #，
-    最终笔记里显示为 #投资/公司分析 等。这样：
+    维度（4 个，均为语义/效用维度，定位交给文件夹）：
+    - 父/子领域： ``投资/公司分析``、``个人成长/读书方法``、``综合/未分类``（锚点兜底）
+    - 主题实体： ``topic/伊利股份`` —— **唯一交由总结 LLM 生成的维度**（强相关 3–5，可少于3，不可多于5）；
+                无 LLM 主题词时退化为关键词正则抽取（extract_topics）。
+    - 用途：     ``用途/教学可用``
+    - 笔记类型： ``类型/结构化复盘``
+    返回值**不带 # 前缀**，由落盘模板 format_note_with_prompt 统一加 #，最终显示为 #投资/公司分析 等。
     - Obsidian 层级标签 #投资 自动命中 #投资/公司分析；
     - category 推算跳过含 / 的标签，命名空间标签绝不抢「分类」（文件夹路由）。
+    （已移除 #来源/：文件夹路径 + Obsidian ``path:`` 搜索已能按作者/来源聚合，标签内再放纯属重复噪声。）
     """
     parts = [p for p in (folder or "").split("/") if p]
     zone, source, subfolder, parent = parent_and_subfolder(parts)
@@ -482,26 +520,31 @@ def infer_semantic_tags(content, folder="", author="", note_type="", url="", sou
     tags = []
     # 领域标签（仅含 / 的子领域）。注意：返回**不带 # 前缀**——落盘模板 format_note_with_prompt
     # 会统一给每个 tag 加 #，这里若带 # 会变成 ##xxx。最终笔记里显示为 #投资/公司分析。
+    # 没命中任何领域（parent 为 None/综合）时落到 #综合/未分类 锚点，保证每篇都有领域维度
+    # （不再静默丢弃导致语义维度塌掉）。
     if parent and parent != "综合" and sub:
         root = parent.split("/")[0]
         encoded = sub.replace("·综合", "").replace(parent, "").strip("·/ ").strip()
         if not encoded:
             encoded = "综合"
         tags.append(f"{root}/{encoded}")
+    elif not parent or parent == "综合":
+        tags.append("综合/未分类")
 
-    # 主题实体
-    for t in extract_topics("", content):
-        tags.append("topic/" + t.replace("/", "·"))
+    # 主题实体：优先用 LLM 生成的 topics（强相关、≤5）；无则代码关键词退化抽取
+    if topics:
+        for t in topics[:5]:
+            slug = t.strip().replace("/", "·")
+            if slug:
+                tags.append("topic/" + slug)
+    else:
+        for t in extract_topics("", content):
+            tags.append("topic/" + t.replace("/", "·"))
 
     # 用途
     nt = (note_type or note_type_from_content(content)).lower()
     for p in purpose(nt, lede, content):
         tags.append("用途/" + p)
-
-    # 来源账号
-    src = (author or source_account or "").strip()
-    if src and src not in ("未知", "匿名"):
-        tags.append("来源/" + src)
 
     # 笔记类型
     if nt:
