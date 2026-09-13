@@ -243,18 +243,8 @@ def _extract_title_from_summary(summarized_content: str) -> str:
 
 
 def _freshness_label(publish_time: int) -> str:
-    """按内容原始发布时间距今天数返回新鲜度标签（时效感知）。
-
-    当日(<1天)=🔥当日 / 一周内=本周 / 更早=更早。无发布时间则返回空串。
-    """
-    if not publish_time or publish_time <= 0:
-        return ""
-    age_days = (time.time() - publish_time) / 86400.0
-    if age_days < 1:
-        return "🔥当日"
-    if age_days < 7:
-        return "本周"
-    return "更早"
+    """（已废弃）原新鲜度标签逻辑。2026-09-13 用户决策移除 #更早/🔥当日/本周 等时效标签（无检索价值），保留空壳以兼容旧引用。"""
+    return ""
 
 
 def _sanitize_folder(folder: str) -> str:
@@ -294,17 +284,22 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
                 监控订阅产出用它按「分类/账号名」归档，内容与源头对得上。
     """
     tags = list(tags or [])
-    # 新鲜度标签（时效感知）：追加到末尾，避免它抢走「分类」（文件名用首个非跳过 tag 作分类）
-    fresh = _freshness_label(publish_time)
-    if fresh:
-        tags.append(fresh)
+
+    # 先基于「用户原始 tags」锁定 category（防止下方注入的自动裸标签 topic/用途 抢分类）。
+    # 自动语义标签只进笔记顶部 #标签 行用于检索，绝不参与文件夹路由。
+    from shared.routing import CATEGORY_SKIP_TAGS
+    category = ""
+    for tag in tags:
+        if tag not in CATEGORY_SKIP_TAGS and "/" not in tag:
+            category = tag
+            break
 
     title = original_title or _extract_title_from_summary(summarized_content) or ""
 
-    # 方案 A（2026-09-13 修订）：落盘时复用分类器追加命名空间语义标签
-    # （#父/子 领域 / #topic/… 主题实体 / #用途/… / #类型/…），与 index 分类器同源。
-    # 仅追加、不覆盖调用方传入的 tags；去重。这些标签只进笔记顶部 #标签 行用于检索，
-    # 不抢「分类」（category 推算已跳过含 / 的标签）。
+    # 方案 A（2026-09-13 修订·2026-09-13 晚间二次精简）：落盘时复用分类器追加语义标签。
+    # 维度顺序：主题实体（裸） → 用途（裸） → 父/子领域（命名空间） → 类型（命名空间）。
+    # 仅追加、不覆盖调用方传入的 tags；去重。topic 与 用途 为裸标签（用户要求精简），
+    # 领域/类型保留「父/子」命名空间（含 /，被 category 推算跳过，不抢文件夹路由）。
     # 主题实体维度由总结 LLM 顺手生成（落盘前已从正文提取并移除『核心主题词』区块），
     # 无 LLM 主题词时退化为代码关键词抽取。
     try:
@@ -333,17 +328,6 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
     _author_norm = (author or "").strip()
     if _author_norm:
         tags = [_t for _t in tags if _t != _author_norm]
-
-    category = ""
-    # 跳过「纯元信息/系统标签」与「命名空间标签（含 /）」——这些只作笔记内 #标签检索，
-    # 不抢「分类」（分类决定落盘文件夹；命名空间标签如 #投资/公司分析 会被 Obsidian
-    # 识别为层级标签，但绝不能当文件夹分类名）。单一真源：shared/routing.CATEGORY_SKIP_TAGS。
-    from shared.routing import CATEGORY_SKIP_TAGS
-    skip_categories = CATEGORY_SKIP_TAGS
-    for tag in tags:
-        if tag not in skip_categories and "/" not in tag:
-            category = tag
-            break
 
     folder = _sanitize_folder(folder)
     # folder 已提供分类归档路径时，文件名不再加【分类】前缀，避免子目录下重复冗余

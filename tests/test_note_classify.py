@@ -77,8 +77,8 @@ class TestInferSemanticTags(unittest.TestCase):
             S_INVEST, folder="【监控】/B站/价投小猪仔/小猪仔拆公司",
             author="价投小猪仔", note_type="structured")
         self.assertIn("投资/公司分析", tags)
-        self.assertIn("topic/伊利股份", tags)
-        self.assertIn("用途/教学可用", tags)
+        self.assertIn("伊利股份", tags)
+        self.assertIn("教学可用", tags)
         self.assertIn("类型/结构化复盘", tags)
         self.assertNotIn("来源/", " ".join(tags))
         for t in tags:
@@ -91,10 +91,10 @@ class TestInferSemanticTags(unittest.TestCase):
             S_BUSINESS, folder="生财有术/虚拟产品",
             author="生财有术", note_type="case")
         self.assertIn("商业/虚拟产品", tags)
-        self.assertIn("topic/小红书", tags)
-        self.assertIn("topic/虚拟产品", tags)
-        self.assertIn("用途/素材可用", tags)
-        self.assertIn("用途/方法论可复用", tags)
+        self.assertIn("小红书", tags)
+        self.assertIn("虚拟产品", tags)
+        self.assertIn("素材可用", tags)
+        self.assertIn("方法论可复用", tags)
         self.assertIn("类型/案例拆解", tags)
 
     def test_ai_datwhale(self):
@@ -102,7 +102,7 @@ class TestInferSemanticTags(unittest.TestCase):
             S_AI, folder="【我的总结】/作者/Datawhale",
             author="Datawhale", note_type="structured")
         self.assertIn("AI科技/AI编程", tags)
-        self.assertIn("topic/Claude Code", tags)
+        self.assertIn("Claude Code", tags)
         self.assertNotIn("来源/", " ".join(tags))
 
     def test_content_creation(self):
@@ -110,17 +110,16 @@ class TestInferSemanticTags(unittest.TestCase):
             S_CONTENT, folder="生财有术/自媒体",
             author="生财有术", note_type="dissection")
         self.assertIn("内容创作/平台运营", tags)
-        self.assertIn("topic/小红书", tags)
+        self.assertIn("小红书", tags)
         self.assertIn("类型/创作解剖", tags)
 
     def test_inbox_fallback_no_domain_when_comprehensive(self):
         tags = infer_semantic_tags(S_PSYCH, folder="【待归类】", author="")
         domain_tags = [t for t in tags if "/" in t
-                       and not t.startswith("topic/") and not t.startswith("用途/")
-                       and not t.startswith("来源/") and not t.startswith("类型/")]
+                       and not t.startswith("类型/")]
         self.assertEqual(domain_tags, ["综合/未分类"])
-        self.assertIn("topic/MBTI", tags)
-        self.assertIn("topic/心理学", tags)
+        self.assertIn("MBTI", tags)
+        self.assertIn("心理学", tags)
 
     def test_author_archived_xiapeng_not_invest(self):
         # 按作者归档的笔记（夏鹏本鹏讲读书/职场）不得被错归投资
@@ -128,7 +127,7 @@ class TestInferSemanticTags(unittest.TestCase):
             S_XP_READING, folder="【我的总结】/作者/夏鹏本鹏",
             author="夏鹏本鹏", note_type="reading")
         domain = [t for t in tags if "/" in t
-                  and not t.startswith(("topic/", "用途/", "来源/", "类型/"))]
+                  and not t.startswith("类型/")]
         self.assertEqual(domain, ["个人成长/读书方法"])
         self.assertNotIn("投资", [t.split("/", 1)[0] for t in domain])
 
@@ -136,7 +135,7 @@ class TestInferSemanticTags(unittest.TestCase):
             S_XP_OPINION, folder="【我的总结】/作者/夏鹏本鹏",
             author="夏鹏本鹏", note_type="opinion")
         domain2 = [t for t in tags2 if "/" in t
-                   and not t.startswith(("topic/", "用途/", "来源/", "类型/"))]
+                   and not t.startswith("类型/")]
         self.assertEqual(domain2, ["个人成长/职场"])
         self.assertNotIn("来源/", " ".join(tags2))
 
@@ -144,15 +143,13 @@ class TestInferSemanticTags(unittest.TestCase):
         tags = infer_semantic_tags(S_INVEST, folder="【监控】/B站/价投小猪仔/小猪仔拆公司",
                                    author="价投小猪仔", note_type="structured")
         self.assertEqual(len(tags), len(set(tags)))
-        for t in tags:
-            if t.startswith("topic/"):
-                self.assertNotIn("/", t[len("topic/"):])
 
 
 class TestCategoryRouting(unittest.TestCase):
     def test_skip_namespace_tags(self):
         self.assertEqual(category_from_tags(["文章总结", "投资/公司分析", "来源/价投小猪仔"]), "")
-        self.assertEqual(category_from_tags(["投资/公司分析", "用途/教学可用"]), "")
+        # 注：topic/用途 现已裸标签化；裸用途会被当分类（用户手贴意图），隔离在 save 层（注入前锁定 category）
+        self.assertEqual(category_from_tags(["投资/公司分析", "教学可用"]), "教学可用")
 
     def test_keep_plain_category(self):
         self.assertEqual(category_from_tags(["投资交易", "投资/公司分析"]), "投资交易")
@@ -168,9 +165,10 @@ class TestFormatOutput(unittest.TestCase):
     def test_hashtag_line_includes_namespace(self):
         out = format_note_with_prompt(
             "# 标题\n正文", author="价投小猪仔", url="http://example.com",
-            tags=["投资/公司分析", "topic/伊利股份"],
+            tags=["投资/公司分析", "伊利股份"],
             add_metadata=True)
-        self.assertIn("#投资/公司分析 #topic/伊利股份", out)
+        self.assertIn("#投资/公司分析", out)
+        self.assertIn("#伊利股份", out)
 
 
 class FakeManager:
@@ -195,10 +193,11 @@ class TestSaveIntegration(unittest.TestCase):
                 S_INVEST, original_url="http://example.com/x", author="价投小猪仔",
                 tags=["文章总结"], original_title="拆解伊利股份", note_type="structured",
                 folder="【监控】/B站/价投小猪仔/小猪仔拆公司", publish_time=0)
-        # 四个维度标签都进笔记（注意：#文章总结/#转载 已不再生成，#来源/ 已移除）
-        for expected in ("#投资/公司分析", "#topic/伊利股份", "#用途/教学可用",
+        # 四个维度标签都进笔记（注意：#文章总结/#转载/#来源/#更早 均已不再生成）
+        for expected in ("#投资/公司分析", "#伊利股份", "#教学可用",
                          "#类型/结构化复盘"):
             self.assertIn(expected, note)
+        self.assertNotIn("#更早", note)  # 时效标签已移除
         # 标签行绝不能出现双井号（标签重复加 #）；正文里的 ## 二级标题是合法 Markdown
         tag_line = note.split("\n\n", 1)[0]
         self.assertNotIn("##", tag_line)
@@ -226,6 +225,21 @@ class TestSaveIntegration(unittest.TestCase):
         self.assertNotIn("来源/", " ".join(tokens))    # 来源标签已移除
         self.assertNotIn("文章总结", tokens)           # 无信息量标签已停生成
         self.assertNotIn("转载", tokens)
+
+    @unittest.skipUnless(_HAS_SAVE, "articles.main 不可导入（依赖缺失）")
+    def test_save_locks_category_from_auto_tags(self):
+        # 路由隔离回归：folder 为空时，自动注入的裸 topic/用途 不得抢「分类」污染文件名【分类】前缀。
+        # （裸标签 #伊利股份 / #教学可用 若被 category_from_tags 误当分类，会生成 【伊利股份】拆解伊利股份.md）
+        with patch("articles.main.OutputManager", FakeManager), \
+             patch("articles.main.dedup") as mock_dedup:
+            mock_dedup.mark_summarized = MagicMock()
+            note, fn = save_summarized_article(
+                S_INVEST, original_url="http://example.com/x", author="价投小猪仔",
+                tags=[], original_title="拆解伊利股份", note_type="structured",
+                folder="", publish_time=0)  # folder 空 -> 走文件名分类前缀逻辑
+        self.assertNotIn("【伊利股份】", fn)
+        self.assertNotIn("【教学可用】", fn)
+        self.assertNotIn("【", fn)  # 原始 tags 空且 folder 空，category 锁定为空，无【分类】前缀
 
 
 class TestTopicBlock(unittest.TestCase):
@@ -255,10 +269,11 @@ class TestTopicBlock(unittest.TestCase):
             S_INVEST, folder="【监控】/B站/价投小猪仔/小猪仔拆公司",
             author="价投小猪仔", note_type="structured",
             topics=["复利", "护城河", "价值投资", "长期主义", "认知", "多余词"])
-        tp = [t for t in tags if t.startswith("topic/")]
-        self.assertEqual(tp, ["topic/复利", "topic/护城河", "topic/价值投资",
-                              "topic/长期主义", "topic/认知"])  # 截断到 5
-        self.assertIn("投资/公司分析", tags)  # 领域仍由代码推导
+        bare = [t for t in tags if "/" not in t]  # 裸标签 = topic + 用途
+        for t in ("复利", "护城河", "价值投资", "长期主义", "认知"):
+            self.assertIn(t, bare)              # topics 参数优先
+        self.assertNotIn("多余词", bare)        # 截断到 5
+        self.assertIn("投资/公司分析", tags)    # 领域仍由代码推导
 
     def test_topics_block_stripped_in_save(self):
         # 端到端：save_summarized_article 从正文剥离【核心主题词】并转为 #topic/，正文不再残留标记
@@ -270,8 +285,8 @@ class TestTopicBlock(unittest.TestCase):
                 body, original_url="http://example.com/x", author="价投小猪仔",
                 tags=[], original_title="拆解伊利股份", note_type="structured",
                 folder="【监控】/B站/价投小猪仔/小猪仔拆公司", publish_time=0)
-        self.assertIn("#topic/护城河", note)
-        self.assertIn("#topic/价值投资", note)
+        self.assertIn("#护城河", note)
+        self.assertIn("#价值投资", note)
         self.assertNotIn("【核心主题词】", note)  # 区块已从正文剥离
 
 

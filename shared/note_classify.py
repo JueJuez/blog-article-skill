@@ -498,18 +498,19 @@ def extract_and_strip_topics(content):
 # 对外单一入口
 # ---------------------------------------------------------------------------
 def infer_semantic_tags(content, folder="", author="", note_type="", url="", source_account="", topics=None):
-    """返回新笔记应追加的命名空间语义标签列表（不含 # 前缀，不含 #文章总结/#转载 等遗留标签）。
+    """返回新笔记应追加的语义标签列表（不含 # 前缀）。
 
-    维度（4 个，均为语义/效用维度，定位交给文件夹）：
-    - 父/子领域： ``投资/公司分析``、``个人成长/读书方法``、``综合/未分类``（锚点兜底）
-    - 主题实体： ``topic/伊利股份`` —— **唯一交由总结 LLM 生成的维度**（强相关 3–5，可少于3，不可多于5）；
-                无 LLM 主题词时退化为关键词正则抽取（extract_topics）。
-    - 用途：     ``用途/教学可用``
-    - 笔记类型： ``类型/结构化复盘``
-    返回值**不带 # 前缀**，由落盘模板 format_note_with_prompt 统一加 #，最终显示为 #投资/公司分析 等。
-    - Obsidian 层级标签 #投资 自动命中 #投资/公司分析；
-    - category 推算跳过含 / 的标签，命名空间标签绝不抢「分类」（文件夹路由）。
-    （已移除 #来源/：文件夹路径 + Obsidian ``path:`` 搜索已能按作者/来源聚合，标签内再放纯属重复噪声。）
+    标签行的**排列顺序即检索心智**：强相关的关键词在前，结构化维度在后。
+    维度（4 个，定位交给文件夹）：
+    - 主题实体（裸标签，**置顶**）： ``伊利股份`` —— **唯一交由总结 LLM 生成的维度**
+      （强相关 3–5，可少于3，不可多于5）；无 LLM 主题词时退化为关键词正则抽取（extract_topics）。
+    - 用途（裸标签）： ``教学可用``（拿来干嘛：教学/素材/灵感/金句/待实践…）
+    - 父/子领域（命名空间）： ``投资/公司分析``、``个人成长/读书方法``、``综合/未分类``（锚点兜底）
+    - 笔记类型（命名空间）： ``类型/结构化复盘``
+    返回值**不带 # 前缀**，由落盘模板 format_note_with_prompt 统一加 #。
+    注意：topic 与 用途 为**裸标签**（用户要求精简），领域/类型保留 ``父/子`` 命名空间——
+    后者含 ``/`` 会被 category 推算跳过，绝不抢「分类」（文件夹路由）；前者仅作检索关键词。
+    （已移除 #来源/ 与 #更早：来源由文件夹路径 + Obsidian ``path:`` 搜索聚合，更早无检索价值。）
     """
     parts = [p for p in (folder or "").split("/") if p]
     zone, source, subfolder, parent = parent_and_subfolder(parts)
@@ -525,10 +526,23 @@ def infer_semantic_tags(content, folder="", author="", note_type="", url="", sou
     sub = resolve_subdomain(parent, lede, parts, source, subfolder)
 
     tags = []
-    # 领域标签（仅含 / 的子领域）。注意：返回**不带 # 前缀**——落盘模板 format_note_with_prompt
-    # 会统一给每个 tag 加 #，这里若带 # 会变成 ##xxx。最终笔记里显示为 #投资/公司分析。
-    # 没命中任何领域（parent 为 None/综合）时落到 #综合/未分类 锚点，保证每篇都有领域维度
-    # （不再静默丢弃导致语义维度塌掉）。
+    # ① 主题实体（裸标签，置顶）：优先 LLM 生成（强相关、≤5），无则代码退化抽取
+    if topics:
+        for t in topics[:5]:
+            slug = t.strip().replace("/", "·")
+            if slug:
+                tags.append(slug)
+    else:
+        for t in extract_topics("", content):
+            tags.append(t.replace("/", "·"))
+
+    # ② 用途（裸标签）
+    nt = (note_type or note_type_from_content(content)).lower()
+    for p in purpose(nt, lede, content):
+        tags.append(p)
+
+    # ③ 领域标签（命名空间，含 /）。没命中任何领域时落到 #综合/未分类 锚点，
+    #    保证每篇都有领域维度（不再静默丢弃导致语义维度塌掉）。
     if parent and parent != "综合" and sub:
         root = parent.split("/")[0]
         encoded = sub.replace("·综合", "").replace(parent, "").strip("·/ ").strip()
@@ -538,22 +552,7 @@ def infer_semantic_tags(content, folder="", author="", note_type="", url="", sou
     elif not parent or parent == "综合":
         tags.append("综合/未分类")
 
-    # 主题实体：优先用 LLM 生成的 topics（强相关、≤5）；无则代码关键词退化抽取
-    if topics:
-        for t in topics[:5]:
-            slug = t.strip().replace("/", "·")
-            if slug:
-                tags.append("topic/" + slug)
-    else:
-        for t in extract_topics("", content):
-            tags.append("topic/" + t.replace("/", "·"))
-
-    # 用途
-    nt = (note_type or note_type_from_content(content)).lower()
-    for p in purpose(nt, lede, content):
-        tags.append("用途/" + p)
-
-    # 笔记类型
+    # ④ 笔记类型（命名空间，含 /）
     if nt:
         label = NOTE_TYPE_LABEL.get(nt)
         if label:
