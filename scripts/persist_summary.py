@@ -56,6 +56,7 @@ def main():
         "original_title": d.get("original_title", ""),
         "publish_time": d.get("publish_time", 0),
         "obsidian": d.get("obsidian", False) or args.obsidian,
+        "note_type": d.get("note_type", ""),
     })
     # 自清理：保存成功后从降级队列移除对应条目（按 original_url 匹配），
     # 这样即使中途停止子 AGENT，重跑也不会重复生成笔记。

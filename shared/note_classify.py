@@ -92,26 +92,33 @@ def parent_and_subfolder(parts):
     return zone, source, subfolder, parent
 
 
+# 父领域候选（按此顺序作为平局时的优先级；实际选择由命中频次打分决定，见 parent_from_lede）
+_PARENT_PATTERNS = [
+    ("投资", r"股票|个股|财报|基金|估值|美联储|仓位|交易|投资|a股|港股|美股|etf|分红|护城河|止损|宏观|经济"),
+    ("商业/搞钱", r"副业|虚拟产品|出海|小程序|赚钱|变现|ai产品|知识付费|搞钱|商业|电商"),
+    ("AI科技", r"\bai\b|编程|代码|claude|cursor|rag|agent|大模型|llm|ai工具|api|前端|后端"),
+    ("内容创作", r"小红书|视频号|公众号|抖音|涨粉|选题|账号运营|带货|自媒体|直播"),
+    ("个人成长", r"习惯|自律|成长|效率|时间管理|精力管理|复盘|职场|跳槽|求职|面试|晋升|沟通|汇报|情商|认知升级|自我提升|内耗|焦虑|读书|阅读|拆书|书单|笔记法|终身学习|元认知"),
+]
+
+
 def parent_from_lede(text):
-    """folder 解析不到 parent 时（如【待归类】/【我的总结】/<分类>/【我的总结】/作者/<账号>），从导语粗判一级领域。
+    """folder 解析不到 parent 时（如【待归类】/【我的总结】/<分类>/【我的总结】/作者/<账号>），从正文粗判一级领域。
 
     父领域推断完全内容驱动，**不在 parent_and_subfolder 按作者/来源硬编码**（旧版曾把「作者归档」笔记无脑兜底 投资，已废除）。
-    **扩展点**：以后若要新增父领域，只需在此追加一个 ``(域名, 正则)`` 分支，并在 ``subdomain_from_lede`` 加对应子领域分支即可；
+    **打分制（2026-09-13 修复）**：不再用「首匹配优先级」——一处偶然提及（如举例里的「投资」）就定全局领域，
+    会把主导主题（如 自律/习惯 密集出现的个人成长视频）错归。改为对全正文按各父领域关键词**命中频次打分、取最高分**，
+    主导主题才胜出；平局时按 ``_PARENT_PATTERNS`` 顺序兜底。
+    **扩展点**：以后若要新增父领域，只需在 ``_PARENT_PATTERNS`` 追加 ``(域名, 正则)``，并在 ``subdomain_from_lede`` 加对应子领域分支即可；
     路由映射（parent_and_subfolder）无需改动，故新增内容类型不会再次错归。
     """
-    lede = lede_from_text(text)
-    s = (lede + " " + text[:2000]).lower()
-    if re.search(r"股票|个股|财报|基金|估值|美联储|仓位|交易|投资|a股|港股|美股|etf|分红|护城河|止损|宏观|经济", s):
-        return "投资"
-    if re.search(r"副业|虚拟产品|出海|小程序|赚钱|变现|ai产品|知识付费|搞钱|商业|电商", s):
-        return "商业/搞钱"
-    if re.search(r"编程|代码|claude|cursor|rag|agent|大模型|llm|ai工具|api|前端|后端", s):
-        return "AI科技"
-    if re.search(r"小红书|视频号|公众号|抖音|涨粉|选题|账号运营|带货|自媒体|直播", s):
-        return "内容创作"
-    if re.search(r"习惯|自律|成长|效率|时间管理|精力管理|复盘|职场|跳槽|求职|面试|晋升|沟通|汇报|情商|认知升级|自我提升|内耗|焦虑|读书|阅读|拆书|书单|笔记法|终身学习|元认知", s):
-        return "个人成长"
-    return "综合"
+    s = text.lower()  # 全正文计分（笔记本就不长），避免偶发提及抢领域
+    best, best_score = "综合", 0
+    for name, pat in _PARENT_PATTERNS:
+        score = len(re.findall(pat, s))
+        if score > best_score:
+            best, best_score = name, score
+    return best
 
 
 def lede_from_text(text):
@@ -187,7 +194,7 @@ def subdomain_from_lede(parent, lede):
     return "综合"
 
 
-def resolve_subdomain(parent, lede, parts, source, subfolder):
+def resolve_subdomain(parent, lede, parts, source, subfolder, body=""):
     if parent in (None, "待定"):
         return "综合"
     if (len(parts) > 1 and parts[0] == MONITOR_ROOT and parts[1] == "B站"
