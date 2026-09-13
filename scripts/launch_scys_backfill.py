@@ -2,6 +2,12 @@
 # -*- coding: utf-8 -*-
 """scripts/launch_scys_backfill.py — scys 补齐调度器：每域一个独立 DETACHED 子进程。
 
+⚠️ **不要在本脚本外再套一层 DETACHED launcher**（例如曾出现的 `_tmp/scys_launch_detached.py`）：
+本脚本自身已是「非 DETACHED 父 + 每域 DETACHED 子」，外层再包一个 DETACHED 父会复刻下方文档
+所述的「DETACHED 父 spawn 失能」bug（跑完第 1 域后父失去 spawn 能力，第 2 域起 rc=1）。
+**直接 `python scripts/launch_scys_backfill.py [--projects ...] [--limit 0]` 即可。** 多域若被
+轮次回收，重跑本脚本即断点续传（state.json 去重，已抓的跳过）。
+
 与老实现（单个 DETACHED 父进程内 for 循环 spawn 多域）不同：本脚本**自身非 DETACHED**，
 仅对每个领域 spawn 一个**独立 DETACHED 子进程**并串行 wait。原因：
   - "DETACHED 父进程 + 多子"实测会失能（跑完第 1 域后父失去 spawn 能力，第 2 域起 rc=1）；
@@ -56,7 +62,17 @@ def _parse_projects(argv: list) -> list:
     return _all_projects()
 
 
-def _work(projects: list) -> int:
+def _parse_limit(argv: list) -> int | None:
+    """--limit N 透传给每域子进程；N=0 表示不限（去掉默认 30 上限）。未给则透 None（子进程走配置默认）。"""
+    if "--limit" in argv:
+        try:
+            return int(argv[argv.index("--limit") + 1])
+        except (IndexError, ValueError):
+            return None
+    return None
+
+
+def _work(projects: list, limit: int | None = None) -> int:
     # 日志文件：父（dup2 fd1/2）与每域 DETACHED 子（显式传文件对象）都写入同一日志。
     # ⚠️ DETACHED 子默认脱离控制台、不继承标准句柄，必须显式传 stdout 文件对象，否则子输出全丢。
     os.makedirs(os.path.dirname(LOG), exist_ok=True)
@@ -64,14 +80,17 @@ def _work(projects: list) -> int:
     lf = logf.fileno()
     os.dup2(lf, 1)
     os.dup2(lf, 2)
-    print(f"\n########## scys 补齐启动 {_now()} domains={projects} ##########", flush=True)
+    print(f"\n########## scys 补齐启动 {_now()} domains={projects} limit={limit} ##########", flush=True)
     for d in projects:
         print(f"########## 域: {d} start={_now()} ##########", flush=True)
         try:
             # 每域一个独立 DETACHED 子进程：脱离会话、抗轮次回收；串行 wait 保证全局单 Chrome。
             # stdout 显式传 logf —— DETACHED 子不继承控制台句柄，必须指定才能写日志。
+            cmd = [sys.executable, SCRIPT, "--project", d]
+            if limit is not None:
+                cmd += ["--limit", str(limit)]
             p = subprocess.Popen(
-                [sys.executable, SCRIPT, "--project", d],
+                cmd,
                 cwd=BASE_DIR,
                 stdout=logf,
                 stderr=subprocess.STDOUT,
@@ -90,9 +109,11 @@ def _work(projects: list) -> int:
 
 def main() -> int:
     projects = _parse_projects(sys.argv[1:])
-    rc = _work(projects)
+    limit = _parse_limit(sys.argv[1:])
+    rc = _work(projects, limit=limit)
     print(f"✓ scys 补齐调度完成（每域独立 DETACHED 子进程）。")
     print(f"  领域: {projects}")
+    print(f"  上限: {limit if limit is not None else '配置默认(30)'}")
     print(f"  进度: notes/_scraped/scys/state.json (done) / _backfill_run.log")
     return rc
 
