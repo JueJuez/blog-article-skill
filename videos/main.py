@@ -638,6 +638,16 @@ def _handle_single_video(url: str, input_data: dict, suppress: bool = False):
         print(f"\n📺 获取视频字幕: {url}")
     result = fetch.fetch_transcript(url)
     if result is None:
+        # 批量补齐模式（BILI_BATCH_NO_ASR=1）：fetch 层已按该开关跳过 ASR 兜底，
+        # 这里必须同步尊重，否则会绕过护栏冲进 asr.transcribe_video —— 既违背
+        # 「只抓不总结·跳 ASR」意图，又易在沙箱/无 GPU 环境挂起或 segfault
+        # （0xC0000005），拖垮整批子进程。直接返回干净的「无字幕」失败，由
+        # triage 归为 B1 类（需用户显式 --with-asr 才补）。
+        if os.environ.get("BILI_BATCH_NO_ASR") == "1":
+            return {
+                "success": False,
+                "message": "该视频无 CC 字幕，且批量模式已禁用 ASR 兜底（BILI_BATCH_NO_ASR=1），跳过。",
+            }
         # 自动 ASR 兜底（用户规则 2026-08-06：抓不到字幕即自动走 ASR）
         # 下载音频 → 本地 faster-whisper 转写，成功则继续总结并落盘（默认飞书，带 obsidian 时双写）。
         print("   ⚠️ 无可用字幕，自动走 ASR 兜底（下载音频 → 本地 Whisper 转写）...")

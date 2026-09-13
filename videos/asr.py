@@ -1,7 +1,10 @@
 """videos/asr.py — 本地/任意视频 ASR 转写（P3）
 
-对本地视频文件或无字幕链接，用 yt-dlp 抽音频 → faster-whisper 本地免费转写。
+对本地视频文件或无字幕链接，用 ffmpeg 直下音频（yt-dlp 仅取直链，绕开沙箱限流）
+→ faster-whisper 本地免费转写。
 作为「抓取不到字幕」时的自动兜底（用户规则 2026-08-06：抓不到字幕即自动走 ASR）。
+下载机制详见 extract_audio 文档：远程链接走「yt-dlp --get-url 取直链 + ffmpeg -headers 直下」，
+不再用 yt-dlp 整段下载客户端（沙箱里会被限流卡 2.5MiB 截断，2026-09-13 修）。
 
 依赖（managed venv，已装）：
 - yt-dlp         视频/音频下载与抽取
@@ -22,6 +25,7 @@
 import os
 import re
 import sys
+import subprocess
 import tempfile
 import hashlib
 import threading
@@ -379,20 +383,103 @@ def _build_ydl_opts(out_wav: str, cookie_str: Optional[str] = None,
     return opts
 
 
-def extract_audio(source: str, out_wav: str,
-                  cookie_str: Optional[str] = None,
-                  ffmpeg_exe: Optional[str] = None) -> bool:
-    """用 yt-dlp 从视频链接/本地文件抽出 wav（ffmpeg 用内嵌 exe，无需系统安装）。
+def _ydl_get_audio_url(source: str, cookie_str: Optional[str] = None,
+                       ffmpeg_exe: Optional[str] = None) -> Optional[str]:
+    """用 yt-dlp 只抽取「直链音频 URL」（simulate + forceurl，不做大体积下载）。
 
-    source: Bilibili/YouTube 链接 或 本地视频/音频路径。
+    沙箱里 yt-dlp 自身的下载客户端会被限流（卡在精确 2.5MiB 截断），但「取播放
+    地址」只是几个小 API 请求，不受影响。拿到 URL 后交给 ffmpeg 直接拉字节
+    （见 _ffmpeg_download_audio），绕开 yt-dlp 限速的下载客户端。
+
+    Returns: 直链音频 URL 或 None。
     """
     try:
         import yt_dlp
     except ImportError:
-        print("⚠️ 未安装 yt-dlp（pip install yt-dlp）")
+        return None
+    opts = {
+        "format": "bestaudio/best",
+        "simulate": True,
+        "forceurl": True,
+        "quiet": True,
+        "no_warnings": True,
+        "socket_timeout": 30,
+    }
+    if cookie_str:
+        opts["http_headers"] = {"Cookie": cookie_str}
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(source, download=False)
+        if isinstance(info, dict):
+            return info.get("url")
+    except Exception as e:
+        print(f"   ℹ️ yt-dlp 取音频直链失败（将回退 yt-dlp 整段下载）：{e}")
+    return None
+
+
+def _ffmpeg_download_audio(url: str, out_wav: str,
+                           cookie_str: Optional[str] = None,
+                           ffmpeg_exe: Optional[str] = None) -> bool:
+    """用 ffmpeg 直接拉音频直链并转成 wav（16k mono）。
+
+    绕开 yt-dlp 被沙箱限流的下载客户端。请求头带 Cookie/Referer/UA
+    （B站 m4s CDN 校验 Referer+UA，签名在 URL query 内）。
+    """
+    ffmpeg_exe = ffmpeg_exe or _ffmpeg_exe()
+    if not ffmpeg_exe:
         return False
-    if not ffmpeg_exe and not _ffmpeg_exe():
-        print("⚠️ 未找到 ffmpeg（请 pip install imageio-ffmpeg 或系统安装 ffmpeg）")
+    UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+    ref = "https://www.bilibili.com/"
+    hdrs = f"User-Agent: {UA}\r\nReferer: {ref}\r\n"
+    if cookie_str:
+        hdrs += f"Cookie: {cookie_str}\r\n"
+    cmd = [
+        ffmpeg_exe, "-y",
+        "-rw_timeout", "120000",   # 单请求读超时 120s
+        "-headers", hdrs,
+        "-i", url,
+        "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-f", "wav",
+        out_wav,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except Exception as e:
+        print(f"   ❌ ffmpeg 下载音频异常: {e}")
+        return False
+    if proc.returncode != 0:
+        print(f"   ❌ ffmpeg 下载音频失败(rc={proc.returncode}): {proc.stderr[-600:]}")
+        return False
+    return os.path.exists(out_wav) and os.path.getsize(out_wav) > 0
+
+
+def _ffmpeg_transcode(local_path: str, out_wav: str,
+                      ffmpeg_exe: Optional[str] = None) -> bool:
+    """本地文件：直接 ffmpeg 转码成 wav（无网络）。"""
+    ffmpeg_exe = ffmpeg_exe or _ffmpeg_exe()
+    if not ffmpeg_exe:
+        return False
+    cmd = [ffmpeg_exe, "-y", "-i", local_path,
+           "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-f", "wav", out_wav]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except Exception as e:
+        print(f"   ❌ 本地音频转码异常: {e}")
+        return False
+    if proc.returncode != 0:
+        print(f"   ❌ 本地音频转码失败: {proc.stderr[-600:]}")
+        return False
+    return os.path.exists(out_wav) and os.path.getsize(out_wav) > 0
+
+
+def _ydl_extract_audio_legacy(source: str, out_wav: str,
+                              cookie_str: Optional[str] = None,
+                              ffmpeg_exe: Optional[str] = None) -> bool:
+    """回退路径：yt-dlp 整段下载 + FFmpegExtractAudio 后处理（兼容非 B站/YouTube 源）。"""
+    try:
+        import yt_dlp
+    except ImportError:
+        print("⚠️ 未安装 yt-dlp（pip install yt-dlp）")
         return False
     try:
         opts = _build_ydl_opts(out_wav, cookie_str=cookie_str, ffmpeg_exe=ffmpeg_exe)
@@ -400,8 +487,36 @@ def extract_audio(source: str, out_wav: str,
             ydl.extract_info(source, download=True)
         return os.path.exists(out_wav)
     except Exception as e:
-        print(f"❌ 音频抽取失败: {e}")
+        print(f"❌ 音频抽取失败(yt-dlp 回退): {e}")
         return False
+
+
+def extract_audio(source: str, out_wav: str,
+                  cookie_str: Optional[str] = None,
+                  ffmpeg_exe: Optional[str] = None) -> bool:
+    """抽出 wav（ffmpeg 用内嵌 exe，无需系统安装）。
+
+    优先级：
+      1. 本地文件 → ffmpeg 直接转码（无网络）。
+      2. 远程链接 → yt-dlp 取直链 + ffmpeg 直接下载（**绕开沙箱里 yt-dlp 被限流的
+         下载客户端**，2026-09-13 修复：idx184 之类无 CC 字幕视频此前卡 2.5MiB 截断）。
+      3. 回退 → 旧 yt-dlp 整段下载（兼容特殊源）。
+
+    source: Bilibili/YouTube 链接 或 本地视频/音频路径。
+    """
+    ffmpeg_exe = ffmpeg_exe or _ffmpeg_exe()
+    if not ffmpeg_exe:
+        print("⚠️ 未找到 ffmpeg（请 pip install imageio-ffmpeg 或系统安装 ffmpeg）")
+        return False
+    # 1) 本地文件
+    if os.path.exists(source):
+        return _ffmpeg_transcode(source, out_wav, ffmpeg_exe)
+    # 2) 远程链接：yt-dlp 取直链 + ffmpeg 直下
+    url = _ydl_get_audio_url(source, cookie_str=cookie_str, ffmpeg_exe=ffmpeg_exe)
+    if url and _ffmpeg_download_audio(url, out_wav, cookie_str=cookie_str, ffmpeg_exe=ffmpeg_exe):
+        return True
+    # 3) 回退：yt-dlp 整段下载
+    return _ydl_extract_audio_legacy(source, out_wav, cookie_str=cookie_str, ffmpeg_exe=ffmpeg_exe)
 
 
 # ---------------------------------------------------------------------------
