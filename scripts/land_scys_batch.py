@@ -1,4 +1,8 @@
-"""scys 批量落地：把子 Agent 产出的 sum_<index>.md 落到飞书（生财有术/<领域>）。
+"""scys 批量落地（飞书双写专用路径）：把子 Agent 产出的 sum_<index>.md 落到飞书（生财有术/<领域>）。
+
+⚠️ 定位：本脚本是【飞书同步路径】，与 scripts/land_scys_by_key.py（【Obsidian 本地路径】）互补。
+- Obsidian 默认时代（DISABLE_FEISHU_SYNC=1）走 land_scys_by_key.py；
+- 若以后恢复飞书双写（DISABLE_FEISHU_SYNC=0），本脚本承担向飞书落地的职责，与 by_key 并存（各自写各自目标，互不影响）。
 
 - 单线程执行，避免并发写同一队列 JSON（子 Agent 只写 temp 文件，不碰队列）。
 - 按 dispatch_map 的 raw_file 定位队列条目；落盘成功才出队。
