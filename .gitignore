@@ -46,6 +46,8 @@ monitors/run_status/
 
 # 迁移 / 看护 运行时产物（非源码，不提交）
 scripts/_*
+# 临时 / 原型 scratch 目录（分类器原型、index CSV 快照、诊断日志、临时落盘脚本等，非源码）
+_tmp/
 scripts/feishu_to_obsidian_log.json
 scripts/migrate_watchdog.log
 scripts/migrate_watchdog_status.json
