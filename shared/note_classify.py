@@ -501,13 +501,13 @@ def extract_and_strip_topics(content):
 def infer_semantic_tags(content, folder="", author="", note_type="", url="", source_account="", topics=None):
     """返回新笔记应追加的语义标签列表（不含 # 前缀）。
 
-    标签行的**排列顺序即检索心智**：强相关的关键词在前，结构化维度在后。
-    维度（4 个，定位交给文件夹）：
-    - 主题实体（裸标签，**置顶**）： ``伊利股份`` —— **唯一交由总结 LLM 生成的维度**
+    标签行的**排列顺序即检索心智**：分类/体裁维度在前，强相关关键词在后。
+    顺序（4 维度）：① 父/子领域（命名空间，含 /，置顶锚点）→ ② 笔记类型（裸）→ ③ 主题实体（裸，LLM 生成）→ ④ 用途（裸）。
+    - 父/子领域（命名空间，含 /，置顶）： ``投资/公司分析``、``个人成长/读书方法``、``综合/未分类``（锚点兜底）
+    - 笔记类型（裸标签）： ``结构化复盘``
+    - 主题实体（裸标签）： ``伊利股份`` —— **唯一交由总结 LLM 生成的维度**
       （强相关 3–5，可少于3，不可多于5）；无 LLM 主题词时退化为关键词正则抽取（extract_topics）。
     - 用途（裸标签）： ``教学可用``（拿来干嘛：教学/素材/灵感/金句/待实践…）
-    - 父/子领域（命名空间）： ``投资/公司分析``、``个人成长/读书方法``、``综合/未分类``（锚点兜底）
-    - 笔记类型（裸标签）： ``结构化复盘``
     返回值**不带 # 前缀**，由落盘模板 format_note_with_prompt 统一加 #。
     注意：topic、用途、类型 均为**裸标签**（用户要求精简，只留关键词）；仅领域保留 ``父/子``
     命名空间——后者含 ``/`` 会被 category 推算跳过，绝不抢「分类」（文件夹路由）；裸标签仅作检索关键词。
@@ -529,23 +529,7 @@ def infer_semantic_tags(content, folder="", author="", note_type="", url="", sou
     sub = resolve_subdomain(parent, lede, parts, source, subfolder)
 
     tags = []
-    # ① 主题实体（裸标签，置顶）：优先 LLM 生成（强相关、≤5），无则代码退化抽取
-    if topics:
-        for t in topics[:5]:
-            slug = t.strip().replace("/", "·")
-            if slug:
-                tags.append(slug)
-    else:
-        for t in extract_topics("", content):
-            tags.append(t.replace("/", "·"))
-
-    # ② 用途（裸标签）
-    nt = (note_type or note_type_from_content(content)).lower()
-    for p in purpose(nt, lede, content):
-        tags.append(p)
-
-    # ③ 领域标签（命名空间，含 /）。没命中任何领域时落到 #综合/未分类 锚点，
-    #    保证每篇都有领域维度（不再静默丢弃导致语义维度塌掉）。
+    # ① 父/子领域（命名空间，含 /）—— 置顶，作为分类锚点（每篇必有，含 #综合/未分类 兜底）
     if parent and parent != "综合" and sub:
         root = parent.split("/")[0]
         encoded = sub.replace("·综合", "").replace(parent, "").strip("·/ ").strip()
@@ -555,11 +539,26 @@ def infer_semantic_tags(content, folder="", author="", note_type="", url="", sou
     elif not parent or parent == "综合":
         tags.append("综合/未分类")
 
-    # ④ 笔记类型（裸标签，与 topic/用途 一致，用户要求精简）
+    # ② 笔记类型（裸标签，与 topic/用途 一致，用户要求精简）
+    nt = (note_type or note_type_from_content(content)).lower()
     if nt:
         label = NOTE_TYPE_LABEL.get(nt)
         if label:
             tags.append(label)
+
+    # ③ 主题实体（裸标签）：优先 LLM 生成（强相关、≤5），无则代码退化抽取
+    if topics:
+        for t in topics[:5]:
+            slug = t.strip().replace("/", "·")
+            if slug:
+                tags.append(slug)
+    else:
+        for t in extract_topics("", content):
+            tags.append(t.replace("/", "·"))
+
+    # ④ 用途（裸标签，拿来干嘛：教学/素材/灵感/金句/待实践…）
+    for p in purpose(nt, lede, content):
+        tags.append(p)
 
     # 去重保序
     seen = set()
