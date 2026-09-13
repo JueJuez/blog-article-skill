@@ -168,9 +168,9 @@ class TestFormatOutput(unittest.TestCase):
     def test_hashtag_line_includes_namespace(self):
         out = format_note_with_prompt(
             "# 标题\n正文", author="价投小猪仔", url="http://example.com",
-            tags=["文章总结", "转载", "投资/公司分析", "topic/伊利股份"],
+            tags=["投资/公司分析", "topic/伊利股份"],
             add_metadata=True)
-        self.assertIn("#文章总结 #转载 #投资/公司分析 #topic/伊利股份", out)
+        self.assertIn("#投资/公司分析 #topic/伊利股份", out)
 
 
 class FakeManager:
@@ -195,9 +195,9 @@ class TestSaveIntegration(unittest.TestCase):
                 S_INVEST, original_url="http://example.com/x", author="价投小猪仔",
                 tags=["文章总结"], original_title="拆解伊利股份", note_type="structured",
                 folder="【监控】/B站/价投小猪仔/小猪仔拆公司", publish_time=0)
-        # 五个维度标签都进笔记
+        # 五个维度标签都进笔记（注意：#文章总结/#转载 已不再生成）
         for expected in ("#投资/公司分析", "#topic/伊利股份", "#用途/教学可用",
-                         "#来源/价投小猪仔", "#类型/结构化复盘", "#文章总结", "#转载"):
+                         "#来源/价投小猪仔", "#类型/结构化复盘"):
             self.assertIn(expected, note)
         # 标签行绝不能出现双井号（标签重复加 #）；正文里的 ## 二级标题是合法 Markdown
         tag_line = note.split("\n\n", 1)[0]
@@ -206,9 +206,10 @@ class TestSaveIntegration(unittest.TestCase):
         self.assertTrue(mock_dedup.mark_summarized.called)
 
     @unittest.skipUnless(_HAS_SAVE, "articles.main 不可导入（依赖缺失）")
-    def test_save_removes_redundant_author_and_adds_base_tag(self):
+    def test_save_removes_redundant_author(self):
         # 模拟消费队列：入队预填 tags=["夏鹏本鹏"]（裸作者），验证落盘后：
-        # ① 裸「夏鹏本鹏」被 来源/夏鹏本鹏 覆盖移除（不重复）② 补 #文章总结 ③ 领域=个人成长
+        # ① 裸「夏鹏本鹏」被 来源/夏鹏本鹏 覆盖移除（不重复）② 领域=个人成长（不再错归投资）
+        # ③ 不生成 #文章总结/#转载 这类无信息量标签
         with patch("articles.main.OutputManager", FakeManager), \
              patch("articles.main.dedup") as mock_dedup:
             mock_dedup.mark_summarized = MagicMock()
@@ -221,9 +222,10 @@ class TestSaveIntegration(unittest.TestCase):
         tokens = [t[1:] for t in tag_line.split() if t.startswith("#")]
         self.assertIn("来源/夏鹏本鹏", tokens)
         self.assertNotIn("夏鹏本鹏", tokens)          # 裸作者已被移除
-        self.assertIn("文章总结", tokens)              # 基础类型标签补齐
         self.assertIn("个人成长/读书方法", tokens)    # 领域正确（不再错归投资）
         self.assertNotIn("投资", [t.split("/")[0] for t in tokens if "/" in t])
+        self.assertNotIn("文章总结", tokens)           # 无信息量标签已停生成
+        self.assertNotIn("转载", tokens)
 
 
 if __name__ == "__main__":

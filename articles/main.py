@@ -119,7 +119,9 @@ _CONTENT_KEYWORDS = [
 
 def suggest_default_tags(note_type: str, title: str = "", content: str = "") -> list:
     """未指定 tags 时，由笔记类型 + 内容关键词生成默认标签。"""
-    tags = [_NOTE_TYPE_TAG.get(note_type, "文章总结")]
+    # 仅对已知笔记类型补「类型」标签（结构化复盘/观点卡等）；未命中则不补——
+    # #文章总结 这类无信息量的兜底标签不再生成（落地使用无意义，且与 #类型/ 命名空间标签重复）。
+    tags = [_NOTE_TYPE_TAG[note_type]] if note_type in _NOTE_TYPE_TAG else []
     text = f"{title}\n{content}"
     for kw in _CONTENT_KEYWORDS:
         if kw in text and kw not in tags:
@@ -291,9 +293,7 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
                 Obsidian `<vault>/<folder>/` 与飞书对应层级容器节点下（不进「待归类」）；
                 监控订阅产出用它按「分类/账号名」归档，内容与源头对得上。
     """
-    tags = list(tags or ["文章总结"])
-    if original_url and "转载" not in tags:
-        tags.append("转载")
+    tags = list(tags or [])
     # 新鲜度标签（时效感知）：追加到末尾，避免它抢走「分类」（文件名用首个非跳过 tag 作分类）
     fresh = _freshness_label(publish_time)
     if fresh:
@@ -319,12 +319,8 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
     except Exception as _e:
         print(f"  ⚠️ 语义标签自动生成失败（非致命，跳过）：{_e}")
 
-    # 方案 A 收口：
-    # ① 确保笔记类型基础标签（#文章总结）存在，与存量 1087 篇保持一致；
-    #    （之前仅 tags 为空时才由 suggest_default_tags 补，传了 tags 就漏掉）
-    if not any(t in ("文章总结", "原创", "动态") for t in tags):
-        tags.insert(0, "文章总结")
-    # ② 命名空间标签已编码的信息，移除冗余裸标签（例：已有「来源/夏鹏本鹏」则移除裸「夏鹏本鹏」，避免同义双写）
+    # 方案 A 收口：命名空间标签已编码的信息，移除冗余裸标签
+    # （例：已有「来源/夏鹏本鹏」则移除裸「夏鹏本鹏」，避免同义双写）
     _ns_values = {_t.split("/", 1)[1] for _t in tags if "/" in _t}
     if _ns_values:
         tags = [_t for _t in tags if not ("/" not in _t and _t in _ns_values)]

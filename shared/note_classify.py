@@ -92,7 +92,12 @@ def parent_and_subfolder(parts):
 
 
 def parent_from_lede(text):
-    """folder 解析不到 parent 时（如【待归类】/【我的总结】/<分类>），从导语粗判一级领域。"""
+    """folder 解析不到 parent 时（如【待归类】/【我的总结】/<分类>/【我的总结】/作者/<账号>），从导语粗判一级领域。
+
+    父领域推断完全内容驱动，**不在 parent_and_subfolder 按作者/来源硬编码**（旧版曾把「作者归档」笔记无脑兜底 投资，已废除）。
+    **扩展点**：以后若要新增父领域，只需在此追加一个 ``(域名, 正则)`` 分支，并在 ``subdomain_from_lede`` 加对应子领域分支即可；
+    路由映射（parent_and_subfolder）无需改动，故新增内容类型不会再次错归。
+    """
     lede = lede_from_text(text)
     s = (lede + " " + text[:2000]).lower()
     if re.search(r"股票|个股|财报|基金|估值|美联储|仓位|交易|投资|a股|港股|美股|etf|分红|护城河|止损|宏观|经济", s):
