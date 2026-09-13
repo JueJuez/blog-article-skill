@@ -50,7 +50,9 @@ def category_from_tags(tags) -> str:
     折算成 category 字段再传入 item（B1/B9 修复，2026-09-05）。
     """
     for tag in (tags or []):
-        if tag and tag not in CATEGORY_SKIP_TAGS:
+        # 跳过含 / 的命名空间标签（如 #投资/公司分析）：它们是 Obsidian 层级检索标签，
+        # 绝不能当「分类」污染文件夹路由（方案 A，2026-09-13）。
+        if tag and tag not in CATEGORY_SKIP_TAGS and "/" not in tag:
             return tag
     return ""
 

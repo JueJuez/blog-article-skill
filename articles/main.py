@@ -300,13 +300,33 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
         tags.append(fresh)
 
     title = original_title or _extract_title_from_summary(summarized_content) or ""
+
+    # 方案 A（2026-09-13）：落盘时复用分类器追加命名空间语义标签（#父/子 #topic/… #用途/…
+    # #来源/… #类型/…），与 index 分类器同源。仅追加、不覆盖调用方传入的 tags；去重。
+    # 这些标签只进笔记顶部 #标签 行用于检索，不抢「分类」（category 推算已跳过含 / 的标签）。
+    try:
+        from shared.note_classify import infer_semantic_tags
+        semantic = infer_semantic_tags(
+            summarized_content, folder=folder, author=author,
+            note_type=note_type, url=original_url,
+        )
+        if semantic:
+            _seen = set(tags)
+            for _t in semantic:
+                if _t not in _seen:
+                    tags.append(_t)
+                    _seen.add(_t)
+    except Exception as _e:
+        print(f"  ⚠️ 语义标签自动生成失败（非致命，跳过）：{_e}")
+
     category = ""
-    # 跳过「纯元信息/系统标签」——这些只作笔记内 #标签，不抢「分类」（分类决定落盘文件夹）。
-    # 单一真源：shared/routing.CATEGORY_SKIP_TAGS（含默认标签/转载标记/短动态类/新鲜度标签）。
+    # 跳过「纯元信息/系统标签」与「命名空间标签（含 /）」——这些只作笔记内 #标签检索，
+    # 不抢「分类」（分类决定落盘文件夹；命名空间标签如 #投资/公司分析 会被 Obsidian
+    # 识别为层级标签，但绝不能当文件夹分类名）。单一真源：shared/routing.CATEGORY_SKIP_TAGS。
     from shared.routing import CATEGORY_SKIP_TAGS
     skip_categories = CATEGORY_SKIP_TAGS
     for tag in tags:
-        if tag not in skip_categories:
+        if tag not in skip_categories and "/" not in tag:
             category = tag
             break
 
@@ -649,7 +669,8 @@ def save_summary_only(input_data: dict) -> dict:
         formatted_note, filename = save_summarized_article(
             summarized_content, original_url=original_url, author=author,
             tags=tags, original_title=original_title, publish_time=publish_time,
-            folder=folder, obsidian=obsidian
+            folder=folder, obsidian=obsidian,
+            note_type=input_data.get('note_type', '')
         )
         return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note}
     except Exception as e:
