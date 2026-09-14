@@ -7,4 +7,6 @@
 2. 新增 `prompts/review_rubric.py`：触发条件（机械信号 + 随机抽样 15%）→ 五维语义判定（A 合成度/B 完整性/C 通顺度/D 忠实度/E 合规度，仅父 LLM 能判）→ 动作（pass / fix_inline 父就地修 / resummarize 打回 / needs_review 入队）；留痕 `_review_log.jsonl` + `_review_queue.jsonl`（无人值守降级，绝不假定语义 OK）。
 3. `save_summary_only` 接入 `source_chars`（从 raw_file 算）、透传 `review_flags`；非空时写 `_review_queue.jsonl`。`templates.py` 字数规则改「参考值非硬框，语义完整+充分合成优先，禁止照搬堆字数」。
 
+**实现注意（2026-09-14 补）**：源长感知的真正生效还依赖「子 Agent 写 JSON → `scripts/persist_summary.py` → `save_summary_only`」这一跳把 `source_chars`/`max_words` 透传过去。该桥此前**漏传** `source_chars`（落到 0），`verifier` 退化成固定 1500~5000 区间，把万字拆解类长文当超硬上限误拦；同时漏传 `--force`，重跑无法绕过去重闸门。已修复：`persist_summary.py` 透传 `source_chars`/`max_words` 并新增 `--force` 透传。**任何走 persist_summary 的落盘路径都依赖此透传**，后续若改 payload 契约勿再漏。
+
 **后果**：机械层只管「形」（H1/链接/字数触发），语义层只由人/LLM 管（互不越权）。测试 `tests/test_note_mechanical_gate.py` 54 例全过（含 `TestSourceAwareReference`）。端到端演示：自由重写「不会谈薪」（源 12666→5744 字），落盘触发 review_flags+压缩信号B，父 Agent 五维判 A/B/D/E pass、C warn（1 处 ASR 残留就地修）→ fix_inline，证明无硬框后长文可充分合成不压碎。⚠️ 已入队 194 篇旧 prompt 不自动继承参考值规则，重跑需重生成。

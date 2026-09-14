@@ -36,6 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("json_path", help="子 Agent 写好的 {summarized_content, folder, ...} JSON 路径")
     ap.add_argument("--obsidian", action="store_true", help="同时写入 Obsidian（默认只写飞书）")
+    ap.add_argument("--force", action="store_true", help="强制重写（绕过已总结去重闸门）")
     args = ap.parse_args()
     _load_env()
     if BASE_DIR not in sys.path:
@@ -57,6 +58,11 @@ def main():
         "publish_time": d.get("publish_time", 0),
         "obsidian": d.get("obsidian", False) or args.obsidian,
         "note_type": d.get("note_type", ""),
+        "force": d.get("force", False) or args.force,
+        # 源长透传：让 save_summary_only 走 source-aware 字数参考值（而非固定区间兜底），
+        # 否则超长原文（如万字拆解）会被固定 1500~5000 硬上限误拦。
+        "source_chars": d.get("source_chars", 0) or 0,
+        "max_words": d.get("max_words"),
     })
     # 自清理：保存成功后从降级队列移除对应条目（按 original_url 匹配），
     # 这样即使中途停止子 AGENT，重跑也不会重复生成笔记。
