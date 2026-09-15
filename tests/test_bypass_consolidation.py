@@ -14,6 +14,12 @@ import pytest
 
 import articles.main as am
 
+# 落盘门禁「内容缺失」下限 300 字（DECISION-20260915 content-first）：
+# 用短占位串（如「笔记内容」）会让所有走 save_summary_only 的用例被拦，
+# 故统一用足够长的正文占位；其具体内容与本文件各用例的断言目标无关。
+NOTE_BODY = "笔记内容占位，用于满足内容缺失下限。" * 30
+
+
 
 @pytest.fixture
 def capture_full(monkeypatch):
@@ -38,7 +44,7 @@ def capture_full(monkeypatch):
 
 def _tmp_summary_file(tmp_path) -> str:
     p = tmp_path / "summary.md"
-    p.write_text("笔记内容", encoding="utf-8")
+    p.write_text(NOTE_BODY, encoding="utf-8")
     return str(p)
 
 
@@ -48,7 +54,7 @@ def _tmp_summary_file(tmp_path) -> str:
 
 def test_save_summary_only_publish_time_passthrough(capture_full):
     res = am.save_summary_only({
-        "summarized_content": "笔记内容",
+        "summarized_content": NOTE_BODY,
         "original_url": "https://www.bilibili.com/video/BV1xx",
         "author": "趋势浪子", "original_title": "测试笔记",
         "publish_time": 1726000000,
@@ -59,7 +65,7 @@ def test_save_summary_only_publish_time_passthrough(capture_full):
 
 def test_save_summary_only_publish_time_default_zero(capture_full):
     res = am.save_summary_only({
-        "summarized_content": "笔记内容",
+        "summarized_content": NOTE_BODY,
         "original_url": "https://www.bilibili.com/video/BV1xx",
         "author": "趋势浪子", "original_title": "测试笔记",
     })
@@ -78,7 +84,7 @@ def _run_cli(monkeypatch, *argv) -> int:
 
 
 def test_cli_publish_time_passthrough(capture_full, monkeypatch):
-    rc = _run_cli(monkeypatch, "--direct", "笔记内容",
+    rc = _run_cli(monkeypatch, "--direct", NOTE_BODY,
                   "--url", "https://www.bilibili.com/video/BV1xx",
                   "--author", "趋势浪子", "--title", "测试笔记",
                   "--publish-time", "1726000000")
@@ -87,7 +93,7 @@ def test_cli_publish_time_passthrough(capture_full, monkeypatch):
 
 
 def test_cli_publish_time_default_zero(capture_full, monkeypatch):
-    rc = _run_cli(monkeypatch, "--direct", "笔记内容",
+    rc = _run_cli(monkeypatch, "--direct", NOTE_BODY,
                   "--url", "https://www.bilibili.com/video/BV1xx",
                   "--author", "趋势浪子", "--title", "测试笔记")
     assert rc == 0
@@ -96,7 +102,7 @@ def test_cli_publish_time_default_zero(capture_full, monkeypatch):
 
 def test_cli_dedup_skips_when_already_summarized(capture_full, monkeypatch):
     monkeypatch.setattr(am.dedup, "is_summarized", lambda **kw: {"filename": "旧笔记.md"})
-    rc = _run_cli(monkeypatch, "--direct", "笔记内容",
+    rc = _run_cli(monkeypatch, "--direct", NOTE_BODY,
                   "--url", "https://www.bilibili.com/video/BV1xx",
                   "--author", "趋势浪子", "--title", "测试笔记")
     assert rc == 0
@@ -105,11 +111,11 @@ def test_cli_dedup_skips_when_already_summarized(capture_full, monkeypatch):
 
 def test_cli_force_overrides_dedup(capture_full, monkeypatch):
     monkeypatch.setattr(am.dedup, "is_summarized", lambda **kw: {"filename": "旧笔记.md"})
-    rc = _run_cli(monkeypatch, "--direct", "笔记内容", "--force",
+    rc = _run_cli(monkeypatch, "--direct", NOTE_BODY, "--force",
                   "--url", "https://www.bilibili.com/video/BV1xx",
                   "--author", "趋势浪子", "--title", "测试笔记")
     assert rc == 0
-    assert capture_full["summarized_content"] == "笔记内容"  # force 豁免去重，照常落盘
+    assert capture_full["summarized_content"] == NOTE_BODY  # force 豁免去重，照常落盘
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +167,7 @@ def test_async_from_file_publish_time_passthrough(capture_full, tmp_path):
 
 def test_runpy_summarized_publish_time_passthrough(capture_full, monkeypatch):
     monkeypatch.setattr(sys, "argv", [
-        "run.py", "--summarized", "笔记内容",
+        "run.py", "--summarized", NOTE_BODY,
         "--url", "https://www.bilibili.com/video/BV1xx",
         "--author", "趋势浪子", "--publish-time", "1726000000"])
     from articles import run as run_mod
@@ -181,7 +187,7 @@ def test_runpy_file_publish_time_passthrough(capture_full, tmp_path, monkeypatch
 
 def test_runpy_summarized_default_zero(capture_full, monkeypatch):
     monkeypatch.setattr(sys, "argv", [
-        "run.py", "--summarized", "笔记内容",
+        "run.py", "--summarized", NOTE_BODY,
         "--url", "https://www.bilibili.com/video/BV1xx",
         "--author", "趋势浪子"])
     from articles import run as run_mod

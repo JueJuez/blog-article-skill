@@ -27,7 +27,7 @@ from articles.main import (
 from articles.dedup import is_summarized
 from shared.title_norm import choose_node_title
 from prompts.templates import (
-    get_note_prompt, format_note_with_prompt,
+    get_note_prompt, format_note_with_prompt, source_chars_of,
     verify_note, should_gate_retry, build_gate_critique, QUALITY_GATE_SELFCHECK,
 )
 from prompts.classify import classify_note_type
@@ -736,7 +736,7 @@ def _finalize_single(title, segments, url, input_data, visual_context: str = "")
             "message": "✅ 已准备好字幕内容，等待执行模型（Agent）按笔记模板总结",
             "article_content": article_content,
             "note_type": note_type,
-            "prompt": get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK,
+            "prompt": get_note_prompt(note_type, source_chars_of(article_content)) + QUALITY_GATE_SELFCHECK,
             "original_url": url,
             "original_title": title,
             "author": author,

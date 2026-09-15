@@ -4,7 +4,8 @@ import time
 import asyncio
 from datetime import datetime
 from .fetch import fetch_web_content  # A1: 增强抓取层
-from .prompt import format_note_with_prompt, CONTENT_SUMMARY_PROMPT, get_note_prompt, classify_note_type
+from .prompt import (format_note_with_prompt, CONTENT_SUMMARY_PROMPT, get_note_prompt,
+                     source_chars_of, classify_note_type)
 from prompts.templates import verify_note, should_gate_retry, build_gate_critique, QUALITY_GATE_SELFCHECK
 from .manager import OutputManager
 from . import dedup  # A2: 增量去重
@@ -269,7 +270,7 @@ def _guess_source(url: str) -> str:
     return ""
 
 
-def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "", topics: list = None) -> tuple:
+def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "", topics: list = None, overwrite: bool = False) -> tuple:
     """保存已总结的文章内容到所有可用目标。
 
     Args:
@@ -282,6 +283,10 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
         folder: 归档子目录（如「投资交易/舟亦横」）。非空时笔记落
                 Obsidian `<vault>/<folder>/` 与飞书对应层级容器节点下（不进「待归类」）；
                 监控订阅产出用它按「分类/账号名」归档，内容与源头对得上。
+        overwrite: 目标文件已存在时**覆盖**而非改名 `-N`（2026-09-15，DECISION-20260915 阶段3）。
+                   默认 False 保持「禁止覆盖」的历史语义；仅「修订已有笔记」的正规入口
+                   （`_save_summary_from_file.py --force`）传 True。旧默认行为会让每次
+                   force 修订都留下 `-1`/`-2` 副本，并由登记表指向副本，制造悬空记录。
     """
     tags = list(tags or [])
 
@@ -339,22 +344,37 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
     if folder:
         filename = f"{folder}/{filename}"
 
-    # 文件名冲突处理（禁止覆盖）
+    # 文件名冲突处理（默认禁止覆盖；overwrite=True 时改为「覆盖同名」）
+    # ⚠️ 历史坑（2026-09-15 修复）：默认的改名逻辑会让**每次 force 修订**都留下
+    # `-1`/`-2` 副本，且登记表会指向副本；若事后手工合并删除副本，登记表就指向已删文件。
+    # 全库累积过 50 个这种副本。修订场景必须走 overwrite=True。
     manager = OutputManager(obsidian=obsidian)
     available_outputs = manager.get_available_outputs()
     if len(available_outputs) > 0:
-        should_rename = False
-        for output in available_outputs:
-            if os.path.exists(output.get_output_path(filename)):
-                should_rename = True
-                break
-        if should_rename:
-            base, ext = os.path.splitext(filename)
-            counter = 1
-            first_output = available_outputs[0]
-            while os.path.exists(first_output.get_output_path(f"{base}-{counter}{ext}")):
-                counter += 1
-            filename = f"{base}-{counter}{ext}"
+        existing = [o for o in available_outputs
+                    if os.path.exists(o.get_output_path(filename))]
+        if existing:
+            if overwrite:
+                for o in existing:
+                    try:
+                        os.remove(o.get_output_path(filename))
+                    except OSError as e:
+                        print(f"   ⚠️ 覆盖模式删除旧文件失败（{e}），将退回改名策略")
+                        base, ext = os.path.splitext(filename)
+                        counter = 1
+                        while os.path.exists(existing[0].get_output_path(f"{base}-{counter}{ext}")):
+                            counter += 1
+                        filename = f"{base}-{counter}{ext}"
+                        break
+                else:
+                    print(f"   ♻️ 覆盖模式：已替换同名旧文件 {filename}")
+            else:
+                base, ext = os.path.splitext(filename)
+                counter = 1
+                first_output = available_outputs[0]
+                while os.path.exists(first_output.get_output_path(f"{base}-{counter}{ext}")):
+                    counter += 1
+                filename = f"{base}-{counter}{ext}"
 
     formatted_note = format_note_with_prompt(
         content=summarized_content, author=author, url=original_url,
@@ -438,7 +458,7 @@ def summarize_content(content: str, author: str = "", url: str = "", tags: list 
         note_type = classify_note_type(original_title, content)
     print(f"   📑 笔记类型: {note_type}")
 
-    prompt = get_note_prompt(note_type)
+    prompt = get_note_prompt(note_type, source_chars_of(content))
 
     metadata = ""
     if tags:
@@ -627,17 +647,20 @@ def save_summary_only(input_data: dict) -> dict:
     publish_time = input_data.get('publish_time', 0)
     folder = input_data.get('folder', '')
     obsidian = input_data.get('obsidian', False)
-    max_words = input_data.get('max_words')  # 动态扩容上限覆盖（父 Agent 逐级放宽时传入 4000/5000）
-    # source_chars：原文（转录稿）长度，用于 source-aware 参考值（有则按源长×比例带，无则固定区间兜底）
+    max_words = input_data.get('max_words')  # 已废弃（上限不再压制篇幅）；保留传递以免旧调用方报错
+    # source_text / source_chars：原文全文与长度。source_text 供内容判据（硬锚点召回、照搬重合），
+    # source_chars 供失控上限（源长×3）。两者都优先取入参，否则从 raw_file 读一次、算一次。
     source_chars = input_data.get('source_chars') or 0
-    if not source_chars:
+    source_text = input_data.get('source_text') or ''
+    if not source_text or not source_chars:
         _rf = input_data.get('raw_file') or input_data.get('raw_file_path')
         if _rf and os.path.exists(_rf):
             try:
                 from prompts.verifier import count_note_words
-                source_chars = count_note_words(open(_rf, encoding='utf-8').read())
+                source_text = source_text or open(_rf, encoding='utf-8').read()
+                source_chars = source_chars or count_note_words(source_text)
             except Exception:
-                source_chars = 0
+                pass
     if not summarized_content:
         return {'success': False, 'message': '请提供总结好的内容'}
     # 机械去重闸门（DECISION-20260825）：URL 已总结过 → 不再写飞书，按成功出队；
@@ -649,38 +672,30 @@ def save_summary_only(input_data: dict) -> dict:
             return {'success': True, 'skipped': True,
                     'message': f"ALREADY_EXISTS:{rec.get('filename', '')}",
                     'filename': rec.get('filename', '')}
-    # 机械质量门禁（DECISION-20260905，零 AI 依赖）：主标题唯一 / 来源链接卫生 / 字数区间。
+    # 机械质量门禁（DECISION-20260905 → DECISION-20260915 content-first）：卫生类硬拦
+    # （H1/来源链接/URL）+ 极端字数硬拦（内容缺失 <300 / 失控 >max(8000,源长×3)）+ 内容判据触发抽检。
     # 接入顺序硬约束：在 dedup 闸门之后（已总结条目机械出队优先于质量拦截），
     # 在 folder 自动路由之前（违规内容不触发路由副作用）。首次拦截不落盘、不 dedup，
-    # 子 Agent 按返回的 issues 修复后重试；同 URL 再次仍纯字数违规则重试放行落盘
-    # （2026-09-10：重改仍越界说明压缩已到头——干货密度高或原文本身撑不起区间）。
-    # H1/来源链接等确定性可修复问题永不放行；force 只豁免 dedup，不豁免质量底线。
+    # 子 Agent 按返回的 issues 修复后重试。**已废除任何「字数上限压制」**——见
+    # docs/decisions/DECISION-20260915-content-first-gate.md（上限会诱导为过门禁而砍内容）。
+    # 旧「重试放行」逃生舱已删除：它当初是为「源本身撑不起固定区间」而设，而现行两条字数硬拦
+    # （内容缺失 / 失控保护）都是确定性缺陷，放行等于把坏笔记写进库。
     from prompts.verifier import verify_note_mechanical
-    from shared.gate_blockers import log_gate_block, count_blocks
+    from shared.gate_blockers import log_gate_block
     _gate = verify_note_mechanical(summarized_content, input_data.get('note_type', ''),
                                    source_url=original_url, max_words=max_words,
-                                   source_chars=source_chars)
+                                   source_chars=source_chars, source_text=source_text)
     if not _gate["passed"]:
-        _non_word_issues = [i for i in _gate["issues"] if not i.startswith("字数")]
-        _blocked_before = count_blocks(original_url or "")
-        if not _non_word_issues and _blocked_before >= 1:
-            print(f"↩️ 字数门禁重试放行：该 URL 已拦截 {_blocked_before} 次，重改后仍越界，"
-                  "按内容密度/原文长度实情放行落盘")
-            log_gate_block(source="queue", note_type=input_data.get('note_type', ''),
-                           url=original_url or "", title=original_title or "",
-                           issues=_gate["issues"], warnings=_gate.get("warnings", []),
-                           action="bypassed_retry")
-        else:
-            print("⛔ 机械门禁拦截：" + "；".join(_gate["issues"]))
-            # 拦截事件持久化（gate_blockers 台账）：队列路径此前无拦截记录，无法区分
-            # 「未消费」与「被拦」，观测缺口由此补齐；台账失败不影响主流程。
-            log_gate_block(source="queue", note_type=input_data.get('note_type', ''),
-                           url=original_url or "", title=original_title or "",
-                           issues=_gate["issues"], warnings=_gate.get("warnings", []),
-                           compression_warnings=_gate.get("compression_warnings", []))
-            return {'success': False, 'message': 'VERIFIER_FAILED:' + '；'.join(_gate["issues"]),
-                    'issues': _gate["issues"],
-                    'compression_warnings': _gate.get("compression_warnings", [])}
+        print("⛔ 机械门禁拦截：" + "；".join(_gate["issues"]))
+        # 拦截事件持久化（gate_blockers 台账）：队列路径此前无拦截记录，无法区分
+        # 「未消费」与「被拦」，观测缺口由此补齐；台账失败不影响主流程。
+        log_gate_block(source="queue", note_type=input_data.get('note_type', ''),
+                       url=original_url or "", title=original_title or "",
+                       issues=_gate["issues"], warnings=_gate.get("warnings", []),
+                       compression_warnings=_gate.get("compression_warnings", []))
+        return {'success': False, 'message': 'VERIFIER_FAILED:' + '；'.join(_gate["issues"]),
+                'issues': _gate["issues"],
+                'compression_warnings': _gate.get("compression_warnings", [])}
     # L8 修复（2026-09-03）：自带总结的保存路径 folder 为空时自动走统一路由器，
     # 与 skill_main 的 L7 手贴 URL 路径对齐——「落哪」由代码决定，不靠调用方记性。
     # 背景：批量总结曾有 78 篇因调用方漏传 folder 全部落进【待归类】。
@@ -692,7 +707,8 @@ def save_summary_only(input_data: dict) -> dict:
             tags=tags, original_title=original_title, publish_time=publish_time,
             folder=folder, obsidian=obsidian,
             note_type=input_data.get('note_type', ''),
-            topics=_topics
+            topics=_topics,
+            overwrite=bool(input_data.get('overwrite', False)),
         )
         # 无人值守降级：落盘命中参考值抽检信号 → 入 needs_review 队列（filename 已知）
         _review_flags = _gate.get("review_flags", [])
@@ -772,7 +788,7 @@ def skill_main(input_data: dict) -> dict:
                 'success': True, 'need_continue_summary': True,
                 'message': '✅ 已抓取文章内容，等待执行模型（Agent）按笔记模板总结',
                 'article_content': article_content, 'note_type': note_type,
-                'prompt': get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK, 'original_url': original_url,
+                'prompt': get_note_prompt(note_type, source_chars_of(article_content)) + QUALITY_GATE_SELFCHECK, 'original_url': original_url,
                 'original_title': original_title, 'author': author, 'tags': tags,
                 'raw_file': _LAST_RAW_FILEPATH, 'folder': folder, 'obsidian': obsidian,
                 'publish_time': _LAST_PUBLISH_TIME or publish_time,

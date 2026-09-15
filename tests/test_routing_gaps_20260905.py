@@ -31,6 +31,11 @@ from shared.routing import (
 # A. routing.category_from_tags（分类提取单一真源）
 # ---------------------------------------------------------------------------
 
+# 落盘门禁「内容缺失」下限 300 字（DECISION-20260915 content-first）：
+# 用短占位串（如「总结文本」）会让所有走 save_summary_only 的用例被拦，
+# 故统一用足够长的正文占位；其具体内容与本文件各用例的断言目标无关。
+NOTE_BODY = "笔记内容占位，用于满足内容缺失下限。" * 30
+
 def test_cft_picks_first_real_tag():
     assert category_from_tags(["生财有术", "AI"]) == "生财有术"
 
@@ -82,7 +87,7 @@ def test_save_summarized_from_file_passes_category(tmp_path, monkeypatch):
     """215 行调用点：save_summarized_from_file 必须把 category 传进 autoroute。"""
     import articles.main as am
     f = tmp_path / "sum.md"
-    f.write_text("总结文本", encoding="utf-8")
+    f.write_text(NOTE_BODY, encoding="utf-8")
     captured = {}
 
     def fake_save(content, **kwargs):
@@ -200,7 +205,7 @@ def test_run_scene2_passes_original_url(tmp_path, monkeypatch):
     import articles.run as arun
 
     f = tmp_path / "sum.md"
-    f.write_text("总结文本", encoding="utf-8")
+    f.write_text(NOTE_BODY, encoding="utf-8")
     captured = {}
 
     def fake_save(**kwargs):

@@ -43,6 +43,7 @@ from prompts.templates import (  # noqa: E402
     NOTE_TEMPLATES,
     QUALITY_GATE_SELFCHECK,
     get_note_prompt,
+    source_chars_of,
 )
 
 try:  # 字幕探测（--fetch 无CC暂缓用）；导入失败时探测降级为不可用，走原管线
@@ -181,7 +182,8 @@ def _build_staging_entry(entry: dict, res: dict) -> dict:
     if note_type not in NOTE_TEMPLATES:
         note_type = classify_note_type(
             res.get("original_title", ""), res.get("article_content", "") or res.get("transcript", ""))
-        prompt = get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK
+        prompt = get_note_prompt(note_type, source_chars_of(
+            res.get("article_content", "") or res.get("transcript", ""))) + QUALITY_GATE_SELFCHECK
     return {
         "url": entry.get("url", ""),
         "title": res.get("original_title", ""),

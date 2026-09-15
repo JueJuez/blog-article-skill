@@ -19,6 +19,12 @@ from articles import dedup
 from articles import main as articles_main
 from monitors import run as run_mod
 
+# 落盘门禁「内容缺失」下限 300 字（DECISION-20260915 content-first）：
+# 用短占位串（如「笔记内容」）会让所有走 save_summary_only 的用例被拦，
+# 故统一用足够长的正文占位；其具体内容与本文件各用例的断言目标无关。
+NOTE_BODY = "笔记内容占位，用于满足内容缺失下限。" * 30
+
+
 
 @pytest.fixture
 def dedup_index(tmp_path, monkeypatch):
@@ -41,7 +47,7 @@ class TestSaveSummaryOnlyGate:
     def test_skips_when_url_already_summarized(self, dedup_index):
         dedup_index.mark_summarized(url="https://a.com/x", filename="old.md")
         res = articles_main.save_summary_only({
-            "summarized_content": "总结", "original_url": "https://a.com/x"})
+            "summarized_content": NOTE_BODY, "original_url": "https://a.com/x"})
         assert res.get("success") is True
         assert res.get("skipped") is True
         assert self.calls == []
@@ -51,7 +57,7 @@ class TestSaveSummaryOnlyGate:
         # 本类 stub 掉保存函数即 stub 掉登记点；端到端登记断言见 test_mark_and_frontmatter.py。
         # 此处守护第③层闸门语义：未命中索引 → 必须调用保存函数且仅一次。
         res = articles_main.save_summary_only({
-            "summarized_content": "总结正文",
+            "summarized_content": NOTE_BODY,
             "original_url": "https://b.com/y",
             "original_title": "T"})
         assert res.get("success") is True
@@ -60,14 +66,14 @@ class TestSaveSummaryOnlyGate:
     def test_force_bypasses_gate(self, dedup_index):
         dedup_index.mark_summarized(url="https://c.com/z", filename="old.md")
         res = articles_main.save_summary_only({
-            "summarized_content": "总结正文",
+            "summarized_content": NOTE_BODY,
             "original_url": "https://c.com/z",
             "force": True})
         assert res.get("skipped") is not True
         assert self.calls == [1]
 
     def test_no_url_falls_through_to_save(self, dedup_index):
-        res = articles_main.save_summary_only({"summarized_content": "总结正文"})
+        res = articles_main.save_summary_only({"summarized_content": NOTE_BODY})
         assert res.get("success") is True
         assert self.calls == [1]
 

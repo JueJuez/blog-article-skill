@@ -150,7 +150,7 @@ def _backfill_one(ep: dict, season_title: str, author: str, report: dict,
         return
     ep_title, segments, t_author = res
     from articles.main import save_raw_content_to_file
-    from articles.prompt import classify_note_type, get_note_prompt
+    from articles.prompt import classify_note_type, get_note_prompt, source_chars_of
     from prompts.templates import QUALITY_GATE_SELFCHECK
     from shared.chunking import segments_to_text
     from videos.main import series_folder
@@ -169,7 +169,7 @@ def _backfill_one(ep: dict, season_title: str, author: str, report: dict,
         "folder": series_folder({}, real_author, season_title, url),
         "raw_file": raw_file,
         # 预计算 prompt（三队列统一口径：monitors/scys/UP）：子 Agent 直接按此总结
-        "prompt": get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK,
+        "prompt": get_note_prompt(note_type, source_chars_of(text)) + QUALITY_GATE_SELFCHECK,
         "queued_at": int(time.time()),
     }
     pending = _load_pending()

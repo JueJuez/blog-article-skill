@@ -38,7 +38,7 @@ from status_store import (  # noqa: E402
 )
 from prompts.classify import classify_note_type  # noqa: E402
 from prompts.templates import (  # noqa: E402
-    NOTE_TEMPLATES, QUALITY_GATE_SELFCHECK, get_note_prompt,
+    NOTE_TEMPLATES, QUALITY_GATE_SELFCHECK, get_note_prompt, source_chars_of,
 )
 
 def _ledger_record_discover(run_id: str, items: list) -> None:
@@ -413,16 +413,17 @@ def _queue_pending_summary(it: dict, res: dict) -> None:
     # res 未带 note_type（或为 dynamic 等非模板类型）时按标题+正文开头补判，
     # 保证子 Agent 读队列条目直接按 prompt 总结，无需自调任何 CLI
     note_type = res.get("note_type") or ""
+    # 读全文：既供分类器判类型（只用前 4000 字），也供 source_chars_of 算篇幅目标
+    raw_text = ""
+    raw_path = res.get("raw_file", "")
+    if raw_path and os.path.exists(raw_path):
+        try:
+            with open(raw_path, encoding="utf-8") as f:
+                raw_text = f.read()
+        except OSError:
+            raw_text = ""
     if note_type not in NOTE_TEMPLATES:
-        raw_body = ""
-        raw_path = res.get("raw_file", "")
-        if raw_path and os.path.exists(raw_path):
-            try:
-                with open(raw_path, encoding="utf-8") as f:
-                    raw_body = f.read(4000)
-            except OSError:
-                raw_body = ""
-        note_type = classify_note_type(entry_title, raw_body)
+        note_type = classify_note_type(entry_title, raw_text[:4000])
     entry = {
         "url": url,
         "title": entry_title,
@@ -432,7 +433,7 @@ def _queue_pending_summary(it: dict, res: dict) -> None:
         "publish_time": it.get("publish_time", 0),
         "folder": res.get("folder") or _item_folder(it),
         "raw_file": res.get("raw_file", ""),
-        "prompt": get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK,
+        "prompt": get_note_prompt(note_type, source_chars_of(raw_text)) + QUALITY_GATE_SELFCHECK,
         "queued_at": int(time.time()),
     }
     pending.append(entry)

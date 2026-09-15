@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 让 shared �
 from login_cdp_fetch import discover_chrome_devtools, write_output
 from shared.cdp_session import SharedCdpSession
 from prompts.classify import classify_note_type
-from prompts.templates import QUALITY_GATE_SELFCHECK, get_note_prompt
+from prompts.templates import QUALITY_GATE_SELFCHECK, get_note_prompt, source_chars_of
 
 CONFIG_PATH = Path(__file__).resolve().parent / "scys_projects.json"
 
@@ -58,20 +58,20 @@ def build_pending_entry(r: dict, project: str, list_item: dict) -> dict:
     分类读 output 正文前 4000 字（fetch_article 刚写好的原文），文件缺失/为空时
     退化为仅按标题分类；prompt 恒有值，子 Agent 读队列即可总结，无需自调任何 CLI。
     """
-    raw_body = ""
+    raw_text = ""
     try:
         with open(r["output"], encoding="utf-8") as f:
-            raw_body = f.read(4000)
+            raw_text = f.read()
     except OSError:
         pass
-    note_type = classify_note_type(r.get("title", ""), raw_body)
+    note_type = classify_note_type(r.get("title", ""), raw_text[:4000])
     return {
         "topicId": str(r["topicId"]), "project": project, "title": r["title"],
         "url": r["url"], "chars": r["chars"],
         "output": r["output"],
         "external_docs": r["external_docs"], "related": r["related"],
         "note_type": note_type,
-        "prompt": get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK,
+        "prompt": get_note_prompt(note_type, source_chars_of(raw_text)) + QUALITY_GATE_SELFCHECK,
         "list_meta": {k: list_item.get(k) for k in
                       ("isDigested", "readingCount", "likeCount", "coinCount",
                        "commentCount", "favoriteCount", "gmtCreate", "aiSummary")},

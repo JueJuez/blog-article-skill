@@ -17,6 +17,12 @@ import pytest
 import articles.main as am
 from shared.routing import resolve_folder
 
+# 落盘门禁「内容缺失」下限 300 字（DECISION-20260915 content-first）：
+# 用短占位串（如「笔记内容」）会让所有走 save_summary_only 的用例被拦，
+# 故统一用足够长的正文占位；其具体内容与本文件各用例的断言目标无关。
+NOTE_BODY = "笔记内容占位，用于满足内容缺失下限。" * 30
+
+
 
 @pytest.fixture
 def capture_save(monkeypatch):
@@ -38,7 +44,7 @@ def capture_save(monkeypatch):
 
 def test_no_folder_routes_by_author(capture_save):
     res = am.save_summary_only({
-        "summarized_content": "笔记内容",
+        "summarized_content": NOTE_BODY,
         "original_url": "https://www.bilibili.com/video/BV1xx",
         "author": "趋势浪子",
         "original_title": "测试笔记",
@@ -50,7 +56,7 @@ def test_no_folder_routes_by_author(capture_save):
 
 def test_explicit_folder_unchanged(capture_save):
     res = am.save_summary_only({
-        "summarized_content": "笔记内容",
+        "summarized_content": NOTE_BODY,
         "original_url": "https://www.bilibili.com/video/BV1xx",
         "author": "趋势浪子",
         "original_title": "测试笔记",
@@ -62,7 +68,7 @@ def test_explicit_folder_unchanged(capture_save):
 
 def test_no_author_falls_to_inbox(capture_save):
     res = am.save_summary_only({
-        "summarized_content": "笔记内容",
+        "summarized_content": NOTE_BODY,
         "original_url": "",
         "original_title": "无主笔记",
     })
@@ -77,7 +83,7 @@ def test_no_author_falls_to_inbox(capture_save):
 
 def _tmp_summary_file(tmp_path) -> str:
     p = tmp_path / "summary.md"
-    p.write_text("笔记内容", encoding="utf-8")
+    p.write_text(NOTE_BODY, encoding="utf-8")
     return str(p)
 
 
@@ -122,7 +128,7 @@ def test_from_file_missing_file_raises(capture_save, tmp_path):
 
 def test_continue_summary_routes_by_author(capture_save):
     res = am.skill_continue_summary(
-        "原文内容", "笔记内容",
+        "原文内容", NOTE_BODY,
         original_url="https://www.bilibili.com/video/BV1xx",
         author="趋势浪子", original_title="测试笔记")
     assert res["success"] is True
@@ -131,7 +137,7 @@ def test_continue_summary_routes_by_author(capture_save):
 
 def test_continue_summary_explicit_folder_unchanged(capture_save):
     res = am.skill_continue_summary(
-        "原文内容", "笔记内容", author="趋势浪子", original_title="测试笔记",
+        "原文内容", NOTE_BODY, author="趋势浪子", original_title="测试笔记",
         folder="自定义/目录")
     assert res["success"] is True
     assert capture_save["folder"] == "自定义/目录"
@@ -163,7 +169,7 @@ def test_async_from_file_missing_file_raises(capture_save, tmp_path):
 
 def test_cli_routes_by_author(capture_save, monkeypatch):
     monkeypatch.setattr(sys, "argv", [
-        "_save_summary.py", "--direct", "总结内容",
+        "_save_summary.py", "--direct", NOTE_BODY,
         "--url", "https://www.bilibili.com/video/BV1xx",
         "--author", "趋势浪子", "--title", "测试笔记"])
     from articles import _save_summary as cli
@@ -173,7 +179,7 @@ def test_cli_routes_by_author(capture_save, monkeypatch):
 
 def test_cli_explicit_folder_unchanged(capture_save, monkeypatch):
     monkeypatch.setattr(sys, "argv", [
-        "_save_summary.py", "--direct", "总结内容",
+        "_save_summary.py", "--direct", NOTE_BODY,
         "--author", "趋势浪子", "--title", "测试笔记", "--folder", "自定义/目录"])
     from articles import _save_summary as cli
     assert cli.main() == 0

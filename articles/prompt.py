@@ -9,6 +9,8 @@ from prompts.templates import (
     KEY_POINTS_PROMPT,
     NOTE_TEMPLATES,
     get_note_prompt,
+    render_coverage_guide,
+    source_chars_of,
     list_note_types,
     format_note_with_prompt,
 )
@@ -25,6 +27,8 @@ __all__ = [
     "KEY_POINTS_PROMPT",
     "NOTE_TEMPLATES",
     "get_note_prompt",
+    "render_coverage_guide",
+    "source_chars_of",
     "get_content_summary_prompt",
     "list_note_types",
     "format_note_with_prompt",

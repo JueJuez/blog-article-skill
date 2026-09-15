@@ -1,25 +1,46 @@
 """笔记机械质量门禁（零 AI 依赖）。
 
-背景（DECISION-20260905 / DECISION-20260907）：FORCE_AGENT_MODE=1 主路径上，模型输出直接经
-save_summary_only 落盘，历史上偶发正文写来源链接（formatter 权威追加后出现两个
-链接）、篇幅严重偏离模板区间；2026-09-07 起去 H1，正文出现一级标题改为拦截
-（标题由文件名/飞书节点标题承担，代码围栏内 # 注释不算）。AI 审核员
-（NOTE_QUALITY_GATE）默认关且无外部 AI 时返回 None，兜不住，故提供机械基线：
-- 8 模板字数区间与模板「风格/字数」行声明一一对应（tests 防漂移）；
-- 硬阈值（<min*0.6 或 >max*1.5）拦截，轻微越界仅 warning 不拦；
-- note_type 不在字数表内时跳过篇幅检查（自定义类型不误伤）。
+## 判据演进（务必先读）
 
-本模块不受 NOTE_QUALITY_GATE 开关控制：它是落盘前的机械底线，不是可选 AI 审核。
+- 2026-09-05（`DECISION-20260905-mechanical-verifier.md`）：引入机械门禁，字数用**固定区间**硬拦。
+- 2026-09-13（`DECISION-20260913-gate-source-aware-review.md`）：固定区间导致「为压缩而压缩」
+  （语义破碎、多句压成一句、丢原意、读不懂），改为**「源长×(0.25,0.45)」参考带** + 父 Agent 抽检。
+- **2026-09-15（`DECISION-20260915-content-first-gate.md`）：比例带同样被数据推翻，本文件改为内容判据。**
+
+## 现行规则（2026-09-15 起）
+
+**硬拦（issues，不落盘）**——只留确定性的与极端情形：
+1. 正文出现一级标题（标题由文件名承担）
+2. 正文写了来源链接行（formatter 会权威追加，重复写会出现两个链接）
+3. 正文出现原文 URL
+4. 字数 `< MIN_WORDS`（300）——内容缺失兜底
+5. 字数 `> max(8000, 源长×3)`——**失控保护**，纯防程序跑飞，不承担质量含义
+
+**触发抽检（review_flags，不拦落盘）**——来自 `prompts/content_signals.py`：
+① 硬锚点召回 < 60%（源锚点 < 4 时该判据不适用）
+② 破碎形态：A 超长句 / C 逗号密度 / D 相邻段高相似（括号类信号已废弃）
+③ 结构缺失：模板声明的「必备」模块没写
+④ 照搬重合：与源 20 字片段重合超阈值
+
+## 已被数据否定、禁止复活的机制
+
+- ❌ **任何形式的「字数上限压制」**：只要存在「不能比 X 长」的线，子 Agent 就会去贴它，
+  必然产生「为过门禁而砍内容」。实测同一 structured 模板下笔记长度差 2.8 倍，
+  比值判据主要在测「子 Agent 这次写得长不长」，与源质量无关。
+- ❌ **「偏短」比例信号**（`count < 源长×0.25 且 <1500`）：同一批语音识别稿里，
+  长源批次 0.20 报偏短、短源批次 1.93 报超参考值，近 10 倍跨度。
+- ❌ **括号类形态信号**：模板本身要求「专业名词首现必须附大白话解释」，括号是规定动作。
+
+**用户硬约束（不得违背）**：内容完整第一，绝不用绝对值字数区间压制篇幅。
 """
 import re
 
-# 各模板单篇正文字数区间（与 prompts/templates.py 中「单篇正文 X～Y 字」声明同步维护；
-# tests/test_note_mechanical_gate.py::TestWordLimitsConsistency 防漂移）。
-# 说明（2026-09-13 决策·source-aware 参考值）：
-#   字数不再是「硬拦截区间」，而是「参考值」——具体目标由原文长度决定（详见 verify_note_mechanical）。
-#   机械门禁只在两种极端拦截：① 字数极低（疑似内容缺失）；② 字数畸高（超 sanity 天花板，疑似原文照搬）。
-#   处于参考带之外但非畸高 → 不拦，仅返回 review_flags 供父 Agent 抽检。
-#   无源长时（纯文章/旧队列）退回固定区间兜底。
+from . import content_signals as CS
+
+# 各模板单篇正文字数区间 —— 仅作「参考值」记录用途，**不再参与任何拦截或抽检触发**。
+# 保留常量是为了：
+#   ① 与 prompts/templates.py 的「风格/字数」声明对齐（tests/test_note_mechanical_gate.py 防漂移）；
+#   ② 后续若要按模板生成参考意见，仍可取用。
 NOTE_WORD_LIMITS = {
     "structured": (1500, 5000),
     "general": (1500, 5000),  # 兜底通用版，与 structured 同 prompt 同区间
@@ -32,25 +53,22 @@ NOTE_WORD_LIMITS = {
     "dissection": (800, 1500),
 }
 
-# 参考值比例带（源长 × 比例）：仅作触发，非硬拦。水货多的源压到 0.25 也 OK；干货多的源压到 0.45 也可能丢。
-REFERENCE_RATIO_BAND = (0.25, 0.45)
-# 字数畸高硬天花板：超过即视为原文照搬/未合成，落盘前必拦（有源长时取 max(绝对值, 源长×0.7)）。
+# 内容缺失兜底：低于此视为「几乎没写」。用户决策 300（2~3 分钟、只讲一两个知识点的短视频
+# 本来就写不出多少字，下限不能一刀切偏高）。
+MIN_WORDS = 300
+# 失控保护：超过即视为程序跑飞。取「绝对值 8000」与「源长×3」的较大者——
+# ×3 而非旧版的 ×0.7，正是不让上限重新变成压缩压力。
 SANITY_CEILING_ABS = 8000
-# 字数极低硬下限：低于此视为内容缺失，必拦（有源长时取 max(绝对值, 源长×0.25×0.6)）。
-SANITY_FLOOR_ABS = 400
-# 偏短触发抽检的软阈值：低于此且低于 ref_lo 才提示父 Agent 复核是否遗漏（水货源压更短也放行）。
-SHORT_REVIEW_THRESHOLD = 1500
-
-# 动态扩容档位（兼容无源长场景的兜底上限；有源长时优先用 source-aware 参考带）
-DYNAMIC_WORD_TIERS = [3000, 4000, 5000]
-
-# 字数硬阈值（无源长兜底 + 地板计算用）：低于下限 60% 或高于上限 150% 判为缺失/失败
-WORD_HARD_LOW_RATIO = 0.6
-WORD_HARD_HIGH_RATIO = 1.5
+SANITY_CEILING_RATIO = 3.0
 
 _H1_RE = re.compile(r"^# .+", re.MULTILINE)
 _CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)  # H1 扫描前剥离，围栏内 # 注释不算标题
 _SOURCE_LINK_LINE_RE = re.compile(r"^\s*\**\s*来源链接\s*\**\s*[：:]", re.MULTILINE)
+
+# 兼容旧引用：旧的动态扩容档位已无意义（上限不再压制篇幅），保留空位以免 ImportError。
+DYNAMIC_WORD_TIERS = [3000, 4000, 5000]
+WORD_HARD_LOW_RATIO = 0.6
+WORD_HARD_HIGH_RATIO = 1.5
 
 
 def count_note_words(note: str) -> int:
@@ -58,71 +76,48 @@ def count_note_words(note: str) -> int:
     return len(re.sub(r"\s", "", note))
 
 
-# ---- 过度压缩启发式（零 AI，纯形态检测；命中视为「该扩容」信号，不拦但报告） ----
-# 设计动机（2026-09-13）：机械门禁判不了语义，但能抓「形式的过度压缩」——
-# 即把多件事压进一个超长复句、用连环括号堆术语。这些形态是语义残缺的高频伴随特征。
-_COMPRESS_LONG_SENT = 140      # 单句（以 。！？\n 切分）去空白后超过此字数，疑似压碎
-_COMPRESS_BRACKET_PAIRS = 2    # 单段落内出现 ≥ 此值的括号对，疑似术语堆砌
-_COMPRESS_COMMA_RATIO = 0.085  # 逗号数 / 总字数 超过此比例，疑似长句堆砌（每 ~12 字一个逗号）
-
-
 def detect_compression_issues(note: str) -> list[str]:
-    """检测「疑似为了压缩而压碎语义」的形态信号。返回 warning 文案列表（空=无信号）。
+    """「疑似为了压缩而压碎语义」的形态信号。委托 `content_signals.form_signals`。
 
-    仅作信号，不拦截落盘——命中时由父 Agent 决策是否让子 Agent 用更高字数目标重写。
+    括号类信号已废弃（见模块 docstring）。本函数保留原名以兼容旧调用方。
     """
-    warnings: list[str] = []
-    prose = _CODE_FENCE_RE.sub("", note)
-
-    # 信号 A：超长句
-    sentences = re.split(r"[。！？\n]", prose)
-    longest = max((len(re.sub(r"\s", "", s)) for s in sentences), default=0)
-    if longest > _COMPRESS_LONG_SENT:
-        warnings.append(
-            f"疑似过度压缩（信号A·超长句）：最长句 {longest} 字 > {_COMPRESS_LONG_SENT}，"
-            "可能是把多件事压进一句导致语义残缺，建议拆句或扩容重写"
-        )
-
-    # 信号 B：连环括号（术语堆砌）
-    for para in prose.split("\n"):
-        if not para.strip():
-            continue
-        pairs = len(re.findall(r"[（(][^()（）]*[)）]", para))
-        if pairs >= _COMPRESS_BRACKET_PAIRS:
-            warnings.append(
-                f"疑似过度压缩（信号B·连环括号）：段落内 {pairs} 处括号解释，"
-                "疑似术语堆砌未展开，建议把括号内容写成完整句"
-            )
-            break  # 一段命中即报，避免重复刷屏
-
-    # 信号 C：逗号密度异常
-    total = count_note_words(prose)
-    commas = len(re.findall(r"[，,]", prose))
-    if total > 0 and commas / total > _COMPRESS_COMMA_RATIO:
-        warnings.append(
-            f"疑似过度压缩（信号C·逗号密度 {commas / total:.2f} > {_COMPRESS_COMMA_RATIO}）："
-            "疑似长句堆砌，建议拆成短句"
-        )
-
-    return warnings
+    sigs = CS.form_signals(note)["signals"]
+    out = []
+    if "A超长句" in sigs:
+        out.append(f"疑似过度压缩（信号A·超长句）：最长句超 {CS.LONG_SENTENCE} 字，"
+                   "可能是把多件事压进一句导致语义残缺，建议拆句或扩容重写")
+    if "C逗号密度" in sigs:
+        out.append(f"疑似过度压缩（信号C·逗号密度 > {CS.COMMA_RATIO}）：疑似长句堆砌，建议拆成短句")
+    if "D相邻段重复" in sigs:
+        out.append(f"疑似注水（信号D·相邻段相似度 > {CS.ADJACENT_SIM}）：相邻段落近乎同义，建议合并")
+    return out
 
 
 def verify_note_mechanical(note: str, note_type: str = "", source_url: str = "",
-                           max_words: int = None, source_chars: int = None) -> dict:
-    """机械校验模型输出的笔记：无一级标题 / 来源链接卫生 / 字数（source-aware 参考值）/ 压缩启发式。
+                           max_words: int = None, source_chars: int = None,
+                           source_text: str = "") -> dict:
+    """机械校验：卫生类硬拦 + 极端字数硬拦 + 内容判据触发抽检。
 
-    返回 {"passed", "issues", "warnings", "compression_warnings", "review_flags"}：
-    - issues 非空 → 必须拦截（H1/来源链接/URL/畸高照搬/极低缺失），子 Agent 修复后重试；
-    - warnings 仅提示，不拦；
-    - compression_warnings：过度压缩启发式信号，不拦，供父 Agent 决策是否扩容；
-    - review_flags：超出「参考值」但非畸高时返回，提示父 Agent 抽检（不拦落盘）；
-    - source_chars：原文（转录稿）去空白字符数，有则按 源长×比例带 作参考值；无则退回固定区间兜底。
-    - max_words：无源长时的动态扩容覆盖（4000/5000）。
+    Args:
+        note: 模型输出的笔记正文。
+        note_type: 模板类型（用于结构完整性判据）。
+        source_url: 原文 URL（用于「正文不得含 URL」）。
+        source_chars: 原文去空白字符数（仅用于失控上限 `源长×3`）。
+        max_words: **已废弃**（保留形参以免旧调用方报错；上限不再压制篇幅）。
+        source_text: 原文全文。给了才能跑「硬锚点召回」与「照搬重合」；没给则只跑
+            形态 + 结构判据（调用方应从 raw_file 传入）。
+
+    Returns:
+        {"passed", "issues", "warnings", "compression_warnings", "review_flags", "review_details"}
+        - issues 非空 → 硬拦，子 Agent 修复后重交
+        - review_flags 非空 → **不拦落盘**，交父 Agent 按五维 rubric 抽检
     """
     issues: list[str] = []
     warnings: list[str] = []
     review_flags: list[str] = []
-    prose = _CODE_FENCE_RE.sub("", note)  # 剥离代码围栏，围栏内 # 注释不算一级标题
+    review_details: dict = {}
+
+    prose = _CODE_FENCE_RE.sub("", note)  # 围栏内 # 注释不算一级标题
     h1_list = _H1_RE.findall(prose)
     if h1_list:
         issues.append(f"去 H1 约束：正文出现 {len(h1_list)} 个一级标题（# ），"
@@ -133,47 +128,31 @@ def verify_note_mechanical(note: str, note_type: str = "", source_url: str = "",
     if source_url and source_url in note:
         issues.append("正文不得出现原文 URL（来源链接由系统权威追加，模型写的 URL 不可信）")
 
-    limits = NOTE_WORD_LIMITS.get(note_type)
     count = count_note_words(note)
-    if limits:
-        lo, hi = limits
-        hi = max(hi, max_words) if max_words else hi  # 无源长时动态扩容覆盖上限
-        if source_chars:
-            # —— source-aware 参考值（优先）——
-            ref_lo = int(source_chars * REFERENCE_RATIO_BAND[0])
-            ref_hi = int(source_chars * REFERENCE_RATIO_BAND[1])
-            ceiling = max(SANITY_CEILING_ABS, int(source_chars * 0.7))
-            # 极低硬地板：仅极端缺失（< 绝对 400 字）拦截；更短者交由「偏短」抽检信号覆盖
-            floor = SANITY_FLOOR_ABS
-            if count > ceiling:
-                issues.append(f"字数 {count} 超畸高天花板（源长 {source_chars}×0.7={int(source_chars*0.7)}，"
-                              f"绝对 {SANITY_CEILING_ABS}），疑似原文照搬/未合成，须重做压缩后重交")
-            elif count < floor:
-                issues.append(f"字数 {count} 低于硬下限（源长 {source_chars}×{REFERENCE_RATIO_BAND[0]}×"
-                              f"{WORD_HARD_LOW_RATIO:.0%}={floor}），疑似内容缺失，须补全后重交")
-            elif count > ref_hi:
-                review_flags.append(f"超参考值：{count} > 源长{source_chars}×0.45={ref_hi}，"
-                                    f"疑未充分合成，父 Agent 需抽检")
-            elif count < ref_lo and count < SHORT_REVIEW_THRESHOLD:
-                review_flags.append(f"偏短：{count} < 源长{source_chars}×0.25={ref_lo} 且<{SHORT_REVIEW_THRESHOLD}，"
-                                    f"疑遗漏核心，父 Agent 需抽检")
-        else:
-            # —— 无源长兜底：固定区间 + 弹性上限 ——
-            if count < lo * WORD_HARD_LOW_RATIO:
-                issues.append(f"字数 {count} 低于 {note_type} 模板硬下限（区间 {lo}～{hi} 字的"
-                              f"{WORD_HARD_LOW_RATIO:.0%}），疑似内容缺失，须补全后重交")
-            elif count > hi * WORD_HARD_HIGH_RATIO:
-                issues.append(f"字数 {count} 超出 {note_type} 模板硬上限（区间 {lo}～{hi} 字的"
-                              f"{WORD_HARD_HIGH_RATIO:.0%}），须压缩或按模板规则拆分后重交")
-            elif count > hi:
-                warnings.append(f"字数 {count} 略高于 {note_type} 模板区间上限 {hi}，建议复核是否堆砌/照搬")
-            elif count < lo:
-                warnings.append(f"字数 {count} 略低于 {note_type} 模板区间下限 {lo}，建议复核内容完整度")
+    if count < MIN_WORDS:
+        issues.append(f"内容缺失：字数 {count} 低于下限 {MIN_WORDS}，疑似几乎未写内容，须补全后重交")
+    else:
+        ceiling = max(SANITY_CEILING_ABS, int((source_chars or 0) * SANITY_CEILING_RATIO))
+        if count > ceiling:
+            issues.append(f"失控保护：字数 {count} 超上限 max(8000, 源长×{SANITY_CEILING_RATIO:g})={ceiling}，"
+                          "疑似程序跑飞或整段照搬，须核查后重交")
+    # 注：上述两条刻意不以「字数」开头——`articles/main.py` 的「重试放行」逃生舱只豁免
+    # 旧的区间类越界（源本身撑不起区间）；内容缺失与失控保护属确定性缺陷，永不放行。
+
+    # 内容判据（取代旧「字数比例带」）。flags 非空只触发抽检，不拦落盘。
+    cf = CS.content_flags(note, source_text or "", note_type)
+    review_flags.extend(cf["flags"])
+    review_details = cf["details"]
+
     compression_warnings = detect_compression_issues(note)
+    warnings.extend(compression_warnings)
+
     return {
         "passed": not issues,
         "issues": issues,
         "warnings": warnings,
         "compression_warnings": compression_warnings,
         "review_flags": review_flags,
+        "review_details": review_details,
+        "word_count": count,
     }

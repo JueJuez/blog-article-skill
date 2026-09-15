@@ -103,7 +103,7 @@ def enqueue_pending(url: str, title: str, author: str, publish_time: int,
     - folder 走统一路由器预计算（监控作者→【监控】区，非监控→【我的总结】/作者/<名>）。
     """
     from articles import dedup as _dedup
-    from articles.prompt import classify_note_type, get_note_prompt
+    from articles.prompt import classify_note_type, get_note_prompt, source_chars_of
     from prompts.templates import QUALITY_GATE_SELFCHECK
     from shared.routing import resolve_folder
 
@@ -135,7 +135,7 @@ def enqueue_pending(url: str, title: str, author: str, publish_time: int,
                                   "source": "bili_backfill"}),
         "raw_file": raw_file,
         # 预计算 prompt（三队列统一口径：monitors/scys/UP）：子 Agent 直接按此总结，无需自调任何 CLI
-        "prompt": get_note_prompt(note_type) + QUALITY_GATE_SELFCHECK,
+        "prompt": get_note_prompt(note_type, source_chars_of(content)) + QUALITY_GATE_SELFCHECK,
         "queued_at": int(time.time()),
     }
     pending.append(entry)

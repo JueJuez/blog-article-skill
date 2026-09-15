@@ -12,6 +12,8 @@ from .templates import (
     CONTENT_SUMMARY_PROMPT,
     KEY_POINTS_PROMPT,
     get_note_prompt,
+    render_coverage_guide,
+    source_chars_of,
     list_note_types,
     format_note_with_prompt,
 )
@@ -22,6 +24,8 @@ __all__ = [
     "CONTENT_SUMMARY_PROMPT",
     "KEY_POINTS_PROMPT",
     "get_note_prompt",
+    "render_coverage_guide",
+    "source_chars_of",
     "list_note_types",
     "format_note_with_prompt",
     "classify_note_type",

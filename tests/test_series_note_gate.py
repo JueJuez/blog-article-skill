@@ -98,13 +98,22 @@ class TestSeriesNoteMechanicalGate:
         assert "来源链接" in str(ei.value)
         assert self.manager_calls == []
 
-    def test_severely_short_blocked(self):
-        # structured 硬下限 = 1500*0.6 = 900 字，400 字必拦
+    def test_below_content_floor_blocked(self):
+        # content-first（2026-09-15）：字数只兜「几乎没写」——下限 300，与模板无关
         with pytest.raises(ValueError) as ei:
-            self._save(_body(400))
+            self._save(_body(299))
         assert str(ei.value).startswith("VERIFIER_FAILED")
-        assert "字数" in str(ei.value)
+        assert "内容缺失" in str(ei.value)
         assert self.manager_calls == []
+
+    def test_short_note_no_longer_blocked(self):
+        """回归守卫：短稿不再被字数拦。
+
+        旧规则 structured 硬下限 = 1500×0.6 = 900，400 字必拦——这正是逼子 Agent
+        「为过门禁而注水/压碎」的来源，2026-09-15 已废除。
+        """
+        from prompts.verifier import verify_note_mechanical
+        assert verify_note_mechanical(_body(400), "structured")["passed"] is True
 
     def test_source_url_in_body_blocked(self):
         content = "正文引用了 https://example.com/ep1 当论据。\n\n" + VALID_STRUCT_CONTENT

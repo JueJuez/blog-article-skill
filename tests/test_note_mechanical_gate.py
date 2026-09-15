@@ -29,14 +29,14 @@ def _body(n: int) -> str:
     return "字" * n
 
 
-VALID_NOTE = _body(1000)  # key_points 区间 (800, 1500) 内（去 H1：正文不带 # 标题）
+VALID_NOTE = _body(1000)  # 篇幅在「内容缺失下限 300」之上（去 H1：正文不带 # 标题）
 
 
 class TestNoH1:
     """去 H1（DECISION-20260907）：正文不含一级标题通过，出现即拦截；围栏内 # 注释不算。"""
 
     def test_no_h1_passes(self):
-        res = verify_note_mechanical("没有主标题的正文", note_type="")
+        res = verify_note_mechanical(VALID_NOTE, note_type="")
         assert res["passed"] is True
         assert res["issues"] == []
 
@@ -83,58 +83,73 @@ class TestSourceLink:
     """来源链接卫生：正文不写来源链接行，避免 formatter 权威追加后出现两个链接。"""
 
     def test_no_source_link_passes(self):
-        res = verify_note_mechanical("纯正文", note_type="")
+        res = verify_note_mechanical(VALID_NOTE, note_type="")
         assert res["passed"] is True
 
     def test_source_link_line_fails(self):
-        note = "**来源链接**：[原文](https://a.com)\n\n正文"
+        note = "**来源链接**：[原文](https://a.com)\n\n" + VALID_NOTE
         res = verify_note_mechanical(note, note_type="")
         assert res["passed"] is False
         assert any("来源链接" in i for i in res["issues"])
 
     def test_source_url_in_body_fails(self):
-        note = "正文引用了 https://a.com/post/1 当论据"
+        note = VALID_NOTE + "\n\n正文引用了 https://a.com/post/1 当论据"
         res = verify_note_mechanical(note, note_type="", source_url="https://a.com/post/1")
         assert res["passed"] is False
         assert any("来源链接" in i for i in res["issues"])
 
     def test_empty_source_url_no_false_positive(self):
-        res = verify_note_mechanical("普通正文", note_type="", source_url="")
+        res = verify_note_mechanical(VALID_NOTE, note_type="", source_url="")
         assert res["passed"] is True
 
 
 class TestWordCount:
-    """篇幅区间：硬阈值（<min*0.6 或 >max*1.5）拦截，轻微越界仅 warning。"""
+    """字数只做两件事（DECISION-20260915 content-first）：内容缺失兜底、失控保护。
 
-    def test_in_range_passes(self):
-        res = verify_note_mechanical(_body(1000), note_type="key_points")
-        assert res["passed"] is True
+    **不再有任何上限压制**，也不再有「比例带」与「轻微越界 warning」——
+    只要存在「不能比 X 长」的线，子 Agent 就会去贴它，必然产生「为过门禁而砍内容」。
+    """
 
-    def test_severely_low_fails(self):
-        # 400 字 < 800*0.6=480 → 硬拦
-        res = verify_note_mechanical(_body(400), note_type="key_points")
+    def test_middle_length_has_no_word_issues(self):
+        # 中段任意长度都不该有字数 issue / warning（框架与源长度都无关）
+        for n in (500, 1000, 2600, 5000):
+            res = verify_note_mechanical(_body(n), note_type="key_points")
+            assert res["passed"] is True
+            assert not any("字数" in i or "内容缺失" in i or "失控" in i for i in res["issues"])
+            assert not any("字数" in w for w in res["warnings"])
+
+    def test_below_min_words_blocked(self):
+        # 299 < 300 → 内容缺失，硬拦（下限与 note_type 无关）
+        res = verify_note_mechanical(_body(299), note_type="key_points")
         assert res["passed"] is False
-        assert any("字数" in i for i in res["issues"])
+        assert any("内容缺失" in i for i in res["issues"])
 
-    def test_severely_high_fails(self):
-        # 2500 字 > 1500*1.5=2250 → 硬拦
-        res = verify_note_mechanical(_body(2500), note_type="key_points")
-        assert res["passed"] is False
-        assert any("字数" in i for i in res["issues"])
-
-    def test_slightly_out_of_range_warns_only(self):
-        # 700 字 ∈ (480, 800)：轻微越界不拦，仅提示
-        res = verify_note_mechanical(_body(700), note_type="key_points")
-        assert res["passed"] is True
-        assert res["warnings"] and any("字数" in w for w in res["warnings"])
-
-    def test_unknown_note_type_skips_word_count(self):
-        res = verify_note_mechanical(_body(3), note_type="mystery")
+    def test_min_words_boundary_passes(self):
+        res = verify_note_mechanical(_body(300), note_type="key_points")
         assert res["passed"] is True
 
-    def test_empty_note_type_skips_word_count(self):
+    def test_min_words_applies_without_note_type(self):
+        # 旧行为是「note_type 未注册就跳过字数检查」；现行下限与类型无关，缺失必拦
         res = verify_note_mechanical(_body(3), note_type="")
+        assert res["passed"] is False
+        assert any("内容缺失" in i for i in res["issues"])
+
+    def test_runaway_ceiling_uses_absolute_floor(self):
+        # 无源长：上限 = 绝对 8000
+        assert verify_note_mechanical(_body(8000), note_type="").get("passed") is True
+        res = verify_note_mechanical(_body(8001), note_type="")
+        assert res["passed"] is False
+        assert any("失控保护" in i for i in res["issues"])
+
+    def test_runaway_ceiling_scales_with_source(self):
+        # 源长 20000 → 上限 max(8000, 60000) = 60000：长源写长不会撞上限
+        res = verify_note_mechanical(_body(20000), note_type="structured",
+                                     source_chars=20000)
         assert res["passed"] is True
+        # 源长 1000 → 上限 max(8000, 3000) = 8000
+        res2 = verify_note_mechanical(_body(8001), note_type="structured",
+                                      source_chars=1000)
+        assert res2["passed"] is False
 
 
 class TestWordCountHelper:
@@ -149,29 +164,26 @@ class TestWordCountHelper:
 
 
 class TestWordLimitsConsistency:
-    """防漂移：NOTE_WORD_LIMITS 必须与各模板字数声明一致。
+    """防漂移：NOTE_WORD_LIMITS 仅是「参考值记录」，且必须与模板声明一致。
 
-    - structured / general 走 source-aware 参考值（源长×比例带），模板不声明固定区间，
-      改为声明「参考值（源长×…）」；其余轻模板仍声明固定区间且须与 NOTE_WORD_LIMITS 一致。
+    DECISION-20260915 后所有模板都改声明「参考值（源长×比例带）」，不再有固定硬区间；
+    NOTE_WORD_LIMITS 保留常量供对齐与查阅，**不参与任何拦截或抽检触发**。
     """
 
-    # 走 source-aware 参考值的类型（无固定区间声明）
-    SOURCE_AWARE_TYPES = {"structured", "general"}
-
     @pytest.mark.parametrize("note_type", sorted(NOTE_WORD_LIMITS))
-    def test_limits_match_template_text(self, note_type):
+    def test_templates_declare_reference_not_fixed_range(self, note_type):
         prompt = templates_mod.NOTE_TEMPLATES[note_type]["prompt"]
-        if note_type in self.SOURCE_AWARE_TYPES:
-            # 源长感知型：模板须声明参考值（源长×比例带），不得出现固定「单篇正文 X～Y 字」硬区间
-            assert "参考值" in prompt and "源长" in prompt, \
-                f"{note_type} 应声明 source-aware 参考值（含『参考值』『源长』）"
-            assert not re.search(r"单篇正文\s*\d+～\d+\s*字", prompt), \
-                f"{note_type} 不应声明固定字数硬区间（已改为参考值）"
-        else:
-            m = re.search(r"单篇正文(?:软上限)?\s*(\d+)～(\d+)\s*字", prompt)
-            assert m, f"{note_type} 模板缺少「单篇正文 X～Y 字」声明"
-            lo, hi = int(m.group(1)), int(m.group(2))
-            assert NOTE_WORD_LIMITS[note_type] == (lo, hi)
+        assert "参考值" in prompt and "源长" in prompt, \
+            f"{note_type} 应声明 source-aware 参考值（含『参考值』『源长』）"
+        assert not re.search(r"单篇正文\s*\d+～\d+\s*字", prompt), \
+            f"{note_type} 不应声明固定字数硬区间（已改为参考值）"
+
+    def test_limits_are_record_only(self):
+        """NOTE_WORD_LIMITS 不得再影响判定：同一篇笔记换 any note_type 结果一致。"""
+        res_a = verify_note_mechanical(_body(2600), note_type="opinion")  # 超出 opinion 旧区间
+        res_b = verify_note_mechanical(_body(2600), note_type="structured")
+        assert res_a["passed"] is True and res_b["passed"] is True
+        assert res_a["issues"] == res_b["issues"] == []
 
     def test_covers_all_templates(self):
         assert set(NOTE_WORD_LIMITS) == set(templates_mod.NOTE_TEMPLATES)
@@ -180,15 +192,56 @@ class TestWordLimitsConsistency:
 class TestSelfcheckAndGatePrompt:
     """建议 5：AI 审核员链路的篇幅自检维度（SELFCHECK 第③条 + GATE_PROMPT 评分项）。"""
 
-    def test_selfcheck_declares_three_items(self):
-        assert "三条专项自检" in templates_mod.QUALITY_GATE_SELFCHECK
+    def test_selfcheck_declares_four_items(self):
+        assert "四条专项自检" in templates_mod.QUALITY_GATE_SELFCHECK
 
-    def test_selfcheck_has_word_count_item(self):
+    def test_selfcheck_has_coverage_and_length_items(self):
+        # ③ 覆盖自检（内容完整优先）；④ 篇幅自检（只守下限）
         sc = templates_mod.QUALITY_GATE_SELFCHECK
-        assert "③" in sc and "篇幅" in sc
+        assert "③ 覆盖自检" in sc and "④ 篇幅自检" in sc
 
-    def test_gate_prompt_has_word_dimension(self):
-        assert "篇幅" in templates_mod.QUALITY_GATE_PROMPT
+    def test_gate_prompt_weights_completeness(self):
+        # 评分维度 7 改为「内容完整（权重最高）」，取代旧的「篇幅达标」
+        assert "内容完整" in templates_mod.QUALITY_GATE_PROMPT
+        assert "篇幅达标" not in templates_mod.QUALITY_GATE_PROMPT
+
+
+class TestCoverageFirstGeneration:
+    """生成侧「内容完整优先」（DECISION-20260915 §7）：所有模板须注入覆盖铁律，
+    且**不得再出现诱导压缩的表述**；按源长注入具体篇幅目标。"""
+
+    def test_all_templates_carry_coverage_rules(self):
+        for k, v in templates_mod.NOTE_TEMPLATES.items():
+            p = v["prompt"]
+            assert "内容完整优先" in p, f"{k} 缺覆盖优先规范"
+            assert "禁止合并要点" in p, f"{k} 缺「禁止合并要点」"
+            assert "禁止概括替代" in p, f"{k} 缺「禁止概括替代」"
+
+    def test_no_compression_threat_left(self):
+        # 旧口径「写长了会被父 Agent 抽检，要求重压」会诱导子 Agent 主动压短 —— 必须消失
+        for k, v in templates_mod.NOTE_TEMPLATES.items():
+            assert "要求重压" not in v["prompt"], f"{k} 仍含压缩威胁句"
+            assert "超参考带上沿" not in v["prompt"], f"{k} 仍含参考带上沿威胁"
+
+    def test_reference_band_raised_to_30_50(self):
+        for k, v in templates_mod.NOTE_TEMPLATES.items():
+            p = v["prompt"]
+            assert "源长×25%" not in p, f"{k} 仍用旧 25% 下沿"
+            assert "源长×30%" in p, f"{k} 未声明新下沿 30%"
+
+    def test_coverage_guide_injected_by_source_chars(self):
+        short = templates_mod.get_note_prompt("structured")
+        assert "附：本篇篇幅目标" not in short      # 未给源长 → 不注入
+        g = templates_mod.render_coverage_guide(20000)
+        assert "20000" in g and "6000～10000" in g
+        assert "上限不硬卡" in g and "覆盖优先于字数" in g
+        assert "源长的 60%" in g  # 防复述式膨胀的反向警戒
+        # 短源不给目标（避免误导），< 400 字返回空
+        assert templates_mod.render_coverage_guide(300) == ""
+
+    def test_source_chars_of_ignores_whitespace(self):
+        assert templates_mod.source_chars_of("ab c" + chr(10) + "d") == 4
+        assert templates_mod.source_chars_of("") == 0
 
 
 class TestSaveSummaryOnlyGate:
@@ -291,11 +344,13 @@ class TestCountBlocks:
         assert gate_blockers_mod.count_blocks("") == 0
 
 
-class TestRetryBypassGate:
-    """重试放行语义（2026-09-10）：同 URL 首次字数违规拦截让模型重改；再次重交
-    仍纯字数违规 → 放行落盘（重改仍越界说明压缩已到头：干货密度高或原文本身
-    撑不起模板区间）。H1/来源链接等确定性可修复问题永不放行；
-    放行记台账 action=bypassed_retry 保持审计闭环。"""
+class TestNoRetryBypass:
+    """**重试放行机制已删除**（DECISION-20260915）。
+
+    旧机制（2026-09-10）为「源本身撑不起固定字数区间」而设：同 URL 二次重交仍纯字数越界
+    则放行。现行两条字数硬拦——内容缺失（<300）与失控保护（>max(8000,源长×3)）——
+    都是确定性缺陷，放行等于把坏笔记写进库。本类改为守住「永不因重试而放行」。
+    """
 
     @pytest.fixture(autouse=True)
     def _stub_env(self, monkeypatch, tmp_path):
@@ -306,7 +361,6 @@ class TestRetryBypassGate:
         monkeypatch.setattr(dedup, "mark_summarized", lambda *a, **k: None)
         monkeypatch.setattr(dedup, "_CACHE_DIR", str(tmp_path))
         monkeypatch.setattr(dedup, "_INDEX_FILE", str(tmp_path / "dedup.json"))
-        # 台账指向 tmp：count_blocks / log_gate_block 走真实实现，行为随台账文件变化
         monkeypatch.setattr(gate_blockers_mod, "GATE_BLOCKERS_BASE",
                             str(tmp_path / "gate_blockers.jsonl"))
         real_log = gate_blockers_mod.log_gate_block
@@ -319,122 +373,112 @@ class TestRetryBypassGate:
 
     def _seed_block(self, url):
         gate_blockers_mod.log_gate_block(source="queue", note_type="key_points",
-                                         url=url, title="旧标题", issues=["字数 400 低于硬下限"])
+                                         url=url, title="旧标题", issues=["内容缺失"])
 
-    def test_first_word_violation_blocked(self):
-        # 首次（台账无记录）：字数硬拦 → 返回 issues 让模型重改，不落盘
+    def test_content_missing_blocked_repeatedly(self):
+        # 同一 URL 反复重交 299 字笔记：每次都拦，绝不因「已拦过」而放行
+        for _ in range(3):
+            res = articles_main.save_summary_only({
+                "summarized_content": _body(299), "original_url": "https://g.com/nb1",
+                "note_type": "key_points"})
+            assert res.get("success") is False
+            assert res.get("message", "").startswith("VERIFIER_FAILED")
+        assert self.save_calls == []
+        assert self.log_calls == ["blocked"] * 3
+
+    def test_runaway_blocked_even_after_history(self):
+        # 台账已有历史拦截记录，失控保护仍拦截（旧机制会在此放行）
+        self._seed_block("https://g.com/nb2")
         res = articles_main.save_summary_only({
-            "summarized_content": _body(400), "original_url": "https://g.com/r1",
+            "summarized_content": _body(9000), "original_url": "https://g.com/nb2",
             "note_type": "key_points"})
         assert res.get("success") is False
-        assert res.get("message", "").startswith("VERIFIER_FAILED")
-        assert res.get("issues")
         assert self.save_calls == []
-        assert self.log_calls == ["blocked"]
 
-    def test_second_word_violation_bypassed(self, tmp_path):
-        # 首次拦截已留台账 → 再次重交仍纯字数违规 → 放行落盘
-        self._seed_block("https://g.com/r2")
-        res = articles_main.save_summary_only({
-            "summarized_content": _body(400), "original_url": "https://g.com/r2",
-            "note_type": "key_points"})
-        assert res.get("success") is True
-        assert self.save_calls == [1]
-        assert self.log_calls == ["blocked", "bypassed_retry"]
-        # 台账文件中 action=bypassed_retry 可追溯
-        lines = []
-        for f in tmp_path.glob("gate_blockers*.jsonl"):
-            lines += [json.loads(x) for x in f.read_text(encoding="utf-8").splitlines() if x.strip()]
-        assert any(r.get("action") == "bypassed_retry" for r in lines)
-
-    def test_h1_never_bypassed(self):
-        # H1 是确定性可修复问题：即使该 URL 已被拦 3 次，仍拦截不落盘
+    def test_h1_still_never_bypassed(self):
         for _ in range(3):
             gate_blockers_mod.log_gate_block(source="queue", note_type="",
-                                             url="https://g.com/r3", title="t", issues=["一级标题"])
+                                             url="https://g.com/nb3", title="t", issues=["一级标题"])
         res = articles_main.save_summary_only({
-            "summarized_content": "# 标题\n\n正文若干", "original_url": "https://g.com/r3",
+            "summarized_content": "# 标题\n\n" + VALID_NOTE, "original_url": "https://g.com/nb3",
             "note_type": ""})
         assert res.get("success") is False
-        assert res.get("message", "").startswith("VERIFIER_FAILED")
         assert self.save_calls == []
-        assert self.log_calls[-1] == "blocked"
 
-    def test_mixed_issues_never_bypassed(self):
-        # 混合 issues（H1 + 字数）：存在非字数 issue → 不放行
-        self._seed_block("https://g.com/r4")
+    def test_no_url_blocked(self):
+        # 无 URL 无法定位台账 → 缺陷照拦
         res = articles_main.save_summary_only({
-            "summarized_content": "# 标题\n\n" + _body(400),
-            "original_url": "https://g.com/r4", "note_type": "key_points"})
-        assert res.get("success") is False
-        assert self.save_calls == []
-        assert self.log_calls[-1] == "blocked"
-
-    def test_no_url_never_bypassed(self):
-        # 无 URL 无法定位台账 → 字数违规照拦（防无主内容绕过门禁）
-        res = articles_main.save_summary_only({
-            "summarized_content": _body(400), "original_url": "",
+            "summarized_content": _body(299), "original_url": "",
             "note_type": "key_points"})
         assert res.get("success") is False
         assert self.save_calls == []
 
 
-class TestSourceAwareReference:
-    """source-aware 参考值（2026-09-13）：有源长时按 源长×比例带 作参考，仅极端畸高/极低硬拦，
-    越出参考带（非畸高）转为 review_flags 供父 Agent 抽检，不拦落盘。"""
+class TestContentSignalGate:
+    """内容判据门禁（DECISION-20260915）：字数比例带废除，抽检触发改由 content_signals 提供。
 
-    SRC = 10000  # 源长 1 万字符
-    # ref_lo=2500, ref_hi=4500, ceiling=max(8000,7000)=8000, floor=400
+    关键回归守卫：**「笔记比源长」不再触发任何信号**（这条线一旦复活，子 Agent 就会
+    为过门禁而砍内容，正是用户踩过的坑）。
+    """
 
-    def _v(self, count, src=SRC):
-        return verify_note_mechanical(_body(count), note_type="structured",
-                                      source_url="https://g.com/x", source_chars=src)
+    def _v(self, note, source="", note_type="", source_chars=None):
+        return verify_note_mechanical(
+            note, note_type=note_type, source_url="https://g.com/x",
+            source_chars=source_chars if source_chars is not None else len(source),
+            source_text=source)
 
-    def test_in_reference_band_passes_clean(self):
-        r = self._v(3500)
+    def test_note_longer_than_source_has_no_length_flag(self):
+        # 源 1000 字 / 笔记 2600 字（比值 2.6）→ 不得有任何「字数/比例」类信号
+        source = "原文讲述方法论与案例，包含若干要点与推导过程。" * 50   # ~1000 字
+        r = self._v(_body(2600), source=source, source_chars=len(source), note_type="structured")
         assert r["passed"] is True
-        assert r["issues"] == []
-        assert r["review_flags"] == []
+        assert not any(("超参考值" in f) or ("偏短" in f) or ("字数" in f)
+                       for f in r["review_flags"])
 
-    def test_over_reference_flags_review_not_block(self):
-        # 5000 > ref_hi(4500) 但 < ceiling(8000) → 不拦，置 review_flags（超参考值）
-        r = self._v(5000)
+    def test_short_note_vs_long_source_has_no_flag(self):
+        # 源 20000 字 / 笔记 1200 字（比值 0.06）→ 也不因「偏短」报警（那是旧判据）
+        r = self._v(_body(1200), source=_body(20000), source_chars=20000, note_type="structured")
         assert r["passed"] is True
-        assert any("超参考值" in f for f in r["review_flags"])
+        assert not any(("偏短" in f) or ("超参考值" in f) for f in r["review_flags"])
 
-    def test_under_reference_but_not_short_ok(self):
-        # 2000 < ref_lo(2500) 但 >= 阈值1500 → 水货源压更短也放行，无 flag
-        r = self._v(2000)
+    def test_anchor_recall_flags_missing_facts(self):
+        # 源含数字锚点，笔记一个都没写 → 触发「疑遗漏核心事实」
+        source = "营收 1200 万，2024 年增长 300%，目标 5000 万。"
+        r = self._v(_body(600), source=source, source_chars=len(source), note_type="structured")
         assert r["passed"] is True
-        assert r["review_flags"] == []
+        assert any("疑遗漏核心事实" in f for f in r["review_flags"])
 
-    def test_under_reference_and_short_flags_review(self):
-        # 1000 < ref_lo(2500) 且 < 1500 → 偏短抽检信号
-        r = self._v(1000)
+    def test_anchor_recall_not_applicable_below_min(self):
+        # 源锚点 < 4 → 该判据不适用，不得报缺
+        source = "只有 1200 万这一个数字。"
+        r = self._v(_body(600), source=source, source_chars=len(source), note_type="structured")
+        assert not any("疑遗漏核心事实" in f for f in r["review_flags"])
+
+    def test_structure_missing_flags(self):
+        # structured 模板声明「分层速览」「正反例对照」「延伸思考」等必备模块；
+        # 正文只是重复字 → 触发结构缺失
+        r = self._v(_body(1500), note_type="structured")
         assert r["passed"] is True
-        assert any("偏短" in f for f in r["review_flags"])
+        assert any("结构缺失" in f for f in r["review_flags"])
 
-    def test_absurdly_high_blocked(self):
-        # 8500 > ceiling(8000) → 畸高照搬，硬拦
-        r = self._v(8500)
-        assert r["passed"] is False
-        assert any("畸高" in i for i in r["issues"])
-
-    def test_extremely_low_blocked(self):
-        # 300 < floor(400) → 内容缺失，硬拦
-        r = self._v(300)
-        assert r["passed"] is False
-        assert any("内容缺失" in i for i in r["issues"])
+    def test_structure_complete_no_flag(self):
+        # 按真实笔记的写法给齐必备模块（标题措辞与线上一致）
+        note = ("**作者**：张三\n\n> **30秒速览**：一句话结论。\n\n"
+                "## 三、正反例对照\n\n"
+                "| 场景 | ✅ 正例 | ❌ 反例 |\n|---|---|---|\n| a | b | c |\n\n"
+                "## 四、延伸思考\n\n1. ？\n\n" + _body(400))
+        r = self._v(note, note_type="structured")
+        assert not any("结构缺失" in f for f in r["review_flags"])
 
     def test_review_flags_propagate_to_save_result(self, tmp_path, monkeypatch):
-        # 越参考值落盘后，save_summary_only 结果须带回 review_flags
+        # 内容判据命中后落盘，save_summary_only 结果须带回 review_flags（供父 Agent 抽检）
         monkeypatch.setattr(articles_main, "save_summarized_article",
                             lambda *a, **k: ("fmt", "f.md"))
         monkeypatch.setattr(dedup, "mark_summarized", lambda *a, **k: None)
         monkeypatch.setattr(dedup, "_CACHE_DIR", str(tmp_path))
         monkeypatch.setattr(dedup, "_INDEX_FILE", str(tmp_path / "dedup.json"))
         res = articles_main.save_summary_only({
-            "summarized_content": _body(5000), "original_url": "https://g.com/sa",
-            "note_type": "structured", "source_chars": self.SRC})
+            "summarized_content": _body(1500), "original_url": "https://g.com/cs1",
+            "note_type": "structured"})
         assert res.get("success") is True
-        assert any("超参考值" in f for f in res.get("review_flags", []))
+        assert any("结构缺失" in f for f in res.get("review_flags", []))
