@@ -1,7 +1,7 @@
 # ASR 转写：B站/远程视频沙箱踩坑与固化
 
 > 维护位置：`videos/asr.py`（代码固化）+ 本文件（知识固化）
-> 最近更新：2026-09-15（新增「字幕可用性判定 & 硬字幕识别」一节；2026-09-13 的三坑已固化）
+> 最近更新：2026-09-15（新增「字幕可用性判定 & 硬字幕识别」一节；新增「坑 4：ASR 同进程连续转写必崩」；2026-09-13 的三坑已固化）
 
 ## 背景
 
@@ -47,6 +47,23 @@
 - **修复**（`videos/asr.py`）：导入期由 `_ensure_cuda_dlls()` 自动扫描并
   `os.add_dll_directory()` + 前置 PATH（幂等、持有句柄防 GC 移除）。**无需手动 export，
   之前那次手动 `export PATH` 已是多余动作**。
+
+### 坑 4：同一 Python 进程连续跑 ASR 转写必崩（GPU/Whisper 状态污染）
+
+- **现象**：`backfill_series.py` 批量补抓时，同进程内逐集调 `fetch_transcript` → `transcribe_video`。
+  第一集 ASR 成功，第二集起进程**无 Python traceback 直接 exit 1 崩溃**（连 `try/except` 都接不到），
+  导致后续无字幕集（第43、152…）抓到音频/转写却没稳定入队。单集单独重试必成功。
+- **根因**：faster-whisper（GPU/ctranslate2）在同进程内反复 `load_model` + 推理后，CUDA/cuBLAS
+  上下文状态污染（疑似显存句柄未彻底释放、`_ensure_cuda_dlls` 重复 `add_dll_directory` 副作用），
+  连续第二次推理触发原生层崩溃。与坑 2（整段长音频）不同——这次是"连续多次调用"触发。
+- **规避（当前实操）**：
+  - **每个无字幕集用独立 Python 进程**跑 `transcribe_video` / `_backfill_one`——
+    进程退出即释放全部 CUDA 状态，下一集全新进程必成功。
+  - 批量 run（`BILI_BATCH_NO_ASR=0` 默认 ASR 兜底）若漏集，**不要重跑整批**，
+    对漏集逐个独立进程补抓（命中 `transcripts/<bvid>.md` 缓存的集秒级完成）。
+  - 已验证：203 集系列课里 5 个真无字幕集，逐进程补抓全部成功（各 1160~1780 字）。
+- **代码层根治待做**：`videos/asr.py` 的 `transcribe_video` 应包装子进程隔离或
+  `importlib.reload` 重置 CUDA 上下文，避免调用方手动拆进程。
 
 ## 验证记录
 
@@ -113,3 +130,10 @@
 
 实操：对"API 空但疑似有字幕"的视频，先用 `subtitle/web/view` 验一次；
 返回 `{}` 且页面 DOM 无字幕节点 → 判硬字幕，放弃。只有确认"真无字幕且非硬字幕"才投 ASR。
+
+> **批量补抓的额外陷阱（2026-09-15）**：系列课批量跑 `backfill_series.py` 时，`dm/view`
+> 在限流窗口会**偶发返回空**（即便该集真有 `ai-zh` 字幕），被当成"无字幕"跳过 → 漏集。
+> 实测 203 集系列课里第99、102集本有 `ai-zh` 字幕却被漏，误判成"需 ASR"。
+> **解法**：批量跑完必须对缺口集用 `fetch_subtitle_only(url, lang="zh")` 逐一复核
+> （它内部重试更稳，且直接读 `dm/view` 字幕列表），有字幕的直接补抓，真无的才走 ASR。
+> 不要轻信"批量报告无字幕"就给 ASR——先复核，避免浪费转写资源。
