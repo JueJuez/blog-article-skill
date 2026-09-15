@@ -97,7 +97,10 @@ def parent_and_subfolder(parts):
 _PARENT_PATTERNS = [
     ("投资", r"股票|个股|财报|基金|估值|美联储|仓位|交易|投资|a股|港股|美股|etf|分红|护城河|止损|宏观|经济"),
     ("商业/搞钱", r"副业|虚拟产品|出海|小程序|赚钱|变现|ai产品|知识付费|搞钱|商业|电商"),
-    ("AI科技", r"\bai\b|编程|代码|claude|cursor|rag|agent|大模型|llm|ai工具|api|前端|后端"),
+    # 软件工程域（2026-09-15 新增）：解决「测试/CI/重构/后端」类纯工程稿件被算进 AI科技 的问题
+    # —— 旧词表把 编程|代码|api|前端|后端 全塞在 AI科技 里，导致无 AI 成分的后端工程文必然命中 AI科技。
+    ("软件工程", r"测试|单测|集测|压测|覆盖率|契约测试|持续集成|持续交付|ci/cd|\bci\b|流水线|重构|代码评审|部署|运维|可观测|微服务|消息队列|数据库|缓存|后端|前端|编程|代码"),
+    ("AI科技", r"\bai\b|claude|cursor|rag|agent|大模型|llm|ai工具|提示词|prompt|copilot"),
     ("内容创作", r"小红书|视频号|公众号|抖音|涨粉|选题|账号运营|带货|自媒体|直播"),
     ("个人成长", r"习惯|自律|成长|效率|时间管理|精力管理|复盘|职场|跳槽|求职|面试|晋升|沟通|汇报|情商|认知升级|自我提升|内耗|焦虑|读书|阅读|拆书|书单|笔记法|终身学习|元认知"),
 ]
@@ -168,6 +171,14 @@ def subdomain_from_lede(parent, lede):
         if re.search(r"知识付费|训练营|社群|课程", s):
             return "知识付费"
         return "商业·综合"
+    if parent == "软件工程":
+        if re.search(r"测试|单测|集测|压测|覆盖率|契约测试|mock", s):
+            return "测试"
+        if re.search(r"ci|cd|持续集成|持续交付|流水线|部署|jenkins|actions|构建", s):
+            return "DevOps/CI"
+        if re.search(r"架构|重构|设计模式|微服务|领域模型", s):
+            return "架构/设计"
+        return "工程实践"
     if parent == "AI科技":
         if re.search(r"编程|代码|claude code|脚本|开发|api|前端|后端", s):
             return "AI编程"

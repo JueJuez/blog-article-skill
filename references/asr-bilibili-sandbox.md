@@ -1,7 +1,7 @@
 # ASR 转写：B站/远程视频沙箱踩坑与固化
 
 > 维护位置：`videos/asr.py`（代码固化）+ 本文件（知识固化）
-> 最近更新：2026-09-13（两个 UP 主合集抓取，5 篇无字幕视频走 ASR 兜底时连踩三坑，已全部固化）
+> 最近更新：2026-09-15（新增「字幕可用性判定 & 硬字幕识别」一节；2026-09-13 的三坑已固化）
 
 ## 背景
 
@@ -65,3 +65,51 @@
 - 长音频自动分片无需干预；如需调阈值/片长：
   `transcribe_audio_chunked(..., auto_threshold=1800, segment_sec=600)`。
 - 断点续跑：转写文本缓存到 `transcripts/<bvid>.md`，非强制模式下命中缓存即跳过下载/转写。
+
+## 字幕可用性判定 & 硬字幕识别（2026-09-15）
+
+> 背景：抓「长视频 + 两系列课」时，先用错接口（`x/player/wbi/v2`）把"全有字幕"判成"全无字幕"，
+> 又一度要给 4h 长视频跑 ASR，最后发现它是**烤进画面的硬字幕**。本节约掉这类误判。
+
+### 1. 项目实际走哪条字幕链路
+
+- `videos/fetch.py` 的字幕探测用 **`dm/view`**（`x/v2/dm/view?aid=&oid=&type=1`），
+  读 `data.subtitle.subtitles` 列表（含 `ai-zh` / `ai-en` / `zh-CN` 等 `lan`）。
+  这条对"确实存在的软字幕"判定可靠（系列1 9 集、系列2 多数集都靠它正确识别 ai-zh）。
+- **`x/player/wbi/v2` 不可用于字幕判定**。实测它对"明明有 ai-zh 字幕"的视频也返回空，
+  会系统性误判成"无字幕"，2026-09-15 那次"三个都无字幕"的错判就源于此。别用它。
+
+### 2. 「API 返回空」≠「视频无字幕」—— 硬字幕陷阱
+
+视频在播放器里**肉眼可见中文字幕**，但 `dm/view` 与字幕专用接口都返回空，这种情况是
+**硬字幕（bened-in / 烤进画面）**：字幕是视频帧的一部分，服务器根本没有独立的字幕资源，
+任何 API 都抓不到，ASR 也只转得出旁白语音、与屏幕上的字幕文字对不上。
+
+**硬字幕的判定（2026-09-15 对 4h 长视频 `BV1rnh36jEkr` 三重印证）：**
+
+1. `dm/view` → `subtitle.subtitles` 为空
+2. 字幕专用接口返回空资产：
+   ```
+   GET https://api.bilibili.com/x/v2/subtitle/web/view
+       ?oid={cid}&pid={aid}&type=1
+       &context_ext=%7b%22video_type%22%3a1%7d
+       &preferred_language=ai-zh&cur_production_type=0&playlist_switch=0
+       &web_location=1315873
+   Header: Referer: https://www.bilibili.com/  +  Cookie
+   ```
+   → HTTP 200 但 body 仅 `{}`（2 字节），即服务端**根本没字幕数据**。
+3. CDP 打开页面：`.bpx-player-subtitle-text` DOM 为 null、无 `.bpx-player-subtitle-btn`、
+   `video.textTracks == 0`、无字幕菜单。
+
+三条任一满足即高度疑似硬字幕；第 2 条（`subtitle/web/view` 返回 `{}`）+ 第 3 条最铁。
+
+### 3. 决策规则：遇到"无字幕"视频，先别急着 ASR
+
+| 情形 | 现象 | 动作 |
+|---|---|---|
+| 软字幕存在 | `dm/view` 列得出 `ai-zh` 等 | 直接下字幕，不跑 ASR |
+| 真无字幕（非硬字幕） | API 空 + 播放器也确实没字 | 走 ASR 兜底（短集成本低） |
+| **硬字幕** | API 空 + **肉眼可见字幕** + `subtitle/web/view` 返回 `{}` | **放弃**，不浪费 ASR（长视频尤甚） |
+
+实操：对"API 空但疑似有字幕"的视频，先用 `subtitle/web/view` 验一次；
+返回 `{}` 且页面 DOM 无字幕节点 → 判硬字幕，放弃。只有确认"真无字幕且非硬字幕"才投 ASR。
