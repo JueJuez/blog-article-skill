@@ -13,10 +13,13 @@
   - 派单（DISPATCH_PROMPT v3）→ 落盘 `_save_resum_batch.py --force`（98/98 覆盖写回，0 失败）→ 抽检。
   - 抽检：39 条命中入台账 root_cause=gate（锚点 28 判据噪音 / 复述 7 代码-Prompt 块 verbatim / 代码块内超长句 2 / D相邻段重复 2）；33 条正文 A超长句机械拆句修复（root_cause=agent，`；，、→`+数字圈拆行，加粗跨行已回合并复查 0 奇数 `**`）。剩余 2 条 A超长句在代码围栏内（verbatim 提示词）保留。
   - 新会话如需续此类任务：**先哈希/存在性核对**（临时产物 + 落盘文件 vs 批次 JSON 条目数），勿只凭累计数字。
-- **✅ scys 引流帖外链修复（24 条）已补重总结**（2026-09-17，用户指出）：scys 常见「简介+大纲+飞书外链」引流帖，正文主体在飞书外链。上一轮重抓 launcher 写死 `--no-external` 跳过了现成 `fetch_article` 的外链跟进 → 引流帖源只有简介。本会话：
-  - 验证：飞书 wiki 分享链接**可见上限 ~2000 字**（AI 速览+大纲+开篇正文），`_fetch_external` 滚动改进（渐进滚动多轮）无效、无害保留；外链文件实际已存在（`<tid>_ext_*.md`，9-12 抓取），**无需重抓飞书**。
-  - 修复：`build_refetch_resum_batches.py --ext` 对主文 <4000 字的含外链条目（24 条）生成「主文+飞书外链」合并源 `notes/_scraped/scys/_full/<tid>.md`（source_words 计入外链）→ `resum_ext_batches/ext_batch_01~03.json` → 派单重总结（源=合并源）→ 落盘 24/24 → 抽检 17 条锚点判据噪音入台账（gate，合并源「飞书」标题词+topicId/年份/演示数字误报）。
-  - ⚠️ 教训：**重抓 scys 源不要 `--no-external`**（现成 fetch_article 默认就抓飞书外链）；引流帖总结的源必须是「主文+外链」合并。
+- **✅ scys 引流帖外链修复已完成（24 条，两轮）**（2026-09-17，用户两次指出）：
+  - **第一轮**：识别 24 条「简介+大纲+飞书外链」引流帖（正文主体在外链），`build_refetch_resum_batches.py --ext` 生成「主文+外链」合并源并重总结落盘——但当时误判「飞书 wiki 分享链接可见上限 ~2000 字」，且**没发现项目已有 `feishu_ext_refetch.py`**。
+  - **第二轮（用户质疑「抓不到飞书源」正确）**：
+    - 项目早有 `scripts/feishu_ext_refetch.py`（2026-08-21）：飞书 wiki/docx 正文渲染在 `div.bear-web-x-container` 容器（**非 window**）+ 虚拟化渲染（视口外卸载），须**增量滚动容器逐视口收集 innerText、按行去重合并**。用 SharedCdpSession + `collect_full_text` 验证：单条从 2043 → 5004 字（完整正文），推翻 ~2000 上限结论。
+    - 新增 `scripts/refetch_feishu_ext_batch.py`（复用 collect_full_text）：批量重抓 24 条外链全文（0.5–3 万字/篇）。**关键坑**：主文源里飞书链接是显示文本（带 `...` 截断），正则提取拼出假 URL → 飞书 404「页面不存在」（18 字）；修复 = 从现有 `_ext_*.md` 文件头 `> 来源：` 取完整 URL（当时来自 `<a href>`）。
+    - 重建合并源（源长 0.5–3 万字）→ `resum_ext_batches/ext_batch_01~06.json` → 重总结落盘 24/24 → 抽检：3 条锚点噪音 + 3 条代码块 verbatim 入台账（gate），13 条正文 A超长句机械拆句修复。
+  - ⚠️ 教训：① 重抓 scys 源不要 `--no-external`（现成 fetch_article 默认抓飞书外链）；② **飞书正文抓取用 `feishu_ext_refetch.py` 的 `.bear-web-x-container` 增量滚动**，不是滚 window；③ 飞书 URL 从 `<a href>`/`_ext` 头取完整版，别从正文显示文本取。
 - **⚠️ 2026-09-17 修正上一会话误判**：上一交接声称「562/690 全部完成」，实际漏了 **batch_53–60（8 批 128 条）**——
   那 8 批从未生成临时稿、从未落盘（临时产物目录缺失 + 磁盘文件哈希=归档旧版一致为证）。
   本会话补做：派单生成 8 批 → 逐批落盘（`_save_resum_batch.py --force`，含 batch_60 一条 note_path 缺失自动新建落地）→ 抽检。
