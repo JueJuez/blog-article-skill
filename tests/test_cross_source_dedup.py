@@ -18,8 +18,8 @@ def _with_archive(archive, fn):
 
 class TestCrossSourceDedup(unittest.TestCase):
     ARCHIVE = [(
-        dedup.normalize_title("从没做过小程序，到 9000 元接单 10 天交付客户项目：我是怎么用 AI Coding 跑通闭环"),
-        dedup.normalize_title("16 年全栈开发，却从没做过小程序。先说结论：能跑通，但流程和想象完全不一样。")[:300],
+        dedup.normalize_title_for_match("从没做过小程序，到 9000 元接单 10 天交付客户项目：我是怎么用 AI Coding 跑通闭环"),
+        dedup.normalize_title_for_match("16 年全栈开发，却从没做过小程序。先说结论：能跑通，但流程和想象完全不一样。")[:300],
         "从没做过小程序，到 9000 元接单 10 天交付客户项目：",
     )]
 

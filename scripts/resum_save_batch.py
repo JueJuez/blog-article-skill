@@ -33,20 +33,6 @@ sys.path.insert(0, ROOT)
 TOPIC_LINE_RE = re.compile(r"【核心主题词】\s*[:：]?\s*\S+")
 
 
-def load_env():
-    p = os.path.join(ROOT, ".env")
-    if os.path.exists(p):
-        with open(p, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-    os.environ["OBSIDIAN_WRITE"] = "1"
-    os.environ["DISABLE_FEISHU_SYNC"] = "1"
-
-
 def main() -> int:
     args = sys.argv[1:]
     if "--force" in args:
@@ -58,7 +44,8 @@ def main() -> int:
     batch_name = os.path.splitext(os.path.basename(batch_path))[0]
     items = json.load(open(batch_path, encoding="utf-8"))
 
-    load_env()
+    from shared.env import load_env
+    load_env(force_obsidian=True)
     from articles.main import save_summarized_article
     from prompts.verifier import verify_note_mechanical, count_note_words
 

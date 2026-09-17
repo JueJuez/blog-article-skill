@@ -43,23 +43,9 @@ def extract_tags_and_strip(content: str):
     return tags, "\n".join(out)
 
 
-def _load_env():
-    # 必须在 import articles 之前就位（feishu.py 在 __init__ 读环境变量）
-    env_path = os.path.join(ROOT, ".env")
-    try:
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-    except FileNotFoundError:
-        pass
-
-
 def main():
-    _load_env()
+    from shared.env import load_env
+    load_env()
     from articles.main import save_summary_only
     from shared.routing import resolve_folder
 

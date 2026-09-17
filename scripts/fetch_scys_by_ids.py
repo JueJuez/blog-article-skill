@@ -36,7 +36,7 @@ STATE_PATH = BASE / "refetch_state.json"
 ARTICLE_GAP = (15, 40)
 
 
-def extract_ids_from_md(md_path: str) -> list[str]:
+def extract_topic_ids_from_md(md_path: str) -> list[str]:
     txt = Path(md_path).read_text(encoding="utf-8")
     return re.findall(r"scys\.com/articleDetail/xq_topic/(\d+)", txt)
 
@@ -57,7 +57,7 @@ def main():
     if args.ids_file and os.path.exists(args.ids_file):
         ids += json.loads(Path(args.ids_file).read_text(encoding="utf-8"))
     if args.list_md:
-        ids += extract_ids_from_md(args.list_md)
+        ids += extract_topic_ids_from_md(args.list_md)
     ids = list(dict.fromkeys(ids))
     if args.limit:
         ids = ids[: args.limit]

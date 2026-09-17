@@ -122,7 +122,9 @@
 | 抓 YouTube 字幕 | `videos.fetch.fetch_youtube_transcript` / `..._cdp` | 登录态走 CDP |
 | 字幕清洗（填词/去重/合并） | `shared.subtitle_clean.preprocess_segments` / `preprocess_text` | 已在 fetch 链路自动接入 |
 | 长文分块 / 两阶段总结 | `shared.chunking.chunk_text` / `two_stage_summarize` | |
-| 判重 / 登记 / 跨源去重 | `articles.dedup.is_summarized` / `mark_summarized` / `find_cross_duplicate` | |
+| 判重 / 登记 / 跨源去重 | `articles.dedup.is_summarized` / `mark_summarized` / `find_cross_duplicate` / `normalize_title_for_match` | ⚠️ 判重用的标题归一叫 `normalize_title_for_match`（2026-09-18 改名），与 `shared.title_norm.normalize_title`（落盘标题清洗）**同名不同义，不可互换** |
+| 单篇笔记抽检（四类判据） | `shared.note_audit.audit_one` / `evidence` / `score_of` | 2026-09-18 下沉，resum_audit_batch 与 audit_gate_signals 共用 |
+| 加载 .env | `shared.env.load_env(force_obsidian=False)` | 2026-09-18 收敛：此前 scripts/ 下 5 份各自实现 |
 | 文件夹路由 | `shared.routing.resolve_folder` / `category_from_tags` | 落盘自动调用 |
 | 语义标签（四维度） | `shared.note_classify.infer_semantic_tags` / `extract_and_strip_topics` | 落盘自动调用 |
 | 笔记类型判定 | `prompts.classify.classify_note_type` | |
@@ -195,6 +197,11 @@
 补源场景勿用）、`scripts/launch_backfill_series_detached.py`、`scripts/launch_scys_backfill.py`。
 
 **飞书迁移期脚本（2026-09-04 起默认不写飞书，多数已冻结；保留作参考/特殊镜像）**
+⚠️ 下面每个文件头部都加了「已冻结」标记：**勿复用、勿在此基础上继续开发**。
+它们内部有大量互相复制的实现（`_find_lark_cli` / `run_cli` / `list_children` / `find_monitor_root` /
+`collect_articles` / `fetch_body` / `is_overview`…），是历史堆积**不是范例**。
+需同类能力先看 `shared/`、`articles/` 下的现行实现。
+`feishu_to_obsidian.py`、`migrate_feishu_structure.py`、`migrate_obsidian_vault.py`、`migrate_watchdog.py`、
 `feishu_to_obsidian.py`、`migrate_feishu_structure.py`、`migrate_obsidian_vault.py`、`migrate_watchdog.py`、
 `fix_feishu_titles.py`、`probe_feishu_titles.py`、`rename_list.py`、`promote_existing.py`、
 `find_duplicates.py`、`delete_duplicates.py`、`scan_feishu_tree.py`、`list_overviews.py`、

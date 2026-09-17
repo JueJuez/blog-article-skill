@@ -30,21 +30,7 @@ STATE_PATH = BASE / "refetch_state.json"
 GAP = (15, 30)
 
 
-def _load_env():
-    env_path = ROOT / ".env"
-    try:
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-    except FileNotFoundError:
-        pass
-
-
-def extract_ids_from_md(md_path: str) -> list[str]:
+def extract_bvids_from_md(md_path: str) -> list[str]:
     txt = Path(md_path).read_text(encoding="utf-8")
     return re.findall(r"bilibili\.com/video/(BV\w+)", txt)
 
@@ -59,14 +45,15 @@ def main():
                     help="无 CC 字幕时启用 ASR 音频转写（默认关，沙箱下常失败）")
     args = ap.parse_args()
 
-    _load_env()
+    from shared.env import load_env
+    load_env()
     from videos.fetch import fetch_bilibili_transcript
 
     ids: list[str] = []
     if args.ids:
         ids += [x.strip() for x in args.ids.split(",") if x.strip()]
     if args.list_md:
-        ids += extract_ids_from_md(args.list_md)
+        ids += extract_bvids_from_md(args.list_md)
     ids = list(dict.fromkeys(ids))
     if args.limit:
         ids = ids[: args.limit]

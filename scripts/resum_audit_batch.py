@@ -25,39 +25,9 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from prompts import content_signals as CS  # noqa: E402
-
-
-def _evidence(item: dict, limit: int = 200) -> list:
-    """摘出 A超长句证据（与 audit_gate_signals.py 一致）。"""
-    note_path = item["note_path"]
-    if not os.path.exists(note_path):
-        return []
-    note = CS.strip_note(open(note_path, encoding="utf-8").read())
-    longest, sent = 0, ""
-    for s in re.split(r"[。！？\n]", note):
-        if CS.count_words(s) > longest:
-            longest, sent = CS.count_words(s), s.strip()
-    return [("A超长句", f"{longest}字: {sent[:limit]}")] if longest > CS.LONG_SENTENCE else []
-
-
-def audit_one(item: dict) -> dict:
-    note_raw = open(item["note_path"], encoding="utf-8").read()
-    note = CS.strip_note(note_raw)
-    source = CS.strip_source(open(item["source_path"], encoding="utf-8").read())
-    cf = CS.content_flags(note, source, item.get("note_type") or "")
-    a = cf["details"].get("anchors", {"total": 0, "matched": 0, "missed": [], "recall": None})
-    return {
-        "title": (item.get("title") or "")[:26],
-        "note_words": CS.count_words(note),
-        "source_words": CS.count_words(source),
-        "ratio": round(CS.count_words(note) / max(1, CS.count_words(source)), 3),
-        "anchors": a,
-        "form": cf["details"]["form"],
-        "structure": cf["details"]["structure"],
-        "verbatim": cf["details"].get("verbatim", 0.0),
-        "flags": cf["flags"],
-        "evidence": _evidence(item),
-    }
+# 2026-09-18：判据实现下沉到 shared.note_audit（此前本脚本与 audit_gate_signals 各一份，
+# 90% 重叠；判据口径必须单一，否则改一处另一处不跟）
+from shared.note_audit import audit_one, score_of  # noqa: E402
 
 
 def main() -> int:
@@ -78,7 +48,7 @@ def main() -> int:
         if not os.path.exists(it.get("source_path") or ""):
             print(f"  [{i}] !! 缺源文件 {it.get('source_path')}")
             continue
-        r = audit_one(it)
+        r = audit_one(it, with_evidence=True, evidence_limit=200)
         res.append(r)
         a = r["anchors"]
         hits = []

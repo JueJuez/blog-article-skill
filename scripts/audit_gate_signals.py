@@ -113,44 +113,14 @@ def build_corpus(which: str = "all") -> list:
 
 # ---------------------------------------------------------------- 审计
 
+# 2026-09-18：判据实现下沉到 shared.note_audit（此前与 resum_audit_batch 各一份，90% 重叠）
+from shared.note_audit import audit_one as _audit_one, score_of  # noqa: E402
+from shared.note_audit import evidence as _evidence  # noqa: E402
+
+
 def audit_one(item: dict) -> dict:
-    note_raw = open(item["note_path"], encoding="utf-8").read()
-    src_raw = open(item["source_path"], encoding="utf-8").read()
-    note = CS.strip_note(note_raw)
-    source = CS.strip_source(src_raw)
-    cf = CS.content_flags(note, source, item["note_type"])
-    return {
-        **{k: item[k] for k in ("title", "folder", "note_type", "group")},
-        "note_words": CS.count_words(note),
-        "source_words": CS.count_words(source),
-        "ratio": round(CS.count_words(note) / max(1, CS.count_words(source)), 3),
-        "anchors": cf["details"].get("anchors", {"total": 0, "matched": 0, "missed": [], "recall": None}),
-        "form": cf["details"]["form"],
-        "structure": cf["details"]["structure"],
-        "verbatim": cf["details"].get("verbatim", 0.0),
-        "flags": cf["flags"],
-    }
-
-
-def score_of(r: dict, min_anchors: int) -> int:
-    s = 0
-    a = r["anchors"]
-    if a["recall"] is not None and a["total"] >= min_anchors and a["recall"] < CS.RECALL_THRESHOLD:
-        s += 2
-    s += len(r["form"]["signals"])
-    s += 2 * len(r["structure"]["missing"])
-    s += 2 if r["verbatim"] > CS.VERBATIM_THRESHOLD else 0
-    return s
-
-
-def _evidence(item: dict, limit: int = 240) -> list:
-    """摘出可人工核对的证据原文（超长句）。括号类信号已废弃，不再取证。"""
-    note = CS.strip_note(open(item["note_path"], encoding="utf-8").read())
-    longest, sent = 0, ""
-    for s in re.split(r"[。！？\n]", note):
-        if CS.count_words(s) > longest:
-            longest, sent = CS.count_words(s), s.strip()
-    return [("A超长句", sent[:limit])] if longest > CS.LONG_SENTENCE else []
+    """本语料需原样带出 title/folder/note_type/group 用于报表分组。"""
+    return _audit_one(item, passthrough_keys=("title", "folder", "note_type", "group"))
 
 
 def write_report(path: str, corpus: list, results: list, ranked: list, args) -> None:
@@ -230,7 +200,7 @@ def write_report(path: str, corpus: list, results: list, ranked: list, args) -> 
         A(f"- 照搬重合：{r['verbatim']}　文件夹：`{r['folder']}`")
         c = by_title.get(r["title"])
         if c:
-            for tag, text in _evidence(c):
+            for tag, text in _evidence(c, limit=240):
                 A(f"- **{tag} 证据**：")
                 A("")
                 A("  > " + text.replace("\n", " ")[:400])

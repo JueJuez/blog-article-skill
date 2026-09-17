@@ -203,7 +203,7 @@ def collect_gc_targets(notes_dir: str, transcripts_dir: str, index,
     if os.path.isdir(notes_dir):
         norm_pairs = []
         for rec in records:
-            n_title = dedup.normalize_title(rec.get("title", ""))
+            n_title = dedup.normalize_title_for_match(rec.get("title", ""))
             if n_title:
                 norm_pairs.append((n_title, rec.get("source_url", "")))
         for fn in sorted(os.listdir(notes_dir)):
@@ -213,7 +213,7 @@ def collect_gc_targets(notes_dir: str, transcripts_dir: str, index,
             if not os.path.isfile(p):
                 continue
             title = _raw_title_from_file(p) or _raw_title_from_filename(fn)
-            n_raw = dedup.normalize_title(title)
+            n_raw = dedup.normalize_title_for_match(title)
             hit_url = ""
             for n_rec, url in norm_pairs:
                 if min(len(n_raw), len(n_rec)) >= _MIN_TITLE_NORM_LEN and (

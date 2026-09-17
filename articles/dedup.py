@@ -206,7 +206,7 @@ def _key_for(url: str = "", content: str = "", title: str = "") -> (str, str):
     if content and content.strip():
         return "content", _hash(content)
     if title and title.strip():
-        return "title_fp", _hash(normalize_title(title))
+        return "title_fp", _hash(normalize_title_for_match(title))
     return "none", ""
 
 
@@ -402,8 +402,13 @@ _CONTENT_PREFIX_LEN = 300
 _scys_archive_cache = None
 
 
-def normalize_title(title: str) -> str:
-    """标题规范化：去空白/标点、小写——公众号与 scys 同步帖标题常有一字之差或截断。"""
+def normalize_title_for_match(title: str) -> str:
+    """【判重用】标题规范化：去空白/标点、小写——公众号与 scys 同步帖标题常有一字之差或截断。
+
+    ⚠️ 2026-09-18 改名（原名 `normalize_title`）：与 `shared.title_norm.normalize_title` **同名不同义**——
+    那个是落盘标题清洗（去模型前缀/替换飞书非法字符/截断 max_len），这个是判重比对用的降噪。
+    两者不可互换：误用会把清洗过的标题拿去判重（漏判），或把降噪标题写进文件名（丢信息）。
+    """
     return _PUNCT_RE.sub("", (title or "")).lower()
 
 
@@ -430,8 +435,8 @@ def _load_scys_archive():
                     break
             body = text.split("---", 1)[-1]
             archive.append((
-                normalize_title(title),
-                normalize_title(body)[:_CONTENT_PREFIX_LEN],
+                normalize_title_for_match(title),
+                normalize_title_for_match(body)[:_CONTENT_PREFIX_LEN],
                 title or fn,
             ))
     _scys_archive_cache = archive
@@ -457,8 +462,8 @@ def find_cross_duplicate(title: str = "", content: str = "",
     标题相似 ≥ threshold，或正文前缀 _CONTENT_PREFIX_LEN 字相似 ≥ threshold，
     即视为同一篇帖子在两个来源重复。返回命中的 {"title", "sim", "via"}，未命中 {}。
     """
-    norm_title = normalize_title(title)
-    norm_content = normalize_title(content)[:_CONTENT_PREFIX_LEN]
+    norm_title = normalize_title_for_match(title)
+    norm_content = normalize_title_for_match(content)[:_CONTENT_PREFIX_LEN]
     if len(norm_title) < 8 and len(norm_content) < 50:
         return {}
     best = {}

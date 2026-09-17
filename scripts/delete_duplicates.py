@@ -12,6 +12,13 @@
   python scripts/delete_duplicates.py --apply          # 真正删除全部
   python scripts/delete_duplicates.py --apply --limit 20  # 先删前 20 个试水
 """
+
+# ⚠️ 已冻结（2026-09-04 起默认只写本地 Obsidian，飞书侧流程停用）——保留作参考：
+#    - 勿复用、勿在此基础上继续开发；需要同类能力先看 shared/ 与 articles/ 下的现行实现。
+#    - 本批脚本内部有大量互相复制的实现（_find_lark_cli / run_cli / list_children /
+#      find_monitor_root / collect_articles / fetch_body / is_overview…），属历史堆积，不是范例。
+#    - 状态与替代品见 docs/PIPELINES.md §11。
+
 import os
 import sys
 import json
