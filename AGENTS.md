@@ -9,7 +9,7 @@
 
 ---
 
-## 四个核心能力
+## 五个核心能力
 
 ### 能力 1 · 一次性总结（文章 / 视频）
 用户给**文章链接、原文、或视频（YouTube / Bilibili）链接 / 字幕** → 总结成笔记。
@@ -55,12 +55,34 @@
   - ⚠️ **两点实操坑（2026-09-11 实踩）**：① `fetch_up_range.py` 从 `os.environ["BILI_COOKIE"]` 读 cookie、且需 `OBSIDIAN_WRITE=1`/`DISABLE_FEISHU_SYNC=1` 才落本地 Obsidian——但**它自身不读 `.env`**；务必用 `python scripts/_run_with_env.py -- python scripts/fetch_up_range.py ...` 包装（该包装器加载 `.env` 注入上述变量后转发子命令），否则 cookie 取不到、落盘走错目标。② 批量**默认跳过 ASR**（`BILI_BATCH_NO_ASR=1`）：只抓现成 CC 字幕，无字幕视频 `fetch` 直接返回 None → 不入队也不收集；要转写无字幕视频须显式加 `--with-asr`（音频下载受沙箱网络/登录态限制，可能失败，无解时标记待补）。
 - B站需要登录态：`BILI_COOKIE` 环境变量（动态接口硬性要求）。
 
-### 能力 3 · 用户侧怎么用（给链接 / 怎么关注）
+### 能力 3 · 存量重做（旧笔记按新版 prompt 重写，2026-09-17 转正）
+
+与能力 1/2 的**增量生产**相对：这条管线服务「库里已有的旧笔记」——抓源/补源 → 重写 → **in-place 覆盖原路径**，
+不产生 `-N` 副本。触发词：「重做一批笔记」「按新版 prompt 重跑」「源丢了补一下」。
+
+| 步骤 | 命令 |
+|---|---|
+| 建重做队列（registry + vault 反查：笔记在库 + 源可定位） | `python scripts/build_resummarize_queue.py` |
+| 按源长切批 + 逐条预计算 prompt（>10000→4 条/批，4000~10000→8，<4000→16） | `python scripts/build_resum_batches.py` |
+| 派子 Agent 写临时稿 `_tmp/resum_c/out/<batch>_<NN>.md`（**必读 `notes/_meta/resum_batches/DISPATCH_PROMPT.md`**） | 见 HANDOFF |
+| **in-place 落盘**（直写 `note_path`，复用生产变换 + 门禁） | `python scripts/resum_save_batch.py <batch.json> <out_dir> --force` |
+| 抽检（只读） | `python scripts/resum_audit_batch.py <batch.json>` |
+| 补源（笔记在库但源丢失，按 ID 列表绕过 dedup、不入队不总结） | `scripts/fetch_bili_by_bvids.py` / `scripts/fetch_scys_by_ids.py` |
+| 重做前备份旧版 | `python scripts/archive_old_before_resum.py <batch.json>` |
+
+- ⚠️ **重做不要走 `save_summary_only` / `_save_summary_from_file.py`**：它们的文件名由
+  `generate_filename(publish_time + title)` **重新推导**，标题一旦与磁盘名错配（本次 690 条里有 18 条）
+  就落成新文件 → `-N` 副本。（`overwrite=True` 只覆盖**同名**，扑空时无效。）
+- ⚠️ `scripts/_*` 被 `.gitignore` 忽略 —— 新增有长期价值的脚本**不要用下划线前缀**，否则不入库。
+- 完整 SOP 与判据噪音档案：`docs/HANDOFF-阶段C-重总结.md` + `notes/_meta/resum_batches/PROGRESS.md`。
+
+### 能力 4 · 用户侧怎么用（给链接 / 怎么关注）
 - 给链接 → 走**能力 1**。
 - 说「关注 / 订阅 / 监控 XXX」 → 走**能力 2**（改 `subscriptions.json` + 跑一次首跑）。
+- 说「重做 / 重写一批旧笔记」 → 走**能力 3**。
 - 不确定走哪条 → 先读本文件 + `RULES.md`，不要凭空造流程。
 
-### 能力 4 · 开源项目抽取归档（`tools/project_import`）
+### 能力 5 · 开源项目抽取归档（`tools/project_import`）
 
 把「GitHub / Gitee 开源项目」调研分类后存入**本地 Obsidian 项目库**（每个项目一个 `.md` + YAML frontmatter）。选本地而非飞书，是因为别的项目的 agent 能零鉴权直接检索，便于「哪些项目能用上」的发现；飞书多维表格仅作可选回退。
 

@@ -10,7 +10,7 @@
 - **✅ 待重抓清单 98 条（B站 15 + scys 83）已补跑完成**（2026-09-17）：
   - 源已按清单抓回：B站 → `notes/_scraped/bili/<bvid>.md`（`scripts/fetch_bili_by_bvids.py`）、scys → `notes/_scraped/scys/<topicId>.md`（`scripts/fetch_scys_by_ids.py` / `launch_scys_refetch_detached.py`），refetch_state.json 记录 done。
   - 批次：`scripts/build_refetch_resum_batches.py` 从 `summary_registry.json` 按 URL 反查 note_path/note_type，source_path 指向新抓源，生成 `notes/_meta/resum_refetch_batches/refetch_batch_01~15.json`（长 4/中 8/短 16 条每批，prompt 预计算）。**不碰已收口的 690 条批次**。
-  - 派单（DISPATCH_PROMPT v3）→ 落盘 `_save_resum_batch.py --force`（98/98 覆盖写回，0 失败）→ 抽检。
+  - 派单（DISPATCH_PROMPT v3）→ 落盘 `resum_save_batch.py --force`（98/98 覆盖写回，0 失败）→ 抽检。
   - 抽检：39 条命中入台账 root_cause=gate（锚点 28 判据噪音 / 复述 7 代码-Prompt 块 verbatim / 代码块内超长句 2 / D相邻段重复 2）；33 条正文 A超长句机械拆句修复（root_cause=agent，`；，、→`+数字圈拆行，加粗跨行已回合并复查 0 奇数 `**`）。剩余 2 条 A超长句在代码围栏内（verbatim 提示词）保留。
   - 新会话如需续此类任务：**先哈希/存在性核对**（临时产物 + 落盘文件 vs 批次 JSON 条目数），勿只凭累计数字。
 - **✅ scys 引流帖外链修复已完成（24 条，两轮）**（2026-09-17，用户两次指出）：
@@ -22,7 +22,7 @@
   - ⚠️ 教训：① 重抓 scys 源不要 `--no-external`（现成 fetch_article 默认抓飞书外链）；② **飞书正文抓取用 `feishu_ext_refetch.py` 的 `.bear-web-x-container` 增量滚动**，不是滚 window；③ 飞书 URL 从 `<a href>`/`_ext` 头取完整版，别从正文显示文本取。
 - **⚠️ 2026-09-17 修正上一会话误判**：上一交接声称「562/690 全部完成」，实际漏了 **batch_53–60（8 批 128 条）**——
   那 8 批从未生成临时稿、从未落盘（临时产物目录缺失 + 磁盘文件哈希=归档旧版一致为证）。
-  本会话补做：派单生成 8 批 → 逐批落盘（`_save_resum_batch.py --force`，含 batch_60 一条 note_path 缺失自动新建落地）→ 抽检。
+  本会话补做：派单生成 8 批 → 逐批落盘（`resum_save_batch.py --force`，含 batch_60 一条 note_path 缺失自动新建落地）→ 抽检。
 - 抽检 batch_53–60：7 条命中全部核清——6 条锚点判据噪音（年份/抓取时间戳/分页控件 0/1200/微信号/评论区昵称，语义均已覆盖，root_cause=gate 入台账），
   batch_57[8][9] 为 interview 模板错用结构化复盘（与 batch_61–67 同类错误），已按访谈模板重做并复检 0 命中。
 - **剩余收尾项（不在本任务内，见 HANDOFF「六、不在本任务内」）**：`manual_queue.json` 25 条《中国好公司》抓取失败、scys 旧队列 65、langzi 队列等。
@@ -48,8 +48,8 @@
 | 批次清单（含 6 条存疑源匹配，已人工核对全部正确） | `notes/_reports/20260916_重跑批次清单.md` |
 | 重跑队列原始数据（690 条） | `notes/_meta/resum_queue.json`（= `resummarize_queue.json`） |
 | 旧版归档脚本（batch_40~67 已预归档，仅异常补跑时用） | `scripts/archive_old_before_resum.py` |
-| 落盘脚本（直写 note_path，绕过空 pending 队列） | `scripts/_save_resum_batch.py <batch.json> <out_dir> --force` |
-| 每批抽检脚本（content_signals，只读） | `scripts/_audit_resum_batch.py <batch.json>` |
+| 落盘脚本（直写 note_path，绕过空 pending 队列） | `scripts/resum_save_batch.py <batch.json> <out_dir> --force` |
+| 每批抽检脚本（content_signals，只读） | `scripts/resum_audit_batch.py <batch.json>` |
 | 抽检根因台账 | `notes/_review_log.jsonl`（`log_review` 写入；归因同时落 `notes/_root_cause_ledger.jsonl`） |
 
 ### 二之二、补跑 / 外链修复专用脚本（2026-09-17 新增，下阶段同类任务直接复用）
@@ -61,7 +61,7 @@
 | scys 补抓 DETACHED 长任务启动器（单 Chrome 串行，限速 15–40s/条） | `scripts/launch_scys_refetch_detached.py`（子进程必带 `-u`，否则日志被块缓冲吞掉） |
 | 批次反查重建（按 URL 从 `summary_registry.json` 反查 note_path/note_type，prompt 预计算） | `scripts/build_refetch_resum_batches.py`（`--ext` 生成引流帖外链合并源） |
 | 批量重抓飞书外链全文（复用 `collect_full_text`） | `scripts/refetch_feishu_ext_batch.py` |
-| 落盘（直写 note_path，绕过空 pending 队列） | `scripts/_save_resum_batch.py <batch.json> <out_dir> --force` |
+| 落盘（直写 note_path，绕过空 pending 队列） | `scripts/resum_save_batch.py <batch.json> <out_dir> --force` |
 
 ## 三、执行 SOP（每批 4 步，严格按序）
 
@@ -70,11 +70,11 @@
    读 `source_path` 全文 → 严格按条目 `prompt` 写笔记 → 写临时 md
    `_tmp/resum_c/out/batch_NN_<idx02d>.md`（UTF-8）。硬性格式：首行 `**作者**：…` /
    无一级标题 / 无来源链接行 / 无标签行 / 末行 `【核心主题词】词1 | 词2 | 词3`。
-2. **落盘**：`python scripts/_save_resum_batch.py notes/_meta/resum_batches/batch_NN.json _tmp/resum_c/out --force`
+2. **落盘**：`python scripts/resum_save_batch.py notes/_meta/resum_batches/batch_NN.json _tmp/resum_c/out --force`
    （复用生产链路变换 + 机械门禁；`note_path` 缺失自动新建落地；返回 `ALREADY_EXISTS`/已落盘视为成功）。
 3. **批量派单三禁令**（RULES.md）：禁子 Agent 自写脚本直调 API / 禁对已存在笔记二次 force /
    Agent 工具报错 ≠ 没干活——**先核验目标目录再决定重派**（batch_39 实测：子 Agent 漏写 1 条却报「7/7 完成」，必须对照批次 JSON 条目数逐条核文件）。
-4. **每批收尾抽检**：`python scripts/_audit_resum_batch.py <batch.json>`，命中项填 `root_cause`
+4. **每批收尾抽检**：`python scripts/resum_audit_batch.py <batch.json>`，命中项填 `root_cause`
    （`prompts/review_rubric.py: log_review`）；**同一根因 ≥3 次 → 先检测真因再改，不是无脑改 prompt**
    （判据噪音 vs 模板×源密度冲突 vs 子 Agent 执行，见 PROGRESS「判据噪音档案」与 `_review_log.jsonl` 的 batch_30/31 根因检测记录）。
    抽检干净后更新 PROGRESS.md 检查点。

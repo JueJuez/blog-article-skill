@@ -6,7 +6,7 @@
 （notes/_scraped/bili/<bvid>.md / notes/_scraped/scys/<topicId>.md），
 本脚本把清单里全部条目按 URL 从 summary_registry.json 反查登记记录，
 组装成与阶段C 批次同构的批次 JSON（note_path / source_path / prompt 预计算），
-供 `_save_resum_batch.py` 落盘复用。
+供 `resum_save_batch.py` 落盘复用。
 
 分批规则与 build_resum_batches.py 一致：>10000 字 → 4 条/批；4000~10000 → 8 条/批；<4000 → 16 条/批。
 

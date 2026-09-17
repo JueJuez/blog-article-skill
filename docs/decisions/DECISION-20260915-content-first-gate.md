@@ -241,6 +241,6 @@
 - 阶段C 执行方式：每批 15~19 条派子 Agent → 按条目 prompt（含篇幅目标块）重写 → `_save_summary_from_file.py --force`
   覆盖同名；旧版先归档 `notes/_archive/`（不物理删除）。
   **⚠️ 2026-09-17 实际执行口径（本节上文为拍板时设想，已偏离）**：批次按源长切分——长源 4 条/批、中源 8 条/批、
-  短源 16 条/批（共 67 批 690 条）；落盘统一走 `scripts/_save_resum_batch.py <batch.json> <out_dir> --force`
+  短源 16 条/批（共 67 批 690 条）；落盘统一走 `scripts/resum_save_batch.py <batch.json> <out_dir> --force`
   （批量直写 `note_path`，`_save_summary_from_file.py` 只用于单篇修订）；旧版归档 `scripts/archive_old_before_resum.py`
   （batch_40~67 已预归档，后续直接 force）。详见 `docs/HANDOFF-阶段C-重总结.md`。
