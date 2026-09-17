@@ -37,7 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 让 shared 包可导入
 from login_cdp_fetch import discover_chrome_devtools, write_output
-from shared.cdp_session import SharedCdpSession
+from shared.cdp_session import SharedCdpSession, extract_body
 from prompts.classify import classify_note_type
 from prompts.templates import QUALITY_GATE_SELFCHECK, get_note_prompt, source_chars_of
 
@@ -517,19 +517,8 @@ class ScysBatchFetcher:
 
     @staticmethod
     def _extract_body(page) -> str:
-        body = ""
-        for sel in [".article-content", ".article-detail", "#articleContent",
-                    ".topic-content", ".post-content", ".markdown-body",
-                    "article", "main", "body"]:
-            try:
-                el = page.query_selector(sel)
-                if el:
-                    t = el.inner_text().strip()
-                    if len(t) > len(body):
-                        body = t
-            except Exception:
-                continue
-        return body
+        """从已渲染页面抽取正文。唯一实现在 shared.cdp_session.extract_body（2026-09-18 收敛）。"""
+        return extract_body(page)
 
     @staticmethod
     def _collect_links(page) -> list[dict]:

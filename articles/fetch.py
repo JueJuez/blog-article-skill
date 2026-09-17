@@ -275,25 +275,9 @@ def _close_scys_session():
 
 
 def _extract_body_scys(page) -> str:
-    """从已渲染 scys 页面抽取正文（与 scys_batch_fetch.ScysClient._extract_body 同款选择器）。"""
-    body = ""
-    for sel in [".article-content", ".article-detail", "#articleContent",
-                ".topic-content", ".post-content", ".markdown-body",
-                "article", "main", "body"]:
-        try:
-            el = page.query_selector(sel)
-            if el:
-                t = el.inner_text().strip()
-                if len(t) > len(body):
-                    body = t
-        except Exception:
-            continue
-    if not body:
-        try:
-            body = page.evaluate("() => document.body.innerText")
-        except Exception:
-            body = ""
-    return body or ""
+    """从已渲染 scys 页面抽取正文。唯一实现在 shared.cdp_session.extract_body（2026-09-18 收敛）。"""
+    from shared.cdp_session import extract_body
+    return extract_body(page)
 
 
 def _scys_cdp_fetch(url: str, out_path=None, **kwargs) -> dict:

@@ -108,6 +108,35 @@ def _import_skill_module():
 _skill = _import_skill_module()
 
 
+def extract_body(page) -> str:
+    """从已渲染页面抽取正文（唯一实现，2026-09-18 收敛）。
+
+    此前本项目有 3 份逐字相同的实现：`articles/fetch.py:_extract_body_scys`、
+    `scripts/scys_batch_fetch.py:ScysClient._extract_body`、本类的 `_extract_body`。
+    抽取规则必须单一：只改一处却漏了另外两处，会导致同一页面在不同入口抽出的正文不一样。
+
+    策略：按选择器优先级取最长的 inner_text；全落空则退回 `document.body.innerText`。
+    """
+    body = ""
+    for sel in [".article-content", ".article-detail", "#articleContent",
+                ".topic-content", ".post-content", ".markdown-body",
+                "article", "main", "body"]:
+        try:
+            el = page.query_selector(sel)
+            if el:
+                t = el.inner_text().strip()
+                if len(t) > len(body):
+                    body = t
+        except Exception:
+            continue
+    if not body:
+        try:
+            body = page.evaluate("() => document.body.innerText")
+        except Exception:
+            body = ""
+    return body or ""
+
+
 class SharedCdpSession(_skill.CdpSession):
     """项目业务层薄子类：实例机制（健康复用/自愈/锁/D6 关灯）继承内核，此处只放抓取方法。"""
 
@@ -132,25 +161,8 @@ class SharedCdpSession(_skill.CdpSession):
                              "您还未登录", "成为会员", "开通会员", "订阅后"]
 
     def _extract_body(self, page) -> str:
-        """从已渲染页面抽取正文（与 articles/fetch.py / scys 同款选择器优先级）。"""
-        body = ""
-        for sel in [".article-content", ".article-detail", "#articleContent",
-                    ".topic-content", ".post-content", ".markdown-body",
-                    "article", "main", "body"]:
-            try:
-                el = page.query_selector(sel)
-                if el:
-                    t = el.inner_text().strip()
-                    if len(t) > len(body):
-                        body = t
-            except Exception:
-                continue
-        if not body:
-            try:
-                body = page.evaluate("() => document.body.innerText")
-            except Exception:
-                body = ""
-        return body or ""
+        """从已渲染页面抽取正文。唯一实现在模块级 `extract_body()`（2026-09-18 收敛）。"""
+        return extract_body(page)
 
     def fetch_wechat(self, url: str, wait_ms: int = 8000):
         """单篇微信正文 → (title, body, 0) 或 None（撞墙/过短/失败）。
