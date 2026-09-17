@@ -234,7 +234,13 @@
 ### 8.3 重跑范围（用户 2026-09-16 拍板）
 
 - `notes/_meta/resummarize_queue.json`：**690 条**（笔记在库 + 源可定位），排序 = 结构缺失多 → 压缩比低 → 源长。
-- 待重抓（下阶段）：`notes/_reports/20260915_待重抓清单.md` —— **B站 15 + scys 83**。
+- ~~待重抓（下阶段）：`notes/_reports/20260915_待重抓清单.md` —— **B站 15 + scys 83**。~~
+  **✅ 2026-09-17 已完成**：源全部补回（`notes/_scraped/bili|scys/`）→ 重总结落盘 98/98，0 失败；
+  另完成引流帖飞书外链修复二轮 24 条。清单文件视为已消费，见 `docs/HANDOFF-阶段C-重总结.md`。
 - 排除：公众号 4（用户决定不重抓）、无 URL 75、登记表悬空 154（库里无文件）。
 - 阶段C 执行方式：每批 15~19 条派子 Agent → 按条目 prompt（含篇幅目标块）重写 → `_save_summary_from_file.py --force`
   覆盖同名；旧版先归档 `notes/_archive/`（不物理删除）。
+  **⚠️ 2026-09-17 实际执行口径（本节上文为拍板时设想，已偏离）**：批次按源长切分——长源 4 条/批、中源 8 条/批、
+  短源 16 条/批（共 67 批 690 条）；落盘统一走 `scripts/_save_resum_batch.py <batch.json> <out_dir> --force`
+  （批量直写 `note_path`，`_save_summary_from_file.py` 只用于单篇修订）；旧版归档 `scripts/archive_old_before_resum.py`
+  （batch_40~67 已预归档，后续直接 force）。详见 `docs/HANDOFF-阶段C-重总结.md`。

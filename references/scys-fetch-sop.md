@@ -125,6 +125,8 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 | `scripts/login_cdp_fetch.py`（本 SOP） | 显式单篇登录态抓取（诊断 / 非文章页） | 接管用户主 Chrome 继承 |
 | `scripts/scys_batch_fetch.py`（§7） | 按项目领域批量抓 scys 帖子 | 同上 |
 | `scripts/feishu_ext_refetch.py`（2026-08-21） | **飞书 wiki/docx 懒加载截断的全文重抓**：增量滚动 `.bear-web-x-container` 容器逐视口收集 innerText 按行去重合并。用法 `python scripts/feishu_ext_refetch.py "<飞书URL>" <out.md>`（用 anaconda python）。批量抓取的 ext 只有目录+开头（500 字级）时用它补；PDF 预览型（canvas 渲染）与 404 仍无解，跳过即可 | 同上 |
+| `scripts/refetch_feishu_ext_batch.py`（2026-09-17） | **批量版**：复用上面 `collect_full_text` 一次重抓 N 条外链全文（实测 0.5–3 万字/篇，**推翻「飞书分享链接可见上限 ~2000 字」的旧误判**）。⚠️ URL 必须从 `<a href>` 或 `_ext_*.md` 文件头 `> 来源：` 取完整版——从正文显示文本正则提取会带 `...` 截断 → 飞书 404 | 同上 |
+| `scripts/fetch_scys_by_ids.py`（2026-09-17） | **按 topicId 列表逐条补抓源**（绕过 dedup 闸门：已总结的帖子标准 `scys_batch_fetch.py` 会跳过）。`--list-md <清单md>` 正则提取 ID、`--no-external` 只抓主文；只写 `notes/_scraped/scys/<topicId>.md`，不入队不总结。**⚠️ 补源场景不要加 `--no-external`**（会把飞书外链正文丢掉） | 同上 |
 | `monitors/run.py --apply` | 公众号 / B站订阅 | 公众号 Cookie / `BILI_COOKIE` |
 | `videos/run.py --url` | 视频（YouTube / B站） | 无（字幕 API → CDP → ASR 兜底） |
 

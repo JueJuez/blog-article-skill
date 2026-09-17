@@ -4,7 +4,7 @@
 > 本文档自包含：新会话不需要读历史对话，按本 SOP 执行即可。
 > 决策依据：`docs/decisions/DECISION-20260915-content-first-gate.md`（§7~§8）。
 
-## 〇、当前状态（2026-09-17 阶段C 真收口 + 待重抓 98 条补跑完成，实时进度以 PROGRESS.md 为准）
+## 〇、当前状态（2026-09-17 阶段C 真收口 + 待重抓 98 条补跑 + 引流帖外链修复二轮 全部完成，实时进度以 PROGRESS.md 为准）
 
 - **✅ 阶段C 真正全部完成：batch_01 – batch_67 全收口（690 / 690）**，无下一待处理批次。
 - **✅ 待重抓清单 98 条（B站 15 + scys 83）已补跑完成**（2026-09-17）：
@@ -50,7 +50,18 @@
 | 旧版归档脚本（batch_40~67 已预归档，仅异常补跑时用） | `scripts/archive_old_before_resum.py` |
 | 落盘脚本（直写 note_path，绕过空 pending 队列） | `scripts/_save_resum_batch.py <batch.json> <out_dir> --force` |
 | 每批抽检脚本（content_signals，只读） | `scripts/_audit_resum_batch.py <batch.json>` |
-| 抽检根因台账 | `notes/_review_log.jsonl`（`log_review` 写入） |
+| 抽检根因台账 | `notes/_review_log.jsonl`（`log_review` 写入；归因同时落 `notes/_root_cause_ledger.jsonl`） |
+
+### 二之二、补跑 / 外链修复专用脚本（2026-09-17 新增，下阶段同类任务直接复用）
+
+| 产物 | 位置 |
+|---|---|
+| 按 bvid 列表逐条补抓 B站源（绕过 dedup、不总结不落盘） | `scripts/fetch_bili_by_bvids.py` |
+| 按 topicId 列表逐条补抓 scys 源（`--list-md` 直读清单、`--no-external` 只主文） | `scripts/fetch_scys_by_ids.py` |
+| scys 补抓 DETACHED 长任务启动器（单 Chrome 串行，限速 15–40s/条） | `scripts/launch_scys_refetch_detached.py`（子进程必带 `-u`，否则日志被块缓冲吞掉） |
+| 批次反查重建（按 URL 从 `summary_registry.json` 反查 note_path/note_type，prompt 预计算） | `scripts/build_refetch_resum_batches.py`（`--ext` 生成引流帖外链合并源） |
+| 批量重抓飞书外链全文（复用 `collect_full_text`） | `scripts/refetch_feishu_ext_batch.py` |
+| 落盘（直写 note_path，绕过空 pending 队列） | `scripts/_save_resum_batch.py <batch.json> <out_dir> --force` |
 
 ## 三、执行 SOP（每批 4 步，严格按序）
 
