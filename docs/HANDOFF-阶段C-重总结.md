@@ -4,15 +4,21 @@
 > 本文档自包含：新会话不需要读历史对话，按本 SOP 执行即可。
 > 决策依据：`docs/decisions/DECISION-20260915-content-first-gate.md`（§7~§8）。
 
-## 〇、当前状态（2026-09-17 真收口，实时进度以 PROGRESS.md 为准）
+## 〇、当前状态（2026-09-17 阶段C 真收口 + 待重抓 98 条补跑完成，实时进度以 PROGRESS.md 为准）
 
 - **✅ 阶段C 真正全部完成：batch_01 – batch_67 全收口（690 / 690）**，无下一待处理批次。
+- **✅ 待重抓清单 98 条（B站 15 + scys 83）已补跑完成**（2026-09-17）：
+  - 源已按清单抓回：B站 → `notes/_scraped/bili/<bvid>.md`（`scripts/fetch_bili_by_bvids.py`）、scys → `notes/_scraped/scys/<topicId>.md`（`scripts/fetch_scys_by_ids.py` / `launch_scys_refetch_detached.py`），refetch_state.json 记录 done。
+  - 批次：`scripts/build_refetch_resum_batches.py` 从 `summary_registry.json` 按 URL 反查 note_path/note_type，source_path 指向新抓源，生成 `notes/_meta/resum_refetch_batches/refetch_batch_01~15.json`（长 4/中 8/短 16 条每批，prompt 预计算）。**不碰已收口的 690 条批次**。
+  - 派单（DISPATCH_PROMPT v3）→ 落盘 `_save_resum_batch.py --force`（98/98 覆盖写回，0 失败）→ 抽检。
+  - 抽检：39 条命中入台账 root_cause=gate（锚点 28 判据噪音 / 复述 7 代码-Prompt 块 verbatim / 代码块内超长句 2 / D相邻段重复 2）；33 条正文 A超长句机械拆句修复（root_cause=agent，`；，、→`+数字圈拆行，加粗跨行已回合并复查 0 奇数 `**`）。剩余 2 条 A超长句在代码围栏内（verbatim 提示词）保留。
+  - 新会话如需续此类任务：**先哈希/存在性核对**（临时产物 + 落盘文件 vs 批次 JSON 条目数），勿只凭累计数字。
 - **⚠️ 2026-09-17 修正上一会话误判**：上一交接声称「562/690 全部完成」，实际漏了 **batch_53–60（8 批 128 条）**——
   那 8 批从未生成临时稿、从未落盘（临时产物目录缺失 + 磁盘文件哈希=归档旧版一致为证）。
   本会话补做：派单生成 8 批 → 逐批落盘（`_save_resum_batch.py --force`，含 batch_60 一条 note_path 缺失自动新建落地）→ 抽检。
 - 抽检 batch_53–60：7 条命中全部核清——6 条锚点判据噪音（年份/抓取时间戳/分页控件 0/1200/微信号/评论区昵称，语义均已覆盖，root_cause=gate 入台账），
   batch_57[8][9] 为 interview 模板错用结构化复盘（与 batch_61–67 同类错误），已按访谈模板重做并复检 0 命中。
-- **剩余收尾项（不在本任务内，见 HANDOFF「六、不在本任务内」）**：待重抓 B站 15 + scys 83、`manual_queue.json` 25 条《中国好公司》抓取失败、scys 旧队列 65、langzi 队列等。
+- **剩余收尾项（不在本任务内，见 HANDOFF「六、不在本任务内」）**：`manual_queue.json` 25 条《中国好公司》抓取失败、scys 旧队列 65、langzi 队列等。
 - **派单一律用 v3 标准指令 `notes/_meta/resum_batches/DISPATCH_PROMPT.md`**（让子 Agent 先 Read 该文件再干活）：
   - LENGTH RULE：目标 30–50%（叙述）/ 50–80%（教程干货），**硬性 ≤100%**（落盘会加标签/来源链接等约 15% 膨胀，故临时稿目标 ≤85%）；覆盖率 > 比例，硬事实一条不许丢。
   - **门禁计数口径（2026-09-16 新增）**：`count_words` = 去空白后全部字符（**含 markdown 符号**与标点）。子 Agent 按「汉字+ASCII 词」自估会少算 15–35% → 以为 0.98× 实际门禁 1.28×。DISPATCH_PROMPT 已内置自测命令，派单时无需额外提醒。
@@ -77,7 +83,7 @@
 
 ## 六、不在本任务内（另列）
 
-- 待重抓（下阶段）：**B站 15 + scys 83**，清单 `notes/_reports/20260915_待重抓清单.md`；
-  另有 `manual_queue.json` 25 条《中国好公司》5~29 集抓取失败，需单独排重抓。
+- ~~待重抓（下阶段）：B站 15 + scys 83~~ —— **✅ 已于 2026-09-17 补跑完成**（见「〇、当前状态」），原清单 `notes/_reports/20260915_待重抓清单.md` 视为已消费。
+- 剩余未结：`manual_queue.json` 25 条《中国好公司》5~29 集抓取失败，需单独排重抓。
 - 语义未明的旧队列：`scys/resummarize_list.json`(65)、`langzi_queue/_groups_todo.json`(7)/`_refetch_todo.json`(86)。
 - 源留存策略（公众号 raw 会被覆盖 → 源缺失根因）待拍板后实现。
