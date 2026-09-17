@@ -176,7 +176,8 @@
 `scripts/audit_fidelity.py`（总结质量抽样审计）、`scripts/audit_overwrite_copies.py`（`-N` 副本审计）、
 `scripts/audit_gate_signals.py`（门禁判据离线审计）、`scripts/vault_lifecycle.py`（vault 生命周期对账）、
 `scripts/triage_fetch_failures.py`（抓取失败只读分类）、`monitors/status_cli.py`（运行状态查询）、
-`scripts/audit_pipeline_coverage.py`（本文覆盖自检）。
+`scripts/audit_pipeline_coverage.py`（本文覆盖自检）、`scripts/audit_duplicate_funcs.py`（重复实现自检：
+**写新函数前跑一次**，看是不是已经有现成的 / 能不能合并）。
 
 **落盘辅助（单篇场景）**
 `scripts/persist_summary.py --obsidian`（接单持久化，含去重+门禁+标签）、
