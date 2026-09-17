@@ -5,6 +5,9 @@
 > WorkBuddy 专属的 `SKILL.md` 只是「薄触发层」，所有真规则以本文件 + `RULES.md` 为准，避免平台切换时流程丢失。
 
 ## 一句话定位
+
+> **找管线入口先看 `docs/PIPELINES.md`（唯一真源）**：本文只做能力导览，每条管线的「入口命令 / 零件清单 /
+> 常见误用」以 PIPELINES 为准。新增或改造管线必须先更新它，否则下一个 Agent 会找不到入口而新开重复实现。
 把「文章 / 视频链接、原文、字幕、订阅的 B站UP主 / 公众号」自动转成结构化笔记，归档到 **本地 Obsidian（默认，2026-09-04 起）；飞书不再默认写入**。
 
 ---
@@ -65,7 +68,7 @@
 | 建重做队列（registry + vault 反查：笔记在库 + 源可定位） | `python scripts/build_resummarize_queue.py` |
 | 按源长切批 + 逐条预计算 prompt（>10000→4 条/批，4000~10000→8，<4000→16） | `python scripts/build_resum_batches.py` |
 | 派子 Agent 写临时稿 `_tmp/resum_c/out/<batch>_<NN>.md`（**必读 `notes/_meta/resum_batches/DISPATCH_PROMPT.md`**） | 见 HANDOFF |
-| **in-place 落盘**（直写 `note_path`，复用生产变换 + 门禁） | `python scripts/resum_save_batch.py <batch.json> <out_dir> --force` |
+| ✅ **in-place 落盘**（唯一入口；校验主题词行 + 机械门禁 → 调生产函数覆盖 `note_path`） | `python scripts/resum_save_batch.py <batch.json> <out_dir> --force` |
 | 抽检（只读） | `python scripts/resum_audit_batch.py <batch.json>` |
 | 补源（笔记在库但源丢失，按 ID 列表绕过 dedup、不入队不总结） | `scripts/fetch_bili_by_bvids.py` / `scripts/fetch_scys_by_ids.py` |
 | 重做前备份旧版 | `python scripts/archive_old_before_resum.py <batch.json>` |
@@ -74,6 +77,9 @@
   `generate_filename(publish_time + title)` **重新推导**，标题一旦与磁盘名错配（本次 690 条里有 18 条）
   就落成新文件 → `-N` 副本。（`overwrite=True` 只覆盖**同名**，扑空时无效。）
 - ⚠️ `scripts/_*` 被 `.gitignore` 忽略 —— 新增有长期价值的脚本**不要用下划线前缀**，否则不入库。
+- ✅ in-place 能力已**下沉到 `articles.main.save_summarized_article(note_path=...)`**（生产函数），
+  `resum_save_batch.py` 是薄壳；**不要直接调生产函数落盘**（会跳过门禁）。回归测试
+  `tests/test_inplace_resum_pipeline.py` 钉死两条管线互不干扰。
 - 完整 SOP 与判据噪音档案：`docs/HANDOFF-阶段C-重总结.md` + `notes/_meta/resum_batches/PROGRESS.md`。
 
 ### 能力 4 · 用户侧怎么用（给链接 / 怎么关注）
@@ -137,6 +143,7 @@
 > ⚠️ 为避免规则漂移：**各平台入口文件应引用或复制本 `AGENTS.md`，真规则只维护一处**（本文件 + `RULES.md`）。
 
 ## 自举指针（不确定时读这些，按序）
+0. **`docs/PIPELINES.md` —— 管线入口唯一真源**（干什么 → 走哪个入口命令 + 哪些是零件别当入口）
 1. `RULES.md` —— 规则唯一来源（地图 + 强制规则，最权威）
 2. `SKILL.md` —— WorkBuddy 触发层 + 对话输出规范（位于 `.workbuddy/skills/blog-article-skill/SKILL.md`，该目录已 gitignore，不进仓库）
 3. `monitors/README.md` —— 订阅监控运营细节与已知坑

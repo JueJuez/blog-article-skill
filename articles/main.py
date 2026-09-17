@@ -270,7 +270,7 @@ def _guess_source(url: str) -> str:
     return ""
 
 
-def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "", topics: list = None, overwrite: bool = False) -> tuple:
+def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "", topics: list = None, overwrite: bool = False, note_path: str = "") -> tuple:
     """保存已总结的文章内容到所有可用目标。
 
     Args:
@@ -287,6 +287,14 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
                    默认 False 保持「禁止覆盖」的历史语义；仅「修订已有笔记」的正规入口
                    （`_save_summary_from_file.py --force`）传 True。旧默认行为会让每次
                    force 修订都留下 `-1`/`-2` 副本，并由登记表指向副本，制造悬空记录。
+                   ⚠️ 它只覆盖**同名**文件：文件名仍是 `generate_filename` 重新推导的，
+                   标题一旦与磁盘现有名错配就扑空（副本照产）——见下条。
+        note_path: **in-place 重做**入口（2026-09-17 下沉自 `scripts/resum_save_batch.py`）。
+                   传入既有笔记的**绝对精确路径**时：跳过 `generate_filename` 与冲突改名，
+                   直接覆盖该路径 → **永不产生 -N 副本**；dedup 登记用相对 vault 的路径。
+                   只写本地（精确路径只在本地库有意义，飞书/总览索引不适用）。
+                   默认 "" = 走原有「推导文件名」逻辑，行为零变化。
+                   调用方：`scripts/resum_save_batch.py`（批量重做的唯一落盘入口）。
     """
     tags = list(tags or [])
 
@@ -380,6 +388,27 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
         content=summarized_content, author=author, url=original_url,
         tags=tags, add_metadata=True, publish_time=publish_time
     )
+
+    # ── in-place 重做模式（note_path = 既有精确路径，2026-09-17 下沉自 resum_save_batch）──
+    # 与「推导文件名」的老路径互斥：不调 generate_filename、不做 -N 冲突改名，直接覆盖目标。
+    # 只写本地库（精确路径只在本地有意义），飞书双写与总览索引不适用。
+    # 上层（resum_save_batch）已做机械门禁与主题词行校验，这里只管落盘 + 登记。
+    if note_path:
+        os.makedirs(os.path.dirname(note_path), exist_ok=True)
+        with open(note_path, "w", encoding="utf-8") as _f:
+            _f.write(formatted_note)
+        _vault = os.getenv("OBSIDIAN_VAULT_PATH", "")
+        try:
+            filename = os.path.relpath(note_path, _vault) if _vault else os.path.basename(note_path)
+        except Exception:
+            filename = os.path.basename(note_path)
+        if original_url or content_key:
+            dedup.mark_summarized(url=original_url, content=content_key, title=title,
+                                  filename=filename, folder=os.path.dirname(filename),
+                                  note_type=note_type, source=_guess_source(original_url))
+        print(f"\n♻️ in-place 重做落盘完成（覆盖既有路径，不产生副本）")
+        print(f"路径: {note_path}")
+        return formatted_note, filename
 
     # ── P2 Draft-only 模式（并行 worker 用，避免并发落飞书；Landing 阶段统一落盘）──
     # 控制来源：显式参数优先；否则读环境变量 DRAFT_ONLY（worker 子进程启动时设置）。
