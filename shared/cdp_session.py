@@ -112,7 +112,7 @@ def extract_body(page) -> str:
     """从已渲染页面抽取正文（唯一实现，2026-09-18 收敛）。
 
     此前本项目有 3 份逐字相同的实现：`articles/fetch.py:_extract_body_scys`、
-    `scripts/scys_batch_fetch.py:ScysClient._extract_body`、本类的 `_extract_body`。
+    `scripts/scys_batch_fetch.py:ScysBatchFetcher._extract_body`、本类的 `_extract_body`。
     抽取规则必须单一：只改一处却漏了另外两处，会导致同一页面在不同入口抽出的正文不一样。
 
     策略：按选择器优先级取最长的 inner_text；全落空则退回 `document.body.innerText`。
