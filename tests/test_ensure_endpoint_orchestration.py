@@ -209,7 +209,9 @@ class TestCloneLock:
 
     def test_timeout_raises(self, tmp_path: Path):
         p = cdp._skill._lock_path(tmp_path)
-        p.write_text("999 fresh", encoding="utf-8")
+        # 用当前活进程 PID 当持有者：非孤儿锁 → 等待 deadline 后抛 TimeoutError。
+        # （旧写法 "999 fresh" 的 PID 999 已死，2026-09-12 孤儿锁修复会立即抢占，测不到超时）
+        p.write_text(f"{os.getpid()} alive", encoding="utf-8")
         with pytest.raises(TimeoutError):
             with cdp._skill._clone_lock(p, timeout=0.3):
                 pass

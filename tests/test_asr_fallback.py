@@ -117,17 +117,17 @@ def test_transcript_cache_path_youtube():
     assert "transcripts" in p1 and p1.endswith(".md")
 
 
-def test_load_cached_transcript():
+def test_load_cached_transcript(tmp_path):
     """命中非空缓存返回文本；缺失返回 None。"""
     url = "https://www.bilibili.com/video/BVtestcache999"
-    p = asr._transcript_cache_path(url)
-    try:
-        with open(p, "w", encoding="utf-8") as f:
+    # 路由到 tmp_path，避免真实 transcripts/ 目录被沙箱 safe-delete shim 拦截导致 flaky
+    cache_file = tmp_path / "cached.md"
+    with mock.patch.object(asr, "_transcript_cache_path", return_value=str(cache_file)):
+        with open(cache_file, "w", encoding="utf-8") as f:
             f.write("测试字幕内容")
         assert asr._load_cached_transcript(url) == "测试字幕内容"
-    finally:
-        asr.safe_remove_one(p)
-    assert asr._load_cached_transcript(url) is None
+        os.remove(cache_file)  # 确定性清理（不依赖 safe_remove_one / 回收站 shim）
+        assert asr._load_cached_transcript(url) is None
 
 
 # ---------------------------------------------------------------------------

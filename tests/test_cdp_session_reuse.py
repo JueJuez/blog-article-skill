@@ -282,7 +282,9 @@ class TestLaunchConditionalKill:
         proc, endpoint = cdp._skill._launch_cloned_logged_in_browser(tmp_path)
 
         assert closed == []
-        assert endpoint == "ws://127.0.0.1:59222"
+        # 共享技能 2026-09-11 修复：冷启动路径也必须返回完整 webSocketDebuggerUrl
+        # （含 /devtools/browser），与复用路径一致。裸 ws://host:port 已失效。
+        assert endpoint == "ws://127.0.0.1:59222/devtools/browser"
         assert proc is not None
 
     def test_stale_kills_chrome(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
