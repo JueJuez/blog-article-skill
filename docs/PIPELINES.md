@@ -88,7 +88,8 @@
 **入口**：`python scripts/launch_scys_backfill.py`（DETACHED 长任务，数小时）；按领域单跑
 `python scripts/scys_batch_fetch.py --project <领域>`。落盘另有 `scripts/land_scys_by_key.py`（按 topicId 稳定键）。
 **零件**：`scripts/scys_batch_fetch.py: ScysBatchFetcher.fetch_article`、`shared/cdp_session.py`、
-`scripts/feishu_ext_refetch.py`（飞书外链全文重抓，`.bear-web-x-container` 增量滚动）。
+`scripts/feishu_ext_refetch.py` + `scripts/refetch_feishu_ext_batch.py`（飞书外链全文重抓 / 批量版，
+`.bear-web-x-container` 增量滚动；⚠️ URL 取 `<a href>` 或 `_ext` 文件头完整版，正文显示文本带 `...` 会 404）。
 
 ## 8. 迁移门禁管线
 
@@ -108,8 +109,119 @@
 | `articles.dedup` | 去重登记表 | 落盘链路 |
 | `shared.cdp_session.SharedCdpSession` | 登录态抓取会话 | scys / 飞书 / YouTube |
 
-## 10. 变更纪律
+## 10. 能力索引：想做这件事时，先查有没有现成的
+
+> **动刀前先扫这一节。** 下面每个能力项目里都已经有实现，直接调用即可；
+> 只有确认这里没有、或现有实现差一层薄改造时，才允许新写函数。
+
+| 想做什么 | 现成的调用点 | 备注 |
+|---|---|---|
+| 抓任意文章正文（scys 自动分流 CDP 登录态） | `articles.fetch.fetch_web_content` | 入口：`articles/run.py` |
+| 抓 B站字幕 / 转写 | `videos.fetch.fetch_transcript` / `fetch_bilibili_transcript` | 入口：`videos/run.py` |
+| 无字幕视频转写（ASR） | `videos.asr.transcribe_video` / `transcribe_audio_chunked` | >30min 自动分片，见 `references/asr-bilibili-sandbox.md` |
+| 抓 YouTube 字幕 | `videos.fetch.fetch_youtube_transcript` / `..._cdp` | 登录态走 CDP |
+| 字幕清洗（填词/去重/合并） | `shared.subtitle_clean.preprocess_segments` / `preprocess_text` | 已在 fetch 链路自动接入 |
+| 长文分块 / 两阶段总结 | `shared.chunking.chunk_text` / `two_stage_summarize` | |
+| 判重 / 登记 / 跨源去重 | `articles.dedup.is_summarized` / `mark_summarized` / `find_cross_duplicate` | |
+| 文件夹路由 | `shared.routing.resolve_folder` / `category_from_tags` | 落盘自动调用 |
+| 语义标签（四维度） | `shared.note_classify.infer_semantic_tags` / `extract_and_strip_topics` | 落盘自动调用 |
+| 笔记类型判定 | `prompts.classify.classify_note_type` | |
+| 生成总结 prompt / 篇幅目标 | `prompts.templates.get_note_prompt` / `render_coverage_guide` | |
+| 笔记格式化（标签行/来源链接） | `prompts.templates.format_note_with_prompt` | |
+| 机械门禁（零 AI） | `prompts.verifier.verify_note_mechanical` | |
+| 内容判据（锚点/破碎/结构/照搬） | `prompts.content_signals.content_flags` | |
+| 抽检留痕 / 根因台账 | `prompts.review_rubric.log_review` / `queue_for_review` | |
+| 标题归一 / 文件名净化 | `shared.title_norm.normalize_title`、`shared.sanitize.sanitize_filename` | |
+| 调外部 AI | `articles.ai_provider.call_ai_summarize` / `get_ai_provider` | |
+| 飞书节点增删改移 | `articles.feishu.FeishuOutput.ensure_folder_path` / `move_node` / `delete_node` | 2026-09-04 起默认不写飞书 |
+| 飞书总览索引 | `shared.feishu_overview.ensure_overview` / `add_entry` / `rebuild` | |
+| 带登录态抓页面（CDP） | `shared.cdp_session.SharedCdpSession` | 委托用户级 SKILL |
+| 飞书外链全文（懒加载） | `scripts/feishu_ext_refetch.py: collect_full_text` | `.bear-web-x-container` 增量滚动 |
+| B站 cookie 健康 / 刷新 | `monitors.bilibili.refresh_cookie_if_dead`、`videos.set_cookie.set_bilibili_cookie` | |
+| 监控去重状态 | `monitors.state.get_seen` / `mark_seen` | |
+| 滚动日志 | `shared.rolling_log.append_rolling` | |
+| 登记表全量重建 | `scripts/rebuild_registry.py` | vault 是唯一真源，登记表可重建 |
+
+### 10.1 模块职能地图（找函数先定位模块）
+
+> 函数级不做全量登记（641 个公共函数里绝大多数是模块内部 helper，全列会淹没重点）。
+> 规则：**先按职责定位模块，再进模块找函数**。下面是最常被需要的模块。
+
+| 模块 | 职责 | 典型函数前缀 |
+|---|---|---|
+| `articles/fetch.py` | 抓网页正文（scys 自动分流 CDP / 微信 / 通用） | `fetch_*`、`is_scys_url` |
+| `articles/dedup.py` | 去重登记表（判重 / 登记 / 跨源去重 / 标题归一） | `is_summarized`、`mark_*`、`find_cross_*` |
+| `articles/main.py` | 落盘主链路（路由 / 门禁 / 保存 / 对外入口） | `save_*`、`skill_*`、`autoroute_*` |
+| `articles/ai_provider.py` | AI provider 抽象与各家实现（Trae/OpenAI/Anthropic/Google…） | `call_*_summarize`、`get_*_provider` |
+| `articles/feishu.py`、`articles/obsidian.py` | 飞书 / Obsidian 输出端实现 | `ensure_*`、`move_node`、`save` |
+| `videos/fetch.py` | 字幕抓取（B站 / YouTube / 412 风控 / cookie 轮换） | `fetch_*_transcript`、`rotate_bili_cookie_*` |
+| `videos/asr.py` | 无字幕转写（下载音频 + Whisper，长音频自动分片） | `transcribe_*`、`extract_audio` |
+| `shared/routing.py` | 文件夹路由（账号 / 系列 / 分类命中） | `resolve_folder`、`match_series` |
+| `shared/note_classify.py` | 语义标签与父子领域判定 | `infer_semantic_tags`、`*_from_lede` |
+| `shared/feishu_overview.py` | 飞书总览索引（账号容器内的文章清单） | `ensure_overview`、`add_entry`、`rebuild` |
+| `shared/cdp_session.py` | 登录态抓取会话（委托用户级 CDP SKILL） | `SharedCdpSession` |
+| `prompts/templates.py` | 模板与 prompt 组装、笔记格式化 | `get_note_prompt`、`format_note_with_prompt` |
+| `prompts/verifier.py`、`prompts/content_signals.py` | 机械门禁与四类内容判据 | `verify_*`、`*_flags` |
+| `monitors/*` | 订阅监控（B站 / 微信 / scys 三源 + 并行 + 状态 + 回溯） | `run_*`、`cmd_*` |
+| `scripts/feishu_to_obsidian.py` 等 `scripts/` 迁移脚本 | 飞书→本地镜像与结构迁移（多已冻结） | — |
+
+## 11. 其余 CLI 清单（不常用，但**已有实现，勿重造**）
+
+> 下面这些没进上面的管线章节，是因为它们属于运维/诊断/历史迁移，不是日常入口。
+> 但**它们都还在代码里**——需要同类能力时先跑 `--help` 看看，别新写。
+> 定期自检：`python scripts/audit_pipeline_coverage.py`（列出本文没登记的 CLI）。
+
+**对账 / 体检 / 审计（可复用）**
+`scripts/rebuild_registry.py`（登记表 bootstrap）、`scripts/audit_sync.py`（vault→飞书对账补传）、
+`scripts/audit_fidelity.py`（总结质量抽样审计）、`scripts/audit_overwrite_copies.py`（`-N` 副本审计）、
+`scripts/audit_gate_signals.py`（门禁判据离线审计）、`scripts/vault_lifecycle.py`（vault 生命周期对账）、
+`scripts/triage_fetch_failures.py`（抓取失败只读分类）、`monitors/status_cli.py`（运行状态查询）、
+`scripts/audit_pipeline_coverage.py`（本文覆盖自检）。
+
+**落盘辅助（单篇场景）**
+`scripts/persist_summary.py --obsidian`（接单持久化，含去重+门禁+标签）、
+`articles/_save_summary.py`（外层对话保存总结的专用入口）、
+`scripts/_save_one_summary.py`（单条 JSON → `save_summary_only`）、
+`scripts/land_migrate_entry.py`（migrate 队列落盘）、
+`scripts/land_scys_batch.py`（scys 飞书双写路径，需 `DISABLE_FEISHU_SYNC=0`）。
+
+**凭据 / 登录态**
+`scripts/login_cdp_fetch.py`（接管 Chrome 抓需登录页）、`scripts/bili_cookie_refresh.py`、
+`videos/set_cookie.py`、`monitors/_auth.py`（weread 扫码辅助）。
+
+**长任务启动器（DETACHED）**
+`scripts/launch_fetch_up_detached.py`、`scripts/launch_scys_refetch_detached.py`（⚠️ 内含 `--no-external` 硬编码，
+补源场景勿用）、`scripts/launch_backfill_series_detached.py`、`scripts/launch_scys_backfill.py`。
+
+**飞书迁移期脚本（2026-09-04 起默认不写飞书，多数已冻结；保留作参考/特殊镜像）**
+`feishu_to_obsidian.py`、`migrate_feishu_structure.py`、`migrate_obsidian_vault.py`、`migrate_watchdog.py`、
+`fix_feishu_titles.py`、`probe_feishu_titles.py`、`rename_list.py`、`promote_existing.py`、
+`find_duplicates.py`、`delete_duplicates.py`、`scan_feishu_tree.py`、`list_overviews.py`、
+`backfill_overviews.py`、`rebuild_overviews.py`、`series_maintenance.py`、`audit_sync_watchdog.py`。
+
+**B站补齐相关**
+`scripts/reset_up_backfill.py`（重置补齐状态）、`scripts/reconcile_series_bvid.py`（bvid 对账，只读）、
+`scripts/fetch_transcript_only.py`（只抓字幕不总结）、`videos/cdp_capture.py`（CDP 抓 YouTube 字幕）、
+`videos/yt_bridge.py`（YouTube 字幕桥接）、`videos/build_bookmarklet_html.py`（小书签安装页生成）。
+
+**其它项目域**
+`tools/project_import/*`（开源项目归档，见能力 5；内部 `assets/pipeline.py`、`assets/ingest_repo.py`、
+`migrate_feishu_to_local.py` 均为其零件，不是入口）、`scripts/fde_extract_cases.py` +
+`scripts/fde_check_card.py`（FDE 案例卡抽取与忠实度门禁，属简历/面试域，非本项目日常管线）。
+
+**自检 / 演示型 `__main__`（非入口，供调试用）**：`shared/note_classify.py`（标签分类器自测）、
+`monitors/run_parallel.py`（并行编排器，日常请用 `monitors/run.py --parallel`，不要直调）。
+
+**归档候选（一次性诊断，任务已完成）**：`scripts/gen_pilot_report.py`、`scripts/audit_overwrite_copies.py`、
+`scripts/build_refetch_resum_batches.py`（与 `build_resum_batches.py` 同构，待合并）、
+`scripts/_force_land_p1.py`（P1 孤儿视频 force 重落盘，任务已完成）。
+
+## 12. 变更纪律
 
 - 改任何入口的**命令形态**（改名/换参数）→ 同步更新本文 + `AGENTS.md` 对应能力小节。
 - 新增脚本：有长期价值的**不要用 `_` 前缀**（`.gitignore:50` 忽略 `scripts/_*`，会漏入库）。
 - 发现本文没覆盖的场景 → **先补本文再动手**，不要自己新开一条并行实现。
+- 新写任何可复用函数前 → 先扫「§10 能力索引」；只有在确认没有、或现有实现需要大改时才新写，
+  并把新函数补进 §10。
+- 定期自检覆盖度：`python scripts/audit_pipeline_coverage.py`（列出所有 CLI 入口里本文没登记的）。
+  它有遗漏不等于文档正确——命中只说明「被提到过」，描述准不准仍要人看。
