@@ -129,6 +129,20 @@ def _summarize_and_save(segments, source_url: str, title: str, author: str,
                    else str(segments))
         return (None, None, True, content, note_type)
 
+    # 落盘内容门禁（2026-09-18 与文章/重抓管线对齐）：机械（H1/URL/字数）+ 内容硬失败
+    # （结构缺失/锚点召回/照搬）。source_text 取字幕原文，令锚点召回/照搬判据也生效
+    # （此前视频实时路径未透传、仅 reland 路径拦结构缺失）。force=True 为逃生舱。
+    # 抛错由上层（监控 _summarize_video_item / CLI）捕获，不静默落坏笔记。
+    _transcript_text = (segments_to_text(segments)
+                        if isinstance(segments, list) and segments and isinstance(segments[0], dict)
+                        else (segments if isinstance(segments, str) else ""))
+    _gate = verify_note_mechanical(final, note_type, source_url=source_url,
+                                   source_text=_transcript_text)
+    if not _gate["passed"]:
+        raise ValueError("VERIFIER_FAILED: " + "；".join(_gate["issues"]))
+    if _gate.get("content_blockers") and not force:
+        raise ValueError("VERIFIER_CONTENT_FAILED: " + "；".join(_gate["content_blockers"]))
+
     label = _NOTE_TYPE_TAG.get(note_type, "视频笔记")
     save_tags = list(tags) if tags else [label]
     # 视频真实标题（fetch/ASR 来源）经确定性清洗再落盘，不依赖模型自创标题
@@ -182,7 +196,7 @@ def _local_write_enabled() -> bool:
 def _save_series_note(content: str, series_dir: str, base_name: str,
                       author: str, url: str, tags: list, note_type: str,
                       obsidian: bool = False, folder: str = "",
-                      publish_time: int = 0) -> str:
+                      publish_time: int = 0, source_text: str = "") -> str:
     """把单集总结笔记同步到所有已配置输出（Obsidian / 飞书等）。
 
     满足用户需求：系列课先建一个「系列名」容器（Obsidian=同名子文件夹；
@@ -200,7 +214,8 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
     H1 / 来源链接行 / 原文 URL / 篇幅崩塌，与 save_summary_only 串式管道同基线。
     违规抛 ValueError("VERIFIER_FAILED: ...") 不落盘。
     """
-    gate = verify_note_mechanical(content, note_type, source_url=url)
+    gate = verify_note_mechanical(content, note_type, source_url=url,
+                                 source_text=source_text)
     if not gate["passed"]:
         from shared.gate_blockers import log_gate_block
         # 拦截事件持久化（gate_blockers 台账）：直连/apply 两条路共用本函数，
@@ -209,9 +224,9 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
                        title=base_name, issues=gate["issues"],
                        warnings=gate.get("warnings", []))
         raise ValueError("VERIFIER_FAILED: " + "；".join(gate["issues"]))
-    # 内容硬失败门禁（2026-09-18 与 save_summary_only / resum_save_batch 对齐）：
-    # 结构缺失确定性内容缺陷 → 拦下不落盘。注：本函数未透传 source_text，
-    # 锚点召回/照搬两类需原文的内容判据此处不触发（系列维护场景源常在，待透传）。
+    # 内容硬失败门禁（2026-09-18 与文章/重抓管线对齐，source_text 已透传）：
+    # 结构缺失/锚点召回/照搬确定性内容缺陷 → 拦下不落盘。reland 维护场景源常在，
+    # 调用方传 source_text 即令锚点召回/照搬判据也生效（不传则只拦结构缺失）。
     if gate.get("content_blockers"):
         from shared.gate_blockers import log_gate_block
         log_gate_block(source="series", note_type=note_type, url=url,

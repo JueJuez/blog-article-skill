@@ -247,8 +247,12 @@ def test_a1_fetch_trafilatura(monkeypatch):
 
 def test_videos_p1_transcript(stub_output, monkeypatch):
     monkeypatch.setenv("FORCE_AGENT_MODE", "0")
+    # 桩 AI 摘要为合规串（无 H1 / >300 字），隔离门禁对内容质量的判定——
+    # 本测试验证「字幕文本→总结→落盘」管线 plumbing，不评内容质量。
+    monkeypatch.setattr(vm, "_summarize_segments",
+                        lambda *a, **k: "要点：本期讲 AI 编程变现的落地路径。\n" + "正文" * 150)
     res = vm.summarize_video({"content": "大家好 欢迎来到本期 我们讲 AI 编程变现 " * 30,
-                               "note_type": "key_points"})
+                               "note_type": "key_points", "force": True})
     assert res.get("success") is True
     assert res.get("filename")
     assert len(stub_output.saved) == 1
@@ -272,9 +276,12 @@ def fake_transcript(monkeypatch):
 
 def test_videos_p21_youtube(fake_transcript, stub_output, monkeypatch):
     monkeypatch.setenv("FORCE_AGENT_MODE", "0")
+    monkeypatch.setattr(vm, "_summarize_segments",
+                        lambda *a, **k: "要点：YouTube 字幕自动抓取的落地路径。\n" + "正文" * 150)
     res = vm.summarize_video({
         "url": "https://www.youtube.com/watch?v=abcdEFGhijK",
         "note_type": "key_points",
+        "force": True,
     })
     assert res.get("success") is True
     assert res.get("filename")
@@ -287,6 +294,8 @@ def test_videos_p21_youtube(fake_transcript, stub_output, monkeypatch):
 
 def test_videos_p23_playlist(monkeypatch, stub_output):
     monkeypatch.setenv("FORCE_AGENT_MODE", "0")
+    monkeypatch.setattr(vm, "_summarize_segments",
+                        lambda *a, **k: "要点：系列课逐集总结的落地路径。\n" + "正文" * 150)
     monkeypatch.setattr(vf, "fetch_playlist", lambda url, limit=None: [
         {"url": "https://www.youtube.com/watch?v=aaa", "title": "第1集"},
         {"url": "https://www.youtube.com/watch?v=bbb", "title": "第2集"},
@@ -301,6 +310,7 @@ def test_videos_p23_playlist(monkeypatch, stub_output):
         "url": "https://www.youtube.com/playlist?list=PLxyz",
         "playlist": True,
         "note_type": "key_points",
+        "force": True,
     })
     assert res.get("success") is True
     assert len(res.get("results", [])) == 2
@@ -332,12 +342,15 @@ def test_videos_p3_asr_no_whisper(monkeypatch):
 
 def test_videos_p4_multimodal_graceful(monkeypatch, fake_transcript, stub_output):
     monkeypatch.setenv("FORCE_AGENT_MODE", "0")
+    monkeypatch.setattr(vm, "_summarize_segments",
+                        lambda *a, **k: "要点：多模态不可用退回字幕总结的落地路径。\n" + "正文" * 150)
     # 避免真实下载卡 60s
     monkeypatch.setattr(mm, "_download_for_multimodal", lambda url, timeout=60: None)
     res = vm.summarize_video({
         "url": "https://www.youtube.com/watch?v=ccccccccccc",
         "multimodal": True,
         "note_type": "key_points",
+        "force": True,
     })
     # 多模态不可用不应阻断：退回到字幕总结
     assert res.get("success") is True

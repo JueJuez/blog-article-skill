@@ -128,3 +128,63 @@ class TestSeriesNoteMechanicalGate:
         assert str(ei.value).startswith("VERIFIER_FAILED")
         assert "原文 URL" in str(ei.value)
         assert self.manager_calls == []
+
+
+class TestSummarizeAndSaveGateWiring:
+    """视频实时落盘 _summarize_and_save 门禁接线（2026-09-18）：此前该函数直接调
+    save_summarized_article 不过 verify_note_mechanical，视频实时路径实际无门禁。
+    本测试只验证「接线」——source_text 取自字幕原文、force 被尊重、失败抛错；
+    门禁阈值逻辑本身由 test_note_mechanical_gate 专测。"""
+
+    @pytest.fixture(autouse=True)
+    def _stub(self, monkeypatch):
+        self.gate_kwargs = {}
+        self._gate_result = {"passed": True, "issues": [], "content_blockers": [],
+                             "warnings": [], "review_flags": [], "compression_warnings": []}
+
+        def _fake_gate(note, note_type="", source_url="", max_words=None,
+                       source_chars=None, source_text=""):
+            self.gate_kwargs = dict(note_type=note_type, source_text=source_text,
+                                     source_url=source_url)
+            return self._gate_result
+
+        monkeypatch.setattr(videos_main, "_summarize_segments", lambda *a, **k: "总结正文")
+        monkeypatch.setattr(videos_main, "verify_note_mechanical", _fake_gate)
+        monkeypatch.setattr(videos_main, "save_summarized_article",
+                            lambda *a, **k: ("fmt", "f.md"))
+
+    def _run(self, segments="字幕原文", force=False):
+        return videos_main._summarize_and_save(
+            segments, "https://example.com/v1", "标题", "UP", [], "structured",
+            force, publish_time=0, folder="", obsidian=False)
+
+    def test_source_text_passed(self):
+        self._run(segments="这是字幕原文内容")
+        assert self.gate_kwargs["source_text"] == "这是字幕原文内容"
+
+    def test_passed_calls_save(self):
+        fn, final, degraded, _, _ = self._run()
+        assert fn == "f.md" and degraded is False
+
+    def test_mechanical_fail_raises(self):
+        self._gate_result = {"passed": False, "issues": ["H1 缺失"],
+                             "content_blockers": [], "warnings": [],
+                             "review_flags": [], "compression_warnings": []}
+        with pytest.raises(ValueError) as ei:
+            self._run()
+        assert str(ei.value).startswith("VERIFIER_FAILED")
+
+    def test_content_blocker_raises(self):
+        self._gate_result = {"passed": True, "issues": [],
+                             "content_blockers": ["结构缺失"], "warnings": [],
+                             "review_flags": [], "compression_warnings": []}
+        with pytest.raises(ValueError) as ei:
+            self._run()
+        assert str(ei.value).startswith("VERIFIER_CONTENT_FAILED")
+
+    def test_force_bypasses_content_blocker(self):
+        self._gate_result = {"passed": True, "issues": [],
+                             "content_blockers": ["结构缺失"], "warnings": [],
+                             "review_flags": [], "compression_warnings": []}
+        fn, final, degraded, _, _ = self._run(force=True)
+        assert fn == "f.md"
