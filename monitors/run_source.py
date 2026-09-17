@@ -8,7 +8,7 @@
   大概率是补跑（某源漏了 / 登录过期没抓到 / 只想要某一家的增量）。
 
 用法：
-  # 只跑 scys（四领域全抓）
+  # 只跑 scys（订阅全域全抓，当前 7 域）
   python monitors/run_source.py --source scys
   # 只跑 scys 的「出海」一个领域
   python monitors/run_source.py --source scys --target 出海
@@ -183,7 +183,7 @@ def run_wechat_backfill(subs: dict, mode: str, apply: bool, obsidian: bool) -> N
 
 
 def run_scys_backfill(subs: dict, mode: str, apply: bool, obsidian: bool) -> None:
-    """scys 补跑：四领域全抓，进 scys 专属待总结队列（不调 apply_summaries，天然不串）。"""
+    """scys 补跑：订阅全域全抓（当前 7 域），进 scys 专属待总结队列（不调 apply_summaries，天然不串）。"""
     scoped = {"bilibili": [], "wechat": [], "scys": subs.get("scys", [])}
     state, all_new = _discover(scoped, mode, False)
     if not apply:

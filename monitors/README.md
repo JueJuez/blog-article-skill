@@ -57,7 +57,7 @@
 
 ## scys（生财有术）新帖监控（2026-08-20 接入）
 
-「跑一下」的第三源：`subscriptions.json` 的 `scys` 列表（当前=自媒体/出海/AI产品开发/小程序四领域，领域名与 menuId 的映射在 `scripts/scys_projects.json`）。
+「跑一下」的第三源：`subscriptions.json` 的 `scys` 列表（当前订阅 **7 域**：AI产品开发 / 小程序 / 出海 / 自媒体 / AI自媒体 / 虚拟产品 / 垂直小号，领域名与 menuId 的映射在 `scripts/scys_projects.json`）。
 
 - **机制**：`run.py --apply` 收尾阶段逐领域子进程调 `scripts/scys_batch_fetch.py --project <领域> --since-days <窗口> --pages 2`——复用补齐批量全链路（列表捕获 → 时间/精华过滤 → 限速抓正文含外链跟进 → 入 `notes/_scraped/scys/pending_summaries.json` 待总结队列），由执行模型按 §9 语义闭环总结（folder=生财有术/<领域>）。
 - **去重**：与批量补齐共用 `notes/_scraped/scys/state.json` 的 done 列表；已在补齐里抓过的帖不会重复抓/总结。
@@ -86,7 +86,7 @@
 | `BILI_SHORT_DYNAMIC_MAX` | 80 | 短动态轻量化阈值（字） |
 | `FIRST_RUN_LIMIT` | 50 | 首跑每类型安全上限（同时影响视频/动态，实际受 `BILI_SAFETY_CAP` 夹取） |
 | `STATE_KEEP` | 1000 | 每源 `seen` 保留的最大 ID 数（防 `state.json` 膨胀） |
-| `SCYS_DAILY_WINDOW_DAYS` | 7 | scys 日常增量窗口（天）**回退值**；`subscriptions.json` 条目有 `since_days` 时以其为准（当前 4 领域均=35，故实际生效 35） |
+| `SCYS_DAILY_WINDOW_DAYS` | 7 | scys 日常增量窗口（天）**回退值**；`subscriptions.json` 条目有 `since_days` 时以其为准（当前 7 域均=35，故实际生效 35） |
 | `SCYS_FIRST_WINDOW_DAYS` | 7 | scys 首跑（`--mode first`）窗口（天）**回退值**；同样可被条目 `since_days` 覆盖 |
 | `subscriptions.json` scys 条目 `since_days` | 35 | **日常增量的实际生效值**（优先级最高），改这里即改窗口，无需动代码 |
 | `SCYS_DAILY_LIST_PAGES` | 2 | scys 日常增量每次翻的列表页数（每页 30 条） |

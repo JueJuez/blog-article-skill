@@ -29,14 +29,14 @@
 - **配置订阅**：编辑 `monitors/subscriptions.json`（参考 `monitors/subscriptions.example.json`）
   - B站：`{"uid": "数字UP主ID"}`
   - 公众号：`{"mp_id": "..."}` 或 `{"share_url": "公众号分享链接"}`
-  - scys：`{"project": "领域名"}`（领域→menuId 映射在 `scripts/scys_projects.json`，当前=自媒体/出海/AI产品开发/小程序）
+  - scys：`{"project": "领域名"}`（领域→menuId 映射在 `scripts/scys_projects.json`；当前订阅 **7 域**见 `monitors/subscriptions.json` 的 `scys` 列表：AI产品开发 / 小程序 / 出海 / 自媒体 / AI自媒体 / 虚拟产品 / 垂直小号）
   - 用户口头说「关注 / 订阅 / 监控 XXX」时：
     - **B站UP主**：**走机械命令** `python monitors/run.py --subscribe --uid <id> --name <名> --category <类> [--sub-all | --sub-window <天>]`（命令会先查重，已在名单则回「已在监控名单内」且不添加，不手搓 JSON）。
     - **公众号 / scys 领域**：编辑 `monitors/subscriptions.json`，格式参考 `monitors/subscriptions.example.json`（公众号：`{"mp_id":"..."}` 或 `{"share_url":"..."}`；scys：`{"project":"领域名"}`）。
     - 不要手搓抓取代码。
 - **运行**
   - 首跑（回填最近 30 天）：`python monitors/run.py --mode first --apply`
-  - 每日增量：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「跑一次 / 跑一下」等关键词即触发）——**含 scys 四领域新帖增量**（窗口/门槛以 `scripts/scys_projects.json` 为准，详见 `monitors/README.md`「scys 新帖监控」）
+  - 每日增量：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「跑一次 / 跑一下」等关键词即触发）——**含 scys 七领域新帖增量**（窗口/门槛以 `scripts/scys_projects.json` 为准，详见 `monitors/README.md`「scys 新帖监控」）
   - **并行模式（可选，2026-08-29 起）**：`python monitors/run.py --parallel --mode auto` 走三源并行 worker（B站/微信/scys 各一 worker，各自写独立 staging 文件 → 父进程合并，消除并发写 `pending_summaries`/`pending_refetch` 队列的竞态；父进程建一次 CDP 会话、各 worker 经 `from_endpoint` 复用，仅一次 kill Chrome）。串行 `--mode auto --apply` 仍是**默认且推荐的日常路径**（惰性 CDP：纯 B站/动态轮次 0 kill）。并行路径代码层 + 单测已通过；真环境端到端已验证（2026-09-02 三源并行实跑；边界与验证见 `docs/plans/PLAN-20260828-parallel-monitor.md` §边界矩阵 #11/#12）。
   - **新会话执行步骤（照做即一帆风顺）**：
     1. 直接运行 `python monitors/run.py --mode auto --apply`。
