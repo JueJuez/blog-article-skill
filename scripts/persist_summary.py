@@ -18,29 +18,16 @@ import argparse
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _load_env():
-    env_path = os.path.join(BASE_DIR, ".env")
-    try:
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-    except FileNotFoundError:
-        pass
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("json_path", help="子 Agent 写好的 {summarized_content, folder, ...} JSON 路径")
     ap.add_argument("--obsidian", action="store_true", help="同时写入 Obsidian（默认只写飞书）")
     ap.add_argument("--force", action="store_true", help="强制重写（绕过已总结去重闸门）")
     args = ap.parse_args()
-    _load_env()
     if BASE_DIR not in sys.path:
         sys.path.insert(0, BASE_DIR)
+    from shared.env import load_env
+    load_env()
     json_path = args.json_path
     try:
         d = json.load(open(json_path, "r", encoding="utf-8"))

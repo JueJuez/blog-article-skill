@@ -107,6 +107,9 @@
 | `shared.note_classify.infer_semantic_tags` | 四维度语义标签 | `save_summarized_article` |
 | `prompts.verifier.verify_note_mechanical` | 机械门禁（零 AI） | `save_summary_only`、`resum_save_batch` |
 | `articles.dedup` | 去重登记表 | 落盘链路 |
+| `shared.env.load_env` | 加载 `.env`（`force_obsidian` 控制是否强制只写本地） | 所有需要 .env 的 CLI |
+| `shared.note_audit.audit_one` | 单篇笔记抽检（四类判据 + A超长句取证） | `resum_audit_batch`、`audit_gate_signals` |
+| `shared.cdp_session.SharedCdpSession` | 登录态抓取会话 | scys / 飞书 / YouTube |
 | `shared.cdp_session.SharedCdpSession` | 登录态抓取会话 | scys / 飞书 / YouTube |
 
 ## 10. 能力索引：想做这件事时，先查有没有现成的
@@ -124,7 +127,7 @@
 | 长文分块 / 两阶段总结 | `shared.chunking.chunk_text` / `two_stage_summarize` | |
 | 判重 / 登记 / 跨源去重 | `articles.dedup.is_summarized` / `mark_summarized` / `find_cross_duplicate` / `normalize_title_for_match` | ⚠️ 判重用的标题归一叫 `normalize_title_for_match`（2026-09-18 改名），与 `shared.title_norm.normalize_title`（落盘标题清洗）**同名不同义，不可互换** |
 | 单篇笔记抽检（四类判据） | `shared.note_audit.audit_one` / `evidence` / `score_of` | 2026-09-18 下沉，resum_audit_batch 与 audit_gate_signals 共用 |
-| 加载 .env | `shared.env.load_env(force_obsidian=False)` | 2026-09-18 收敛：此前 scripts/ 下 5 份各自实现 |
+| 加载 .env | `shared.env.load_env(force_obsidian=False)` | 2026-09-18 收敛：此前 scripts/ 下 6 份各自实现（`_run_with_env` / `_save_summary_from_file` / `resum_save_batch` / `fetch_bili_by_bvids` / `land_scys_by_key` / `persist_summary`） |
 | 文件夹路由 | `shared.routing.resolve_folder` / `category_from_tags` | 落盘自动调用 |
 | 语义标签（四维度） | `shared.note_classify.infer_semantic_tags` / `extract_and_strip_topics` | 落盘自动调用 |
 | 笔记类型判定 | `prompts.classify.classify_note_type` | |
