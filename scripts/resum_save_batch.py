@@ -35,7 +35,8 @@ TOPIC_LINE_RE = re.compile(r"【核心主题词】\s*[:：]?\s*\S+")
 
 def main() -> int:
     args = sys.argv[1:]
-    if "--force" in args:
+    force = "--force" in args
+    if force:
         args = [a for a in args if a != "--force"]
     if len(args) < 2:
         print("用法: resum_save_batch.py <batch.json> <out_dir> [--force]")
@@ -77,15 +78,23 @@ def main() -> int:
         # 门禁（与生产一致）：H1/来源链接/URL + 极端字数；不过就不覆盖旧版好笔记
         src = it.get("source_path", "")
         source_chars = 0
+        source_text = ""
         if src and os.path.exists(src):
             try:
-                source_chars = count_note_words(open(src, encoding="utf-8").read())
+                _src_txt = open(src, encoding="utf-8").read()
+                source_chars = count_note_words(_src_txt)
+                source_text = _src_txt
             except Exception:
                 pass
         gate = verify_note_mechanical(content, note_type, source_url=url,
-                                     source_chars=source_chars)
+                                     source_chars=source_chars, source_text=source_text)
         if not gate["passed"]:
             failed.append((i, "GATE:" + ";".join(gate["issues"]), title))
+            continue
+        # 内容硬失败门禁（2026-09-18 与 save_summary_only 对齐）：锚点召回/照搬/结构缺失
+        # 确定性内容缺陷，拦下不覆盖旧版好笔记；--force 为逃生舱。
+        if gate.get("content_blockers") and not force:
+            failed.append((i, "CONTENT_GATE:" + ";".join(gate["content_blockers"]), title))
             continue
 
         _vault = os.getenv("OBSIDIAN_VAULT_PATH", "")

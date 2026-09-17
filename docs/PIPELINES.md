@@ -105,7 +105,7 @@
 | `articles.main.save_summary_only` | 去重闸门 + 机械门禁 + 路由 + 落盘 | `skill_main`、队列消费 |
 | `shared.routing.resolve_folder` | 文件夹路由 | 落盘链路 |
 | `shared.note_classify.infer_semantic_tags` | 四维度语义标签 | `save_summarized_article` |
-| `prompts.verifier.verify_note_mechanical` | 机械门禁（零 AI） | `save_summary_only`、`resum_save_batch` |
+| `prompts.verifier.verify_note_mechanical` | 机械门禁（零 AI）+ 内容硬失败分级（`content_blockers`：结构缺失/锚点召回不足/照搬未合成 → 拦 + retry；形态信号只软抽检）| `save_summary_only`、`resum_save_batch`、`videos.main._save_series_note`（2026-09-18 三处统一） |
 | `articles.dedup` | 去重登记表 | 落盘链路 |
 | `shared.env.load_env` | 加载 `.env`（`force_obsidian` 控制是否强制只写本地） | 所有需要 .env 的 CLI |
 | `shared.note_audit.audit_one` | 单篇笔记抽检（四类判据 + A超长句取证） | `resum_audit_batch`、`audit_gate_signals` |

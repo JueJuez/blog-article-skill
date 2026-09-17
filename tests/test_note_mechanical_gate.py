@@ -470,8 +470,9 @@ class TestContentSignalGate:
         r = self._v(note, note_type="structured")
         assert not any("结构缺失" in f for f in r["review_flags"])
 
-    def test_review_flags_propagate_to_save_result(self, tmp_path, monkeypatch):
-        # 内容判据命中后落盘，save_summary_only 结果须带回 review_flags（供父 Agent 抽检）
+    def test_content_blockers_reject_save_summary_only(self, tmp_path, monkeypatch):
+        # 2026-09-18 统一落盘门禁：结构缺失是确定性内容缺陷 → 硬拦 + 返回 retry 信号，
+        # 与 resum_save_batch / 系列课门禁对齐（此前队列路径只有机械门禁、内容判据仅软抽检）。
         monkeypatch.setattr(articles_main, "save_summarized_article",
                             lambda *a, **k: ("fmt", "f.md"))
         monkeypatch.setattr(dedup, "mark_summarized", lambda *a, **k: None)
@@ -480,5 +481,21 @@ class TestContentSignalGate:
         res = articles_main.save_summary_only({
             "summarized_content": _body(1500), "original_url": "https://g.com/cs1",
             "note_type": "structured"})
+        assert res.get("success") is False
+        assert res.get("message", "").startswith("VERIFIER_CONTENT_FAILED")
+        assert res.get("retry") is True
+        assert any("结构缺失" in f for f in res.get("issues", []))
+
+    def test_soft_form_signal_still_passes(self, tmp_path, monkeypatch):
+        # 形态信号（A超长句）只做软抽检，不拦盘，review_flags 透传给父 Agent 抽检
+        monkeypatch.setattr(articles_main, "save_summarized_article",
+                            lambda *a, **k: ("fmt", "f.md"))
+        monkeypatch.setattr(dedup, "mark_summarized", lambda *a, **k: None)
+        monkeypatch.setattr(dedup, "_CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(dedup, "_INDEX_FILE", str(tmp_path / "dedup.json"))
+        long_sent = "这是一句把很多内容塞进一句里没有标点的超长话" * 30  # >140 字单句
+        res = articles_main.save_summary_only({
+            "summarized_content": long_sent, "original_url": "https://g.com/cs2",
+            "note_type": ""})  # 空类型无必备模块 → 不触发结构缺失
         assert res.get("success") is True
-        assert any("结构缺失" in f for f in res.get("review_flags", []))
+        assert any("疑压碎" in f for f in res.get("review_flags", []))

@@ -26,8 +26,14 @@ def _body(n: int) -> str:
     return "字" * n
 
 
-# structured 区间 (1500, 3000)，1600 字落在区间内
-VALID_STRUCT_CONTENT = _body(NOTE_WORD_LIMITS["structured"][0] + 100)
+# structured 区间 (1500, 3000)，1600 字落在区间内；含必备模块（分层速览/正反例对照/我的想法）
+# 才满足「结构完整」，否则 2026-09-18 起结构缺失升为内容硬失败会拦盘。
+VALID_STRUCT_CONTENT = (
+    "速览：本集讲了三个核心要点。\n\n"
+    "正反例：正面这么做拿到结果，反面那么做踩了坑。\n\n"
+    "我的想法：可以迁移到自己项目里。\n\n"
+    + _body(NOTE_WORD_LIMITS["structured"][0] + 100)
+)
 
 
 class _StubOutput:

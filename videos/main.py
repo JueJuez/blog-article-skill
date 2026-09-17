@@ -209,6 +209,15 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
                        title=base_name, issues=gate["issues"],
                        warnings=gate.get("warnings", []))
         raise ValueError("VERIFIER_FAILED: " + "；".join(gate["issues"]))
+    # 内容硬失败门禁（2026-09-18 与 save_summary_only / resum_save_batch 对齐）：
+    # 结构缺失确定性内容缺陷 → 拦下不落盘。注：本函数未透传 source_text，
+    # 锚点召回/照搬两类需原文的内容判据此处不触发（系列维护场景源常在，待透传）。
+    if gate.get("content_blockers"):
+        from shared.gate_blockers import log_gate_block
+        log_gate_block(source="series", note_type=note_type, url=url,
+                       title=base_name, issues=gate["content_blockers"],
+                       warnings=gate.get("warnings", []))
+        raise ValueError("VERIFIER_CONTENT_FAILED: " + "；".join(gate["content_blockers"]))
     formatted = format_note_with_prompt(
         content=content, author=author, url=url,
         tags=tags, add_metadata=True, publish_time=publish_time

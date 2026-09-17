@@ -725,6 +725,20 @@ def save_summary_only(input_data: dict) -> dict:
         return {'success': False, 'message': 'VERIFIER_FAILED:' + '；'.join(_gate["issues"]),
                 'issues': _gate["issues"],
                 'compression_warnings': _gate.get("compression_warnings", [])}
+    # 内容硬失败门禁（2026-09-18 统一落盘）：锚点召回缺失/逐字照搬/结构缺失 = 确定性内容缺陷，
+    # 与机械门禁同权拦盘，并交外层执行模型带反馈重试（retry 信号）。形态信号（A/C/D）只做软抽检，
+    # 不拦盘。force=True 为逃生舱（同机械门禁）。队列路径此前只有机械门禁，内容判据是软抽检，
+    # 这道闸把它和重抓路径（resum_save_batch）对齐为「内容缺陷也拦 + 重试」。
+    if _gate.get("content_blockers") and not input_data.get("force", False):
+        _cb = _gate["content_blockers"]
+        print("⛔ 内容门禁拦截：" + "；".join(_cb))
+        log_gate_block(source="queue", note_type=input_data.get('note_type', ''),
+                       url=original_url or "", title=original_title or "",
+                       issues=_cb, warnings=_gate.get("warnings", []),
+                       compression_warnings=_gate.get("compression_warnings", []))
+        return {'success': False, 'message': 'VERIFIER_CONTENT_FAILED:' + '；'.join(_cb),
+                'issues': _cb, 'retry': True,
+                'compression_warnings': _gate.get("compression_warnings", [])}
     # L8 修复（2026-09-03）：自带总结的保存路径 folder 为空时自动走统一路由器，
     # 与 skill_main 的 L7 手贴 URL 路径对齐——「落哪」由代码决定，不靠调用方记性。
     # 背景：批量总结曾有 78 篇因调用方漏传 folder 全部落进【待归类】。

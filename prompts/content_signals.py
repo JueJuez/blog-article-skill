@@ -332,6 +332,32 @@ def verbatim_ratio(note: str, source: str, n: int = VERBATIM_N) -> float:
 
 # ---------------------------------------------------------------- 汇总
 
+# 内容判据分级：哪些算「硬失败（落盘门禁应拦 + 触发重试）」，哪些只做「软抽检（不拦盘）」。
+# 设计：硬失败 = 确定性、可修、误报低的核心缺陷；形态信号（压碎/堆砌/注水）误报相对高，
+# 且属表达层，交给 DISPATCH_PROMPT / QUALITY_GATE_SELFCHECK 软提示自修，不进硬拦。
+_HARD_FLAG_KEYS = (
+    "疑遗漏核心事实",   # ① 硬锚点召回 < 阈值（仅 applicable 时由调用方决定是否计入）
+    "疑照搬未合成",     # ④ 逐字搬运未合成
+    "结构缺失",         # ③ 模板必备模块缺失
+)
+
+
+def classify_content_flags(flags: list) -> dict:
+    """把 content_flags 的 flags 分成硬失败 / 软抽检两类。
+
+    Returns: {"hard": [...], "soft": [...]}
+    - hard：落盘门禁应拦 + 交外层模型带反馈重试（源于 ①锚点召回 / ④照搬 / ③结构缺失）。
+    - soft：只交父 Agent 抽检，不拦盘（形态信号 ②A/C/D）。
+    """
+    hard, soft = [], []
+    for f in flags:
+        if any(k in f for k in _HARD_FLAG_KEYS):
+            hard.append(f)
+        else:
+            soft.append(f)
+    return {"hard": hard, "soft": soft}
+
+
 def content_flags(note: str, source: str = "", note_type: str = "",
                   min_anchors: int = MIN_ANCHORS,
                   recall_threshold: float = RECALL_THRESHOLD) -> dict:

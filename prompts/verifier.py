@@ -143,6 +143,9 @@ def verify_note_mechanical(note: str, note_type: str = "", source_url: str = "",
     cf = CS.content_flags(note, source_text or "", note_type)
     review_flags.extend(cf["flags"])
     review_details = cf["details"]
+    # 硬失败分级（2026-09-18 统一落盘门禁）：锚点召回/照搬/结构缺失 = 应拦 + 触发重试；
+    # 形态信号（A超长句/C逗号密度/D相邻段重复）只做软抽检。落盘层据 content_blockers 决定是否拦。
+    content_blockers = CS.classify_content_flags(cf["flags"])["hard"]
 
     compression_warnings = detect_compression_issues(note)
     warnings.extend(compression_warnings)
@@ -154,5 +157,6 @@ def verify_note_mechanical(note: str, note_type: str = "", source_url: str = "",
         "compression_warnings": compression_warnings,
         "review_flags": review_flags,
         "review_details": review_details,
+        "content_blockers": content_blockers,
         "word_count": count,
     }
