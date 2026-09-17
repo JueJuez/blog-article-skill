@@ -48,6 +48,7 @@ def main():
     ap.add_argument("--ids-file", default="", help="JSON 数组文件路径")
     ap.add_argument("--limit", type=int, default=0, help="最多抓几条（探针用）")
     ap.add_argument("--no-external", action="store_true", help="不抓外链知识库（只主文）")
+    ap.add_argument("--force", action="store_true", help="忽略 refetch_state 的 done，强制重抓")
     args = ap.parse_args()
 
     ids: list[str] = []
@@ -64,8 +65,9 @@ def main():
 
     state = json.loads(STATE_PATH.read_text(encoding="utf-8")) if STATE_PATH.exists() else {"done": []}
     done = set(str(x) for x in state.get("done", []))
-    todo = [i for i in ids if i not in done]
-    print(f"[scys-refetch] 已完成 {len(done)}，待抓 {len(todo)}")
+    todo = ids if args.force else [i for i in ids if i not in done]
+    print(f"[scys-refetch] 已完成 {len(done)}，待抓 {len(todo)}" +
+          ("（--force 覆盖）" if args.force else ""))
     if not todo:
         return
 

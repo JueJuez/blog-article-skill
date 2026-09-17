@@ -558,22 +558,29 @@ class ScysBatchFetcher:
         return internal, external
 
     def _fetch_external(self, page, url: str) -> dict:
-        """外部知识库：滚动到底再抓（懒加载）。"""
+        """外部知识库（飞书 wiki/docx 等）：渐进滚动多轮触发分块懒加载后再取文本。
+
+        飞书 wiki 正文按滚动位置分块注入 DOM，直接滚到底会漏中间块，
+        故从顶到底步进滚动两轮（每 900px 等 500ms 让块渲染），滚到底后
+        高度若再增长则继续滚，直到高度稳定。
+        """
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         page.wait_for_timeout(5000)
-        for _ in range(15):
-            grew = page.evaluate(
-                """() => {
-                    const h = document.body.scrollHeight;
-                    window.scrollTo(0, h);
-                    return h;
-                }"""
-            )
-            page.wait_for_timeout(1500)
-            h2 = page.evaluate("() => document.body.scrollHeight")
-            if h2 == grew:
-                break
-        page.wait_for_timeout(1000)
+        for _round in range(2):
+            page.evaluate("() => window.scrollTo(0, 0)")
+            page.wait_for_timeout(2000)
+            y, h = 0, page.evaluate("() => document.body.scrollHeight")
+            while y < h:
+                y += 900
+                page.evaluate(f"() => window.scrollTo(0, {y})")
+                page.wait_for_timeout(500)
+                h2 = page.evaluate("() => document.body.scrollHeight")
+                if h2 > h:
+                    h = h2  # 懒加载使页面变长，继续滚
+            page.wait_for_timeout(2500)
+        # 兜底：若滚回顶部后高度又增长，再多滚一轮
+        page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+        page.wait_for_timeout(2500)
         title = page.title()
         body = page.evaluate("() => document.body.innerText")
         return {"url": url, "title": title, "body": body}
