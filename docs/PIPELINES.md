@@ -184,6 +184,8 @@
 `scripts/triage_fetch_failures.py`（抓取失败只读分类）、`monitors/status_cli.py`（运行状态查询）、
 `scripts/audit_pipeline_coverage.py`（本文覆盖自检）、`scripts/audit_duplicate_funcs.py`（重复实现自检：
 **写新函数前跑一次**，看是不是已经有现成的 / 能不能合并）。
+`scripts/pipeline_gate.py`（管线门禁真源：未登记 CLI + 新增完全重复 → 拦截；由
+`tests/test_pipeline_gate.py` 断言强制生效，见 §12）。
 
 **落盘辅助（单篇场景）**
 `scripts/persist_summary.py --obsidian`（接单持久化，含去重+门禁+标签）、
@@ -205,7 +207,6 @@
 它们内部有大量互相复制的实现（`_find_lark_cli` / `run_cli` / `list_children` / `find_monitor_root` /
 `collect_articles` / `fetch_body` / `is_overview`…），是历史堆积**不是范例**。
 需同类能力先看 `shared/`、`articles/` 下的现行实现。
-`feishu_to_obsidian.py`、`migrate_feishu_structure.py`、`migrate_obsidian_vault.py`、`migrate_watchdog.py`、
 `feishu_to_obsidian.py`、`migrate_feishu_structure.py`、`migrate_obsidian_vault.py`、`migrate_watchdog.py`、
 `fix_feishu_titles.py`、`probe_feishu_titles.py`、`rename_list.py`、`promote_existing.py`、
 `find_duplicates.py`、`delete_duplicates.py`、`scan_feishu_tree.py`、`list_overviews.py`、
@@ -237,3 +238,9 @@
   并把新函数补进 §10。
 - 定期自检覆盖度：`python scripts/audit_pipeline_coverage.py`（列出所有 CLI 入口里本文没登记的）。
   它有遗漏不等于文档正确——命中只说明「被提到过」，描述准不准仍要人看。
+- **管线门禁（2026-09-18）**：新建「未登记到本文的 CLI 入口」或「基线 `ALLOWED_DUP` 之外的完全
+  重复函数」会被拦截。这意味着：**新增任何 CLI / 复用任何现成函数，都要先在本文（登记入口）
+  或 `scripts/pipeline_gate.py`（基线）落地，否则 `tests/test_pipeline_gate.py` 跑红。**
+  门禁逻辑单点维护在 `scripts/pipeline_gate.py`（`check()` 返回问题清单），由
+  `tests/test_pipeline_gate.py` 断言强制生效，配合纪律「改动后必跑全量测试」。
+  **纯项目内机制，不依赖 git hook / 任何 git 配置，换机克隆零接线。**
