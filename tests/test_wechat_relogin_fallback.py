@@ -33,7 +33,8 @@ def test_fallback_triggers_relogin():
         return [{"id": "abc123", "title": "测试文章", "publishTime": 1700000000,
                  "url": "https://mp.weixin.qq.com/s/abc123", "source": "wechat"}]
 
-    with mock.patch.object(run, "trigger_relogin", m_rel), \
+    with mock.patch.object(run, "WECHAT_SOURCE_ENABLED", True), \
+         mock.patch.object(run, "trigger_relogin", m_rel), \
          mock.patch.object(run, "_wait_for_token_refresh", m_wait), \
          mock.patch.object(wechat.WereadClient, "is_token_valid", return_value=True), \
          mock.patch.object(wechat.WechatSource, "discover", side_effect=discover_side_effect):
@@ -56,7 +57,8 @@ def test_valid_token_no_relogin():
     def discover_ok(state, first_run_limit=50, mode="auto"):
         return [{"id": "ok1", "title": "t", "publishTime": 1, "url": "u", "source": "wechat"}]
 
-    with mock.patch.object(run, "trigger_relogin", m_rel), \
+    with mock.patch.object(run, "WECHAT_SOURCE_ENABLED", True), \
+         mock.patch.object(run, "trigger_relogin", m_rel), \
          mock.patch.object(run, "_wait_for_token_refresh", m_wait), \
          mock.patch.object(wechat.WereadClient, "is_token_valid", return_value=True), \
          mock.patch.object(wechat.WechatSource, "discover", side_effect=discover_ok):
@@ -80,7 +82,8 @@ def test_transient_401_no_relogin():
             raise RuntimeError("401 transient")
         return [{"id": "t1", "title": "t", "publishTime": 1, "url": "u", "source": "wechat"}]
 
-    with mock.patch.object(run, "trigger_relogin", m_rel), \
+    with mock.patch.object(run, "WECHAT_SOURCE_ENABLED", True), \
+         mock.patch.object(run, "trigger_relogin", m_rel), \
          mock.patch.object(run, "_wait_for_token_refresh", m_wait), \
          mock.patch.object(wechat.WereadClient, "is_token_valid", return_value=True), \
          mock.patch.object(wechat.WechatSource, "discover", side_effect=discover_flaky):
@@ -100,7 +103,8 @@ def test_preckeck_invalid_triggers_relogin():
     def discover_ok(state, first_run_limit=50, mode="auto"):
         return [{"id": "v1", "title": "t", "publishTime": 1, "url": "u", "source": "wechat"}]
 
-    with mock.patch.object(run, "trigger_relogin", m_rel), \
+    with mock.patch.object(run, "WECHAT_SOURCE_ENABLED", True), \
+         mock.patch.object(run, "trigger_relogin", m_rel), \
          mock.patch.object(run, "_wait_for_token_refresh", m_wait), \
          mock.patch.object(wechat.WereadClient, "is_token_valid", return_value=False), \
          mock.patch.object(wechat.WechatSource, "discover", side_effect=discover_ok):
@@ -112,9 +116,32 @@ def test_preckeck_invalid_triggers_relogin():
     print("[PASS] test_preckeck_invalid_triggers_relogin")
 
 
+def test_disabled_source_skips_wechat():
+    """WECHAT_SOURCE_ENABLED=0（代理源站长期不可用时的停摆开关）→ 不探代理、不弹码、返回空。
+
+    2026-09-18：weread 代理源站 502（8-28 起）+ 本机被 Steam++ 劫持解析到 127.0.0.1，
+    公众号源停用。此开关保证每日增量不在死链上空转，同时 B站/scys 照常。
+    """
+    m_rel = mock.MagicMock(return_value="fake_qr.png")
+    m_discover = mock.MagicMock(return_value=[{"id": "should-not-happen"}])
+
+    with mock.patch.object(run, "WECHAT_SOURCE_ENABLED", False), \
+         mock.patch.object(run, "trigger_relogin", m_rel), \
+         mock.patch.object(wechat.WereadClient, "is_token_valid", return_value=False), \
+         mock.patch.object(wechat.WechatSource, "discover", m_discover):
+        subs = {"wechat": [{"share_url": "u", "name": "n"}]}
+        result = run.discover_all(subs, {"sources": {}}, mode="auto")
+
+    assert m_rel.call_count == 0, "停用时不应触发重登弹码"
+    assert m_discover.call_count == 0, "停用时不应调用代理 discover"
+    assert result == [], f"停用时应返回空列表，实际 {result}"
+    print("[PASS] test_disabled_source_skips_wechat")
+
+
 if __name__ == "__main__":
     test_fallback_triggers_relogin()
     test_valid_token_no_relogin()
     test_transient_401_no_relogin()
     test_preckeck_invalid_triggers_relogin()
+    test_disabled_source_skips_wechat()
     print("\n✅ 全部回归测试通过")

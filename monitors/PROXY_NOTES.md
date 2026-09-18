@@ -97,3 +97,36 @@
 - **代码已边界化**：默认 `since = 今天 - 35 天`，`WECHAT_BACKFILL_PAGES` 从 200 降到 20，退避重试从 20 次×60s 降到 5 次×30s，深历史驱动 `backfill_deep.py` 已删除。
 - recurring 自动化「公众号历史回溯续批」保持 **PAUSED**。
 - 结论：深历史回溯**投入产出比过低且不可靠**，只补最近稳定窗口。若将来确需深历史，先 `--reset-backfill <号> --since <远日期>` 并自行承担漏段风险。
+
+## 9. 代理死亡 + 本机劫持（2026-09-18 确诊 · 公众号源已停用）
+
+用户报「微信代理连续半个月不可用」。实测为**两层故障叠加**：
+
+### 9.1 本机 DNS 劫持（请求根本没出网）
+- `socket.gethostbyname('weread.111965.xyz')` → **127.0.0.1**；但 `C:\Windows\System32\drivers\etc\hosts`
+  里**没有**这一行（68 行劫持全是 Steam++ 的 steam/twitch/ubisoft）。
+- `0.0.0.0:443` 被 **`Steam++.Accelerator.exe`**（Watt Toolkit 加速服务）监听，对本站返回自签证书
+  `issuer=CN=SteamTools Certificate, O=BeyondDimension` → requests 抛 `CERTIFICATE_VERIFY_FAILED`。
+- 后果：`is_proxy_reachable()` 失败 → 代码按设计判定「代理不可达、过期判定不可信」→ **不弹码、直接跳过**，
+  表现为 `article=0 / status=ok` 的**静默零结果**，连日志都只有一行 warning。
+
+### 9.2 源站真的 502（绕过劫持仍不可用）
+- 绕过本地解析直连真 IP：`curl --resolve weread.111965.xyz:443:172.67.173.210`（真 IP 由公共 DNS
+  223.5.5.5 / 119.29.29.29 查得，Cloudflare `172.67.173.210` / `104.21.47.228`）。
+- 证书校验**通过**，但 `/`、`/api/v2/login/platform`、`/api/v2/platform/mps/*/articles` **全部 502**
+  （Cloudflare `error code: 502`），两个 IP 皆然 → **CF 正常、回源失败 = 后端源站已死**。
+- 死亡时间：`.wechat_auth.json` mtime 与 `state.json` 四个 wechat 源 `last_check` 全部冻结在
+  **2026-08-28 18:23**（JWT iat 08-28 18:19）→ 实际 **21 天**，比用户感知的「半个月」更早。
+
+### 9.3 处置（2026-09-18 用户拍板：暂时搁置）
+- 新增**总开关** `WECHAT_SOURCE_ENABLED`（`monitors/run.py`，**默认 0 = 停用**）：停用后不探代理、
+  不弹二维码、不重试，`--backfill` 直接拒绝执行；B站 / scys 七域照常。
+  源站恢复后 `WECHAT_SOURCE_ENABLED=1 python monitors/run.py --mode auto --apply` 即复开。
+- **只停「列表发现」**：手工贴 `mp.weixin.qq.com/s/<aid>` 链接落盘不受影响（正文直连仍可用）。
+- 若将来换源：改 `WEREAD_PLATFORM_URL`（`monitors/wechat.py:25` 已支持覆盖）+ 置 `WECHAT_SOURCE_ENABLED=1`。
+- 未处理：本机 DNS 劫持（需退出 Steam++ 或关其网络加速）。**源站活着之前不急着处理**，
+  否则恢复了也还是连不上——两个都得修才有用。
+
+### 9.4 教训
+- ⚠️ 「代理不可达」被设计成静默跳过，多轮零结果**无任何告警**，故障能被掩盖三周。
+  日后若要复开，应补「连续 N 轮公众号 0 结果」的显式告警（本次未做）。

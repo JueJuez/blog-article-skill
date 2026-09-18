@@ -150,6 +150,11 @@ DEFAULT_CATEGORY = os.environ.get("MONITOR_DEFAULT_CATEGORY", "投资交易")
 # 公众号文章连续抓取正文为空（限流空页 / 微信扫码墙 / 文章已删除）达到此次数，
 # 判定为「不可抓取」，移出重试队列并明确上报（不再无限重试刷虚假告警）。可调。
 WECHAT_MAX_REFETCH = int(os.environ.get("WECHAT_MAX_REFETCH", "3"))
+# 公众号源总开关。置 0 = 整个微信公众号「发现新文」链路停摆（不再探代理、不弹二维码、
+# 不尝试补抓），B站/scys 照常。用于代理源站长期不可用时把每日增量从无意义的等待中摘出来。
+# 2026-09-18 起默认 0：weread 代理源站 502（8-28 起死），详见 monitors/PROXY_NOTES.md §9。
+# 注意：只停「列表发现」；手工贴 mp.weixin.qq.com 链接落盘不受此开关影响（正文直连仍可用）。
+WECHAT_SOURCE_ENABLED = os.environ.get("WECHAT_SOURCE_ENABLED", "0") == "1"
 # ---- scys（生财有术）日常监控（「跑一下」第三源，2026-08-20 接入） ----
 # 复用 scripts/scys_batch_fetch.py 入口按领域增量抓新帖。窗口默认 7 天而非 1 天：
 # 新帖常在发布数日后才被标精华（互动也要时间发酵），窗口太窄会永久漏掉
@@ -647,6 +652,11 @@ def discover_all(subs: dict, state: dict, mode: str = "auto",
     #      不再打 list_articles（过期返回 200 空、失明）。并新增兜底：预检误判有效、
     #      但全部源零结果且持续 401 时，仍触发重登并刷新后重试一轮——根治「过期却不弹码」。
     wechat_subs = subs.get("wechat", [])
+    if wechat_subs and not WECHAT_SOURCE_ENABLED:
+        # 源站级停摆：不探代理、不弹码、不重试，避免每日增量在死链上空转。
+        print("⏸ [微信读书] 公众号源已停用（WECHAT_SOURCE_ENABLED=0，代理源站 502 自 2026-08-28 起）。"
+              "B站/scys 照常；源站恢复后设 WECHAT_SOURCE_ENABLED=1 即可复开。", file=sys.stderr)
+        wechat_subs = []
     if wechat_subs:
         # 选一个真实 share_url 作为探针：resolve_mp(force=True) 对过期 token 稳定 401，
         # 而 list_articles 对过期 token 返回 200 空，无法用于失效检测。
@@ -1397,6 +1407,10 @@ def cmd_backfill(args, subs: dict, state: dict) -> None:
         return
 
     since_ts = bf._parse_since(since)
+    if not WECHAT_SOURCE_ENABLED:
+        print("❌ 公众号源已停用（WECHAT_SOURCE_ENABLED=0，代理源站 502 自 2026-08-28 起），"
+              "回溯无法执行。源站恢复后设 WECHAT_SOURCE_ENABLED=1 再跑。", file=sys.stderr)
+        return
     # 设 env，复用 discover_all：只跑微信（bilibili=[] 避免混入日常动态/视频），
     # 范围限定到 names，窗口改 since，每批上限 = batch。
     os.environ["WECHAT_BACKFILL"] = "1"
