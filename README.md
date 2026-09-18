@@ -394,7 +394,7 @@ blog-article-skill/
 │   └── classify.py           # 笔记类型分类
 ├── monitors/                 # 订阅监控（B站UP主 / 公众号 / scys 领域）：发现新内容→AI总结→默认写本地 Obsidian（2026-09-04 起，飞书关）
 │   ├── bilibili.py           # B站源（官方 API + WBI 签名，带登录 Cookie）
-│   ├── wechat.py             # 公众号源（经 weread 代理发现新文）；token 数小时失效，交互式弹码续期、headless 跳过
+│   ├── wechat.py             # 公众号源（**当前停用**：原 weread 代理已死；接替方案「微信读书直连 cover」待接入）
 │   ├── run.py                # CLI + 调度入口（--apply 直接调总结管线）
 │   ├── run_source.py         # 单源补跑（bili/wechat/scys 各自独立消费 pending_refetch）
 │   ├── run_parallel.py       # 三源并行 worker（可选路径，串行 --mode auto 仍是日常默认）
@@ -402,7 +402,7 @@ blog-article-skill/
 │   ├── state.py              # 每源去重状态 + 防膨胀裁剪
 │   ├── ad_filter.py          # 广告过滤（整篇纯广告 skip / 干货夹广告净化）
 │   ├── subscriptions.example.json  # 订阅配置模板（subscriptions.json 本体已 gitignore）
-│   ├── PROXY_NOTES.md        # weread 代理的坑（乱序分片/空窗/publishTime 伪造）——回溯前必读
+│   ├── PROXY_NOTES.md        # weread 代理的坑 + 死亡诊断 + 直连接替方案指针（动公众号前必读）
 │   └── README.md             # 监控运营文档 + 已知坑
 ├── scripts/                  # 运维脚本（抓取/落地/去重/修复，清单以目录为准）
 │   ├── scys_batch_fetch.py   # scys 按领域批量抓取（补齐/增量共用）

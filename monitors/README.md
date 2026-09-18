@@ -8,7 +8,7 @@
 | 文件 | 职责 |
 |------|------|
 | `state.py` | 每源去重状态（`state.json`），per-source 裁剪防膨胀 |
-| `wechat.py` | 公众号源（经 `weread.111965.xyz` 转发发现新文）；token 数小时失效，交互式弹码续期、headless 跳过 |
+| `wechat.py` | 公众号源（**当前停用** `WECHAT_SOURCE_ENABLED=0`：原 `weread.111965.xyz` 转发已死；接替方案「微信读书直连 cover」已验证、**待接入**，见 `references/weread-direct-source.md`） |
 | `bilibili.py` | B站UP主源（官方 API + WBI 签名，带登录 Cookie） |
 | `ad_filter.py` | 广告过滤：整篇纯广告 skip / 干货夹广告净化保留 |
 | `run.py` | CLI + 调度入口（`--apply` 直接调总结管线）；`--apply` 时按 `subscriptions.json` 的 `scys` 列表逐领域子进程跑 `scripts/scys_batch_fetch.py` 增量抓新帖（见下方「scys 新帖监控」） |
@@ -42,7 +42,7 @@
 
 1. **运行**：`python monitors/run.py --mode auto --apply`（仅看发现列表就去掉 `--apply`）。
 2. **发现阶段（discover_all）**：
-   - 公众号：`weread` 代理拿列表（仅元数据）→ 时间窗口 + 去重 + 广告过滤；token 失效才弹码等扫码（≤180s），**token 有效时空轮会自动退避重试**，不会卡。
+   - 公众号：**当前停用**（原 `weread` 代理已死，`WECHAT_SOURCE_ENABLED=0`）。接替方案为微信读书直连 `/api/mp/cover`：每号取最新 1 篇 + 原文直链正文，**无需签名、4 请求/天**，已端到端验证、**待接入**，详见 `references/weread-direct-source.md`。旧行为（代理拿列表 → 时间窗口 + 去重 + 广告过滤；token 失效弹码扫码）在代理复活前不适用。
    - B站：官方 API 一步拿视频 + 动态，号间 30±5s 退避；某号异常只跳过该号、其他号照跑。
 3. **抓取 + 总结（apply_summaries）**：
    - 公众号文章：`fetch_web_content` **直连微信**抽正文（`WECHAT_GAP=6s`+抖动防限流），异常/空页进 `pending_refetch` 下次重抓；直连撞墙的批次自动合并走一次 CDP 批量会话抓正文。
@@ -101,7 +101,9 @@
    - **防重复弹窗**：`trigger_relogin()` 带跨进程互斥锁（Windows `msvcrt.locking`）+ 5 分钟幂等 TTL，多进程同时触发（如手动 + 定时重复跑）也只弹一个码、只起一个轮询 daemon（PID 锁定于 `.poll_daemon.pid`）。
    - **失败容忍**：`poll_login` API 偶发超时/5xx 时，`_auth.py` 指数退避重试（3s→6s→…→30s，连续 10 次失败退出），不会因一次抖动就放弃。
    - ⚠️ 同一二维码（UUID）被微信扫码后，weread 服务端会很快销毁旧 UUID（再 poll 返回 500）。若扫完仍 0 条，优先查当日滚动日志 `.poll_daemon.YYYYMMDD.log` 是否捕获到 `[poll-success]`；未捕获则重新触发一次让 `run.py` 生成新二维码再扫。
-3. **自建 wewe-rss 救不了公众号稳定性**：其 `PLATFORM_URL` 默认仍指向同一转发服务器，脏活没变。
+3. **自建 wewe-rss / 换镜像域名都救不了公众号**：其 `PLATFORM_URL` 指向的转发服务部署在
+   **Deno Deploy Classic**（平台 2026-07-20 sunset），`111965` 与 `965111` 两个域名已同时死亡
+   （502 / 404）。出路是**微信读书直连源**（自建、不经第三方），见 `references/weread-direct-source.md`。
 4. **B站 `-352` 真因**：缺 `dm_img_*` WebGL 指纹 + 无登录态 + `web_location` 写错；已带 `BILI_COOKIE` + 指纹修复。付费 / 粉丝可见内容 `code=-404/-403` 直接跳过不重试。
 5. **`state.json` 膨胀**：`mark_seen` 按源裁剪到 `STATE_KEEP`（默认 1000，首跑单源约 100 ID，留 10× 余量）。上限取决于"窗口内 ID 数"，与"运行次数"无关——每日跑两遍不会撑爆。
 6. **健康度可观测**：`run.py --apply` 末尾打印统计行（视频/动态/速览/广告跳过/scys重复/限流待重试/错误），监控异常一眼可见。
@@ -163,7 +165,14 @@ python monitors/run.py --mode first --apply
 
 ## 公众号历史回溯（续批）
 
-把某公众号**最近稳定窗口内**漏抓的文章补回来。weread 免费代理可稳定返回约 **最近 30~35 天**的文章（哥飞 23 篇 raw 全落在 2026-07-24~08-19，即 27 天内）；超过此边界代理乱序分片 + `publishTime` 伪造，极不可靠，**不再补**。如需深挖请显式 `--since`，但预期会漏段（详见 `PROXY_NOTES.md`）。
+把某公众号**最近稳定窗口内**漏抓的文章补回来。
+
+⚠️ **当前不可用**：本能力依赖的 weread 代理已死（2026-08-28 起），`WECHAT_SOURCE_ENABLED=0` 时
+`--backfill` 直接拒绝执行。下方为**历史机制描述**，保留供参考。
+注意：接替的「微信读书直连源」**只有最新 1 篇、没有历史列表**（列表接口需 `x-wrpa-0` 签名且未打通），
+因此即便接入直连源，回溯能力也需另寻路径（如 `references/wechat-mp-sources.md` §6 的路线三）。
+
+weread 免费代理（历史）可稳定返回约 **最近 30~35 天**的文章（哥飞 23 篇 raw 全落在 2026-07-24~08-19，即 27 天内）；超过此边界代理乱序分片 + `publishTime` 伪造，极不可靠，**不再补**。如需深挖请显式 `--since`，但预期会漏段（详见 `PROXY_NOTES.md`）。
 
 ### 核心机制
 

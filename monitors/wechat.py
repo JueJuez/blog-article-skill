@@ -8,6 +8,13 @@
         -> [{id, title, picUrl, publishTime}]
 请求头: Authorization: Bearer {token}, xid: {vid}
 历史文章 = 翻页同一接口（page+1），直到返回 <20 条。
+
+⚠️ 2026-09-18 起本源已停用：代理 `weread.111965.xyz`（备用 `965111.xyz`）随
+Deno Deploy Classic sunset 一并死亡，`WECHAT_SOURCE_ENABLED` 默认 0。
+接替方案是**微信读书直连源**——`GET weread.qq.com/api/mp/cover?bookId=MP_WXS_xxx`
++ 自有 cookie，**无需签名**，每号取最新 1 篇（`reviewId` 后段即原文直链 token）。
+实测结论（含 -2041 真因 = 缺 `x-wrpa-0` 签名、风控铁律）见
+`references/weread-direct-source.md`；外部资料见 `references/wechat-mp-sources.md`。
 """
 import os
 import sys

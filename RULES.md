@@ -26,10 +26,10 @@
 | **RULES.md（本文件）** | 规则 + 地图索引（规则唯一来源） | ❌ 只放条目与指针 |
 | `SKILL.md` | 技能触发条件 + 调用入口 + 对话输出规范（面向「怎么用」）。**实际位置** `.workbuddy/skills/blog-article-skill/SKILL.md`（该目录已 gitignore，不进仓库） | 少量用法，规则指向 RULES.md |
 | `AGENTS.md` | **平台无关真源入口**（跨 WorkBuddy / Cursor / Claude / Codex / Copilot / 裸 API 通用） | 能力清单 + 接口速查 + 配置引导 + 各平台加载方式，指向本文件 |
-| `references/` | 专项详细文档。现行 7 篇：`config.md`（全部环境变量）/ `login-required-cdp-workflow.md`（需登录态抓取唯一路径 + 故障表）/ `scys-fetch-sop.md`（scys 抓取 SOP）/ `youtube-cdp-workflow.md`（YouTube CDP 抓取）/ `feishu-cli.md`（飞书 CLI 4 坑）/ `glossary.md`（术语表，新 Agent 先读）/ `testing_rules.md`（TDD 流程） | ✅ 放深入细节 |
+| `references/` | 专项详细文档。现行 **9 篇**：`config.md`（全部环境变量）/ `login-required-cdp-workflow.md`（需登录态抓取唯一路径 + 故障表）/ `scys-fetch-sop.md`（scys 抓取 SOP）/ `youtube-cdp-workflow.md`（YouTube CDP 抓取）/ `feishu-cli.md`（飞书 CLI 4 坑）/ `glossary.md`（术语表，新 Agent 先读）/ `testing_rules.md`（TDD 流程）/ `weread-direct-source.md`（**微信读书直连源·本项目实测真源**）/ `wechat-mp-sources.md`（**公众号抓取外部资料索引**：博客/开源项目/六条路线） | ✅ 放深入细节 |
 | `references/PRD.md`、`references/scys-cdp-lessons-learned.md` | **已归档桩文件**：原处仅留「已归档 + 指向 `_archive/`」的 5 行指针，正文在 `_archive/PRD.md` / `_archive/scys-cdp-lessons-learned.md`。**勿照做**（PRD 是 pre-监控时期；lessons 已 SUPERSEDED） | — |
 | `monitors/README.md` | 订阅监控的运营文档 + 已知坑（三源机制 / 双队列 / 系列课 / 公众号回溯） | ✅ 放运营细节 |
-| `monitors/PROXY_NOTES.md` | weread 代理的坑（乱序分片 / 空窗 / publishTime 伪造）——做公众号回溯前必读 | ✅ 放细节 |
+| `monitors/PROXY_NOTES.md` | weread 代理的坑（乱序分片 / 空窗 / publishTime 伪造）+ **代理死亡诊断** + 直连接替方案指针（§11）——动公众号前必读 | ✅ 放细节 |
 | `tools/project_import/SKILL.md` | **能力 4（开源项目归档）的真源**：激活条件 + 完整流程 + 子代理工作流 | ✅ 放细节 |
 | `docs/decisions/` | grill_rules 的「产出 A：决策清单」存放地（`DECISION-YYYYMMDD-{slug}.md`，≤15 行） | ✅ 极轻量 |
 | `docs/plans/`、`docs/*.md` | 执行计划与运维手册（并行监控 runbook 等） | ✅ 放细节 |

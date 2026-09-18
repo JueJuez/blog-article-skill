@@ -11,6 +11,7 @@ notes/
 monitors/state.json
 monitors/backfill_targets.json
 monitors/.wechat_auth.json
+monitors/.weread_cookie
 monitors/.login_qr.png
 monitors/.login_uuid.json
 monitors/subscriptions.json
