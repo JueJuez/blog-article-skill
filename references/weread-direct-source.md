@@ -251,6 +251,10 @@ https://mp.weixin.qq.com/s/<token>     ← 原文直链，项目既有 fetch_web
 
 ## 4. 凭据（cookie）
 
+> ⚠️ **生产路径（monitors/weread.py）不使用本节导出文件**：页内 fetch 的登录 cookie
+> 由浏览器实时携带，续期 = CDP Chrome 里重新扫码（自动弹码流程见 §5.3），
+> 无任何落盘凭据要更换。下方导出工具仅供探针/requests 直调实验用。
+
 - 落盘位置：`monitors/.weread_cookie`（已加入 `.gitignore`，绝不入库）
 - 获取：`python scripts/weread_cookie_export.py --test MP_WXS_2399233620`
   （连现有 CDP Chrome 取 weread 域 cookie 并落盘；`--test` 会额外打 1 个请求自测）
@@ -267,12 +271,13 @@ https://mp.weixin.qq.com/s/<token>     ← 原文直链，项目既有 fetch_web
    去重靠 `reviewId`/原文 token（进 `seen`）；**列表接口的 `createTime` 有时间戳**，
    主路径无此问题
 3. **cookie 有效期：不猜（2026-09-19 用户定策）**——无官方文档，不做任何时效假设。
-   策略 = **观测上报，不自动硬闯**：每次运行先打 1 次列表请求，
-   - 成功 → 正常走管线；
-   - 失败（-2010/-2012/-2041 或任何异常）→ **原样记录错误码与现象**（含页面是否
-     「安全检测中」/二维码），标记本轮跳过，**把现场报给用户**，等用户反馈是
-     人机检测还是登录失效，再决定扫码或冷却。
-   绝不自动重试硬闯、绝不猜测性换 cookie。
+   策略已演进为**自动处置**（当日下半年落地，取代最初的「纯观测上报」）：
+   - 登录失效（-2041 且 wr_skey 缺失）→ **自动截登录二维码等扫码**（扫到 cookie
+     浏览器内自动生效、自动续抓；`WEREAD_AUTO_RELOGIN`/`WEREAD_RELOGIN_WAIT`）；
+   - wr_skey 仍在的 -2041 → 大概率人机检测，**不白等扫码**，转过码流程
+     （`scripts/weread_captcha.py`，识别需模型在场）；
+   - 连环码（同日第 2 次提交）→ 高危熔断 12 小时（见 §8）。
+   仍然成立的红线：绝不自动重试硬闯、绝不猜测性换 cookie。
 4. 请求量：现役监控名单 2 号（中金点睛、哥飞；生财有术/DeepVan 已于 2026-09-19 移除），时间窗语义下日常 ≈ **2-4 请求/天**（正文走 mp 直链不耗 weread 配额），远低于原代理；**机械熔断**：双层配额 日 `WEREAD_DAILY_QUOTA=25` / 小时 `WEREAD_HOURLY_QUOTA=6`（`monitors/.weread_quota.json` 按天/小时计数），到线自动跳过公众号源或停止补全续批——2026-09-19 开发验收期超量（~25-30 次）连触 4 轮验证码的事故已用机械闸门封死
 5. 🔴 **低频铁律**（2026-09-18 事故 + 博客佐证，详见 `wechat-mp-sources.md` §9）：
    探索性调用每接口间隔 ≥10s、单日总量十几请求封顶；生产列表/正文间隔 ≥2s（we-mp-rss 默认）；
@@ -292,7 +297,7 @@ https://mp.weixin.qq.com/s/<token>     ← 原文直链，项目既有 fetch_web
 新增公众号如何拿 bookId：原有 `wxs2mp` 解析随代理一起死了，**目前无在线解析途径**；
 可手工在微信读书搜索该号，从页面请求里抄 `MP_WXS_` id。
 
-## 8. 验证码实测（2026-09-19 · 半自动过码已跑通）
+## 8. 验证码实测（2026-09-19 · 会话内自动过码已跑通）
 
 **形态**：腾讯验证码组件（`captcha.gtimg.com/static/template/drag_ele…`），**图像点选类**——
 「选择最符合描述的图片“一辆棕色的车”」，3×2 拼图六选一（混元AI生成图），点错可「换一组」。
@@ -308,7 +313,7 @@ https://mp.weixin.qq.com/s/<token>     ← 原文直链，项目既有 fetch_web
   Playwright 在 frame 内按**元素局部坐标**点击（`locator.click(position=…)`，自动映射）；
 - 提交/换一组按钮按可见文本「确定」/「换一组」定位。
 
-**半自动过码（已实测通过，2026-09-19）**：`scripts/weread_captcha.py`——
+**过码流程（已实测通过，2026-09-19；识别由会话内执行模型完成）**：`scripts/weread_captcha.py`——
 `--shot`（整页截图，模型读图出格子）→ `--grid "行,列" --confirm`（frame 内点选+提交）
 → 自动核验；点错 `--refresh` 换新码重来（≤2 次）。**实测：一次点选提交即过码，
 过码后列表接口立即恢复 200**（风险态解除，无需换 cookie/重新登录）。

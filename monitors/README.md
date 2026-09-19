@@ -9,7 +9,7 @@
 |------|------|
 | `state.py` | 每源去重状态（`state.json`），per-source 裁剪防膨胀 |
 | `wechat.py` | 公众号源（旧 wewe-rss 代理，**永久停用** `WECHAT_SOURCE_ENABLED=0`，代理平台 2026-07-20 下线；保留不动） |
-| `weread.py` | **weread 直连公众号源（现役接替方案，PLAN-20260919）**：`WEREAD_SOURCE_ENABLED=1` 启用；微信读书登录态页内 fetch `/web/mp/articles` 发现新文（时间窗语义，断跑补齐封顶 30 天），正文走 mp 原文直链；登录失效自动弹码扫码续期、验证码停手转过码、双层配额熔断（日 `WEREAD_DAILY_QUOTA=25` / 小时 `WEREAD_HOURLY_QUOTA=6`）；历史补全 `run.py --weread-backfill`；bookId 映射在 `BOOK_ID_FALLBACK` + `.mp_cache.json`；实测真源 `references/weread-direct-source.md` |
+| `weread.py` | **weread 直连公众号源（现役接替方案，PLAN-20260919）**：`WEREAD_SOURCE_ENABLED=1` 启用；微信读书登录态页内 fetch `/web/mp/articles` 发现新文（时间窗语义，断跑补齐封顶 30 天），正文走 mp 原文直链；登录失效自动弹码扫码续期、验证码停手转过码、双层配额熔断（日 `WEREAD_DAILY_QUOTA=25` / 小时 `WEREAD_HOURLY_QUOTA=6`）、**连环码高危熔断**（同日第 2 次验证码提交 → 停 12 小时）；历史补全 `run.py --weread-backfill`；bookId 映射在 `BOOK_ID_FALLBACK` + `.mp_cache.json`；实测真源 `references/weread-direct-source.md` |
 | `bilibili.py` | B站UP主源（官方 API + WBI 签名，带登录 Cookie） |
 | `ad_filter.py` | 广告过滤：整篇纯广告 skip / 干货夹广告净化保留 |
 | `run.py` | CLI + 调度入口（`--apply` 直接调总结管线）；`--apply` 时按 `subscriptions.json` 的 `scys` 列表逐领域子进程跑 `scripts/scys_batch_fetch.py` 增量抓新帖（见下方「scys 新帖监控」） |
@@ -168,12 +168,11 @@ python monitors/run.py --mode first --apply
 
 把某公众号**最近稳定窗口内**漏抓的文章补回来。
 
-⚠️ **当前不可用**：本能力依赖的 weread 代理已死（2026-08-28 起），`WECHAT_SOURCE_ENABLED=0` 时
-`--backfill` 直接拒绝执行。下方为**历史机制描述**，保留供参考。
-注意（2026-09-19 更新）：接替的「微信读书直连源」**已开发接入**（`monitors/weread.py`，登录态下
-每页 20 条可翻全历史）——`paginate` 翻页累加器（`offset += len(reviews)`）已就位，回溯能力可
-基于它重建（低频分批翻页，`WEREAD_DAILY_PAGES` 调大即翻多页），但日常 `--backfill` 仍走旧代理
-语义（需 `WECHAT_SOURCE_ENABLED=1`），直连版历史回填为独立任务（PLAN-20260919 §5 首跑语义）。
+**现役补全入口 = weread 版**：`python monitors/run.py --weread-backfill --names <名> --since <日期> --apply`
+（补到指定日期全部入队，正文走 mp 直链；页数上限未翻到 since 再跑一次即续批；受双层配额约束自动分摊）。
+
+⚠️ 下方为旧代理版 `--backfill` 的**历史机制描述**（依赖死掉的 weread 代理，`WECHAT_SOURCE_ENABLED=0`
+时直接拒绝执行），保留供参考：
 
 weread 免费代理（历史）可稳定返回约 **最近 30~35 天**的文章（哥飞 23 篇 raw 全落在 2026-07-24~08-19，即 27 天内）；超过此边界代理乱序分片 + `publishTime` 伪造，极不可靠，**不再补**。如需深挖请显式 `--since`，但预期会漏段（详见 `PROXY_NOTES.md`）。
 
