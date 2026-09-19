@@ -131,6 +131,27 @@ def _captcha_frame(page):
     return None
 
 
+# 码只在 mp reader 页由前端渲染（-2041 后弹码；shelf 页无任何提示）。
+# 过码时若当前页无码：导航到任一公众号 reader 页让它现身（前端会自己发 1 次
+# articles 请求触发弹码）。默认哥飞（WR_READER_URL 可覆盖为任意 reader 页 URL）。
+DEFAULT_READER_URL = ("https://weread.qq.com/web/mp/reader/"
+                      "d5442a0224d505f5758535f323339393233333632301a9")
+
+
+def _ensure_captcha_visible(page) -> bool:
+    if _captcha_frame(page) is not None:
+        return True
+    url = os.environ.get("WR_READER_URL", DEFAULT_READER_URL)
+    print(f"[nav] 当前页无验证码组件，导航 reader 页让它现身（前端 1 次请求）：{url[:70]}…")
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        page.wait_for_timeout(8000)
+    except Exception as e:  # noqa: BLE001
+        print(f"[nav] 导航失败: {e}", file=sys.stderr)
+        return False
+    return _captcha_frame(page) is not None
+
+
 def _click_visible_text(frame, text: str) -> bool:
     """在 frame 里点第一个可见的指定文本元素（如 确定 / 换一组）。"""
     loc = frame.get_by_text(text, exact=True)
@@ -212,6 +233,11 @@ def main() -> int:
             hit = detect_captcha(page)
             print(f"[detect] {'⚠️ 页面出现安全检测/验证码标记' if hit else '✅ 未检测到验证码标记'}")
             return 0 if not hit else 3
+        # --shot/--refresh/--grid 都是过码流程：当前页无码时先导航 reader 页让它现身
+        if args.shot or args.refresh or args.grid:
+            if not _ensure_captcha_visible(page):
+                print("ℹ️ reader 页也未出现验证码（风险态可能已解除或已过码），"
+                      "按截图核验即可", file=sys.stderr)
         if args.shot:
             _shot(page)
         if args.refresh:
