@@ -9,6 +9,7 @@
 import json
 import os
 import sys
+import time
 import types
 
 import pytest
@@ -91,6 +92,27 @@ def test_paginate_stops_on_auth_error():
     reviews, cat, last = wr.paginate(lambda b, o: pages[o], "MP_WXS_1", max_pages=5)
     assert cat == "auth" and last["errCode"] == -2041
     assert len(reviews) == 20                # 已拿到的第 1 页保留，中断上报
+
+
+def test_paginate_cutoff_stops_at_window_boundary():
+    """时间窗语义：翻到「整页早于窗口起点」即停（窗口内全要，与更新频率无关）。"""
+    now = int(time.time())
+    pages = {
+        0: {"reviews": [{"subReviews": [_review(f"MP_WXS_1_r{i}", "T", now - 3600 * (i + 1))
+                                         for i in range(20)]}]},          # 最近 20h 内
+        20: {"reviews": [{"subReviews": [_review(f"MP_WXS_1_o{i}", "T", now - 86400 * 40)
+                                          for i in range(3)]}]},          # 40 天前
+    }
+    calls = []
+
+    def fetch_page(book_id, offset):
+        calls.append(offset)
+        return pages[offset]
+
+    reviews, cat, _ = wr.paginate(fetch_page, "MP_WXS_1", max_pages=10,
+                                  cutoff_ts=now - 7 * 86400)
+    assert calls == [0, 20]                  # 第 2 页整页早于 7 天窗 → 取完即停
+    assert cat == "ok" and len(reviews) == 23
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +220,7 @@ def test_discover_first_run_baseline_only(tmp_path, monkeypatch):
 
 def test_discover_incremental_dedup(tmp_path, monkeypatch):
     monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_WINDOW_DAYS", 0)  # 关时间窗（测试用旧时间戳）
     state = {"sources": {"weread:MP_WXS_100": {"seen": ["MP_WXS_1_a"]}}}
     page = FakePage(responses=[_resp([f"MP_WXS_1_{c}" for c in "abc"])])
     items, health = wr.discover_weread(state, _entries(1), session=FakeSession(page))
@@ -208,6 +231,7 @@ def test_discover_incremental_dedup(tmp_path, monkeypatch):
 def test_discover_auth_error_stops_remaining_accounts(monkeypatch):
     """-2041 → 观测上报路径：记录错误码、停手、剩余号跳过且零请求。"""
     monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_AUTO_RELOGIN", False)  # 本测关闭自动弹码，验上报语义
     page = FakePage(responses=[{"errCode": -2041}])   # 只有 1 个响应：号1 若被请求会拿空
     state = {"sources": {"weread:MP_WXS_1": {"seen": ["x"]}}}
     items, health = wr.discover_weread(state, _entries(2), session=FakeSession(page))
@@ -233,6 +257,7 @@ def test_discover_captcha_screenshots_and_stops(monkeypatch, tmp_path):
 def test_discover_unreachable_token_skipped_and_not_seen(monkeypatch):
     """含 ~ 的非 /s/ 型 token（实测 mp 直链「参数错误」）：不入队、不标 seen，健康度暴露。"""
     monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_WINDOW_DAYS", 0)
     state = {"sources": {"weread:MP_WXS_100": {"seen": ["MP_WXS_100_dummy"]}}}
     page = FakePage(responses=[_resp(["MP_WXS_100_okToken1", "MP_WXS_100_bad~Token"])])
     items, health = wr.discover_weread(state, _entries(1), session=FakeSession(page))
@@ -290,3 +315,96 @@ def test_run_discover_all_weread_skipped_in_backfill(monkeypatch):
     monkeypatch.setattr(wr, "discover_weread", lambda *a, **k: called.append(1) or ([], {}))
     run_mod.discover_all({"wechat": [{"name": "哥飞"}], "bilibili": []}, {"sources": {}})
     assert called == []
+
+
+# ---------------------------------------------------------------------------
+# 时间窗 / 扫码续期 / 历史补全
+# ---------------------------------------------------------------------------
+
+def test_discover_window_filters_by_publish_time(monkeypatch):
+    """30 天窗语义：日更号窗口内全要、窗口外不翻；周更号窗口内几篇抓几篇。"""
+    now = int(time.time())
+    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_WINDOW_DAYS", 7)
+    state = {"sources": {"weread:MP_WXS_100": {"seen": ["MP_WXS_100_dummy"]}}}
+    resp = {"reviews": [{"subReviews": [
+        _review("MP_WXS_100_new1", "新文", now - 3600),
+        _review("MP_WXS_100_old1", "一个月前", now - 86400 * 30),
+    ]}]}
+    page = FakePage(responses=[resp])       # 第 2 次取页拿 {} → empty → 翻页正常终止
+    items, health = wr.discover_weread(state, _entries(1), session=FakeSession(page))
+    assert [it["id"] for it in items] == ["MP_WXS_100_new1"]   # 窗口外被过滤
+    assert health["new"] == 1 and health["ok"] == 1
+
+
+def test_discover_relogin_retries_account(monkeypatch):
+    """登录态错误 → 自动弹码 → 扫码成功 → 重试本号并产出条目（页面内 cookie 自动生效）。"""
+    now = int(time.time())
+    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_WINDOW_DAYS", 0)
+    monkeypatch.setattr(wr, "WEREAD_AUTO_RELOGIN", True)
+    monkeypatch.setattr(wr, "WEREAD_RELOGIN_WAIT", 1)
+    calls = []
+
+    def fake_relogin(session, timeout, qr_path=None):
+        calls.append(timeout)
+        return True
+
+    monkeypatch.setattr(wr, "trigger_weread_relogin", fake_relogin)
+    state = {"sources": {"weread:MP_WXS_100": {"seen": ["MP_WXS_100_dummy"]}}}
+    page = FakePage(responses=[{"errCode": -2012},                # 第 1 次：登录失效
+                               _resp(["MP_WXS_100_fresh"], ts=now)])  # 重试：成功
+    items, health = wr.discover_weread(state, _entries(1), session=FakeSession(page))
+    assert calls == [1] and health["relogin"] is True
+    assert [it["id"] for it in items] == ["MP_WXS_100_fresh"]
+    assert health["ok"] == 1 and health["errors"] == []
+
+
+def test_discover_relogin_failure_reports(monkeypatch):
+    """扫码超时/失败：记错误停手，剩余号跳过（不硬闯）。"""
+    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_WINDOW_DAYS", 0)
+    monkeypatch.setattr(wr, "WEREAD_AUTO_RELOGIN", True)
+    monkeypatch.setattr(wr, "WEREAD_RELOGIN_WAIT", 1)
+    monkeypatch.setattr(wr, "trigger_weread_relogin", lambda *a, **k: False)
+    state = {"sources": {"weread:MP_WXS_100": {"seen": ["MP_WXS_100_dummy"]}}}
+    page = FakePage(responses=[{"errCode": -2041}])
+    items, health = wr.discover_weread(state, _entries(2), session=FakeSession(page))
+    assert items == [] and len(page.fetch_apis) == 1
+    assert health["relogin"] is False and health["errors"][0][1] == "auth"
+    assert health["skipped"] == ["号1"]
+
+
+def test_backfill_collects_until_since(monkeypatch):
+    """补全语义：since 之内未抓的全入队；翻到早于 since 的页即停（reached_since）。"""
+    now = int(time.time())
+    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_WINDOW_DAYS", 0)
+    state = {"sources": {"weread:MP_WXS_100": {"seen": ["MP_WXS_100_dummy"]}}}
+    resp = {"reviews": [{"subReviews": [
+        _review("MP_WXS_100_bf1", "十天内", now - 86400 * 10),
+        _review("MP_WXS_100_bf2", "两个月前", now - 86400 * 60),
+    ]}]}
+    page = FakePage(responses=[resp])
+    since_ts = now - 86400 * 30
+    items, health = wr.discover_weread_backfill(state, _entries(1), since_ts,
+                                                max_pages=5, session=FakeSession(page))
+    assert [it["id"] for it in items] == ["MP_WXS_100_bf1"]   # 早于 since 的不入队
+    assert health["reached_since"] is True and health["pages"]["号0"] == 1
+    seen_now = state["sources"]["weread:MP_WXS_100"]["seen"]
+    assert "MP_WXS_100_bf2" in seen_now     # 已翻到的旧文标 seen 防重扫
+
+
+def test_backfill_page_cap_reports_continue(monkeypatch):
+    """页数上限截断未到 since：reached_since=False，再跑一次即续批。"""
+    now = int(time.time())
+    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    state = {"sources": {"weread:MP_WXS_100": {"seen": []}}}
+    # 每次取页都返回同一批 20 条（FakePage 弹尽后返回 {} → 但这里让 responses 循环）
+    resp = {"reviews": [{"subReviews": [
+        _review(f"MP_WXS_100_p{i}", "T", now - 86400 * (i + 1)) for i in range(20)]}]}
+    page = FakePage(responses=[resp, resp])
+    items, health = wr.discover_weread_backfill(state, _entries(1), now - 86400 * 90,
+                                                max_pages=2, session=FakeSession(page))
+    assert health["reached_since"] is False
+    assert health["pages"]["号0"] == 2 and health["new"] == 20  # 第 2 页同批 rid 被 seen 去重

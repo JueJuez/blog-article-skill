@@ -1297,6 +1297,9 @@ def main():
                         help="回溯起点：YYYY-MM-DD 或时间戳；早于该日期的文章不抓")
     parser.add_argument("--batch", type=int, default=0,
                         help="每批最大入队篇数（默认 15），控制单次运行规模、便于自动续批")
+    parser.add_argument("--weread-backfill", action="store_true",
+                        help="weread 历史补全（公众号补到什么时候）：配合 --names/--since，"
+                             "从最新往老翻到 since 为止全部入队；未翻到再跑一次即续批")
     parser.add_argument("--drain", action="store_true",
                         help="从 backfill_targets.json 队列取第一个未完成 job 续批（自动化用）")
     parser.add_argument("--reset-backfill", type=str, default="",
@@ -1340,6 +1343,10 @@ def main():
 
     if args.backfill:
         cmd_backfill(args, subs, state)
+        return
+
+    if args.weread_backfill:
+        cmd_weread_backfill(args, subs, state)
         return
 
     # --apply 轮次：会话 holder 提前建好传给 discover_all（weread 直连源需要登录态页面），
@@ -1396,6 +1403,50 @@ def main():
               f"（查询：python monitors/status_cli.py summary）")
     else:
         print(json.dumps(all_new, ensure_ascii=False, indent=2))
+
+
+def cmd_weread_backfill(args, subs: dict, state: dict) -> None:
+    """weread 历史补全（「公众号补全 / 补到什么时候」，PLAN-20260919 用户定策）。
+
+    python monitors/run.py --weread-backfill --names 哥飞 --since 2026-03-01 --apply
+    - 时间语义：since 之内发布的未抓文章全部入队（与更新频率无关）；
+    - weread 请求量 = 每号翻的页数（每页 20 条，间隔 ≥2s，--batch 限页数）；
+    - 未翻到 since（页数上限截断）→ 再跑一次本命令即续批，seen 去重不重复入队；
+    - 入队走与每日监控同一条 apply_summaries 管线（正文走 mp 直链）。
+    """
+    from monitors.weread import discover_weread_backfill, resolve_book_ids, format_health
+    from monitors import backfill as bf
+    names = [n.strip() for n in (args.names or "").split(",") if n.strip()]
+    if not names:
+        print("❌ --weread-backfill 需 --names <逗号名>（subscriptions.json wechat 名单内）",
+              file=sys.stderr)
+        return
+    entries = [e for e in resolve_book_ids(subs) if e["name"] in names]
+    missing = [n for n in names if n not in {e["name"] for e in entries}]
+    if missing:
+        print(f"[warn] 无 bookId 映射，跳过：{'/'.join(missing)}（手工抄 MP_WXS_ id 后再补）",
+              file=sys.stderr)
+    if not entries:
+        return
+    if args.since:
+        since_ts = bf._parse_since(args.since)
+    else:
+        since_ts = int(time.time()) - 180 * 86400
+        print("ℹ️ --since 未指定，默认补最近 180 天")
+    max_pages = args.batch or 20
+    print(f"📥 weread 补全：{'/'.join(e['name'] for e in entries)} | since "
+          f"{time.strftime('%Y-%m-%d', time.localtime(since_ts))} | 每号最多翻 {max_pages} 页"
+          f"（约 {max_pages * 20} 篇/号）")
+    items, health = discover_weread_backfill(state, entries, since_ts, max_pages=max_pages)
+    print(f"📊 [weread-backfill] {format_health(health)}"
+          f" · 已入队 {len(items)} 篇")
+    if not health.get("reached_since", True):
+        print("⏳ 本轮页数上限内未翻到 since 起点，再跑一次本命令即续批（seen 去重不重复入队）")
+    if args.apply:
+        save_state(state)
+        apply_summaries(items, args.obsidian, consume_prev_refetch=False)
+    else:
+        print(json.dumps(items, ensure_ascii=False, indent=2))
 
 
 def cmd_backfill(args, subs: dict, state: dict) -> None:

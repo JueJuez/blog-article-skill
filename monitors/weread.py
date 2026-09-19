@@ -8,15 +8,18 @@
 
 生产纪律（红线，内置非可选）：
   - 列表只在页面内 fetch（同源带登录 cookie + 页面签名）；requests 直调仅限免签名接口
-  - 每号每天 1 次列表（默认 offset=0 一页 20 条，足够日增量检测）；翻页仅手动补齐任务用
-  - 列表间隔 ≥2s + 抖动；单日十几请求封顶；个人单账号低频自用，不做号池
-  - cookie 策略（用户定策）：不猜、不自动刷新。任何登录态/风控类错误码或页面出现
-    验证码 → 立即停手 + 截图 + 原样记录，剩余号本轮跳过，报给用户等反馈
+  - 增量按时间窗过滤（WEREAD_WINDOW_DAYS，断跑自动补齐、封顶 30 天）：日更号 30 天
+    ≈30 篇、周更号≈4 篇，翻页翻到「早于窗口起点」即停，与更新频率无关
+  - 登录失效（-2041 且无验证码）→ 自动开登录页截二维码等扫码（WEREAD_AUTO_RELOGIN，
+    扫码成功 cookie 浏览器内自动生效、无需换任何凭据，扫到即继续抓）；页面出现
+    验证码 → 停手截图上报（过码走 scripts/weread_captcha.py，识别需模型在场）
+  - 列表间隔 ≥2s + 抖动；个人单账号低频自用，不做号池
   - 正文不在此模块抓：条目与旧代理源同形（route=article）→ 既有 apply_summaries
-    管线走 mp.weixin.qq.com 直链抓正文（风险隔离：weread 每号每天只 1 次列表请求）
+    管线走 mp.weixin.qq.com 直链抓正文（风险隔离：weread 每号每天只 1~2 次列表请求）
 
 开关：WEREAD_SOURCE_ENABLED（run.py 读，默认 0）。订阅名单复用 subscriptions.json 的
 wechat 列表，bookId 映射独立维护（BOOK_ID_FALLBACK + monitors/.mp_cache.json 反查）。
+历史补全（「公众号补全 / 补到什么时候」）：run.py --weread-backfill --names X --since 日期。
 """
 from __future__ import annotations
 
@@ -27,7 +30,7 @@ import re
 import sys
 import time
 
-from monitors.state import get_seen, mark_seen
+from monitors.state import get_seen, mark_seen, effective_window_days
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -49,6 +52,17 @@ BOOK_ID_FALLBACK = {
 LIST_GAP = float(os.environ.get("WEREAD_LIST_GAP", "2"))
 # 每号每次运行拉的页数（1 页 = 20 条）。日常增量保持 1；历史补齐另起任务显式传大值
 DAILY_PAGES = int(os.environ.get("WEREAD_DAILY_PAGES", "1"))
+# 增量时间窗（天）：只抓窗口内发布的文章（按 createTime 过滤，与更新频率无关——
+# 日更号 30 天≈30 篇、周更号≈4 篇）；翻页翻到「早于窗口起点」即停。0=关闭时间过滤
+WEREAD_WINDOW_DAYS = float(os.environ.get("WEREAD_WINDOW_DAYS", "2"))
+# 窗口封顶（天）：断跑自动补齐时最多补到这里（对齐 B站 WECHAT_MAX_WINDOW_DAYS 语义）
+WEREAD_MAX_WINDOW_DAYS = float(os.environ.get("WEREAD_MAX_WINDOW_DAYS", "30"))
+# 单号单轮翻页安全上限（防极端高频号翻爆；正常 30 天窗口 ≤2 页）
+WEREAD_MAX_PAGES = int(os.environ.get("WEREAD_MAX_PAGES", "15"))
+# 登录态失效自动弹码：-2041 且无验证码 → 打开登录页截二维码等扫码（0=关闭，退回纯上报）
+WEREAD_AUTO_RELOGIN = os.environ.get("WEREAD_AUTO_RELOGIN", "1") == "1"
+# 等扫码时长（秒）；扫到即自动继续抓取该号及后续号，超时跳过本轮
+WEREAD_RELOGIN_WAIT = int(os.environ.get("WEREAD_RELOGIN_WAIT", "180"))
 # 等 __WRPA__ 签名器（WASM）就绪的超时秒数。实测签名器只在 /web 等 SPA 路由加载，
 # 首页 `/` 不加载（2026-09-19 诊断，见 references/weread-direct-source.md §2.4）
 WRPA_WAIT_S = float(os.environ.get("WEREAD_WRPA_WAIT_S", "30"))
@@ -116,12 +130,14 @@ def classify_list_response(resp) -> str:
     return "ok" if parse_reviews(resp) else "empty"
 
 
-def paginate(fetch_page, book_id: str, max_pages: int = 1):
+def paginate(fetch_page, book_id: str, max_pages: int = 1, cutoff_ts: int = None):
     """翻页累加器（纯逻辑，fetch_page 由调用方注入）。
 
     offset += len(reviews)（实测每页固定 20 条、页间无缝衔接；issue #442 的 50 步长
     实测会跳过每页之间约 30 条，禁用）。空列表即到底；中途遇 auth/unknown_err
-    立即中断上报。返回 (reviews, end_category, last_resp)。
+    立即中断上报。cutoff_ts 给定时：翻到「最老一条 createTime < cutoff_ts」即停
+    （时间窗语义——窗口内全要、窗口外不翻，与号更新频率无关）。
+    返回 (reviews, end_category, last_resp)。
     """
     reviews, offset = [], 0
     last_resp = None
@@ -137,6 +153,9 @@ def paginate(fetch_page, book_id: str, max_pages: int = 1):
             break
         reviews.extend(page_items)
         offset += len(page_items)
+        if cutoff_ts is not None and page_items and \
+                all(int(r.get("createTime", 0) or 0) < cutoff_ts for r in page_items):
+            break  # 整页都早于窗口起点：窗口已覆盖，停止翻页
     return reviews, "ok", last_resp
 
 
@@ -323,8 +342,150 @@ class WereadLister:
 
 
 # ---------------------------------------------------------------------------
+# 登录态判别与扫码续期
+# ---------------------------------------------------------------------------
+
+LOGIN_URL = "https://weread.qq.com/#login"
+# 登录二维码截图落点（与旧代理源 login_qr.png 同目录同风格，RELOGIN_QR 供上层弹窗）
+RELOGIN_QR_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "weread_login_qr.png")
+
+
+def has_login_cookie(session) -> bool:
+    """weread 域是否存在登录 cookie wr_skey（只看名，不读值）。"""
+    try:
+        cookies = session.context.cookies("https://weread.qq.com")
+        return any(c.get("name") == "wr_skey" for c in cookies)
+    except Exception:
+        return False
+
+
+def trigger_weread_relogin(session, timeout: int, qr_path: str = None) -> bool:
+    """登录态失效续期：打开登录页 → 截二维码 → 等扫码 → 轮询登录态恢复。
+
+    - 二维码截图落 qr_path 并打印 RELOGIN_QR:<path>（上层会话/用户据此扫码）。
+    - 列表请求在页面内发、cookie 由浏览器实时携带：**扫码成功即新 cookie 自动生效**，
+      无任何落盘凭据需要更换。
+    - 返回 True=登录态已恢复（wr_skey 在且列表接口探活 200）；False=超时/失败。
+    """
+    qr_path = qr_path or RELOGIN_QR_PATH
+    if has_login_cookie(session):
+        # wr_skey 仍在：登录没丢，-2041 是人机检测/风控而非过期——扫码无意义
+        print("[relogin] 登录 cookie 仍在（wr_skey），-2041 非过期所致；"
+              "请走人机检测过码（python scripts/weread_captcha.py --shot）", file=sys.stderr)
+        return False
+    page = _find_or_open_weread_page(session)
+    try:
+        page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30_000)
+        page.wait_for_timeout(4000)
+        # SPA 可能停在书架再显示登录面板：有「登录」按钮就点开
+        try:
+            page.click("text=登录", timeout=3000)
+            page.wait_for_timeout(2500)
+        except Exception:
+            pass
+        if detect_captcha(page):
+            path = screenshot_captcha(page)
+            print(f"[relogin] 登录页出现安全检测/验证码，已截图 {path or '?'}；"
+                  f"请先过码（python scripts/weread_captcha.py --grid …）再重跑", file=sys.stderr)
+            return False
+        os.makedirs(os.path.dirname(qr_path), exist_ok=True)
+        page.screenshot(path=qr_path)
+        print(f"RELOGIN_QR:{qr_path}", file=sys.stderr)
+        print(f"[relogin] 二维码已截图（{qr_path}），请用微信扫码登录微信读书"
+              f"（最长等 {timeout}s）…", file=sys.stderr)
+    except Exception as e:
+        print(f"[relogin] 打开登录页失败: {e}", file=sys.stderr)
+        return False
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(5)
+        if not has_login_cookie(session):
+            continue  # wr_skey 尚未出现
+        # cookie 已出现：打 1 次列表探活确认服务端会话有效（不额外消耗业务配额）
+        try:
+            lister = WereadLister(session)
+            resp = lister.fetch_list_raw(BOOK_ID_FALLBACK["哥飞"], 0)
+            if classify_list_response(resp) == "ok":
+                print("[relogin] ✅ 扫码成功，登录态已恢复", file=sys.stderr)
+                return True
+        except Exception:
+            continue
+    print(f"[relogin] ⏰ 等待扫码超时（{timeout}s）", file=sys.stderr)
+    return False
+
+
+def _window_cutoff(state, book_id: str, is_first: bool) -> int:
+    """增量时间窗起点（epoch 秒）。WEREAD_WINDOW_DAYS=0 关闭（返回 0=不过滤）。
+
+    断跑自动补齐：eff = max(基础窗, 距上次成功运行天数+1)，封顶 WEREAD_MAX_WINDOW_DAYS。
+    """
+    if WEREAD_WINDOW_DAYS <= 0:
+        return 0
+    if is_first:
+        eff = WEREAD_WINDOW_DAYS
+    else:
+        last = state.get("sources", {}).get(_source_key(book_id), {}).get("last_check", 0)
+        eff = effective_window_days(WEREAD_WINDOW_DAYS, last, WEREAD_MAX_WINDOW_DAYS)
+    return int(time.time() - eff * 86400)
+
+
+# ---------------------------------------------------------------------------
 # 一轮发现
 # ---------------------------------------------------------------------------
+
+def _process_one_account(lister, state, e: dict, cutoff: int, max_pages: int,
+                         baseline_only: bool) -> tuple:
+    """单号列表→去重→条目。返回 (items, rids_fetched, result_dict)。
+
+    result_dict: {"status": "ok"|"auth"|"captcha"|"fetch_err"|"unknown_err",
+                  "detail": str, "new_n": int, "is_first": bool}
+    """
+    name, book_id = e["name"], e["book_id"]
+    try:
+        reviews, cat, last_resp = paginate(lister.fetch_list_raw, book_id,
+                                           max_pages=max_pages, cutoff_ts=cutoff)
+    except RuntimeError as ex:
+        return [], [], {"status": "fetch_err", "detail": str(ex)[:160],
+                        "new_n": 0, "is_first": False}
+    if detect_captcha(lister.page):
+        path = screenshot_captcha(lister.page)
+        return [], [], {"status": "captcha",
+                        "detail": f"列表请求后页面出现安全检测/验证码，已截图 {path or '(截图失败)'}",
+                        "new_n": 0, "is_first": False}
+    if cat != "ok":
+        code = last_resp.get("errCode") if isinstance(last_resp, dict) else "?"
+        return [], [], {"status": cat, "detail": f"errCode={code}",
+                        "new_n": 0, "is_first": False}
+    seen = get_seen(state, _source_key(book_id))
+    rids = [r.get("reviewId", "") for r in reviews if r.get("reviewId")]
+    is_first = not seen
+    if is_first or baseline_only:
+        new_reviews = []
+    else:
+        new_reviews = [r for r in reviews if r.get("reviewId") not in seen]
+    items, new_n, unreachable_rids, unreachable_titles = [], 0, set(), []
+    for r in new_reviews:
+        if cutoff and int(r.get("createTime", 0) or 0) < cutoff:
+            continue  # 页边界骑跨窗口起点的兜底过滤
+        token = extract_token(r.get("reviewId", ""))
+        if not _MP_TOKEN_RE.match(token):
+            # 非 /s/ 型 token（含 ~ 等）：mp 直链不可达（实测「参数错误」），
+            # 不入队、不标 seen——下轮继续出现在健康度行，直到用户反馈处置
+            info = r.get("mpInfo") or {}
+            unreachable_rids.add(r.get("reviewId", ""))
+            unreachable_titles.append(f"{info.get('title', '')[:30]}({r.get('reviewId', '')})")
+            continue
+        it = review_to_item(r, name, e.get("category", ""))
+        if it:
+            items.append(it)
+            new_n += 1
+    # 本页 reviewId 进 seen（含首跑基线），直链不可达条目除外（不标 seen，每轮重新暴露）
+    mark_seen(state, _source_key(book_id),
+              [rid for rid in rids if rid not in unreachable_rids],
+              last_check=int(time.time()))
+    return items, rids, {"status": "ok", "detail": "", "new_n": new_n,
+                         "is_first": is_first, "unreachable": unreachable_titles}
+
 
 def discover_weread(state: dict, entries: list, session=None,
                     pages: int = None) -> tuple:
@@ -334,18 +495,18 @@ def discover_weread(state: dict, entries: list, session=None,
       传入共享会话（run.py --apply 轮次）：只使用不关闭（one-kill 归调用方）。
     - state：调用方持有并负责落盘时机（与 run.py「仅 --apply 落盘 seen」守卫一致，
       本函数只内存内变更，预览不落盘）。
-    - cookie 策略：不猜、不自动刷新。任一号返回登录态/风控类错误码、或页面出现
-      验证码 → 立即停手（剩余号记 skipped），截图 + 原样记录错误码报给用户。
-    - 首跑语义（PLAN §5）：seen 为空的号只把本页 reviewId 写入 seen 建立基线，
-      不回填总结历史。
+    - 时间窗：只抓窗口内发布的文章（翻页翻到窗口起点即停）；首跑只建基线不总结。
+    - 登录失效（-2041 等）：自动打开登录页截二维码等扫码（WEREAD_AUTO_RELOGIN，
+      扫到即继续抓该号及后续号；二维码落 monitors/weread_login_qr.png）；
+      页面出现验证码 → 停手上报（过码走 scripts/weread_captcha.py，识别需模型在场）。
     """
     own_session = session is None
     if own_session:
         from shared.cdp_session import SharedCdpSession
         session = SharedCdpSession()
-    health = {"ok": 0, "new": 0, "captcha": False, "errors": [], "skipped": [], "baseline": []}
+    health = {"ok": 0, "new": 0, "captcha": False, "errors": [], "skipped": [],
+              "baseline": [], "relogin": False}
     items: list = []
-    pages = pages or DAILY_PAGES
     try:
         lister = WereadLister(session)
         if detect_captcha(lister.page):
@@ -355,60 +516,143 @@ def discover_weread(state: dict, entries: list, session=None,
             health["skipped"] = [e["name"] for e in entries]
             return items, health
         stop = False
+        relogin_used = False  # 每轮最多自动弹码一次，避免死循环扫码
         for e in entries:
             name, book_id = e["name"], e["book_id"]
             if stop:
                 health["skipped"].append(name)
                 continue
-            try:
-                reviews, cat, last_resp = paginate(lister.fetch_list_raw, book_id, max_pages=pages)
-            except RuntimeError as ex:
-                health["errors"].append((name, "fetch_err", str(ex)[:160]))
-                stop = True  # 请求层异常（签名缺失/非 200/非 JSON）：不硬闯，剩余号跳过
+            is_first = not get_seen(state, _source_key(book_id))
+            cutoff = _window_cutoff(state, book_id, is_first)
+            its, rids, res = _process_one_account(lister, state, e, cutoff,
+                                                  WEREAD_MAX_PAGES, baseline_only=False)
+            if res["status"] in ("auth", "unknown_err") and not relogin_used \
+                    and WEREAD_AUTO_RELOGIN and WEREAD_RELOGIN_WAIT > 0 \
+                    and not has_login_cookie(session):
+                # 登录 cookie 缺失 = 真过期 → 自动弹码等扫码（页面内 fetch 的 cookie
+                # 由浏览器实时携带，扫码成功即自动生效）。
+                # wr_skey 仍在 → 大概率人机检测（风控），不走扫码（白等），
+                # 落到下方停手上报，由会话内模型过码。
+                if trigger_weread_relogin(session, WEREAD_RELOGIN_WAIT):
+                    health["relogin"] = True
+                    relogin_used = True
+                    its, rids, res = _process_one_account(
+                        lister, state, e, cutoff, WEREAD_MAX_PAGES, baseline_only=False)
+            if res["status"] != "ok":
+                if res["status"] == "captcha":
+                    health["captcha"] = True
+                detail = res["detail"]
+                if res["status"] in ("auth", "unknown_err"):
+                    detail += f"（若为安全检测，过码：python scripts/weread_captcha.py --shot）"
+                health["errors"].append((name, res["status"], detail))
+                stop = True  # 处置不了：停手（剩余号跳过），绝不硬闯
                 continue
-            if detect_captcha(lister.page):
-                path = screenshot_captcha(lister.page)
-                health["captcha"] = True
-                health["errors"].append((name, "captcha", f"列表请求后页面出现安全检测/验证码，已截图 {path or '(截图失败)'}"))
-                stop = True
-                continue
-            if cat != "ok":
-                code = last_resp.get("errCode") if isinstance(last_resp, dict) else "?"
-                health["errors"].append((name, cat, f"errCode={code}（若为安全检测，"
-                                         f"过码：python scripts/weread_captcha.py --shot）"))
-                stop = True  # 登录态/风控类错误：原样上报，等用户反馈，不自动处置
-                continue
-            seen = get_seen(state, _source_key(book_id))
-            rids = [r.get("reviewId", "") for r in reviews if r.get("reviewId")]
-            is_first = not seen
-            new_reviews = [] if is_first else \
-                [r for r in reviews if r.get("reviewId") not in seen]
-            new_n = 0
-            unreachable_rids = set()
-            for r in new_reviews:
-                token = extract_token(r.get("reviewId", ""))
-                if not _MP_TOKEN_RE.match(token):
-                    # 非 /s/ 型 token（含 ~ 等）：mp 直链不可达（实测「参数错误」），
-                    # 不入队、不标 seen——下轮继续出现在健康度行，直到用户反馈处置
-                    info = r.get("mpInfo") or {}
-                    unreachable_rids.add(r.get("reviewId", ""))
-                    health.setdefault("unreachable", []).append(
-                        f"{info.get('title', '')[:30]}({r.get('reviewId', '')})")
-                    continue
-                it = review_to_item(r, name, e.get("category", ""))
-                if it:
-                    items.append(it)
-                    new_n += 1
-            # 本页 reviewId 进 seen（含首跑基线），直链不可达条目除外（不标 seen，每轮重新暴露）
-            mark_seen(state, _source_key(book_id),
-                      [rid for rid in rids if rid not in unreachable_rids],
-                      last_check=int(time.time()))
+            items.extend(its)
             health["ok"] += 1
-            if is_first:
+            health.setdefault("unreachable", []).extend(res.get("unreachable") or [])
+            if res["is_first"]:
                 health["baseline"].append(name)
             else:
-                health["new"] += new_n
+                health["new"] += res["new_n"]
             time.sleep(LIST_GAP + random.uniform(0, 1))  # 号间退避；最后一号多睡一次无害
+    finally:
+        if own_session:
+            try:
+                session.close()
+            except Exception:
+                pass
+    return items, health
+
+
+def discover_weread_backfill(state: dict, entries: list, since_ts: int,
+                             max_pages: int = 20, session=None) -> tuple:
+    """weread 历史补全（「补到什么时候」）：从最新往老翻到 since_ts 为止，
+    窗口内未抓过的全部入队。返回 (new_items, health)。
+
+    - 与日常增量同一条入队管线（route=article → apply_summaries 抓正文入队列）。
+    - 翻到 since_ts 或 max_pages 截断；截断未到 since_ts 时 health 记 reached_since=False，
+      再跑一次本命令即续（seen 去重保证不重复入队）。
+    - weread 请求量 = 每号翻的页数（每页 20 条、间隔 ≥2s）；补一年 ≈ 每号 15~25 页，
+      建议分多次跑或接受一次较多请求（一次性任务，非日常节奏）。
+    - 扫码续期与日常增量同款（每轮最多弹码一次）。
+    """
+    own_session = session is None
+    if own_session:
+        from shared.cdp_session import SharedCdpSession
+        session = SharedCdpSession()
+    health = {"ok": 0, "new": 0, "captcha": False, "errors": [], "skipped": [],
+              "relogin": False, "reached_since": True, "pages": {}}
+    items: list = []
+    try:
+        lister = WereadLister(session)
+        stop = False
+        relogin_used = False
+        for e in entries:
+            name, book_id = e["name"], e["book_id"]
+            if stop:
+                health["skipped"].append(name)
+                continue
+            offset = 0
+            n_pages = 0
+            its_all: list = []
+            oldest = None
+            while n_pages < max_pages:
+                fetch = lambda b, o, _off=offset: lister.fetch_list_raw(b, o + _off)
+                try:
+                    reviews, cat, last_resp = paginate(fetch, book_id, max_pages=1)
+                except RuntimeError as ex:
+                    health["errors"].append((name, "fetch_err", str(ex)[:160]))
+                    stop = True
+                    break
+                if detect_captcha(lister.page):
+                    path = screenshot_captcha(lister.page)
+                    health["captcha"] = True
+                    health["errors"].append((name, "captcha",
+                                             f"页面出现安全检测/验证码，已截图 {path or '?'}"))
+                    stop = True
+                    break
+                if cat != "ok":
+                    code = last_resp.get("errCode") if isinstance(last_resp, dict) else "?"
+                    if cat in ("auth", "unknown_err") and not relogin_used \
+                            and WEREAD_AUTO_RELOGIN and WEREAD_RELOGIN_WAIT > 0:
+                        if trigger_weread_relogin(session, WEREAD_RELOGIN_WAIT):
+                            health["relogin"] = True
+                            relogin_used = True
+                            continue  # 同一 offset 重试（扫码后 cookie 自动生效）
+                    health["errors"].append((name, cat, f"errCode={code}"))
+                    stop = True
+                    break
+                if not reviews:
+                    break  # 翻到底
+                n_pages += 1
+                offset += len(reviews)
+                seen = get_seen(state, _source_key(book_id))
+                in_range = [r for r in reviews
+                            if r.get("reviewId") not in seen
+                            and int(r.get("createTime", 0) or 0) >= since_ts]
+                for r in in_range:
+                    token = extract_token(r.get("reviewId", ""))
+                    if not _MP_TOKEN_RE.match(token):
+                        continue  # ~token 直链不可达，跳过（不标 seen，待用户反馈）
+                    it = review_to_item(r, name, e.get("category", ""))
+                    if it:
+                        its_all.append(it)
+                # 本批全部 reviewId 标 seen（含早于 since 的，防反复重扫）；~token 除外
+                mark_seen(state, _source_key(book_id),
+                          [r.get("reviewId") for r in reviews if r.get("reviewId")
+                           and _MP_TOKEN_RE.match(extract_token(r.get("reviewId", "")))],
+                          last_check=int(time.time()))
+                oldest = min(int(r.get("createTime", 0) or 0) for r in reviews)
+                if oldest < since_ts:
+                    break  # 已翻过 since 起点，该号补全完成
+                time.sleep(LIST_GAP + random.uniform(0, 1))
+            items.extend(its_all)
+            if not stop or its_all:
+                health["ok"] += 1
+                health["new"] += len(its_all)
+            health["pages"][name] = n_pages
+            if n_pages >= max_pages and oldest is not None and oldest >= since_ts:
+                health["reached_since"] = False  # 截断未到 since，再跑一次续
     finally:
         if own_session:
             try:
