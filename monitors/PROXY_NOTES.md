@@ -184,7 +184,8 @@ Deno Deploy Classic 服务，平台 2026-07-20 sunset）。改用**微信读书�
 完整结论（接口实测表 / reviewId→原文直链映射 / 凭据 / 限制 / bookId 对照表）见
 **`references/weread-direct-source.md`**（单一真源，本节约只做指针）。
 
-一句话能力边界：**每个公众号每次只能拿到最新 1 篇**（`/api/mp/cover`）；
-`/web/mp/articles` 实测返回 -2041，**但成因未证实**（无官方 API 文档，社区说法互相矛盾，
-见该文档 §2.1 证据等级）——只能说「未打通列表」，不能断言「官方砍了列表」。
-请求量 4 号 × 1 次/天 = 4 请求/天。
+一句话能力边界（**2026-09-19 更新：列表已打通**）：扫码登录态下 `/web/mp/articles`
+返回 200 + reviews 列表，**每页 20 条、`offset += len(reviews)` 翻页拿全历史**；
+-2041 的真凶 = 未登录（签名/订阅/废弃三假设全排除，见真源 §2.2 实验 2）。
+正文只走 mp 原文直链（用户定策，不用 weread content 兜底）。
+生产接入待开发：触发词「开发weread源模块」→ `docs/plans/PLAN-20260919-weread-source-module.md`。

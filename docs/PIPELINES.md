@@ -69,6 +69,11 @@
 **零件**：`monitors/run_source.py`、`monitors/bilibili.py`、`monitors/wechat.py`、`monitors/state.py`、
 `pending_summaries.json` 队列、`scripts/filter_pending.py`（派单前清洗，属于队列维护不是入口）。
 
+**🚧 规划中（2026-09-19）—— weread 直连公众号源**：旧代理源（`monitors/wechat.py`，wewe-rss）已死，
+替代方案「微信读书直连」已全线实测打通（列表+翻页+正文直链），**待开发**。
+触发词「**开发weread源模块**」→ 读 `docs/plans/PLAN-20260919-weread-source-module.md` 开工
+（自包含：已验证代码/翻页规则/防封纪律/任务清单全在内，勿重新探索）。
+
 ## 5. 系列课管线
 
 **入口**：`python scripts/backfill_series.py --series <名>`（清单外整季补齐）；

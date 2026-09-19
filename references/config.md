@@ -254,6 +254,7 @@ NOTE_GATE_THRESHOLD=85
 | `BILI_MAX_WINDOW_DAYS` | 30 | 每日增量窗口**封顶**（天）；断跑超过此天数只补到此处（更长历史用 `--mode first`） |
 | `WECHAT_WINDOW_DAYS` | 2 | 公众号每日增量基础窗口（天）；同样支持自动补齐，封顶 `WECHAT_MAX_WINDOW_DAYS` |
 | `WECHAT_MAX_WINDOW_DAYS` | 30 | 公众号每日增量窗口封顶（天） |
+| `WECHAT_SOURCE_ENABLED` | 0 | 公众号源总开关：原 weread 代理已死（2026-08-28 起 502），默认停用；接替方案「微信读书直连」待开发（触发词「开发weread源模块」→ `docs/plans/PLAN-20260919-weread-source-module.md`），届时另立 `WEREAD_SOURCE_ENABLED` |
 | `BILI_PAGE_SIZE` | 50 | 单页拉取条数（覆盖整个时间窗口） |
 | `BILI_SHORT_DYNAMIC_MAX` | 80 | 短动态轻量化阈值（字）：净化后正文 ≤ 此值走「速览」，不走重总结模板 |
 | `FIRST_RUN_LIMIT` | 50 | 首跑每类型安全上限（实际受 `BILI_SAFETY_CAP`=50 夹取，防极端 UP 刷爆） |

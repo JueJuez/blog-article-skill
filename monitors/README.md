@@ -8,7 +8,7 @@
 | 文件 | 职责 |
 |------|------|
 | `state.py` | 每源去重状态（`state.json`），per-source 裁剪防膨胀 |
-| `wechat.py` | 公众号源（**当前停用** `WECHAT_SOURCE_ENABLED=0`：原 `weread.111965.xyz` 转发已死；接替方案「微信读书直连 cover」已验证、**待接入**，见 `references/weread-direct-source.md`） |
+| `wechat.py` | 公众号源（**当前停用** `WECHAT_SOURCE_ENABLED=0`：原 `weread.111965.xyz` 转发已死；接替方案「微信读书直连」**列表+翻页已实测打通、待开发**，触发词「开发weread源模块」→ `docs/plans/PLAN-20260919-weread-source-module.md`，实测真源 `references/weread-direct-source.md`） |
 | `bilibili.py` | B站UP主源（官方 API + WBI 签名，带登录 Cookie） |
 | `ad_filter.py` | 广告过滤：整篇纯广告 skip / 干货夹广告净化保留 |
 | `run.py` | CLI + 调度入口（`--apply` 直接调总结管线）；`--apply` 时按 `subscriptions.json` 的 `scys` 列表逐领域子进程跑 `scripts/scys_batch_fetch.py` 增量抓新帖（见下方「scys 新帖监控」） |
@@ -42,7 +42,7 @@
 
 1. **运行**：`python monitors/run.py --mode auto --apply`（仅看发现列表就去掉 `--apply`）。
 2. **发现阶段（discover_all）**：
-   - 公众号：**当前停用**（原 `weread` 代理已死，`WECHAT_SOURCE_ENABLED=0`）。接替方案为微信读书直连 `/api/mp/cover`：每号取最新 1 篇 + 原文直链正文，**无需签名、4 请求/天**，已端到端验证、**待接入**，详见 `references/weread-direct-source.md`。旧行为（代理拿列表 → 时间窗口 + 去重 + 广告过滤；token 失效弹码扫码）在代理复活前不适用。
+   - 公众号：**当前停用**（原 `weread` 代理已死，`WECHAT_SOURCE_ENABLED=0`）。接替方案「微信读书直连」**列表+翻页已实测打通（2026-09-19）**：登录态页内 fetch `/web/mp/articles` 每页 20 条可翻全历史、正文走 mp 原文直链；生产模块**待开发**，触发词「开发weread源模块」→ `docs/plans/PLAN-20260919-weread-source-module.md`（实测真源 `references/weread-direct-source.md`）。旧行为（代理拿列表 → 时间窗口 + 去重 + 广告过滤；token 失效弹码扫码）在代理复活前不适用。
    - B站：官方 API 一步拿视频 + 动态，号间 30±5s 退避；某号异常只跳过该号、其他号照跑。
 3. **抓取 + 总结（apply_summaries）**：
    - 公众号文章：`fetch_web_content` **直连微信**抽正文（`WECHAT_GAP=6s`+抖动防限流），异常/空页进 `pending_refetch` 下次重抓；直连撞墙的批次自动合并走一次 CDP 批量会话抓正文。
@@ -169,8 +169,9 @@ python monitors/run.py --mode first --apply
 
 ⚠️ **当前不可用**：本能力依赖的 weread 代理已死（2026-08-28 起），`WECHAT_SOURCE_ENABLED=0` 时
 `--backfill` 直接拒绝执行。下方为**历史机制描述**，保留供参考。
-注意：接替的「微信读书直连源」**只有最新 1 篇、没有历史列表**（列表接口需 `x-wrpa-0` 签名且未打通），
-因此即便接入直连源，回溯能力也需另寻路径（如 `references/wechat-mp-sources.md` §6 的路线三）。
+注意（2026-09-19 更新）：接替的「微信读书直连源」**列表翻页已实测打通**（登录态下可拿全历史，
+每页 20 条）——直连源接入后回溯能力反而可重建（低频分批翻页），见
+`docs/plans/PLAN-20260919-weread-source-module.md`；旧代理时代的「30~35 天稳定窗口」限制不再适用。
 
 weread 免费代理（历史）可稳定返回约 **最近 30~35 天**的文章（哥飞 23 篇 raw 全落在 2026-07-24~08-19，即 27 天内）；超过此边界代理乱序分片 + `publishTime` 伪造，极不可靠，**不再补**。如需深挖请显式 `--since`，但预期会漏段（详见 `PROXY_NOTES.md`）。
 
