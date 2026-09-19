@@ -22,6 +22,12 @@ from monitors import weread as wr  # noqa: E402
 from monitors import run as run_mod  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _isolated_quota(tmp_path, monkeypatch):
+    """所有用例默认使用临时配额台账（与真实 .weread_quota.json 隔离）。"""
+    monkeypatch.setattr(wr, "QUOTA_PATH", str(tmp_path / "quota.json"))
+
+
 def _review(rid: str, title: str, ts: int) -> dict:
     return {"review": {"reviewId": rid, "createTime": ts,
                        "mpInfo": {"title": title, "originalId": rid.rsplit("_", 1)[-1]}}}
@@ -408,3 +414,60 @@ def test_backfill_page_cap_reports_continue(monkeypatch):
                                                 max_pages=2, session=FakeSession(page))
     assert health["reached_since"] is False
     assert health["pages"]["号0"] == 2 and health["new"] == 20  # 第 2 页同批 rid 被 seen 去重
+
+
+# ---------------------------------------------------------------------------
+# 单日配额熔断
+# ---------------------------------------------------------------------------
+
+def test_quota_record_and_daily_reset(tmp_path, monkeypatch):
+    monkeypatch.setattr(wr, "QUOTA_PATH", str(tmp_path / "quota.json"))
+    monkeypatch.setattr(wr, "WEREAD_DAILY_QUOTA", 16)
+    assert wr.quota_today() == 0 and wr.quota_remaining() == 16
+    wr.quota_record(3)
+    assert wr.quota_today() == 3 and wr.quota_remaining() == 13
+    # 跨天重置：把台账日期改成昨天
+    q = json.load(open(tmp_path / "quota.json", encoding="utf-8"))
+    q["date"] = "2000-01-01"
+    json.dump(q, open(tmp_path / "quota.json", "w", encoding="utf-8"))
+    assert wr.quota_today() == 0 and wr.quota_remaining() == 16
+
+
+def test_fetch_raises_when_quota_exhausted(tmp_path, monkeypatch):
+    monkeypatch.setattr(wr, "QUOTA_PATH", str(tmp_path / "quota.json"))
+    monkeypatch.setattr(wr, "WEREAD_DAILY_QUOTA", 5)
+    wr.quota_record(5)
+    lister = wr.WereadLister(FakeSession(FakePage()))
+    with pytest.raises(wr.WereadQuotaExhausted):
+        lister.fetch_list_raw("MP_WXS_100", 0)
+
+
+def test_discover_skips_when_quota_exhausted(tmp_path, monkeypatch):
+    """多源场景熔断：公众号源整体跳过、零请求、健康度带任务消息。"""
+    monkeypatch.setattr(wr, "QUOTA_PATH", str(tmp_path / "quota.json"))
+    monkeypatch.setattr(wr, "WEREAD_DAILY_QUOTA", 16)
+    wr.quota_record(16)
+    page = FakePage()
+    items, health = wr.discover_weread({"sources": {}}, _entries(2),
+                                       session=FakeSession(page))
+    assert items == [] and health["quota_exhausted"] is True
+    assert page.fetch_apis == [] and health["skipped"] == ["号0", "号1"]
+    assert "单日上限" in wr.format_health(health)
+
+
+def test_backfill_stops_when_quota_exhausted_midway(tmp_path, monkeypatch):
+    """补全场景熔断：中途到线停止续批，reached_since=False（明天再跑续批）。"""
+    monkeypatch.setattr(wr, "QUOTA_PATH", str(tmp_path / "quota.json"))
+    monkeypatch.setattr(wr, "WEREAD_DAILY_QUOTA", 16)
+    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    wr.quota_record(15)                      # 只剩 1 次：第 1 页成功，第 2 页熔断
+    state = {"sources": {"weread:MP_WXS_100": {"seen": []}}}
+    now = int(time.time())
+    r1 = {"reviews": [{"subReviews": [_review(f"MP_WXS_100_q{i}", "T", now - 86400)
+                                       for i in range(20)]}]}
+    page = FakePage(responses=[r1])          # 第 2 页时 FakePage 返回 {}，但配额已尽先熔断
+    items, health = wr.discover_weread_backfill(state, _entries(1), now - 86400 * 30,
+                                                max_pages=5, session=FakeSession(page))
+    assert health["quota_exhausted"] is True and health["reached_since"] is False
+    assert len(items) == 20 and len(page.fetch_apis) == 1
+    assert "单日上限" in wr.format_health(health)

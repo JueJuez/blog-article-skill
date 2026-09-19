@@ -63,6 +63,52 @@ WEREAD_MAX_PAGES = int(os.environ.get("WEREAD_MAX_PAGES", "15"))
 WEREAD_AUTO_RELOGIN = os.environ.get("WEREAD_AUTO_RELOGIN", "1") == "1"
 # 等扫码时长（秒）；扫到即自动继续抓取该号及后续号，超时跳过本轮
 WEREAD_RELOGIN_WAIT = int(os.environ.get("WEREAD_RELOGIN_WAIT", "180"))
+# 单日请求配额（熔断线）：weread 列表请求持久化计数（带日期，跨天自动清零）。
+# 到线即熔断：日常监控跳过公众号源（B站/scys 照跑）、补全任务停止续批——
+# 防封纪律「单日十几请求封顶」的机械封顶（默认 16 = 4 号×2 页 + 余量）
+WEREAD_DAILY_QUOTA = int(os.environ.get("WEREAD_DAILY_QUOTA", "16"))
+# 配额台账落点（点文件不入库；{"date": "YYYY-MM-DD", "count": N}）
+QUOTA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".weread_quota.json")
+
+
+class WereadQuotaExhausted(RuntimeError):
+    """单日 weread 请求配额耗尽（熔断）。消息即用户可读的任务返回。"""
+
+
+def quota_today() -> int:
+    """今天已用的 weread 列表请求数（台账日期非今天 = 0）。"""
+    try:
+        with open(QUOTA_PATH, encoding="utf-8") as f:
+            q = json.load(f)
+        return int(q.get("count", 0)) if q.get("date") == time.strftime("%Y-%m-%d") else 0
+    except Exception:
+        return 0
+
+
+def quota_remaining() -> int:
+    return max(0, WEREAD_DAILY_QUOTA - quota_today())
+
+
+def quota_record(n: int = 1) -> None:
+    """记一次请求（按天持久化；跨天自动重置）。"""
+    today = time.strftime("%Y-%m-%d")
+    try:
+        with open(QUOTA_PATH, encoding="utf-8") as f:
+            q = json.load(f)
+    except Exception:
+        q = {}
+    if q.get("date") != today:
+        q = {"date": today, "count": 0}
+    q["count"] = int(q.get("count", 0)) + n
+    try:
+        with open(QUOTA_PATH, "w", encoding="utf-8") as f:
+            json.dump(q, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+QUOTA_MSG = (f"公众号 weread 请求已达单日上限 {WEREAD_DAILY_QUOTA}，已熔断跳过；"
+             f"明天自动恢复（补全任务再跑一次即续批）")
 # 等 __WRPA__ 签名器（WASM）就绪的超时秒数。实测签名器只在 /web 等 SPA 路由加载，
 # 首页 `/` 不加载（2026-09-19 诊断，见 references/weread-direct-source.md §2.4）
 WRPA_WAIT_S = float(os.environ.get("WEREAD_WRPA_WAIT_S", "30"))
@@ -208,6 +254,8 @@ def resolve_book_ids(subs: dict) -> list:
 def format_health(health: dict) -> str:
     """health dict → 人类可读 weread 健康度段（供 run.py 打印）。"""
     seg = f"正常 {health.get('ok', 0)} 号 · 新文章 {health.get('new', 0)}"
+    if health.get("quota_exhausted"):
+        seg += f" · ⛔{QUOTA_MSG}"
     if health.get("baseline"):
         seg += f" · 首跑基线 {'/'.join(health['baseline'])}（不回填历史）"
     if health.get("captcha"):
@@ -327,7 +375,14 @@ class WereadLister:
         self.page = _find_or_open_weread_page(session)
 
     def fetch_list_raw(self, book_id: str, offset: int = 0, max_len: int = 2_000_000) -> dict:
-        """拉一页列表，返回解析后的 JSON（可能含 errCode）。请求层异常抛 RuntimeError。"""
+        """拉一页列表，返回解析后的 JSON（可能含 errCode）。请求层异常抛 RuntimeError。
+
+        单一请求咽喉：每次调用计入当日配额（WEREAD_DAILY_QUOTA），耗尽抛
+        WereadQuotaExhausted 熔断（调用方按场景跳过或停止续批）。
+        """
+        if quota_remaining() <= 0:
+            raise WereadQuotaExhausted(QUOTA_MSG)
+        quota_record(1)
         api = LIST_API.format(book_id=book_id, offset=offset)
         res = self.page.evaluate(_FETCH_JS, [api, max_len])
         if not isinstance(res, dict) or not res.get("ok"):
@@ -408,6 +463,9 @@ def trigger_weread_relogin(session, timeout: int, qr_path: str = None) -> bool:
             if classify_list_response(resp) == "ok":
                 print("[relogin] ✅ 扫码成功，登录态已恢复", file=sys.stderr)
                 return True
+        except WereadQuotaExhausted:
+            print(f"[relogin] {QUOTA_MSG}（探活未执行）", file=sys.stderr)
+            return False
         except Exception:
             continue
     print(f"[relogin] ⏰ 等待扫码超时（{timeout}s）", file=sys.stderr)
@@ -444,6 +502,9 @@ def _process_one_account(lister, state, e: dict, cutoff: int, max_pages: int,
     try:
         reviews, cat, last_resp = paginate(lister.fetch_list_raw, book_id,
                                            max_pages=max_pages, cutoff_ts=cutoff)
+    except WereadQuotaExhausted:
+        return [], [], {"status": "quota", "detail": QUOTA_MSG,
+                        "new_n": 0, "is_first": False}
     except RuntimeError as ex:
         return [], [], {"status": "fetch_err", "detail": str(ex)[:160],
                         "new_n": 0, "is_first": False}
@@ -500,12 +561,18 @@ def discover_weread(state: dict, entries: list, session=None,
       扫到即继续抓该号及后续号；二维码落 monitors/weread_login_qr.png）；
       页面出现验证码 → 停手上报（过码走 scripts/weread_captcha.py，识别需模型在场）。
     """
+    if quota_remaining() <= 0:
+        # 熔断（多源场景）：公众号源直接跳过，B站/scys 照跑，不建会话不杀 Chrome
+        health = {"ok": 0, "new": 0, "captcha": False, "errors": [("all", "quota", QUOTA_MSG)],
+                  "skipped": [e["name"] for e in entries], "baseline": [],
+                  "relogin": False, "quota_exhausted": True}
+        return [], health
     own_session = session is None
     if own_session:
         from shared.cdp_session import SharedCdpSession
         session = SharedCdpSession()
     health = {"ok": 0, "new": 0, "captcha": False, "errors": [], "skipped": [],
-              "baseline": [], "relogin": False}
+              "baseline": [], "relogin": False, "quota_exhausted": False}
     items: list = []
     try:
         lister = WereadLister(session)
@@ -541,6 +608,8 @@ def discover_weread(state: dict, entries: list, session=None,
             if res["status"] != "ok":
                 if res["status"] == "captcha":
                     health["captcha"] = True
+                if res["status"] == "quota":
+                    health["quota_exhausted"] = True
                 detail = res["detail"]
                 if res["status"] in ("auth", "unknown_err"):
                     detail += f"（若为安全检测，过码：python scripts/weread_captcha.py --shot）"
@@ -576,12 +645,19 @@ def discover_weread_backfill(state: dict, entries: list, since_ts: int,
       建议分多次跑或接受一次较多请求（一次性任务，非日常节奏）。
     - 扫码续期与日常增量同款（每轮最多弹码一次）。
     """
+    if quota_remaining() <= 0:
+        # 熔断（补全场景）：任务消息直接返回，已入队进度靠 seen 保留，明天续批
+        health = {"ok": 0, "new": 0, "captcha": False, "errors": [("all", "quota", QUOTA_MSG)],
+                  "skipped": [], "relogin": False, "reached_since": False, "pages": {},
+                  "quota_exhausted": True}
+        return [], health
     own_session = session is None
     if own_session:
         from shared.cdp_session import SharedCdpSession
         session = SharedCdpSession()
     health = {"ok": 0, "new": 0, "captcha": False, "errors": [], "skipped": [],
-              "relogin": False, "reached_since": True, "pages": {}}
+              "relogin": False, "reached_since": True, "pages": {},
+              "quota_exhausted": False}
     items: list = []
     try:
         lister = WereadLister(session)
@@ -600,6 +676,11 @@ def discover_weread_backfill(state: dict, entries: list, since_ts: int,
                 fetch = lambda b, o, _off=offset: lister.fetch_list_raw(b, o + _off)
                 try:
                     reviews, cat, last_resp = paginate(fetch, book_id, max_pages=1)
+                except WereadQuotaExhausted:
+                    health["quota_exhausted"] = True
+                    health["reached_since"] = False  # 配额熔断：明天再跑一次即续批
+                    stop = True
+                    break
                 except RuntimeError as ex:
                     health["errors"].append((name, "fetch_err", str(ex)[:160]))
                     stop = True

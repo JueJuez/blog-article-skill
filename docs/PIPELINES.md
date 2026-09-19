@@ -65,14 +65,14 @@
 ## 4. 订阅监控管线
 
 **入口**：`python monitors/run.py --mode auto --apply`（每日）/ `--mode first --apply`（首跑 30 天）/
-`--parallel --mode auto`（三源并行）/ `--subscribe ...`（加订阅）/ `--backfill ...`（公众号历史）
+`--parallel --mode auto`（三源并行）/ `--subscribe ...`（加订阅）/ `--backfill ...`（公众号历史·旧代理）/`--weread-backfill --names X --since 日期 --apply`（weread 历史补全，未翻到再跑即续批）
 **零件**：`monitors/run_source.py`、`monitors/bilibili.py`、`monitors/weread.py`、`monitors/wechat.py`（旧代理，永久停用）、
 `monitors/state.py`、`pending_summaries.json` 队列、`scripts/filter_pending.py`（派单前清洗，属于队列维护不是入口）。
 
 **weread 直连公众号源（2026-09-19 开发落地，PLAN-20260919）**：旧 wewe-rss 代理已死，
 接替方案 `monitors/weread.py` 随每日监控自动参与——`.env` 设 `WEREAD_SOURCE_ENABLED=1` 启用
 （默认 0）。登录态页内 fetch `/web/mp/articles`（每号每天 1 页 20 条，首跑只建 seen 基线），
-正文走 mp 原文直链与普通公众号同管线；登录态/风控错误码或验证码 → 停手截图上报
+增量按时间窗（`WEREAD_WINDOW_DAYS=2` 基础、断跑补齐封顶 30 天）；正文走 mp 原文直链与普通公众号同管线；单日请求配额熔断（`WEREAD_DAILY_QUOTA=16`，到线跳过/停止续批）；登录失效自动弹码等扫码；验证码 → 停手截图上报
 （`_tmp/weread_probe/`），半自动过码 `scripts/weread_captcha.py`。机制/防封纪律见
 `references/weread-direct-source.md`。
 **weread 探针工具（2026-09-18/19 探索用，非生产入口，勿接入管线）**：
