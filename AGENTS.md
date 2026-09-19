@@ -41,7 +41,7 @@
   - **并行模式（可选，2026-08-29 起）**：`python monitors/run.py --parallel --mode auto` 走三源并行 worker（B站/微信/scys 各一 worker，各自写独立 staging 文件 → 父进程合并，消除并发写 `pending_summaries`/`pending_refetch` 队列的竞态；父进程建一次 CDP 会话、各 worker 经 `from_endpoint` 复用，仅一次 kill Chrome）。串行 `--mode auto --apply` 仍是**默认且推荐的日常路径**（惰性 CDP：纯 B站/动态轮次 0 kill）。并行路径代码层 + 单测已通过；真环境端到端已验证（2026-09-02 三源并行实跑；边界与验证见 `docs/plans/PLAN-20260828-parallel-monitor.md` §边界矩阵 #11/#12）。
   - **新会话执行步骤（照做即一帆风顺）**：
     1. 直接运行 `python monitors/run.py --mode auto --apply`。
-    2. 公众号 token 失效 → 自动弹二维码（`RELOGIN_QR:` 路径），**本机会话扫码后续期，本次运行即继续抓取公众号**（刷新 token 后重试整轮）；headless/无人看码则本次跳过公众号、B站照跑不受影响。
+    2. 公众号（weread 直连源）两种异常自动处置：**cookie 失效** → 自动截登录二维码（`monitors/weread_login_qr.png` + `RELOGIN_QR:` 提示），用户微信扫码后 cookie 浏览器内自动生效、本次运行即继续抓取；**人机验证** → 会话内执行模型识图过码（`scripts/weread_captcha.py --shot`/`--grid`，自动核验）。请求全程挂双层配额（日 25/小时 6），到线熔断跳过公众号源、B站/scys 照跑。headless/无人看码则本轮跳过公众号。
     3. 发现 → 抓正文 → 进 `pending_summaries.json` 队列（FORCE_AGENT_MODE 下不自动总结；系列课单集经五步管线与单视频同队列，PLAN-20260908 后无独立系列队列）；scys 新帖进 `notes/_scraped/scys/pending_summaries.json` 队列。
     4. 运行结束后，本会话（执行模型）**必须**在本次会议内闭环两类待总结队列（全自动，无需用户手动命令）：
        - **派单前先跑 `python scripts/filter_pending.py`**（机械清洗两队列：URL 命中 dedup 索引的已总结条目自动出队、scys 队列清 `summarized:true`——多 Agent 接力时已总结内容不再浪费 AI token、不重复落盘）。
@@ -53,9 +53,9 @@
        - ⚠️ 系列课增量语义（PLAN-20260908 后）：每日重跑时，`videos.main` 按登记表 URL 键去重，**只把未总结的集**入队；UP 更新后自动只抓新增集，已总结的旧集不会重复总结/落盘。
        - ⚠️ 系列课落盘结构：系列容器挂 `【监控】/<平台>/<UP>/<系列名>/` 下（不是根），由统一路由器 `shared/routing.py: resolve_folder` 算路径；五步管线 `_save_series_note` 收到的 `folder` **只到账号层**（`rsplit('/',1)[0]`），系列容器由 `ensure_series_node` 单建——否则系列名被建两次造成嵌套。`_read_series_from_feishu` 的 `parent_token` 已是容器 token 时直接用，不再内部 `ensure_series_node`。
     5. 末尾看健康度行（视频/动态/文章/跳过/限流待重试/错误）确认是否异常。
-    - 内置重试（无需手动）：token 失效弹码等扫码(≤180s) / 401 瞬错 ×3 / 代理空轮退避重试 / 正文限流进 `pending_refetch` 下次重抓。
+    - 内置重试（无需手动）：weread cookie 失效弹码等扫码(≤180s，扫到即续抓) / 人机验证自动过码 / 配额到线熔断跳过（次日自动恢复）/ 正文限流进 `pending_refetch` 下次重抓。（旧代理的 401×3 / 空轮退避随源停用而失效）
 - **抓取规则**：按时间窗口（首跑 30 天 / 每日 1 天，断跑自动拉长封顶 30 天）+ 无干货动态屏蔽 + 短动态轻量化 + 新鲜度标签。细节见 `monitors/README.md`。
-- **历史回溯（续批）**：把某公众号 N 年内历史文章分批抓全（例：哥飞可到 2025 年中、生财有术代理深度仅 2026-06，更早文章代理侧不可达、代码无解）。入口 `python monitors/run.py --backfill --names <逗号名> --since <YYYY-MM-DD> --batch 15`（入队 + 跑一批）；`--drain` 从 `monitors/backfill_targets.json` 取第一个未完成 job 自动续批（适合 recurring 自动化）。范围门禁只动目标号；游标复用 `state.json` 的 `seen` + `state["backfill"][name]`，不重置即可续批。完整机制见 `monitors/README.md`「公众号历史回溯（续批）」+ `references/config.md` backfill 段。
+- **历史回溯（续批）**：**现役 = weread 版** `python monitors/run.py --weread-backfill --names <逗号名> --since <YYYY-MM-DD> [--batch 页数] --apply`（补到指定日期全部入队，正文走 mp 直链；未翻到 since 再跑一次即续批，seen 去重不重复入队；受双层配额约束自动分摊）。触发词：「公众号补全 / 补到什么时候」。旧代理版 `--backfill` 已随代理停用（`WECHAT_SOURCE_ENABLED=0`），机制描述见 `monitors/README.md`「公众号历史回溯（续批）」。
 - **UP 主全量补齐（B站，2026-09-03 收编管线）**：把某 UP 主历史视频全部抓字幕+总结归档，与 scys 补齐同构（抓完入 `pending_summaries` 队列，prompt/folder 预计算，子 Agent 消费），**不依赖会话手搓**。触发词：「补齐 <UP名> 的视频 / 把某 UP 主视频归档」。机械三步：`list_up_videos.py --uid <UID>` → `fetch_up_range.py 1 N --uid <UID> --author <UP名>`（限速+412熔断+抓到即入队）→ `filter_pending.py` 清洗后派子 Agent 消费队列。落盘路由：名单外 UP → `【我的总结】/作者/<名>`（加监控名单走 `--subscribe`，两者独立）。完整说明见 `references/config.md`「UP 视频批量字幕抓取」。
   - ⚠️ **两点实操坑（2026-09-11 实踩）**：① `fetch_up_range.py` 从 `os.environ["BILI_COOKIE"]` 读 cookie、且需 `OBSIDIAN_WRITE=1`/`DISABLE_FEISHU_SYNC=1` 才落本地 Obsidian——但**它自身不读 `.env`**；务必用 `python scripts/_run_with_env.py -- python scripts/fetch_up_range.py ...` 包装（该包装器加载 `.env` 注入上述变量后转发子命令），否则 cookie 取不到、落盘走错目标。② 批量**默认跳过 ASR**（`BILI_BATCH_NO_ASR=1`）：只抓现成 CC 字幕，无字幕视频 `fetch` 直接返回 None → 不入队也不收集；要转写无字幕视频须显式加 `--with-asr`（音频下载受沙箱网络/登录态限制，可能失败，无解时标记待补）。
 - B站需要登录态：`BILI_COOKIE` 环境变量（动态接口硬性要求）。

@@ -69,12 +69,15 @@
 **零件**：`monitors/run_source.py`、`monitors/bilibili.py`、`monitors/weread.py`、`monitors/wechat.py`（旧代理，永久停用）、
 `monitors/state.py`、`pending_summaries.json` 队列、`scripts/filter_pending.py`（派单前清洗，属于队列维护不是入口）。
 
-**weread 直连公众号源（2026-09-19 开发落地，PLAN-20260919）**：旧 wewe-rss 代理已死，
-接替方案 `monitors/weread.py` 随每日监控自动参与——`.env` 设 `WEREAD_SOURCE_ENABLED=1` 启用
-（默认 0）。登录态页内 fetch `/web/mp/articles`（每号每天 1 页 20 条，首跑只建 seen 基线），
-增量按时间窗（`WEREAD_WINDOW_DAYS=2` 基础、断跑补齐封顶 30 天）；正文走 mp 原文直链与普通公众号同管线；单日请求配额熔断（`WEREAD_DAILY_QUOTA=16`，到线跳过/停止续批）；登录失效自动弹码等扫码；验证码 → 停手截图上报
-（`_tmp/weread_probe/`），半自动过码 `scripts/weread_captcha.py`。机制/防封纪律见
-`references/weread-direct-source.md`。
+**weread 直连公众号源（2026-09-19 起现役，PLAN-20260919）**：旧 wewe-rss 代理已死，
+接替方案 `monitors/weread.py` 随每日监控自动参与（`WEREAD_SOURCE_ENABLED=1` 已启用）。
+增量按时间窗（`WEREAD_WINDOW_DAYS=2` 基础、断跑补齐封顶 30 天，按 createTime 过滤、
+与更新频率无关；首跑只建基线），正文走 mp 原文直链与普通公众号同管线。
+异常自动处置：cookie 失效 → 自动截二维码等扫码（扫到即续抓）；验证码 → 会话内模型过码
+（`scripts/weread_captcha.py`）；双层配额熔断（日 `WEREAD_DAILY_QUOTA=25` / 小时
+`WEREAD_HOURLY_QUOTA=6`，到线跳过公众号源或停止补续批）。
+历史补全：`--weread-backfill --names X --since 日期 --apply`（未翻到再跑即续批）。
+机制/防封纪律见 `references/weread-direct-source.md`。
 **weread 探针工具（2026-09-18/19 探索用，非生产入口，勿接入管线）**：
 `scripts/weread_api_probe.py`（登录态页内 fetch 探测）、`scripts/weread_cookie_export.py`
 （cookie 导出/自测）、`scripts/weread_state.py`（登录态体检）、`scripts/weread_probe.py` +

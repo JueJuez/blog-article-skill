@@ -43,7 +43,7 @@
 
 1. **运行**：`python monitors/run.py --mode auto --apply`（仅看发现列表就去掉 `--apply`）。
 2. **发现阶段（discover_all）**：
-   - 公众号（weread 直连源，2026-09-19 开发落地）：旧 wewe-rss 代理已死（`WECHAT_SOURCE_ENABLED=0` 永久停用）；接替方案 `monitors/weread.py` **已开发接入**，`WEREAD_SOURCE_ENABLED=1` 启用。登录态页内 fetch `/web/mp/articles` 发现新文（每号每天 1 页 20 条，首跑只建 seen 基线不回填历史），正文走 mp 原文直链（与普通公众号文章同管线）；登录态/风控错误码（-2010/-2012/-2041）或验证码 → **停手截图上报**（`_tmp/weread_probe/`），半自动过码用 `scripts/weread_captcha.py`。机制/翻页规则/防封纪律见 `references/weread-direct-source.md`。
+   - 公众号（weread 直连源，2026-09-19 起现役）：旧 wewe-rss 代理已死（`WECHAT_SOURCE_ENABLED=0` 永久停用）；接替方案 `monitors/weread.py`，`WEREAD_SOURCE_ENABLED=1` 启用。监控名单 = `subscriptions.json` wechat 列表（当前：中金点睛、哥飞；生财有术走 scys 渠道，DeepVan 已退订）。**时间窗增量**（基础 2 天、断跑自动补齐封顶 30 天，按 createTime 过滤与更新频率无关；首跑只建基线）；正文走 mp 原文直链（与普通公众号同管线）。异常自动处置：cookie 失效 → 自动截二维码等扫码（扫码即续抓）；验证码 → 会话内模型过码（`scripts/weread_captcha.py`）；**双层配额熔断**（日 25/小时 6，到线跳过/停止续批）。机制/翻页规则/防封纪律见 `references/weread-direct-source.md`。
    - B站：官方 API 一步拿视频 + 动态，号间 30±5s 退避；某号异常只跳过该号、其他号照跑。
 3. **抓取 + 总结（apply_summaries）**：
    - 公众号文章：`fetch_web_content` **直连微信**抽正文（`WECHAT_GAP=6s`+抖动防限流），异常/空页进 `pending_refetch` 下次重抓；直连撞墙的批次自动合并走一次 CDP 批量会话抓正文。
@@ -54,7 +54,7 @@
 5. **Agent 总结闭环**：本会话（执行模型）读队列 → 派**子 Agent** 消费条目已预计算的 prompt 总结（入队时已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好，2026-09-05 起三队列统一）→ `save_summary_only` 落盘（默认本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0）→ 出队。**原子化**：成功才出队，中断可安全重跑。scys 队列同理（folder=生财有术/<领域>，语义见 `references/scys-fetch-sop.md` §9）。
 6. **看健康度行**：末尾 `📊 本轮健康度：...` 一行，异常（错误/限流待重试高）一眼可见。
 
-**重试矩阵（无需手动干预）**：token 失效→弹码等扫码 / 401 瞬错×3 / 代理空轮退避重试 / 正文限流→`pending_refetch`（`python run.py --refetch-only` 统一重抓）。
+**重试矩阵（无需手动干预）**：weread cookie 失效→自动截码等扫码（扫到即续抓）/ 人机验证→会话内模型过码 / 配额到线→熔断跳过（次日恢复）/ 正文限流→`pending_refetch`（`python run.py --refetch-only` 统一重抓）。（旧代理的 401×3/空轮退避随源停用而失效。）
 
 ## scys（生财有术）新帖监控（2026-08-20 接入）
 

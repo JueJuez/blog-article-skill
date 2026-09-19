@@ -255,7 +255,7 @@ NOTE_GATE_THRESHOLD=85
 | `WECHAT_WINDOW_DAYS` | 2 | 公众号每日增量基础窗口（天）；同样支持自动补齐，封顶 `WECHAT_MAX_WINDOW_DAYS` |
 | `WECHAT_MAX_WINDOW_DAYS` | 30 | 公众号每日增量窗口封顶（天） |
 | `WECHAT_SOURCE_ENABLED` | 0 | 旧代理公众号源总开关：原 wewe-rss 代理已死（2026-07-20 平台下线），**永久停用**；接替方案见下方 `WEREAD_SOURCE_ENABLED`（`monitors/wechat.py` 保留不动） |
-| `WEREAD_SOURCE_ENABLED` | 0 | **weread 直连公众号源总开关**（PLAN-20260919，代理接替方案）：置 1 后每日增量经微信读书登录态页内 fetch `/web/mp/articles` 发现新文，正文走 mp 原文直链不经 weread；订阅名单复用 `subscriptions.json` 的 wechat 列表，bookId 映射在 `monitors/weread.py`；验证码 → 停手截图上报（过码 `scripts/weread_captcha.py`）。机制/防封纪律见 `references/weread-direct-source.md` |
+| `WEREAD_SOURCE_ENABLED` | 1 | **weread 直连公众号源总开关**（代理接替方案，2026-09-19 已启用）：每日增量经微信读书登录态页内 fetch `/web/mp/articles` 发现新文（时间窗语义），正文走 mp 原文直链不经 weread；订阅名单复用 `subscriptions.json` 的 wechat 列表（当前：中金点睛、哥飞），bookId 映射在 `monitors/weread.py`；cookie 失效自动弹码等扫码、验证码由会话内模型过码、双层配额熔断（日 25/小时 6）。机制/防封纪律见 `references/weread-direct-source.md` |
 | `WEREAD_WINDOW_DAYS` | 2 | weread 增量**基础时间窗**（天）：只抓窗口内发布的文章（按 createTime 过滤，与更新频率无关）；0=关闭时间过滤。断跑自动补齐见下方封顶 |
 | `WEREAD_MAX_WINDOW_DAYS` | 30 | weread 增量窗口**封顶**（天）：断跑 N 天按 gap 拉长窗口补回，最多补 30 天 |
 | `WEREAD_MAX_PAGES` | 15 | weread 单号单轮翻页安全上限（每页 20 条；正常 30 天窗口 ≤2 页） |
