@@ -57,8 +57,10 @@ WRPA_WAIT_S = float(os.environ.get("WEREAD_WRPA_WAIT_S", "30"))
 # 只观测上报，绝不自动重试硬闯、绝不猜测性换 cookie
 AUTH_ERROR_CODES = {-2010, -2012, -2041}
 
-# 「安全检测中」遮罩 / 验证码页面的文本标记（出现任一即判触发，停手截图）
-CAPTCHA_MARKERS = ("安全检测", "安全验证", "验证码", "人机识别", "拖动滑块", "完成拼图")
+# 「安全检测中」遮罩 / 验证码标记（2026-09-19 实测补充：点选码是 iframe 里的组件，
+# 文案为「选择最符合描述的图片」，主 frame innerText 查不到——检测必须遍历 frames）
+CAPTCHA_MARKERS = ("安全检测", "安全验证", "验证码", "人机识别", "拖动滑块", "完成拼图",
+                   "最符合描述的图片")
 CAPTCHA_DIR = os.path.join(BASE_DIR, "_tmp", "weread_probe")
 
 _REVIEW_ID_RE = re.compile(r"^MP_WXS_\d+_(.+)$")
@@ -205,12 +207,19 @@ def format_health(health: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def detect_captcha(page) -> bool:
-    """页面出现「安全检测中」遮罩 / 验证码标记 → True（出现即停手，绝不硬闯）。"""
-    try:
-        text = page.evaluate("() => document.body ? document.body.innerText : ''") or ""
-    except Exception:
-        return False
-    return any(m in text for m in CAPTCHA_MARKERS)
+    """页面（含全部 iframe）出现「安全检测中」遮罩 / 验证码标记 → True。
+
+    ⚠️ 点选验证码组件在 iframe 里渲染（2026-09-19 实测），只查主 frame 会漏检。
+    """
+    frames = getattr(page, "frames", None) or [page]
+    for frame in frames:
+        try:
+            text = frame.evaluate("() => document.body ? document.body.innerText : ''") or ""
+        except Exception:
+            continue
+        if any(m in text for m in CAPTCHA_MARKERS):
+            return True
+    return False
 
 
 def screenshot_captcha(page) -> str:
@@ -365,7 +374,8 @@ def discover_weread(state: dict, entries: list, session=None,
                 continue
             if cat != "ok":
                 code = last_resp.get("errCode") if isinstance(last_resp, dict) else "?"
-                health["errors"].append((name, cat, f"errCode={code}"))
+                health["errors"].append((name, cat, f"errCode={code}（若为安全检测，"
+                                         f"过码：python scripts/weread_captcha.py --shot）"))
                 stop = True  # 登录态/风控类错误：原样上报，等用户反馈，不自动处置
                 continue
             seen = get_seen(state, _source_key(book_id))
