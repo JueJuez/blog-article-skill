@@ -70,6 +70,10 @@ WEREAD_RELOGIN_WAIT = int(os.environ.get("WEREAD_RELOGIN_WAIT", "180"))
 # 防突发（6/小时，2026-09-19 连环验证码事故教训：短时密集请求比日总量更危险）
 WEREAD_DAILY_QUOTA = int(os.environ.get("WEREAD_DAILY_QUOTA", "25"))
 WEREAD_HOURLY_QUOTA = int(os.environ.get("WEREAD_HOURLY_QUOTA", "6"))
+# 连环码熔断（用户定策 2026-09-19）：正常仅 1 次人机验证；同日第 2 次「确定」提交
+# = 高危风控信号（行为像人机/请求过多才会连环触发），熔断 N 小时不发任何请求
+WEREAD_CAPTCHA_SERIAL_LIMIT = int(os.environ.get("WEREAD_CAPTCHA_SERIAL_LIMIT", "2"))
+WEREAD_RISK_COOLDOWN_HOURS = float(os.environ.get("WEREAD_RISK_COOLDOWN_HOURS", "12"))
 QUOTA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".weread_quota.json")
 
 
@@ -118,6 +122,58 @@ def quota_block_message() -> str:
             f"明天自动恢复（补全任务再跑一次即续批）")
 
 
+def _save_quota(q: dict) -> None:
+    try:
+        with open(QUOTA_PATH, "w", encoding="utf-8") as f:
+            json.dump(q, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def risk_blocked_seconds() -> float:
+    """连环码高危熔断剩余秒数（未熔断 = 0）。"""
+    q = _load_quota()
+    until = float(q.get("risk_until", 0) or 0)
+    return max(0.0, until - time.time())
+
+
+def record_captcha_event() -> str | None:
+    """记一次人机验证「确定」提交（每次提交 = 消耗一个挑战）。
+
+    同日提交次数 ≥ WEREAD_CAPTCHA_SERIAL_LIMIT → 高危熔断：置 risk_until 并返回
+    用户可读的熔断消息（未触发返回 None）。事件列表按自然日判定、跨天清零。
+    """
+    today = time.strftime("%Y-%m-%d")
+    q = _load_quota()
+    if q.get("date") != today:
+        q = {"date": today, "count": 0,
+             "hour": time.strftime("%Y-%m-%d %H"),
+             "hour_count": q.get("hour_count", 0) if q.get("hour") == time.strftime("%Y-%m-%d %H") else 0,
+             "captcha_events": []}
+    events = [e for e in (q.get("captcha_events") or []) if isinstance(e, str)]
+    events.append(time.strftime("%H:%M"))
+    q["captcha_events"] = events
+    _save_quota(q)
+    if len(events) >= WEREAD_CAPTCHA_SERIAL_LIMIT:
+        until = time.time() + WEREAD_RISK_COOLDOWN_HOURS * 3600
+        q["risk_until"] = until
+        _save_quota(q)
+        return weread_block_message()
+    return None
+
+
+def weread_block_message() -> str | None:
+    """统一请求闸门：连环码高危熔断优先，其次日/小时配额。None = 放行。"""
+    secs = risk_blocked_seconds()
+    if secs > 0:
+        return (f"⚠️ 今日连环出现 {WEREAD_CAPTCHA_SERIAL_LIMIT} 次人机验证（高危风控信号："
+                f"行为像人机/请求过多才会连环触发），weread 已熔断，"
+                f"{int(secs // 3600)}小时{int(secs % 3600 // 60)}分后自动恢复；期间不发任何请求")
+    if quota_remaining_n() <= 0:
+        return quota_block_message()
+    return None
+
+
 def quota_record(n: int = 1) -> None:
     """记 n 次请求（日/小时双层持久化；跨天/跨小时各自自动重置）。"""
     today = time.strftime("%Y-%m-%d")
@@ -129,11 +185,7 @@ def quota_record(n: int = 1) -> None:
         q["hour"], q["hour_count"] = hour, 0
     q["count"] = int(q.get("count", 0)) + n
     q["hour_count"] = int(q.get("hour_count", 0)) + n
-    try:
-        with open(QUOTA_PATH, "w", encoding="utf-8") as f:
-            json.dump(q, f, ensure_ascii=False)
-    except Exception:
-        pass
+    _save_quota(q)
 # 等 __WRPA__ 签名器（WASM）就绪的超时秒数。实测签名器只在 /web 等 SPA 路由加载，
 # 首页 `/` 不加载（2026-09-19 诊断，见 references/weread-direct-source.md §2.4）
 WRPA_WAIT_S = float(os.environ.get("WEREAD_WRPA_WAIT_S", "30"))
@@ -405,8 +457,9 @@ class WereadLister:
         单一请求咽喉：每次调用计入当日配额（WEREAD_DAILY_QUOTA），耗尽抛
         WereadQuotaExhausted 熔断（调用方按场景跳过或停止续批）。
         """
-        if quota_remaining_n() <= 0:
-            raise WereadQuotaExhausted(quota_block_message())
+        blocked = weread_block_message()
+        if blocked:
+            raise WereadQuotaExhausted(blocked)
         quota_record(1)
         api = LIST_API.format(book_id=book_id, offset=offset)
         res = self.page.evaluate(_FETCH_JS, [api, max_len])
@@ -527,8 +580,8 @@ def _process_one_account(lister, state, e: dict, cutoff: int, max_pages: int,
     try:
         reviews, cat, last_resp = paginate(lister.fetch_list_raw, book_id,
                                            max_pages=max_pages, cutoff_ts=cutoff)
-    except WereadQuotaExhausted:
-        return [], [], {"status": "quota", "detail": quota_block_message(),
+    except WereadQuotaExhausted as ex:
+        return [], [], {"status": "quota", "detail": str(ex),
                         "new_n": 0, "is_first": False}
     except RuntimeError as ex:
         return [], [], {"status": "fetch_err", "detail": str(ex)[:160],
@@ -586,10 +639,11 @@ def discover_weread(state: dict, entries: list, session=None,
       扫到即继续抓该号及后续号；二维码落 monitors/weread_login_qr.png）；
       页面出现验证码 → 停手上报（过码走 scripts/weread_captcha.py，识别需模型在场）。
     """
-    if quota_remaining_n() <= 0:
+    _blocked = weread_block_message()
+    if _blocked:
         # 熔断（多源场景）：公众号源直接跳过，B站/scys 照跑，不建会话不杀 Chrome
         health = {"ok": 0, "new": 0, "captcha": False,
-                  "errors": [("all", "quota", quota_block_message())],
+                  "errors": [("all", "blocked", _blocked)],
                   "skipped": [e["name"] for e in entries], "baseline": [],
                   "relogin": False, "quota_exhausted": True}
         return [], health
@@ -671,10 +725,11 @@ def discover_weread_backfill(state: dict, entries: list, since_ts: int,
       建议分多次跑或接受一次较多请求（一次性任务，非日常节奏）。
     - 扫码续期与日常增量同款（每轮最多弹码一次）。
     """
-    if quota_remaining_n() <= 0:
+    _blocked = weread_block_message()
+    if _blocked:
         # 熔断（补全场景）：任务消息直接返回，已入队进度靠 seen 保留，明天续批
         health = {"ok": 0, "new": 0, "captcha": False,
-                  "errors": [("all", "quota", quota_block_message())],
+                  "errors": [("all", "blocked", _blocked)],
                   "skipped": [], "relogin": False, "reached_since": False, "pages": {},
                   "quota_exhausted": True}
         return [], health

@@ -493,3 +493,54 @@ def test_backfill_stops_when_quota_exhausted_midway(tmp_path, monkeypatch):
     assert health["quota_exhausted"] is True and health["reached_since"] is False
     assert len(items) == 20 and len(page.fetch_apis) == 1
     assert "上限" in wr.format_health(health) and "熔断" in wr.format_health(health)
+
+
+# ---------------------------------------------------------------------------
+# 连环码高危熔断
+# ---------------------------------------------------------------------------
+
+def test_captcha_serial_breaker(tmp_path, monkeypatch):
+    """同日第 2 次验证码提交 = 高危：置熔断、请求闸门拒发；跨天事件清零。"""
+    monkeypatch.setattr(wr, "WEREAD_CAPTCHA_SERIAL_LIMIT", 2)
+    monkeypatch.setattr(wr, "WEREAD_RISK_COOLDOWN_HOURS", 12)
+    assert wr.record_captcha_event() is None            # 第 1 次：正常放行
+    assert wr.weread_block_message() is None
+    warn = wr.record_captcha_event()                     # 第 2 次：连环码 → 熔断
+    assert warn and "高危风控" in warn
+    assert wr.risk_blocked_seconds() > 0
+    lister = wr.WereadLister(FakeSession(FakePage()))
+    with pytest.raises(wr.WereadQuotaExhausted, match="高危风控"):
+        lister.fetch_list_raw("MP_WXS_100", 0)
+    # 跨天：事件清零，熔断与配额一并复位
+    q = json.load(open(tmp_path / "quota.json", encoding="utf-8"))
+    q["date"] = "2000-01-01"
+    q["hour"] = "2000-01-01 00"
+    q.pop("risk_until")
+    json.dump(q, open(tmp_path / "quota.json", "w", encoding="utf-8"))
+    assert wr.weread_block_message() is None
+
+
+def test_captcha_breaker_expires(tmp_path, monkeypatch):
+    """熔断到期自动恢复（risk_until 过期后闸门放行）。"""
+    monkeypatch.setattr(wr, "WEREAD_CAPTCHA_SERIAL_LIMIT", 2)
+    monkeypatch.setattr(wr, "WEREAD_RISK_COOLDOWN_HOURS", 12)
+    wr.record_captcha_event()
+    wr.record_captcha_event()
+    assert wr.weread_block_message() is not None
+    q = json.load(open(tmp_path / "quota.json", encoding="utf-8"))
+    q["risk_until"] = time.time() - 1
+    json.dump(q, open(tmp_path / "quota.json", "w", encoding="utf-8"))
+    assert wr.weread_block_message() is None
+
+
+def test_discover_blocked_by_risk_breaker(tmp_path, monkeypatch):
+    """熔断期内发现轮次：零请求、全部跳过、健康度带高危消息。"""
+    monkeypatch.setattr(wr, "WEREAD_CAPTCHA_SERIAL_LIMIT", 2)
+    wr.record_captcha_event()
+    monkeypatch.setattr(wr, "WEREAD_CAPTCHA_SERIAL_LIMIT", 2)
+    wr.record_captcha_event()
+    page = FakePage()
+    items, health = wr.discover_weread({"sources": {}}, _entries(1),
+                                       session=FakeSession(page))
+    assert items == [] and page.fetch_apis == []
+    assert "高危风控" in wr.format_health(health)

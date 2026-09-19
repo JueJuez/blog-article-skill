@@ -46,6 +46,7 @@ if ROOT not in sys.path:
 from shared.cdp_session import SharedCdpSession  # noqa: E402
 from monitors.weread import (  # noqa: E402
     CAPTCHA_DIR, _find_or_open_weread_page, detect_captcha, screenshot_captcha,
+    record_captcha_event,
 )
 
 _TEXT_JS = "() => document.body ? document.body.innerText : ''"
@@ -206,6 +207,12 @@ def _solve_grid(page, cells: list, confirm: bool) -> None:
         else:
             frame.locator(".tc-embed-verify-btn").first.click(force=True, timeout=5000)
             print("[grid] 已点 .tc-embed-verify-btn 提交（文本定位未见可见元素）")
+        # 连环码记账：每次「确定」提交 = 消耗一个挑战；同日第 2 次 = 高危风控 → 熔断
+        warn = record_captcha_event()
+        if warn:
+            print(f"⚠️ {warn}
+   （本次验证已完成提交；熔断期内 weread 不再发任何请求，"
+                  f"请停止后续操作，让账号冷却）")
 
 
 def main() -> int:

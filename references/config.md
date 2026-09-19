@@ -263,6 +263,8 @@ NOTE_GATE_THRESHOLD=85
 | `WEREAD_RELOGIN_WAIT` | 180 | 等待扫码时长（秒），超时本轮跳过该源 |
 | `WEREAD_DAILY_QUOTA` | 25 | **weread 单日请求配额（熔断线·日层）**：列表请求按天持久化计数（`monitors/.weread_quota.json`，跨天自动清零），到线即熔断——日常监控跳过公众号源（B站/scys 照跑）、补全任务停止并提示「已达上限，明天再跑即续批」 |
 | `WEREAD_HOURLY_QUOTA` | 6 | **weread 小时级请求上限（熔断线·小时层）**：按自然小时计数、整点自动恢复；防短时密集触发连环验证码（2026-09-19 事故教训）。任一层到线都熔断，健康度行报对应层 |
+| `WEREAD_CAPTCHA_SERIAL_LIMIT` | 2 | **连环码熔断阈值（高危风控信号）**：正常只出 1 次人机验证；同日第 2 次「确定」提交 = 行为像人机/请求过多的强信号，自动熔断 weread 全部请求。事件按自然日清零 |
+| `WEREAD_RISK_COOLDOWN_HOURS` | 12 | 连环码触发后的冷却时长（小时），到期自动恢复 |
 | `WEREAD_LIST_GAP` | 2 | weread 每号列表请求间隔下限（秒，+0~1s 抖动）；防封纪律：单日十几请求封顶，勿调小 |
 | `WEREAD_DAILY_PAGES` | 1 | （已由时间窗语义取代，保留兼容）每号每次运行拉的基础页数 |
 | `BILI_PAGE_SIZE` | 50 | 单页拉取条数（覆盖整个时间窗口） |

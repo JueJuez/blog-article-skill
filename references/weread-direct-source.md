@@ -316,6 +316,8 @@ https://mp.weixin.qq.com/s/<token>     ← 原文直链，项目既有 fetch_web
 **检测要点**：`detect_captcha` 必须**遍历全部 iframe frames**（只查主 frame 漏检），
 标记词需含「最符合描述的图片」。
 
+**连环码 = 高危风控信号（2026-09-19 用户定策）**：正常状态只出 **1 次**人机验证；同日第 2 次提交（`scripts/weread_captcha.py --confirm` 每次提交记账）说明行为像人机/请求过多，自动熔断 12 小时不发任何 weread 请求（`WEREAD_CAPTCHA_SERIAL_LIMIT=2`/`WEREAD_RISK_COOLDOWN_HOURS=12`，台账 `.weread_quota.json` 的 `captcha_events`/`risk_until`，跨天清零）。2026-09-19 事故实录：超量后连续 4 轮码（溪流→花园→瀑布→礁石），正是该规则的实证。
+
 ## 7. 相关脚本
 
 | 脚本 | 作用 |
