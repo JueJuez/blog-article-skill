@@ -8,7 +8,8 @@
 | 文件 | 职责 |
 |------|------|
 | `state.py` | 每源去重状态（`state.json`），per-source 裁剪防膨胀 |
-| `wechat.py` | 公众号源（**当前停用** `WECHAT_SOURCE_ENABLED=0`：原 `weread.111965.xyz` 转发已死；接替方案「微信读书直连」**列表+翻页已实测打通、待开发**，触发词「开发weread源模块」→ `docs/plans/PLAN-20260919-weread-source-module.md`，实测真源 `references/weread-direct-source.md`） |
+| `wechat.py` | 公众号源（旧 wewe-rss 代理，**永久停用** `WECHAT_SOURCE_ENABLED=0`，代理平台 2026-07-20 下线；保留不动） |
+| `weread.py` | **weread 直连公众号源（现役接替方案，PLAN-20260919）**：`WEREAD_SOURCE_ENABLED=1` 启用；微信读书登录态页内 fetch `/web/mp/articles` 发现新文（每号每天 1 页 20 条），正文走 mp 原文直链；-2010/-2012/-2041 或验证码 → 停手截图上报不硬闯；bookId 映射在 `BOOK_ID_FALLBACK` + `.mp_cache.json`；实测真源 `references/weread-direct-source.md` |
 | `bilibili.py` | B站UP主源（官方 API + WBI 签名，带登录 Cookie） |
 | `ad_filter.py` | 广告过滤：整篇纯广告 skip / 干货夹广告净化保留 |
 | `run.py` | CLI + 调度入口（`--apply` 直接调总结管线）；`--apply` 时按 `subscriptions.json` 的 `scys` 列表逐领域子进程跑 `scripts/scys_batch_fetch.py` 增量抓新帖（见下方「scys 新帖监控」） |
@@ -42,7 +43,7 @@
 
 1. **运行**：`python monitors/run.py --mode auto --apply`（仅看发现列表就去掉 `--apply`）。
 2. **发现阶段（discover_all）**：
-   - 公众号：**当前停用**（原 `weread` 代理已死，`WECHAT_SOURCE_ENABLED=0`）。接替方案「微信读书直连」**列表+翻页已实测打通（2026-09-19）**：登录态页内 fetch `/web/mp/articles` 每页 20 条可翻全历史、正文走 mp 原文直链；生产模块**待开发**，触发词「开发weread源模块」→ `docs/plans/PLAN-20260919-weread-source-module.md`（实测真源 `references/weread-direct-source.md`）。旧行为（代理拿列表 → 时间窗口 + 去重 + 广告过滤；token 失效弹码扫码）在代理复活前不适用。
+   - 公众号（weread 直连源，2026-09-19 开发落地）：旧 wewe-rss 代理已死（`WECHAT_SOURCE_ENABLED=0` 永久停用）；接替方案 `monitors/weread.py` **已开发接入**，`WEREAD_SOURCE_ENABLED=1` 启用。登录态页内 fetch `/web/mp/articles` 发现新文（每号每天 1 页 20 条，首跑只建 seen 基线不回填历史），正文走 mp 原文直链（与普通公众号文章同管线）；登录态/风控错误码（-2010/-2012/-2041）或验证码 → **停手截图上报**（`_tmp/weread_probe/`），半自动过码用 `scripts/weread_captcha.py`。机制/翻页规则/防封纪律见 `references/weread-direct-source.md`。
    - B站：官方 API 一步拿视频 + 动态，号间 30±5s 退避；某号异常只跳过该号、其他号照跑。
 3. **抓取 + 总结（apply_summaries）**：
    - 公众号文章：`fetch_web_content` **直连微信**抽正文（`WECHAT_GAP=6s`+抖动防限流），异常/空页进 `pending_refetch` 下次重抓；直连撞墙的批次自动合并走一次 CDP 批量会话抓正文。
@@ -169,9 +170,10 @@ python monitors/run.py --mode first --apply
 
 ⚠️ **当前不可用**：本能力依赖的 weread 代理已死（2026-08-28 起），`WECHAT_SOURCE_ENABLED=0` 时
 `--backfill` 直接拒绝执行。下方为**历史机制描述**，保留供参考。
-注意（2026-09-19 更新）：接替的「微信读书直连源」**列表翻页已实测打通**（登录态下可拿全历史，
-每页 20 条）——直连源接入后回溯能力反而可重建（低频分批翻页），见
-`docs/plans/PLAN-20260919-weread-source-module.md`；旧代理时代的「30~35 天稳定窗口」限制不再适用。
+注意（2026-09-19 更新）：接替的「微信读书直连源」**已开发接入**（`monitors/weread.py`，登录态下
+每页 20 条可翻全历史）——`paginate` 翻页累加器（`offset += len(reviews)`）已就位，回溯能力可
+基于它重建（低频分批翻页，`WEREAD_DAILY_PAGES` 调大即翻多页），但日常 `--backfill` 仍走旧代理
+语义（需 `WECHAT_SOURCE_ENABLED=1`），直连版历史回填为独立任务（PLAN-20260919 §5 首跑语义）。
 
 weread 免费代理（历史）可稳定返回约 **最近 30~35 天**的文章（哥飞 23 篇 raw 全落在 2026-07-24~08-19，即 27 天内）；超过此边界代理乱序分片 + `publishTime` 伪造，极不可靠，**不再补**。如需深挖请显式 `--since`，但预期会漏段（详见 `PROXY_NOTES.md`）。
 

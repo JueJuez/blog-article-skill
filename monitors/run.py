@@ -155,6 +155,11 @@ WECHAT_MAX_REFETCH = int(os.environ.get("WECHAT_MAX_REFETCH", "3"))
 # 2026-09-18 起默认 0：weread 代理源站 502（8-28 起死），详见 monitors/PROXY_NOTES.md §9。
 # 注意：只停「列表发现」；手工贴 mp.weixin.qq.com 链接落盘不受此开关影响（正文直连仍可用）。
 WECHAT_SOURCE_ENABLED = os.environ.get("WECHAT_SOURCE_ENABLED", "0") == "1"
+# weread 直连公众号源总开关（PLAN-20260919，wewe-rss 死代理的接替）。默认 0：
+# 微信读书列表接口需扫码登录态，且每日多打 4 个列表请求，经用户显式开启才参与每日增量。
+# 开启后：订阅名单仍取 subscriptions.json 的 wechat 列表，bookId 映射独立维护在
+# monitors/weread.py（BOOK_ID_FALLBACK + .mp_cache.json）；正文走 mp 直链，不经 weread。
+WEREAD_SOURCE_ENABLED = os.environ.get("WEREAD_SOURCE_ENABLED", "0") == "1"
 # ---- scys（生财有术）日常监控（「跑一下」第三源，2026-08-20 接入） ----
 # 复用 scripts/scys_batch_fetch.py 入口按领域增量抓新帖。窗口默认 7 天而非 1 天：
 # 新帖常在发布数日后才被标精华（互动也要时间发酵），窗口太窄会永久漏掉
@@ -636,7 +641,7 @@ def _discover_wechat_retry(src, state, mode, name, retries: int = 3) -> tuple:
 
 
 def discover_all(subs: dict, state: dict, mode: str = "auto",
-                 force_all: bool = False) -> list:
+                 force_all: bool = False, session_holder: dict = None) -> list:
     all_new: list = []
     token, vid = load_weread_auth()
 
@@ -750,6 +755,42 @@ def discover_all(subs: dict, state: dict, mode: str = "auto",
                 else:
                     print(f"⏰ 等待扫码超时（{WECHAT_RELOGIN_WAIT}s），本次跳过公众号源"
                           f"（B站照常）；下次运行自动恢复。", file=sys.stderr)
+
+    # ---------- weread 直连源（PLAN-20260919，wewe-rss 死代理的接替） ----------
+    # 订阅名单复用 subscriptions.json 的 wechat 列表；bookId 映射独立维护在
+    # monitors/weread.py。backfill 模式不参与（那是旧代理语义的历史回溯）。
+    # 会话：调用方给了 session_holder（--apply 轮次）则惰性建一个共享会话，
+    # 后续 apply_summaries / scys 复用（one-kill）；否则 weread 自管（预览模式）。
+    _wr_health = None
+    if WEREAD_SOURCE_ENABLED and subs.get("wechat") \
+            and os.environ.get("WECHAT_BACKFILL") != "1":
+        try:
+            from monitors.weread import discover_weread, resolve_book_ids, format_health
+            wr_entries = resolve_book_ids(subs)
+            if wr_entries:
+                if session_holder is not None:
+                    _wr_session = _acquire_session(session_holder)
+                    if _wr_session is None:
+                        _wr_health = {"ok": 0, "new": 0, "captcha": False,
+                                      "errors": [("all", "cdp", "CDP 会话不可用")],
+                                      "skipped": [e["name"] for e in wr_entries],
+                                      "baseline": []}
+                        wr_items = []
+                    else:
+                        wr_items, _wr_health = discover_weread(state, wr_entries,
+                                                               session=_wr_session)
+                else:
+                    wr_items, _wr_health = discover_weread(state, wr_entries)
+                all_new.extend(wr_items)
+            else:
+                _wr_health = {"ok": 0, "new": 0, "captcha": False,
+                              "errors": [("all", "no_bookid", "订阅名单内无号有 bookId 映射")],
+                              "skipped": [], "baseline": []}
+        except Exception as e:
+            print(f"[warn] weread 源失败，跳过: {type(e).__name__} {str(e)[:160]}", file=sys.stderr)
+            _wr_health = None
+        if _wr_health is not None:
+            print(f"📊 [weread] {format_health(_wr_health)}")
 
     # B站 cookie 失效检测（2026-09-09）：失效表现是 -101/空数据而非 412，被动钩子不触发，
     # 轮次开始主动 nav 探测；失效自动 CDP 轮换（会短暂关闭 Chrome）。仅在有 B站订阅时运行。
@@ -1301,7 +1342,12 @@ def main():
         cmd_backfill(args, subs, state)
         return
 
-    all_new = discover_all(subs, state, mode=mode, force_all=args.all_videos)
+    # --apply 轮次：会话 holder 提前建好传给 discover_all（weread 直连源需要登录态页面），
+    # weread 发现 / 撞墙文批量 / scys 复用同一会话，Chrome 全轮最多 kill 一次。
+    # 预览（无 --apply）：传 None，weread 自管会话。
+    _session_holder = {"obj": None} if args.apply else None
+    all_new = discover_all(subs, state, mode=mode, force_all=args.all_videos,
+                           session_holder=_session_holder)
 
     if not all_new:
         # 首跑踩坑：discover_all 返回 0 时容易被误认成「成功无新内容」，这里显式提示，
@@ -1318,11 +1364,10 @@ def main():
         started = time.time()
         _ledger_record_discover(run_id, all_new)  # P0 Ledger：发现阶段每源计数
         save_state(state)
-        # 单一共享 CDP 会话（惰性）：scys / 公众号撞墙文 / 重试 共用一个，Chrome 最多杀一次。
-        # 活 Chrome 带调试端口时本就 0 kill；无端口时只在「确有撞墙文」或「有 scys」才 kill 一次
-        # （profile_clone 路径），纯 B站/动态轮次完全不建会话、0 kill。
-        # 用 holder 跨 apply_summaries 与 run_scys_daily 共享同一会话，确保 one-kill。
-        _session_holder = {"obj": None}
+        # 单一共享 CDP 会话（惰性）：weread 直连源 / scys / 公众号撞墙文 / 重试 共用一个，
+        # Chrome 最多杀一次。活 Chrome 带调试端口时本就 0 kill；无端口时只在「确有撞墙文」
+        # 或「有 scys / weread 开启」才 kill 一次（profile_clone 路径），纯 B站/动态轮次
+        # 完全不建会话、0 kill。holder 在 discover_all 前创建并被 weread 首用。
         scys_pending_n = 0
         stats = apply_summaries(
             all_new, args.obsidian, session=None, session_holder=_session_holder,

@@ -35,7 +35,7 @@
     - **公众号 / scys 领域**：编辑 `monitors/subscriptions.json`，格式参考 `monitors/subscriptions.example.json`（公众号：`{"mp_id":"..."}` 或 `{"share_url":"..."}`；scys：`{"project":"领域名"}`）。
     - 不要手搓抓取代码。
 - **运行**
-  - 🚧 **公众号源现状（2026-09-19）**：旧代理源（wewe-rss）已死停用；替代方案「微信读书直连」已全线实测打通、**待开发**。触发词「**开发weread源模块**」→ 读 `docs/plans/PLAN-20260919-weread-source-module.md` 开工（自包含：已验证代码/翻页规则/防封纪律/任务清单，勿重新探索；实测细节真源 `references/weread-direct-source.md`）。
+  - **公众号源现状（2026-09-19 开发落地）**：旧代理源（wewe-rss）已死永久停用；接替方案「微信读书直连」**已开发接入**（`monitors/weread.py`，PLAN-20260919）——`.env` 设 `WEREAD_SOURCE_ENABLED=1` 启用后随每日监控自动发现新文（登录态页内 fetch `/web/mp/articles`，每号每天 1 页 20 条，首跑只建 seen 基线不回填历史；正文走 mp 直链同普通公众号管线）。**登录态/风控错误码（-2010/-2012/-2041）或验证码 → 停手截图上报（`_tmp/weread_probe/`）不硬闯**；半自动过码用 `scripts/weread_captcha.py`（--shot 截图 → 模型识图出坐标 → --click 点击）；bookId 映射在 `monitors/weread.py` 的 `BOOK_ID_FALLBACK` + `.mp_cache.json`。机制/翻页规则/防封纪律真源 `references/weread-direct-source.md`。
   - 首跑（回填最近 30 天）：`python monitors/run.py --mode first --apply`
   - 每日增量：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「跑一次 / 跑一下」等关键词即触发）——**含 scys 七领域新帖增量**（窗口/门槛以 `scripts/scys_projects.json` 为准，详见 `monitors/README.md`「scys 新帖监控」）
   - **并行模式（可选，2026-08-29 起）**：`python monitors/run.py --parallel --mode auto` 走三源并行 worker（B站/微信/scys 各一 worker，各自写独立 staging 文件 → 父进程合并，消除并发写 `pending_summaries`/`pending_refetch` 队列的竞态；父进程建一次 CDP 会话、各 worker 经 `from_endpoint` 复用，仅一次 kill Chrome）。串行 `--mode auto --apply` 仍是**默认且推荐的日常路径**（惰性 CDP：纯 B站/动态轮次 0 kill）。并行路径代码层 + 单测已通过；真环境端到端已验证（2026-09-02 三源并行实跑；边界与验证见 `docs/plans/PLAN-20260828-parallel-monitor.md` §边界矩阵 #11/#12）。

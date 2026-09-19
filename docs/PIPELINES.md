@@ -66,13 +66,20 @@
 
 **入口**：`python monitors/run.py --mode auto --apply`（每日）/ `--mode first --apply`（首跑 30 天）/
 `--parallel --mode auto`（三源并行）/ `--subscribe ...`（加订阅）/ `--backfill ...`（公众号历史）
-**零件**：`monitors/run_source.py`、`monitors/bilibili.py`、`monitors/wechat.py`、`monitors/state.py`、
-`pending_summaries.json` 队列、`scripts/filter_pending.py`（派单前清洗，属于队列维护不是入口）。
+**零件**：`monitors/run_source.py`、`monitors/bilibili.py`、`monitors/weread.py`、`monitors/wechat.py`（旧代理，永久停用）、
+`monitors/state.py`、`pending_summaries.json` 队列、`scripts/filter_pending.py`（派单前清洗，属于队列维护不是入口）。
 
-**🚧 规划中（2026-09-19）—— weread 直连公众号源**：旧代理源（`monitors/wechat.py`，wewe-rss）已死，
-替代方案「微信读书直连」已全线实测打通（列表+翻页+正文直链），**待开发**。
-触发词「**开发weread源模块**」→ 读 `docs/plans/PLAN-20260919-weread-source-module.md` 开工
-（自包含：已验证代码/翻页规则/防封纪律/任务清单全在内，勿重新探索）。
+**weread 直连公众号源（2026-09-19 开发落地，PLAN-20260919）**：旧 wewe-rss 代理已死，
+接替方案 `monitors/weread.py` 随每日监控自动参与——`.env` 设 `WEREAD_SOURCE_ENABLED=1` 启用
+（默认 0）。登录态页内 fetch `/web/mp/articles`（每号每天 1 页 20 条，首跑只建 seen 基线），
+正文走 mp 原文直链与普通公众号同管线；登录态/风控错误码或验证码 → 停手截图上报
+（`_tmp/weread_probe/`），半自动过码 `scripts/weread_captcha.py`。机制/防封纪律见
+`references/weread-direct-source.md`。
+**weread 探针工具（2026-09-18/19 探索用，非生产入口，勿接入管线）**：
+`scripts/weread_api_probe.py`（登录态页内 fetch 探测）、`scripts/weread_cookie_export.py`
+（cookie 导出/自测）、`scripts/weread_state.py`（登录态体检）、`scripts/weread_probe.py` +
+`scripts/launch_weread_probe.py`（CDP 被动抓包 + DETACHED 启动器）、`scripts/weread_sig_probe.py`
+（签名复用验证）、`scripts/weread_hook_sr.py`（hook __WRPA__.sr 记录真实调用）。
 
 ## 5. 系列课管线
 

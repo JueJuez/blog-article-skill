@@ -169,6 +169,20 @@ fetch('/web/mp/articles?bookId=MP_WXS_2399233620&offset=0',
   → 200 + {"reviews":[...]}
 ```
 
+🔴 **2026-09-19 生产化时实测修正（签名三硬约束，违反即 -2041，表象与未登录无法区分）**：
+
+1. **`sr()` 必须签完整 URL（含 `https://weread.qq.com` origin）**——用相对路径签名只返回
+   一段 hex，服务端判签名无效 → -2041。当日排障实锤：cookie 体检正常（wr_skey/wr_vid/wr_rt
+   齐全、书架页登录态渲染正常），相对路径签名打列表稳定 -2041；改完整 URL 签名 → 200。
+2. **`sr()` 返回 `Promise<Array>`**，需 `await` 后再 `.join(',')`（计划文档示例漏了 await）。
+3. **`__WRPA__` 只在 `/web` 等 SPA 路由加载**（如 `/web/shelf`）——首页 `/` **不加载**（36s
+   轮询无果实测）。生产导航目标用 `https://weread.qq.com/web/shelf`，并轮询
+   `typeof window.__WRPA__ === 'object'` 就绪后再发请求（`monitors/weread.py:_ensure_wrpa_ready`）。
+
+辅助判别（2026-09-19 抓包）：前端自己发的 `/web/mp/articles` 请求头**只有 x-wrpa-0**，
+无 x-wr-ticket/x-wr-randstr（Playwright `page.on("request")` 全量捕获）——再次证实这两个头
+非必须。前端 x-wrpa-0 为两段式（hex~128 + base64~180），与完整 URL 签名输出一致。
+
 - 请求只带 `x-wrpa-0`（页内 `sr()` 现算）+ 自动 cookie——**`x-wr-ticket`/`x-wr-randstr`
   非必须**（localStorage 里也找不到它们，应为前端在特定场景才附加的增强头）
 - `sr(url)` 本次生成的签名仅 16 字符（抓包所见为 ~200 字符），仍通过——签名算法细节待考，
@@ -202,6 +216,12 @@ https://mp.weixin.qq.com/s/<token>                   ← 原文直链（正文�
   - **翻页规则：`offset += len(reviews)`，翻到空列表即到底**——不要用 issue #442
     所说的「50 步长」，实测 50 会**跳过每页之间约 30 条**（漏文章）
   - 前端 UI 的「无限下滚」底层就是本接口（用户在页面上看不到翻页按钮是正常的）
+- ⚠️ **~ token 条目 mp 直链不可达（2026-09-19 实测）**：约 1/10 条目的
+  `originalId`（= reviewId 末段）含 `~`（如 `s6xNpVp1TsNmz7E~qKD9Ug`），拼
+  `mp.weixin.qq.com/s/<token>` 必返回「参数错误」（原文与 %7E 转义均试过）。
+  标准 `/s/` token 字符集不含 `~`，疑似非 /s/ 型 ID，映射规则未知（未再探索，
+  防 weread 请求超配额）。生产处理（`monitors/weread.py`）：不入队、不标 seen，
+  健康度行持续暴露 `直链不可达 N 篇`，等用户反馈处置。
 - **需要登录态**：页面内 fetch（`credentials:'include'` + `__WRPA__.sr()` 签名）已实测 200（§2.4）；
   requests 直调是否可行待测（需导出登录 cookie + 解决签名来源，签名可重放是已知线索）
 
