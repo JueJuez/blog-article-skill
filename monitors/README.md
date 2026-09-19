@@ -9,7 +9,7 @@
 |------|------|
 | `state.py` | 每源去重状态（`state.json`），per-source 裁剪防膨胀 |
 | `wechat.py` | 公众号源（旧 wewe-rss 代理，**永久停用** `WECHAT_SOURCE_ENABLED=0`，代理平台 2026-07-20 下线；保留不动） |
-| `weread.py` | **weread 直连公众号源（现役接替方案，PLAN-20260919）**：`WEREAD_SOURCE_ENABLED=1` 启用；微信读书登录态页内 fetch `/web/mp/articles` 发现新文（时间窗语义，断跑补齐封顶 30 天），正文走 mp 原文直链；登录失效自动弹码扫码续期、验证码停手转过码、单日配额 `WEREAD_DAILY_QUOTA=16` 熔断；历史补全 `run.py --weread-backfill`；bookId 映射在 `BOOK_ID_FALLBACK` + `.mp_cache.json`；实测真源 `references/weread-direct-source.md` |
+| `weread.py` | **weread 直连公众号源（现役接替方案，PLAN-20260919）**：`WEREAD_SOURCE_ENABLED=1` 启用；微信读书登录态页内 fetch `/web/mp/articles` 发现新文（时间窗语义，断跑补齐封顶 30 天），正文走 mp 原文直链；登录失效自动弹码扫码续期、验证码停手转过码、双层配额熔断（日 `WEREAD_DAILY_QUOTA=25` / 小时 `WEREAD_HOURLY_QUOTA=6`）；历史补全 `run.py --weread-backfill`；bookId 映射在 `BOOK_ID_FALLBACK` + `.mp_cache.json`；实测真源 `references/weread-direct-source.md` |
 | `bilibili.py` | B站UP主源（官方 API + WBI 签名，带登录 Cookie） |
 | `ad_filter.py` | 广告过滤：整篇纯广告 skip / 干货夹广告净化保留 |
 | `run.py` | CLI + 调度入口（`--apply` 直接调总结管线）；`--apply` 时按 `subscriptions.json` 的 `scys` 列表逐领域子进程跑 `scripts/scys_batch_fetch.py` 增量抓新帖（见下方「scys 新帖监控」） |

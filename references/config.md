@@ -261,7 +261,8 @@ NOTE_GATE_THRESHOLD=85
 | `WEREAD_MAX_PAGES` | 15 | weread 单号单轮翻页安全上限（每页 20 条；正常 30 天窗口 ≤2 页） |
 | `WEREAD_AUTO_RELOGIN` | 1 | 登录态失效（-2041 且无验证码）自动续期：打开微信读书登录页截二维码等扫码（落 `monitors/weread_login_qr.png`），扫码成功 cookie 浏览器内自动生效、继续抓取；0=退回纯上报 |
 | `WEREAD_RELOGIN_WAIT` | 180 | 等待扫码时长（秒），超时本轮跳过该源 |
-| `WEREAD_DAILY_QUOTA` | 16 | **weread 单日请求配额（熔断线）**：列表请求按天持久化计数（`monitors/.weread_quota.json`，跨天自动清零），到线即熔断——日常监控跳过公众号源（B站/scys 照跑）、补全任务停止并提示「已达上限，明天再跑即续批」 |
+| `WEREAD_DAILY_QUOTA` | 25 | **weread 单日请求配额（熔断线·日层）**：列表请求按天持久化计数（`monitors/.weread_quota.json`，跨天自动清零），到线即熔断——日常监控跳过公众号源（B站/scys 照跑）、补全任务停止并提示「已达上限，明天再跑即续批」 |
+| `WEREAD_HOURLY_QUOTA` | 6 | **weread 小时级请求上限（熔断线·小时层）**：按自然小时计数、整点自动恢复；防短时密集触发连环验证码（2026-09-19 事故教训）。任一层到线都熔断，健康度行报对应层 |
 | `WEREAD_LIST_GAP` | 2 | weread 每号列表请求间隔下限（秒，+0~1s 抖动）；防封纪律：单日十几请求封顶，勿调小 |
 | `WEREAD_DAILY_PAGES` | 1 | （已由时间窗语义取代，保留兼容）每号每次运行拉的基础页数 |
 | `BILI_PAGE_SIZE` | 50 | 单页拉取条数（覆盖整个时间窗口） |

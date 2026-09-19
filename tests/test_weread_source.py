@@ -422,15 +422,35 @@ def test_backfill_page_cap_reports_continue(monkeypatch):
 
 def test_quota_record_and_daily_reset(tmp_path, monkeypatch):
     monkeypatch.setattr(wr, "QUOTA_PATH", str(tmp_path / "quota.json"))
-    monkeypatch.setattr(wr, "WEREAD_DAILY_QUOTA", 16)
-    assert wr.quota_today() == 0 and wr.quota_remaining() == 16
+    monkeypatch.setattr(wr, "WEREAD_DAILY_QUOTA", 25)
+    monkeypatch.setattr(wr, "WEREAD_HOURLY_QUOTA", 6)
+    assert wr.quota_remaining() == (25, 6) and wr.quota_remaining_n() == 6  # 起始瓶颈=小时层
     wr.quota_record(3)
-    assert wr.quota_today() == 3 and wr.quota_remaining() == 13
+    assert wr.quota_today() == 3
+    assert wr.quota_remaining() == (22, 3)          # 日层 25-3，小时层 6-3
+    assert wr.quota_remaining_n() == 3              # 瓶颈在小时层
     # 跨天重置：把台账日期改成昨天
     q = json.load(open(tmp_path / "quota.json", encoding="utf-8"))
     q["date"] = "2000-01-01"
     json.dump(q, open(tmp_path / "quota.json", "w", encoding="utf-8"))
-    assert wr.quota_today() == 0 and wr.quota_remaining() == 16
+    # 跨天只清日层；小时层独立按自然小时清零（当前小时计数 3 仍在）
+    assert wr.quota_remaining() == (25, 3) and wr.quota_remaining_n() == 3
+
+
+def test_quota_hourly_layer(tmp_path, monkeypatch):
+    monkeypatch.setattr(wr, "QUOTA_PATH", str(tmp_path / "quota.json"))
+    monkeypatch.setattr(wr, "WEREAD_DAILY_QUOTA", 25)
+    monkeypatch.setattr(wr, "WEREAD_HOURLY_QUOTA", 6)
+    wr.quota_record(6)
+    assert wr.quota_remaining_n() == 0 and wr.quota_today() == 6   # 日层未满，小时层到线
+    msg = wr.quota_block_message()
+    assert "小时上限" in msg and "整点" in msg
+    # 跨小时重置：小时串改成上一小时 → 小时层恢复，日层仍计数
+    q = json.load(open(tmp_path / "quota.json", encoding="utf-8"))
+    q["hour"] = "2000-01-01 00"
+    json.dump(q, open(tmp_path / "quota.json", "w", encoding="utf-8"))
+    assert wr.quota_this_hour() == 0 and wr.quota_remaining_n() == 6
+    assert wr.quota_today() == 6                    # 日层不受跨小时影响
 
 
 def test_fetch_raises_when_quota_exhausted(tmp_path, monkeypatch):
@@ -446,6 +466,7 @@ def test_discover_skips_when_quota_exhausted(tmp_path, monkeypatch):
     """多源场景熔断：公众号源整体跳过、零请求、健康度带任务消息。"""
     monkeypatch.setattr(wr, "QUOTA_PATH", str(tmp_path / "quota.json"))
     monkeypatch.setattr(wr, "WEREAD_DAILY_QUOTA", 16)
+    monkeypatch.setattr(wr, "WEREAD_HOURLY_QUOTA", 100)   # 隔离小时层，验日层消息
     wr.quota_record(16)
     page = FakePage()
     items, health = wr.discover_weread({"sources": {}}, _entries(2),
@@ -459,8 +480,9 @@ def test_backfill_stops_when_quota_exhausted_midway(tmp_path, monkeypatch):
     """补全场景熔断：中途到线停止续批，reached_since=False（明天再跑续批）。"""
     monkeypatch.setattr(wr, "QUOTA_PATH", str(tmp_path / "quota.json"))
     monkeypatch.setattr(wr, "WEREAD_DAILY_QUOTA", 16)
+    monkeypatch.setattr(wr, "WEREAD_HOURLY_QUOTA", 6)
     monkeypatch.setattr(wr, "LIST_GAP", 0)
-    wr.quota_record(15)                      # 只剩 1 次：第 1 页成功，第 2 页熔断
+    wr.quota_record(5)                       # 小时层剩 1：第 1 页成功，第 2 页熔断
     state = {"sources": {"weread:MP_WXS_100": {"seen": []}}}
     now = int(time.time())
     r1 = {"reviews": [{"subReviews": [_review(f"MP_WXS_100_q{i}", "T", now - 86400)
@@ -470,4 +492,4 @@ def test_backfill_stops_when_quota_exhausted_midway(tmp_path, monkeypatch):
                                                 max_pages=5, session=FakeSession(page))
     assert health["quota_exhausted"] is True and health["reached_since"] is False
     assert len(items) == 20 and len(page.fetch_apis) == 1
-    assert "单日上限" in wr.format_health(health)
+    assert "上限" in wr.format_health(health) and "熔断" in wr.format_health(health)

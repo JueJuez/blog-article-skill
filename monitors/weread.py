@@ -63,52 +63,77 @@ WEREAD_MAX_PAGES = int(os.environ.get("WEREAD_MAX_PAGES", "15"))
 WEREAD_AUTO_RELOGIN = os.environ.get("WEREAD_AUTO_RELOGIN", "1") == "1"
 # 等扫码时长（秒）；扫到即自动继续抓取该号及后续号，超时跳过本轮
 WEREAD_RELOGIN_WAIT = int(os.environ.get("WEREAD_RELOGIN_WAIT", "180"))
-# 单日请求配额（熔断线）：weread 列表请求持久化计数（带日期，跨天自动清零）。
-# 到线即熔断：日常监控跳过公众号源（B站/scys 照跑）、补全任务停止续批——
-# 防封纪律「单日十几请求封顶」的机械封顶（默认 16 = 4 号×2 页 + 余量）
-WEREAD_DAILY_QUOTA = int(os.environ.get("WEREAD_DAILY_QUOTA", "16"))
-# 配额台账落点（点文件不入库；{"date": "YYYY-MM-DD", "count": N}）
+# 请求配额（熔断线，双层）：weread 列表请求持久化计数（.weread_quota.json，
+# 点文件不入库）。日层按自然天清零、小时层按自然小时清零；任一层到线即熔断：
+# 日常监控跳过公众号源（B站/scys 照跑）、补全任务停止续批。
+# 依据防封纪律：单日「十几请求封顶」（25 = 4 号日常 2 页 + 补齐余量）+ 小时级
+# 防突发（6/小时，2026-09-19 连环验证码事故教训：短时密集请求比日总量更危险）
+WEREAD_DAILY_QUOTA = int(os.environ.get("WEREAD_DAILY_QUOTA", "25"))
+WEREAD_HOURLY_QUOTA = int(os.environ.get("WEREAD_HOURLY_QUOTA", "6"))
 QUOTA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".weread_quota.json")
 
 
 class WereadQuotaExhausted(RuntimeError):
-    """单日 weread 请求配额耗尽（熔断）。消息即用户可读的任务返回。"""
+    """weread 请求配额耗尽（日/小时层熔断）。消息即用户可读的任务返回。"""
+
+
+def _load_quota() -> dict:
+    try:
+        with open(QUOTA_PATH, encoding="utf-8") as f:
+            q = json.load(f)
+        return q if isinstance(q, dict) else {}
+    except Exception:
+        return {}
 
 
 def quota_today() -> int:
     """今天已用的 weread 列表请求数（台账日期非今天 = 0）。"""
-    try:
-        with open(QUOTA_PATH, encoding="utf-8") as f:
-            q = json.load(f)
-        return int(q.get("count", 0)) if q.get("date") == time.strftime("%Y-%m-%d") else 0
-    except Exception:
-        return 0
+    q = _load_quota()
+    return int(q.get("count", 0)) if q.get("date") == time.strftime("%Y-%m-%d") else 0
+
+
+def quota_this_hour() -> int:
+    """本自然小时已用的请求数（台账小时非当前 = 0）。"""
+    q = _load_quota()
+    return int(q.get("hour_count", 0)) if q.get("hour") == time.strftime("%Y-%m-%d %H") else 0
 
 
 def quota_remaining() -> int:
-    return max(0, WEREAD_DAILY_QUOTA - quota_today())
+    """当前还可发的请求数 = min(日层余量, 小时层余量)。"""
+    return max(0, WEREAD_DAILY_QUOTA - quota_today()),         max(0, WEREAD_HOURLY_QUOTA - quota_this_hour())
+
+
+def quota_remaining_n() -> int:
+    d, h = quota_remaining()
+    return min(d, h)
+
+
+def quota_block_message() -> str:
+    """到线的层对应任务消息（先报小时层——它整点就恢复，更 actionable）。"""
+    d, h = quota_remaining()
+    if h <= 0:
+        return (f"公众号 weread 请求已达小时上限 {WEREAD_HOURLY_QUOTA}/小时，已熔断跳过；"
+                f"整点后自动恢复")
+    return (f"公众号 weread 请求已达单日上限 {WEREAD_DAILY_QUOTA}，已熔断跳过；"
+            f"明天自动恢复（补全任务再跑一次即续批）")
 
 
 def quota_record(n: int = 1) -> None:
-    """记一次请求（按天持久化；跨天自动重置）。"""
+    """记 n 次请求（日/小时双层持久化；跨天/跨小时各自自动重置）。"""
     today = time.strftime("%Y-%m-%d")
-    try:
-        with open(QUOTA_PATH, encoding="utf-8") as f:
-            q = json.load(f)
-    except Exception:
-        q = {}
+    hour = time.strftime("%Y-%m-%d %H")
+    q = _load_quota()
     if q.get("date") != today:
-        q = {"date": today, "count": 0}
+        q["date"], q["count"] = today, 0
+    if q.get("hour") != hour:
+        q["hour"], q["hour_count"] = hour, 0
     q["count"] = int(q.get("count", 0)) + n
+    q["hour_count"] = int(q.get("hour_count", 0)) + n
     try:
         with open(QUOTA_PATH, "w", encoding="utf-8") as f:
             json.dump(q, f, ensure_ascii=False)
     except Exception:
         pass
-
-
-QUOTA_MSG = (f"公众号 weread 请求已达单日上限 {WEREAD_DAILY_QUOTA}，已熔断跳过；"
-             f"明天自动恢复（补全任务再跑一次即续批）")
 # 等 __WRPA__ 签名器（WASM）就绪的超时秒数。实测签名器只在 /web 等 SPA 路由加载，
 # 首页 `/` 不加载（2026-09-19 诊断，见 references/weread-direct-source.md §2.4）
 WRPA_WAIT_S = float(os.environ.get("WEREAD_WRPA_WAIT_S", "30"))
@@ -255,7 +280,7 @@ def format_health(health: dict) -> str:
     """health dict → 人类可读 weread 健康度段（供 run.py 打印）。"""
     seg = f"正常 {health.get('ok', 0)} 号 · 新文章 {health.get('new', 0)}"
     if health.get("quota_exhausted"):
-        seg += f" · ⛔{QUOTA_MSG}"
+        seg += f" · ⛔{quota_block_message()}"
     if health.get("baseline"):
         seg += f" · 首跑基线 {'/'.join(health['baseline'])}（不回填历史）"
     if health.get("captcha"):
@@ -380,8 +405,8 @@ class WereadLister:
         单一请求咽喉：每次调用计入当日配额（WEREAD_DAILY_QUOTA），耗尽抛
         WereadQuotaExhausted 熔断（调用方按场景跳过或停止续批）。
         """
-        if quota_remaining() <= 0:
-            raise WereadQuotaExhausted(QUOTA_MSG)
+        if quota_remaining_n() <= 0:
+            raise WereadQuotaExhausted(quota_block_message())
         quota_record(1)
         api = LIST_API.format(book_id=book_id, offset=offset)
         res = self.page.evaluate(_FETCH_JS, [api, max_len])
@@ -464,7 +489,7 @@ def trigger_weread_relogin(session, timeout: int, qr_path: str = None) -> bool:
                 print("[relogin] ✅ 扫码成功，登录态已恢复", file=sys.stderr)
                 return True
         except WereadQuotaExhausted:
-            print(f"[relogin] {QUOTA_MSG}（探活未执行）", file=sys.stderr)
+            print(f"[relogin] {quota_block_message()}（探活未执行）", file=sys.stderr)
             return False
         except Exception:
             continue
@@ -503,7 +528,7 @@ def _process_one_account(lister, state, e: dict, cutoff: int, max_pages: int,
         reviews, cat, last_resp = paginate(lister.fetch_list_raw, book_id,
                                            max_pages=max_pages, cutoff_ts=cutoff)
     except WereadQuotaExhausted:
-        return [], [], {"status": "quota", "detail": QUOTA_MSG,
+        return [], [], {"status": "quota", "detail": quota_block_message(),
                         "new_n": 0, "is_first": False}
     except RuntimeError as ex:
         return [], [], {"status": "fetch_err", "detail": str(ex)[:160],
@@ -561,9 +586,10 @@ def discover_weread(state: dict, entries: list, session=None,
       扫到即继续抓该号及后续号；二维码落 monitors/weread_login_qr.png）；
       页面出现验证码 → 停手上报（过码走 scripts/weread_captcha.py，识别需模型在场）。
     """
-    if quota_remaining() <= 0:
+    if quota_remaining_n() <= 0:
         # 熔断（多源场景）：公众号源直接跳过，B站/scys 照跑，不建会话不杀 Chrome
-        health = {"ok": 0, "new": 0, "captcha": False, "errors": [("all", "quota", QUOTA_MSG)],
+        health = {"ok": 0, "new": 0, "captcha": False,
+                  "errors": [("all", "quota", quota_block_message())],
                   "skipped": [e["name"] for e in entries], "baseline": [],
                   "relogin": False, "quota_exhausted": True}
         return [], health
@@ -645,9 +671,10 @@ def discover_weread_backfill(state: dict, entries: list, since_ts: int,
       建议分多次跑或接受一次较多请求（一次性任务，非日常节奏）。
     - 扫码续期与日常增量同款（每轮最多弹码一次）。
     """
-    if quota_remaining() <= 0:
+    if quota_remaining_n() <= 0:
         # 熔断（补全场景）：任务消息直接返回，已入队进度靠 seen 保留，明天续批
-        health = {"ok": 0, "new": 0, "captcha": False, "errors": [("all", "quota", QUOTA_MSG)],
+        health = {"ok": 0, "new": 0, "captcha": False,
+                  "errors": [("all", "quota", quota_block_message())],
                   "skipped": [], "relogin": False, "reached_since": False, "pages": {},
                   "quota_exhausted": True}
         return [], health
