@@ -371,20 +371,24 @@ def _bili_extract_bvid(url: str) -> Optional[str]:
 LAST_PUBDATE = 0
 
 # 最近一次抓取是否命中「充电专属·仅试看」（2026-09-20）：
-# fetch_subtitle_only 读 view API 后写入，fetch_bilibili_transcript 据此**不再走 ASR 兜底**
-# ——充电专属 B站只给试看片段，ASR 也只会转出残缺内容（详见 bili_is_charging_exclusive）。
+# fetch_subtitle_only 读 view API 后写入。⚠️ 它**只用于打印更准确的原因**，不再作为拦截依据
+# ——实证「充电」限制的是媒体流，字幕流可能完整（详见 bili_is_charging_exclusive 的说明）。
 LAST_CHARGING_EXCLUSIVE = False
 
 
 def bili_is_charging_exclusive(info: Optional[Dict]) -> bool:
     """判断该 B站视频是否为「充电专属**且当前账号只能看试看片段**」（2026-09-20 新增）。
 
-    为什么需要单独判断：充电专属视频 B站只返回试看片段（实证：88 分钟的视频只拿到 299.9s、
-    28 分钟只拿到 179.9s），**换 cookie、换下载方式都拿不到全片**。此前的行为是把试看片段
-    当全片转写并落盘，笔记静默丢掉 90%+ 的内容且无任何告警——属于最隐蔽的一类数据损失。
+    ⚠️ **它不等于「源残缺」，不要拿它直接拦内容**（2026-09-20 实测更正）：
+    upower 限制的是**媒体流**（音频只给试看片段），**字幕流不一定要限**。实证两集走向相反：
+      - `BV1eL4k6jEii`：音频只给 1/41 分钟，**字幕却给了全片**（源 11352 字 / 4.57 字/秒），笔记合法；
+      - `BV1fr8P6REBW`：音频只给 32/104 分钟（源真残）。
+    ⇒ 正确策略：**有字幕就用字幕直接过**；没字幕才走 ASR，由**音频覆盖率校验**（<90% 拒绝，
+    见 `videos/asr.py::transcribe_video`）裁决。本函数只用于把日志原因打得更准，以及让上层
+    决定要不要多打印一句提示。
 
     判据：view API 的 `is_upower_exclusive` 与 `is_upower_preview` **同时为真**
-    （只看 `is_upower_exclusive` 会在「账号已充电、可看全片」时误杀）；
+    （只看 `is_upower_exclusive` 会在「账号已充电、可看全片」时误判）；
     兼容投稿列表 API 的 `is_charging_arc`（老入口没有 upower 字段时用它兜底）。
     """
     if not info:
@@ -392,6 +396,27 @@ def bili_is_charging_exclusive(info: Optional[Dict]) -> bool:
     if info.get("is_upower_exclusive") and info.get("is_upower_preview"):
         return True
     return bool(info.get("is_charging_arc"))
+
+
+def _source_density_warning(segs, info: Optional[Dict], tag: str) -> None:
+    """字幕源的「源字/秒」健全性提示（**非阻断**，2026-09-20 新增）。
+
+    为什么需要：充电专属只限制**媒体流**，字幕流可能完整也可能残缺；字幕分页本身也可能断层。
+    用「源字/秒」做体检：正常口播 **4~6**，明显偏低（< 2）说明字幕只覆盖了视频的一小部分。
+
+    **故意只告警不拦**：实测命中里绝大多数是「视频本来就短」（1~5 分钟）造成的误报，
+    拦了会误杀正常内容；是否收录由调用方/用户决定（ASR 路径已有硬闸门，见 asr.py）。
+    """
+    try:
+        dur = float((info or {}).get("duration") or 0)
+        chars = sum(len((s or {}).get("text", "")) for s in (segs or []))
+        if dur and chars:
+            cps = chars / dur
+            if cps < 2.0:
+                print(f"   ⚠️ 源密度告警：字幕 {chars} 字 / 视频 {dur:.0f}s = {cps:.2f} 字/秒"
+                      f"（正常 4~6），源可能只覆盖了视频一部分（{tag}）；若视频本身很短可忽略。")
+    except Exception:
+        pass
 
 
 def _bili_get_video_info(bvid: str) -> Optional[Dict]:
@@ -984,12 +1009,15 @@ def fetch_subtitle_only(url: str, lang: str = "zh", page: int = None) -> Optiona
     title = info["title"]
     pages = info.get("pages") or []
 
-    # 充电专属·仅试看：B站只给试看片段，字幕/ASR 都拿不到全片内容。
-    # 在此拦截（而不是等到 ASR 再拦）可覆盖所有走本函数的入口，且不会浪费一次音频下载。
+    # 充电专属（仅试看）：**不再一刀切跳过**（2026-09-20 用户定策，微调后）——
+    # 实证「充电」限制的是**媒体流**（音频只给试看片段），**字幕流不一定要限**：
+    #   BV1eL4k6jEii 音频只给 1/41 分钟，但字幕给了全片（源 11352 字 / 4.57 字/秒），笔记完全合法。
+    # 故策略改为：**有字幕就用字幕直接过**；拿不到字幕才走 ASR，由「源完整性校验」决定收不收
+    # （见 videos/asr.py::transcribe_video 的 90% 覆盖率闸门）。本标记只用于打印更准确的原因。
     LAST_CHARGING_EXCLUSIVE = bili_is_charging_exclusive(info)
     if LAST_CHARGING_EXCLUSIVE:
-        print(f"   ⛔ 充电专属视频（当前账号仅可试看），跳过抓取：{title}")
-        return None
+        print(f"   ℹ️ 该集为充电专属（当前账号仅可试看）：先按字幕抓取；若无字幕，"
+              f"则由音频完整性校验决定是否收录。")
 
     target = None
     if page and pages:
@@ -1004,6 +1032,7 @@ def fetch_subtitle_only(url: str, lang: str = "zh", page: int = None) -> Optiona
     segs = _bili_fetch_page_subtitle(aid, cid, lang)
     if segs:
         print(f"   OK Bilibili 字幕获取成功（{len(segs)} 条，API 原生链路）")
+        _source_density_warning(segs, info, "API 原生链路")
         return (title, segs, info.get("author", ""))
 
     # 风控熔断（批量场景 BILI_FAILFAST_412=1）：API 链路已命中 412 时，
@@ -1074,6 +1103,7 @@ def fetch_subtitle_only(url: str, lang: str = "zh", page: int = None) -> Optiona
                 if segs2:
                     segs2 = preprocess_segments(segs2)  # B：字幕轻量清洗
                     print(f"   OK Bilibili 字幕获取成功（清洗后 {len(segs2)} 条，yt-dlp 兜底）")
+                    _source_density_warning(segs2, info, "yt-dlp 兜底")
                     return (title2, segs2, info.get("author", ""))
                 print("   ℹ️ yt-dlp 也未拿到字幕")
         except Exception as e:
@@ -1093,11 +1123,13 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
     sub = fetch_subtitle_only(url, lang=lang, page=page)
     if sub:
         return sub
-    # 充电专属·仅试看：fetch_subtitle_only 已判定并置位，这里**不再走 ASR 兜底**——
-    # 只拿到了试看片段，ASR 只会产出残缺内容（2026-09-20 实踩：88 分钟的视频只拿到 5.6%）。
+    # 充电专属（仅试看）：**不阻断 ASR**（2026-09-20 用户定策）——「充电」限制媒体流，
+    # 不代表字幕就一定拿不到；既然字幕这条路已经空手，就交给 ASR + 音频完整性校验裁决：
+    # 拿到的音频若只覆盖视频 <90%（试看片段的典型形态），videos/asr.py::transcribe_video
+    # 会直接拒绝转写，不会产出残缺笔记。这里只把原因打清楚，便于事后定位。
     if is_bilibili(url) and LAST_CHARGING_EXCLUSIVE:
-        print("   ⛔ 该集为充电专属（当前账号仅可试看），跳过 ASR 兜底：拿不到完整源，不产出残缺笔记。")
-        return None
+        print("   ℹ️ 该集为充电专属（当前账号仅可试看）且无字幕：转 ASR 试取音频，"
+              "由完整性校验（覆盖率 ≥90%）决定是否收录。")
     # 风控熔断（批量场景 BILI_FAILFAST_412=1）：412 命中后不再下载音频做 ASR
     if _risk_412_failfast():
         print("   STOP 风控412命中，跳过 ASR 兜底")

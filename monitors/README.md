@@ -26,7 +26,7 @@
 - **无干货动态屏蔽**：去掉链接后正文 <15 字，或命中系统通知模板（充电专属问答 /「我回复了@」/「快来围观吧」/「为我充电」）→ 直接丢弃，不进总结管线（但仍记入 `seen`，避免下次重复拉取）。
 - **短动态轻量化**：动态正文净化后 ≤ `BILI_SHORT_DYNAMIC_MAX`=**80 字** → 存「短动态速览」（原文 + 元信息），不走重 LLM 总结模板，省 token、防短评灌水。
 - **新鲜度标签**：笔记自动带 `#🔥当日` / `#本周` / `#更早`（按内容**原始发布时间**判定，中国时区），正文元信息同步写入「**发布时间**：YYYY-MM-DD HH:MM」行（publish_time>0 时），不再只用"我们处理它的时间"。
-- **充电专属视频**：标记 `is_charging`，apply 阶段跳过正文抓取（付费内容无 transcript），仅监控"发过"。**补齐/补源路径另有一道同源护栏（2026-09-20 补）**：`videos/fetch.py::bili_is_charging_exclusive()`，按 view API 的 `is_upower_exclusive && is_upower_preview` 判定——`backfill_series` / 系列课走的是 `ugc_season` 列表、拿不到投稿列表的 `is_charging_arc`，此前这个口子会把 B站给的「试看片段」当全片抓下来（实测 88 分钟的视频只拿到 299.9s），且全程无告警。
+- **充电专属视频**：标记 `is_charging`，apply 阶段跳过正文抓取（付费内容无 transcript），仅监控"发过"。**补齐/补源路径的处置（2026-09-20 微调后）**：`videos/fetch.py::bili_is_charging_exclusive()`（按 view API 的 `is_upower_exclusive && is_upower_preview` 判定；`backfill_series` / 系列课走 `ugc_season` 列表、拿不到投稿列表的 `is_charging_arc`）**只用来打日志原因，不再一刀切拦截**——实证「充电」限制的是媒体流、**字幕流可能完整**（有一集音频只给 1/41 分钟，字幕却给了全片，笔记合法）。现行策略：**有字幕就用字幕过；没字幕才走 ASR，由 `videos/asr.py::transcribe_video` 的「音频覆盖率 ≥90%」硬闸门裁决**。
 
 ## 频率与风控
 

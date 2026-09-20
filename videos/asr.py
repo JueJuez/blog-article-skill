@@ -852,13 +852,16 @@ def transcribe_video(url: str, lang: str = "zh",
     except Exception as e:
         print(f"   ℹ️ B站元数据/ cookie 获取跳过：{e}")
 
-    # 充电专属·仅试看：B站只给试看片段，换 cookie / 换下载方式都拿不到全片。
-    # 2026-09-20 实踩：此前的行为是「下载到试看片段照样转写并落盘」，产出的笔记只覆盖
-    # 全片 5%~11% 的内容且**没有任何告警**——属于最隐蔽的一类数据损失，故在此硬拦。
+    # 充电专属（仅试看）：**不再一刀切跳过**（2026-09-20 用户定策，微调后）。
+    # 机理：upower 限制的是**媒体流**，不是字幕流也不必然导致音频不完整——
+    #   实证 BV1eL4k6jEii 音频只给 1/41 分钟，字幕却给了全片（笔记合法）；
+    #   而 BV1fr8P6REBW 音频只给 32/104 分钟（源真残）。
+    # 故策略：**让「源完整性校验」做唯一裁决**（下面那段 90% 覆盖率闸门），
+    # 本标记只用于把失败原因打得更准。这样既不误杀「字幕/音频完整的充电集」，
+    # 也不会放过「只拿到试看片段」的集。
     if upower_preview:
-        print(f"   ⛔ 该集为「充电专属·仅试看」：B站只提供试看片段（全片 {expect_dur:.0f}s），"
-              f"拿不到完整源，跳过 ASR（不产出残缺笔记）。需账号已充电才能收录。")
-        return None
+        print(f"   ℹ️ 该集为充电专属（当前账号仅可试看），全片 {expect_dur:.0f}s："
+              f"先取音频，再由完整性校验（覆盖率 ≥90%）决定是否收录。")
 
     # 断点续跑：非强制且命中 ASR 缓存 → 跳过下载音频 + GPU 转写，直接返回文本
     if not force:
@@ -895,12 +898,14 @@ def transcribe_video(url: str, lang: str = "zh",
                         print(f"   ℹ️ B站音频下载失败且 cookie 刷新异常：{e}，跳过 ASR。")
                         return None
             return None
-        # 源完整性校验（2026-09-20）：本地音频若明显短于视频总时长，说明拿到的是残缺源
-        # （充电专属试看 / 下载被截断 / CDN 只返回一段）。此前无此校验，会把残缺音频当全片
-        # 转写并落盘，笔记静默丢失大部分内容。宁可失败（进失败账本、可人工排查）也不产出残品。
+        # 源完整性校验（2026-09-20）——**充电专属的唯一裁决闸门**。
+        # 本地音频若明显短于视频总时长，说明拿到的是残缺源（充电专属试看 / 下载被截断 /
+        # CDN 只返回一段）。此前无此校验，会把残缺音频当全片转写并落盘，笔记静默丢失大部分
+        # 内容。宁可失败（进失败账本、可人工排查）也不产出残品。
         got_dur = _wav_duration(wav) or 0.0
         if expect_dur and got_dur and got_dur < expect_dur * 0.9:
-            print(f"   ⛔ 源不完整：本地音频 {got_dur:.0f}s 仅覆盖视频 {expect_dur:.0f}s 的 "
+            why = "（该集为充电专属，B站只给试看片段）" if upower_preview else ""
+            print(f"   ⛔ 源不完整{why}：本地音频 {got_dur:.0f}s 仅覆盖视频 {expect_dur:.0f}s 的 "
                   f"{got_dur / expect_dur * 100:.0f}%（阈值 90%），跳过 ASR 以免产出残缺笔记。")
             return None
         segs = transcribe_audio_chunked(wav, model_size, lang, device, wall_timeout=wall_timeout)
