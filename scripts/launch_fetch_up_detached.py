@@ -7,7 +7,7 @@ DETACHED 子进程脱离 agent 会话树，否则 run_in_background 在轮次结
 （参考 launch_scys_backfill.py 的「DETACHED 父 spawn 失能」结论：非 DETACHED 父
 spawn 单 DETACHED 子最稳。）
 
-子进程内部：`_run_with_env.py` 注入 .env（BILI_COOKIE / OBSIDIAN_WRITE / DISABLE_FEISHU_SYNC）
+子进程内部：`run_with_env.py` 注入 .env（BILI_COOKIE / OBSIDIAN_WRITE / DISABLE_FEISHU_SYNC）
 → 再执行 `fetch_up_range.py`（抓字幕 + 入 pending_summaries 队列，不总结）。
 
 用法:
@@ -40,7 +40,7 @@ def main() -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        sys.executable, str(ROOT / "scripts" / "_run_with_env.py"), "--",
+        sys.executable, str(ROOT / "scripts" / "run_with_env.py"), "--",
         sys.executable, str(ROOT / "scripts" / "fetch_up_range.py"),
         str(args.start), str(args.end),
         "--uid", str(args.uid), "--author", args.author,

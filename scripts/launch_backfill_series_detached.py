@@ -4,7 +4,7 @@
 203 集系列常跑数小时，必须用 DETACHED 子进程脱离 agent 会话树，否则 run_in_background
 在轮次结束被环境回收（参考 launch_fetch_up_detached.py 同构结论）。
 
-子进程内部：`_run_with_env.py` 注入 .env（BILI_COOKIE 等）→ 执行 `backfill_series.py`。
+子进程内部：`run_with_env.py` 注入 .env（BILI_COOKIE 等）→ 执行 `backfill_series.py`。
 
 用法:
     python scripts/launch_backfill_series_detached.py \
@@ -34,7 +34,7 @@ def main() -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        sys.executable, str(ROOT / "scripts" / "_run_with_env.py"), "--",
+        sys.executable, str(ROOT / "scripts" / "run_with_env.py"), "--",
         sys.executable, str(ROOT / "scripts" / "backfill_series.py"),
     ]
     for u in args.url:
