@@ -1,9 +1,10 @@
 """PLAN-20260908 阶段4.3：系列课点名补齐命令（RED）。
 
 行为：scripts/backfill_series.py —— 「补齐 <UP> 的系列课」给系列任一集 URL：
-① 1 次 view API 列全集 → ② 登记表过滤已总结 → ③ D8 护栏（失败账本累计 3 次
-转人工，队列存量条目视为上轮失败 +1）→ ④ 剩余集逐条抓字幕入 pending_summaries
-降级队列（folder=系列容器路由 + 第NN集_ 前缀 + prompt 预计算）→ 子 Agent 消费。
+① 1 次 view API 列全集 → ② 登记表过滤已总结 → ③ D8 护栏（**真实抓取失败**累计 3 次转人工；
+队列存量条目**只计 `report["in_queue"]`、不再计失败**——巡检并行消费，「排队」是常态，见 945c036）
+→ ④ 剩余集逐条抓字幕入 pending_summaries 降级队列（folder=系列容器路由 + 第NN集_ 前缀 + prompt 预计算）
+→ 子 Agent 消费。
 """
 import json
 import os
@@ -157,8 +158,14 @@ def test_transcript_failure_bumps_ledger_and_continues(tmp_path):
     assert urls[0] not in [p["url"] for p in pending]
 
 
-def test_queued_but_not_summarized_accumulates_failure(tmp_path):
-    """D8：队列已有条目（上轮入队后仍未登记）→ 检出时 +1，达 3 转人工且不重复入队。"""
+def test_queued_but_not_summarized_counted_not_penalized(tmp_path):
+    """D8 修订（行为变更见 945c036）：队列已有条目 → **不再计失败**，只计入 in_queue。
+
+    背景：backfill 现按巡检节奏反复跑、与队列消费**并行**，「在队列等消费」是常态；
+    旧逻辑每轮 bump 会把正常排队的集误推成 3 次转人工。故改为只计数不入账。
+    ⚠️ 真实抓取失败仍走 bump_failure 并达 3 转人工（覆盖见 test_fetch_failure 类用例），
+    本用例锁的是「排队 ≠ 失败」这条边界，防止有人把 D8 惩罚加回去。
+    """
     urls = _ep_urls()
     fails = os.path.join(str(tmp_path), "failures.json")
     with open(fails, "w", encoding="utf-8") as f:
@@ -175,7 +182,8 @@ def test_queued_but_not_summarized_accumulates_failure(tmp_path):
             c.stop()
     with open(fails, encoding="utf-8") as f:
         fails_now = json.load(f)
-    assert fails_now[urls[0]]["fail_count"] == 3
-    assert urls[0] in [m["url"] for m in report["manual"]]
+    assert fails_now[urls[0]]["fail_count"] == 2      # 不变：排队不算失败
+    assert report["in_queue"] == 1                    # 但要有可见性
+    assert urls[0] not in [m["url"] for m in report["manual"]]   # 不转人工
     pending = _read_json(os.path.join(str(tmp_path), "pending.json"))
     assert len(pending) == 4  # 旧条目保留，ep1 不重复入队，新增 ep2/ep3/ep4 三条

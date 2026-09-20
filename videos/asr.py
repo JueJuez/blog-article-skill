@@ -847,8 +847,10 @@ def transcribe_video(url: str, lang: str = "zh",
                 title = info.get("title", "")
                 author = info.get("author", "")
                 expect_dur = float(info.get("duration") or 0)
-                upower_preview = bool(info.get("is_upower_exclusive")
-                                      and info.get("is_upower_preview"))
+                # 判据复用 fetch 的单一实现（2026-09-20）：此前此处内联了同一表达式，
+                # 但漏掉 is_charging_arc 兜底 → 与 bili_is_charging_exclusive 语义分叉。
+                # 本变量只用于把日志/失败原因写准，不参与裁决（硬闸门是下面的 90% 覆盖率）。
+                upower_preview = fetch.bili_is_charging_exclusive(info)
     except Exception as e:
         print(f"   ℹ️ B站元数据/ cookie 获取跳过：{e}")
 
