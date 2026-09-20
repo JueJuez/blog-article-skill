@@ -177,6 +177,13 @@ def extract_article_title(content: str) -> str:
 def generate_filename(title: str, url: str = "", category: str = "", publish_time: int = 0) -> str:
     safe_title = re.sub(r'[\\/:*?"<>|\n\r]', '_', title).strip()
     if not safe_title or len(safe_title) < 2:
+        # ⚠️ 兜底命名会产出「未命名笔记-<时间戳>.md」，是**数据缺陷的显影**，不是正常路径。
+        # 2026-09-20 实测：重做清单 folder 字段错位 + 条目 title 为空 ⇒ 静默落盘 8 篇
+        # 「未命名笔记」（趋势浪子第 63~70 集），无人察觉。此处补显式告警，让调用方看见；
+        # 不改返回值以保持向后兼容（tests/test_patch_trio.py 依赖该格式）。
+        import sys as _sys
+        print(f"⚠️ [generate_filename] 标题为空/过短（title={title!r}）→ 兜底为「未命名笔记」。"
+              f"这通常意味着上游丢标题（检查 queue/清单条目的 title 字段）。", file=_sys.stderr)
         timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
         return f"未命名笔记-{timestamp}.md"
     # 文件名日期：优先内容原始发布时间，否则处理时间

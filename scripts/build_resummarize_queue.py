@@ -121,7 +121,15 @@ def collect(since: str) -> list:
             continue
         note_path = os.path.join(VAULT, fn.replace("/", os.sep))
         src_path = resolve(v)
-        folder = fn.replace(os.sep, "/")
+        # ⚠️ 这个字段必须是**目录**，不能是文件路径（2026-09-20 修）。
+        # 此前直接用 fn 原值（filename，含 .md）→ 重做清单里的 folder 变成「文件路径」，
+        # 消费方一旦把它原样当目录传给 save_summary_only，路径推导就会失败并静默兜底成
+        # 「未命名笔记-<时间戳>.md」（实测 8 篇：趋势浪子第 63~70 集，2026-09-20）。
+        # 取 dirname 而不是 registry 的 folder 字段：filename 实测全是**相对库根**的路径
+        # （1200/1200，首段为【监控】/【我的总结】/生财有术 等），而 registry.folder
+        # 相对与绝对**混用**，改用它会让下面 zone/author 的 split 取到盘符（`D:`/`Obsidian`，
+        # 2026-09-20 实测踩过）。dirname 只砍最后一段，前 3 段不变 ⇒ zone/author 结果与修前一致。
+        folder = os.path.dirname(fn).replace(os.sep, "/")
         row = {
             "title": v.get("title") or "",
             "url": v.get("source_url") or "",

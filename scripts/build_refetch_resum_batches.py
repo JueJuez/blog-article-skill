@@ -197,7 +197,10 @@ def main() -> int:
 
 def _build_row(v: dict, url: str, bv: str = "", tid: str = "") -> dict:
     fn = v.get("filename") or ""
-    folder = (v.get("folder") or "").replace("/", os.sep)
+    # folder 必须是**目录**（与 build_resummarize_queue.py 同口径，2026-09-20 对齐）：
+    # 取 filename 的 dirname（相对库根），不要用 registry.folder（相对/绝对混用），
+    # 也不要把 .md 文件路径当目录传下去。
+    folder = os.path.dirname(fn).replace("/", os.sep)
     note_path = os.path.join(VAULT, fn.replace("/", os.sep))
     src = source_path_for(url, bv=bv, tid=tid)
     source_ok = src.exists()
@@ -213,7 +216,7 @@ def _build_row(v: dict, url: str, bv: str = "", tid: str = "") -> dict:
     return {
         "title": v.get("title") or "",
         "url": url,
-        "folder": (v.get("folder") or "").replace(os.sep, "/"),
+        "folder": os.path.dirname(fn).replace(os.sep, "/"),
         "zone": folder.split(os.sep)[0] if folder else "?",
         "author": folder.split(os.sep)[2] if folder.count(os.sep) >= 2 else "",
         "note_type": v.get("note_type") or "",
