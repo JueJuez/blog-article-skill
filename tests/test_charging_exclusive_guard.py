@@ -7,8 +7,11 @@
     · `BV1fr8P6REBW` 音频只给 32/104 分钟 → 源真残。
   所以改成：
     ① **有字幕 → 直接用字幕过**（充电与否都一样）；
-    ② **拿不到字幕 → 走 ASR，由「源完整性校验」裁决**：本地音频 < 视频时长×90% 即拒绝转写；
-    ③ 字幕路径上加一条**非阻断**的「源字/秒」密度告警（< 2 提示，防另一条路径静默残品）。
+    ② **拿不到字幕 → 走 ASR，由「源完整性校验」裁决**：本地音频 < 视频时长×90% 即拒绝转写。
+
+  两条已按用户决定**不做**的事（守住别悄悄长回来）：
+    · 字幕侧不加「源字/秒」密度校验（用户：没遇到过字幕不完整，别加机制）；
+    · 不设「已知充电+无字幕就直接记不可达」的快速路径（会误杀「短视频+试看完整」的真能收录集）。
 
 本测试全部离线（不联网、不下载、不加载模型）。
 
@@ -102,33 +105,13 @@ def test_subtitle_layer_returns_subtitles_for_charging_video():
     assert res[1] == segs
 
 
-def test_source_density_warning_flags_low_density():
-    """源字/秒 < 2 时应打印告警（非阻断）——守住「字幕路径」这条静默残品通道。"""
-    import io
-    import contextlib
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        vf._source_density_warning([{"text": "短" * 100}], {"duration": 600}, "test")
-    assert "源密度告警" in buf.getvalue(), "低密度应告警"
+def test_source_density_warning_removed():
+    """字幕侧不做密度校验（用户 2026-09-20 决定：没遇到过字幕不完整，别加机制）。
 
-
-def test_source_density_warning_silent_on_normal_density():
-    import io
-    import contextlib
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        # 3000 字 / 600 秒 = 5 字/秒，正常
-        vf._source_density_warning([{"text": "字" * 3000}], {"duration": 600}, "test")
-    assert "源密度告警" not in buf.getvalue()
-
-
-def test_source_density_warning_silent_when_duration_unknown():
-    import io
-    import contextlib
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        vf._source_density_warning([{"text": "短"}], None, "test")
-    assert "源密度告警" not in buf.getvalue()
+    守住「不要悄悄长回来」——ASR 层的覆盖率闸门才是唯一硬闸门。
+    """
+    assert not hasattr(vf, "_source_density_warning"), \
+        "字幕侧密度告警已按用户决定撤除，不应再出现（如需恢复请先与用户确认）"
 
 
 # ---------------------------------------------------------------------------

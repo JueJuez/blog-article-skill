@@ -398,27 +398,6 @@ def bili_is_charging_exclusive(info: Optional[Dict]) -> bool:
     return bool(info.get("is_charging_arc"))
 
 
-def _source_density_warning(segs, info: Optional[Dict], tag: str) -> None:
-    """字幕源的「源字/秒」健全性提示（**非阻断**，2026-09-20 新增）。
-
-    为什么需要：充电专属只限制**媒体流**，字幕流可能完整也可能残缺；字幕分页本身也可能断层。
-    用「源字/秒」做体检：正常口播 **4~6**，明显偏低（< 2）说明字幕只覆盖了视频的一小部分。
-
-    **故意只告警不拦**：实测命中里绝大多数是「视频本来就短」（1~5 分钟）造成的误报，
-    拦了会误杀正常内容；是否收录由调用方/用户决定（ASR 路径已有硬闸门，见 asr.py）。
-    """
-    try:
-        dur = float((info or {}).get("duration") or 0)
-        chars = sum(len((s or {}).get("text", "")) for s in (segs or []))
-        if dur and chars:
-            cps = chars / dur
-            if cps < 2.0:
-                print(f"   ⚠️ 源密度告警：字幕 {chars} 字 / 视频 {dur:.0f}s = {cps:.2f} 字/秒"
-                      f"（正常 4~6），源可能只覆盖了视频一部分（{tag}）；若视频本身很短可忽略。")
-    except Exception:
-        pass
-
-
 def _bili_get_video_info(bvid: str) -> Optional[Dict]:
     """返回视频基础信息 + 所有分P（多P系列课）列表。
 
@@ -1032,7 +1011,6 @@ def fetch_subtitle_only(url: str, lang: str = "zh", page: int = None) -> Optiona
     segs = _bili_fetch_page_subtitle(aid, cid, lang)
     if segs:
         print(f"   OK Bilibili 字幕获取成功（{len(segs)} 条，API 原生链路）")
-        _source_density_warning(segs, info, "API 原生链路")
         return (title, segs, info.get("author", ""))
 
     # 风控熔断（批量场景 BILI_FAILFAST_412=1）：API 链路已命中 412 时，
@@ -1103,7 +1081,6 @@ def fetch_subtitle_only(url: str, lang: str = "zh", page: int = None) -> Optiona
                 if segs2:
                     segs2 = preprocess_segments(segs2)  # B：字幕轻量清洗
                     print(f"   OK Bilibili 字幕获取成功（清洗后 {len(segs2)} 条，yt-dlp 兜底）")
-                    _source_density_warning(segs2, info, "yt-dlp 兜底")
                     return (title2, segs2, info.get("author", ""))
                 print("   ℹ️ yt-dlp 也未拿到字幕")
         except Exception as e:

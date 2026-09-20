@@ -135,7 +135,7 @@
 | 想做什么 | 现成的调用点 | 备注 |
 |---|---|---|
 | 抓任意文章正文（scys 自动分流 CDP 登录态） | `articles.fetch.fetch_web_content` | 入口：`articles/run.py` |
-| 抓 B站字幕 / 转写 | `videos.fetch.fetch_transcript` / `fetch_bilibili_transcript` | 入口：`videos/run.py`。**充电专属不阻断**（有字幕就用字幕），字幕侧有 `_source_density_warning` 非阻断告警；不完整由 ASR 层闸门兜住 |
+| 抓 B站字幕 / 转写 | `videos.fetch.fetch_transcript` / `fetch_bilibili_transcript` | 入口：`videos/run.py`。**充电专属不阻断**（有字幕就用字幕）；源不完整由 ASR 层的覆盖率闸门兜住 |
 | 无字幕视频转写（ASR） | `videos.asr.transcribe_video` / `transcribe_audio_chunked` | >30min 自动分片；**唯一源质量硬闸门**：本地音频 < 视频时长×90% 即拒绝转写（充电试看/下载截断）；⚠️ **依赖版本有红线**：`ctranslate2==4.5.0`、`onnxruntime==1.19.2`、`nvidia-cublas-cu12` + `nvidia-cudnn-cu12`(cuDNN 9) —— 见 `references/asr-bilibili-sandbox.md`「本机运行环境版本要求」 |
 | 抓 YouTube 字幕 | `videos.fetch.fetch_youtube_transcript` / `..._cdp` | 登录态走 CDP |
 | 字幕清洗（填词/去重/合并） | `shared.subtitle_clean.preprocess_segments` / `preprocess_text` | 已在 fetch 链路自动接入 |
