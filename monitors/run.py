@@ -877,6 +877,14 @@ def _summarize_video_item(it: dict, obsidian: bool, stats: dict, transcript: str
     """
     _inp = {"url": it["url"], "publish_time": it.get("publish_time", 0),
             "obsidian": obsidian}
+    # 系列排除名单（2026-09-19）：subscriptions.json 配 series_exclude 的账号，
+    # 命中的 ugc_season 系列在管线内整体跳过（不总结/不入队）
+    try:
+        from shared.routing import load_series_exclude
+        _inp["series_exclude"] = load_series_exclude().get(
+            it.get("sub_name") or it.get("author", ""), [])
+    except Exception:
+        _inp["series_exclude"] = []
     if transcript is not None:
         _inp["transcript"] = transcript
         _inp["original_title"] = it.get("title", "")

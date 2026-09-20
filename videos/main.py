@@ -623,6 +623,16 @@ def summarize_series_episode(url: str, input_data: dict = None) -> dict:
                     if ep.get("bvid") == bvid:
                         ep_index = n
     if season_title:
+        # ⓪系列排除名单（2026-09-19）：监控场景用户点名去掉的系列课整体跳过，
+        # 不总结、不入队、不落盘；手动单视频入口不传 series_exclude 不受影响。
+        from shared.routing import series_title_excluded
+        if series_title_excluded(season_title, input_data.get("series_exclude") or []):
+            print(f"⏭️ 系列「{season_title}」在排除名单（series_exclude），跳过")
+            return {
+                "success": True,
+                "skipped": True,
+                "message": f"系列「{season_title}」在排除名单（subscriptions.json series_exclude），跳过。",
+            }
         input_data["folder"] = series_folder(input_data, input_data.get("author", ""),
                                              season_title, url)
         if ep_index:

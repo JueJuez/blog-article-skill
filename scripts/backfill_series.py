@@ -125,17 +125,20 @@ def _backfill_one(ep: dict, season_title: str, author: str, report: dict,
         print(f"[backfill] 转人工（失败 {rec.get('fail_count')} 次，不再自动重试）: {url}")
         return
     if any(p.get("url") == url for p in _load_pending()):
-        cnt = bump_failure(url, "入队后历经一轮仍未登记（消费未成功）")
-        if cnt >= FAIL_LIMIT:
-            report["manual"].append({"url": url, "fail_count": cnt,
-                                     "last_error": "入队后历经一轮仍未登记"})
-            print(f"[backfill] 转人工（失败 {cnt} 次）: {url}")
-        else:
-            report["in_queue"] += 1
-            print(f"[backfill] 已在队列（累计失败 {cnt}）: {url}")
+        # 2026-09-20 改：持续监督模式下 backfill 与消费并行，「在队列等消费」是常态，
+        # 每轮 bump 会把正常排队集误推到 3 次转人工——改为只计数不入账，消费失败的
+        # 集本来就留在队列里，无需 D8 惩罚（真实抓取失败仍走 bump_failure）。
+        report["in_queue"] += 1
+        print(f"[backfill] 已在队列（等待消费）: {url}")
         return
     if gap:
         time.sleep(gap)
+    # 崩溃定位锚点（2026-09-20）：本集开始抓取即打印，监督者据此识别反复弄死
+    # 进程的集（当初 faster-whisper 原生崩溃无法被 try/except 捕获，故用日志锚点定位）。
+    # ⚠️ 后续澄清：当时被判成「毒集」的集其实混了三类不同原因——环境崩（ctranslate2
+    # 4.8.2 回归，已修）、源没人声（录屏音乐短片）、充电专属仅试看；后两类任何 ASR 都
+    # 无解，别当环境故障反复重试（详见 `references/asr-bilibili-sandbox.md`）。
+    print(f"[backfill] 开始抓取: {url}", flush=True)
     try:
         from videos.fetch import fetch_transcript
         res = fetch_transcript(url)
@@ -192,6 +195,16 @@ def backfill_series(urls: list, gap: float = None) -> dict:
             print(f"[backfill] 非系列视频，跳过（点名补齐仅处理系列课）: {url}")
             continue
         report["series"] += 1
+        # 系列排除名单（2026-09-20）：用户点名去掉的系列课（subscriptions.json
+        # series_exclude）不在补齐范围，与监控管线同一守卫。
+        try:
+            from shared.routing import load_series_exclude, series_title_excluded
+            _exc = load_series_exclude().get(season.get("author", ""), [])
+            if series_title_excluded(season["season_title"], _exc):
+                print(f"[backfill] 系列《{season['season_title']}》在排除名单（series_exclude），跳过")
+                continue
+        except Exception:
+            pass
         episodes = season["episodes"]
         report["episodes"] += len(episodes)
         ep_urls = [e["url"] for e in episodes]

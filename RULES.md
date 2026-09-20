@@ -151,6 +151,9 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
   > **【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】**
   - **不要**在 `videos/asr.py` 已提供的兜底之外「自作主张开发新兜底」。环境坑（HF 镜像 / xet / CUDA dll / 沙箱安全删除）已由 `asr.py` 的 `_apply_env_defaults()` + `_ensure_cuda_dlls()` 自动处理，**无需手敲 export、不要 diagnose**。
   - **B站/远程视频 ASR 沙箱专属坑**（B站 CDN 域名轮换致 ffmpeg 直下 `-138` 崩溃、长音频整段塞 GPU 的 CUDA 原生段错误、nvidia dll 路径缺失）已固化进 `videos/asr.py`：urllib 下载抗 host 轮换、>30min 自动 600s 分片转写（`transcribe_audio_chunked`）、`_ensure_cuda_dlls()` 注入 dll。根因、修复与验证见 `references/asr-bilibili-sandbox.md`，**勿在调用层重写兜底**。
+  - **⚠️ ASR 依赖有版本红线（2026-09-20 定版，换机/出错先看这里）**：`ctranslate2==4.5.0`（4.8.2 在本机构造模型即原生 access violation，**CPU 与 CUDA 都崩**）、`onnxruntime==1.19.2`（1.29.0 导入即 DLL 初始化失败，VAD 依赖）、`nvidia-cublas-cu12` + `nvidia-cudnn-cu12`(cuDNN **9**，GPU 必需，约 700MB)、`KMP_DUPLICATE_LIB_OK=TRUE`（已由 `_apply_env_defaults()` 自动设）。**表在 `references/asr-bilibili-sandbox.md`「本机运行环境版本要求」**，`_ensure_cuda_dlls()` 的 docstring 里也指向了它。
+  - **ASR 三个失败类别必须先分清，别一律当「环境坏了」**（2026-09-20 实踩）：① **环境崩型**（上面那批版本问题，可修）；② **源没人声型**（录屏+音乐短片，转写返回空或只吐 Whisper 幻觉 → 任何 ASR 都无解，应剔除）；③ **充电专属型**（B站付费内容只给试看片段，`is_upower_exclusive && is_upower_preview` → 换 cookie/换下载都拿不到，需账号充电）。② ③ 已由代码/护栏自动识别，**不要反复重跑刷失败账本**。
+  - **抓取层已内置两条源质量护栏（2026-09-20）**：`videos/fetch.py::bili_is_charging_exclusive()` 在字幕层拦充电专属（`fetch_subtitle_only` / `fetch_bilibili_transcript`）；`videos/asr.py::transcribe_video` 再加「本地音频时长 < 视频时长×90% 即拒绝转写」的**源完整性校验**。回归测试 `tests/test_charging_exclusive_guard.py`。
 - **区分「真无字幕」vs「抓取机制故障」（避免误判导致乱调试）**：
   - 真无字幕：`capture_transcript` 已连上 CDP 实例、页面正常加载（能拿到标题）、但 `captionTracks` 为空 → **直接回上面那句话**，不要调试。
   - 抓取机制故障：CDP 端点连不上 / 页面空白 / 代理失效（YouTube 打不开）→ 这是**基础设施问题**，不是视频没字幕；按 `references/youtube-cdp-workflow.md` §6 排查（`ensure_endpoint` 三段式自愈/冷启动自动处理；手动诊断跑技能 CLI `ensure_endpoint.py --probe-only`），**不要**把它当成「无字幕」回给用户。

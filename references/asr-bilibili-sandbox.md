@@ -38,15 +38,32 @@
     `segment_sec`（默认 600s）切片，逐段转写并拼接绝对时间戳；短音频走原整段快路径。
   - `transcribe_video()` 改调分片版。切片后每段 VRAM 占用有界，彻底规避崩溃。
 
-### 坑 3：nvidia CUDA 运行库（cublas/cudnn dll）路径
+### 坑 3：CUDA/GPU 运行库（cublas / cudnn）——**装什么、装在哪、谁在调用**
 
-- **现象**：本机有 GPU（ctranslate2 能看到 CUDA 设备），但加载模型报
-  `Library cublas64_12.dll is not found or cannot be loaded`，随后回退 CPU（极慢）。
-- **根因**：管理版 Python 解释器没把 pip 安装的 nvidia-* 运行库（nvidia-cublas-cu12 等
-  wheel，放在 `site-packages/nvidia/<pkg>/bin`）纳入 DLL 搜索路径。
-- **修复**（`videos/asr.py`）：导入期由 `_ensure_cuda_dlls()` 自动扫描并
-  `os.add_dll_directory()` + 前置 PATH（幂等、持有句柄防 GC 移除）。**无需手动 export，
-  之前那次手动 `export PATH` 已是多余动作**。
+**一句话**：GPU 跑 Whisper 需要 pip 装的 `nvidia-cublas-cu12` + `nvidia-cudnn-cu12`（cuDNN **9.x**）。
+它们落在 `site-packages/nvidia/<pkg>/bin`，由 `videos/asr.py::_ensure_cuda_dlls()` 在导入期自动
+`os.add_dll_directory()` + 前置 PATH（幂等、持有句柄防 GC 移除）。**调用方无需任何手动 export。**
+
+现役版本（2026-09-20 装好并实测）：
+
+| 包 | 版本 | 提供的 DLL |
+|----|------|-----------|
+| `nvidia-cublas-cu12` | 12.9.2.10 | `cublas64_12.dll` / `cublasLt64_12.dll` |
+| `nvidia-cudnn-cu12` | 9.26.0.51 | cuDNN 9 组件：`cudnn_ops64_9.dll` / `cudnn_cnn64_9.dll` / `cudnn64_9.dll` … |
+| `nvidia-cuda-nvrtc-cu12` | 12.9.86 | `nvrtc64_120_0.dll`（随上面带入） |
+
+```bash
+# 安装（本机共享 anaconda 环境；≈700MB，清华镜像下 1~2 分钟）
+D:/App/anaconda3/python.exe -m pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
+```
+
+- **症状对照**：缺 cublas → `Library cublas64_12.dll is not found or cannot be loaded`；
+  缺 cuDNN 9 组件 → `Could not locate cudnn_ops64_9.dll` / `Cannot load symbol cudnnCreateTensorDescriptor`。
+  两种都会**静默回退 CPU**（0.8x 实时，比 GPU 慢 3 倍以上）。
+- **本机实测（2026-09-20）**：装前全盘搜索 `cudnn_ops64_9.dll` / `cudnn_cnn64_9.dll` / `cublasLt64_12.dll`
+  **均不存在**，ctranslate2 包内只有一个 0.27MB 的 `cudnn64_9.dll` 壳 ⇒ 「以前 GPU 能跑」靠的是机器上
+  某条外部路径，现已改为**显式 pip 依赖**。装后实测 GPU 实时率 **2.6x**（CPU 0.8x）。
+- 显卡/驱动：`nvidia-smi` 可查；本机 RTX 4060 Laptop 8GB / 驱动 596.21。
 
 ### 坑 4：同一 Python 进程连续跑 ASR 转写必崩（GPU/Whisper 状态污染）
 
@@ -65,6 +82,50 @@
 - **代码层根治待做**：`videos/asr.py` 的 `transcribe_video` 应包装子进程隔离或
   `importlib.reload` 重置 CUDA 上下文，避免调用方手动拆进程。
 
+### 坑 5：B站「充电专属」只能拿到试看片段（2026-09-20 实踩 · 最隐蔽的一类）
+
+- **现象**：补齐流程里 2 集「充电专属」视频（88 分钟 / 28 分钟）下载到的音频只有
+  **299.9s / 179.9s**，管线**全程无告警**地按残缺源转写并落盘 → 笔记静默丢掉 90%+ 内容。
+- **判据**：view API 的 `is_upower_exclusive=true` **且** `is_upower_preview=true`
+  （只看 `is_upower_exclusive` 会在「账号已充电、可看全片」时误杀）。
+- **省时间的排除顺序**（先别怀疑网络/下载）：
+  1. 查 `is_upower_*` 权限字段；
+  2. `Range: bytes=0-1` 看响应的 `Content-Range`，确认传输是否完整（本机实测 `bytes 0-1/7396351` = 读全了）；
+  3. `yt-dlp` 列格式看上报 filesize 与时长是否矛盾（88 分钟只报 7.4MB ≈ 11kbps，**物理不可能**）。
+- **已加护栏**：`videos/fetch.py` 新增 `bili_is_charging_exclusive()`；
+  `fetch_subtitle_only` / `fetch_bilibili_transcript`（字幕层）与 `videos/asr.py::transcribe_video`（ASR 层）
+  三处拦截；`_bili_get_video_info` 新增 `duration` / `is_upower_exclusive` / `is_upower_preview` 字段。
+- **回归测试**：`python tests/test_charging_exclusive_guard.py`（含「账号已充电不得误杀」反向用例）。
+
+### 坑 6：源完整性——「音频比视频短」必须拒绝转写
+
+- 与坑 5 同源但更通用：充电专属试看、CDN 只返回一段、下载被截断，症状都是**本地音频远短于视频时长**。
+- **护栏**（`videos/asr.py::transcribe_video`）：下载音频后比对 `_wav_duration(wav)` 与 view API 的
+  `duration`，**低于 90% 直接拒绝转写**并打印明确原因。
+- 宁可失败进失败账本（可人工排查），也不产出残缺笔记——加护栏前是静默产出残品的。
+
+## 🔧 本机运行环境版本要求（2026-09-20 实测定版 · 换机 / 排查先看这里）
+
+| 包 / 开关 | **必须是** | 为什么 |
+|-----------|-----------|--------|
+| `ctranslate2` | **4.5.0** | 4.8.2 在本机构造模型即原生 `access violation`（`faster_whisper/transcribe.py:689`），**CPU 与 CUDA 都崩**（实测）。若被升到 4.8.x，ASR 全链路必崩 |
+| `onnxruntime` | **1.19.2** | 1.29.0 导入即 `DLL load failed ... 动态链接库(DLL)初始化例程失败`；faster-whisper 的 VAD（`vad_filter=True`，`videos/asr.py` 硬编码）依赖它 |
+| `nvidia-cublas-cu12` | 12.9.x | 见坑 3 |
+| `nvidia-cudnn-cu12` | 9.26.x（cuDNN **9**） | 见坑 3 |
+| `KMP_DUPLICATE_LIB_OK` | `TRUE` | anaconda 的 MKL 与 ctranslate2 各带一份 `libiomp5md.dll` → `OMP: Error #15` 后**直接 Aborted**（原生崩，`try/except` 抓不住） |
+
+- `KMP_DUPLICATE_LIB_OK` 已由 `videos/asr.py::_apply_env_defaults()` **自动设置**，调用方无需关心
+  （2026-09-20 之前项目完全没有这个开关）。
+- **排错顺序**：① 先跑 10 秒预检（`_load_model` 一次 + 转写 3 秒静音），失败即停并带明确报错；
+  ② 再看 `Lib/site-packages` 与 `Scripts` 的 **mtime**——它们停在哪天，就说明该环境最后一包变更是哪天。
+- ⚠️ **「包没变但症状新生」是常态**：2026-09-20 实测 env 自 09-03 起一个包都没动，而 ASR 从可用变成必崩
+  ⇒ 变化在系统层（系统 DLL / VC++ 运行时 / 驱动 / Windows 更新）。所以**重装/升级包不会复发此病因，
+  但也挡不住下次系统更新**——这正是要加预检的原因。
+- ⚠️ **退出阶段的 `Fatal Python error: Aborted`**：GPU 推理跑完后**解释器退出时**可能崩一次
+  （结果已产出、已写文件，才崩），退出码非 0。批量脚本判 rc 时别误判成「没跑完」。
+- ⚠️ pip 中途失败会留下 `Lib/site-packages/~ranslate2`、`~nnxruntime` 之类 `~` 前缀残目录
+  （随后 pip 报 `Ignoring invalid distribution`），需手工删除。
+
 ## 验证记录
 
 - 短/中视频（组织权力论 2 篇、手段方法论 1 篇）无 CC 字幕 → ASR（GPU medium）转写成功。
@@ -77,11 +138,17 @@
 
 - 单视频 ASR 兜底：`from videos.asr import transcribe_video; transcribe_video(url)`
   （自动 CC → ASR）。
-- 批量无字幕视频：保持 `BILI_BATCH_NO_ASR=1` 跳过无字幕视频；仅对确需文本的无字幕视频
-  单独 `transcribe_video(url)` 或 `transcribe_to_file(url, out_path)`。
+- 批量无字幕视频：
+  - **正常情况（GPU 可用，2026-09-20 起）**：直接跑，不必设 `BILI_BATCH_NO_ASR`。
+    GPU 实时率约 **2.6x**，CPU 约 0.8x —— GPU 不可用时会静默回退 CPU，慢约 3 倍，
+    此时先按「本机运行环境版本要求」节排查。
+  - 只想快速补丁一轮、暂不处理无字幕集时才用 `BILI_BATCH_NO_ASR=1` 跳过（**属临时手段，
+    不是默认姿势**——它会让无字幕集直接进失败账本）。
 - 长音频自动分片无需干预；如需调阈值/片长：
   `transcribe_audio_chunked(..., auto_threshold=1800, segment_sec=600)`。
 - 断点续跑：转写文本缓存到 `transcripts/<bvid>.md`，非强制模式下命中缓存即跳过下载/转写。
+- ⚠️ 受限/残缺源会被主动拒绝并**不会写缓存**：充电专属仅试看、音频覆盖率 <90%
+  （见坑 5 / 坑 6）——这两类集请勿反复重跑，应记录为「不可达」。
 
 ## 字幕可用性判定 & 硬字幕识别（2026-09-15）
 

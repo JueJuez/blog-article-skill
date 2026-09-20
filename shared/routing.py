@@ -122,6 +122,37 @@ def load_series_patterns() -> dict:
     return out
 
 
+def load_series_exclude() -> dict:
+    """从 subscriptions.json 派生 账号名 → series_exclude 列表。
+
+    series_exclude: [str, ...] —— B站 ugc_season 系列名黑名单：监控总结管线
+    （videos.main.summarize_series_episode）命中即整体跳过，不总结、不入队、
+    不落盘。用于用户点名去掉的系列课（2026-09-19：价投小猪仔的小猪仔与生活 /
+    动画片：小猪仔学投资）。配置名与 B站季名互为子串即命中（B站季名可能带
+    「合集·」前缀等装饰）。
+    """
+    out: dict = {}
+    try:
+        with open(_subs_path(), encoding="utf-8") as f:
+            subs = json.load(f)
+    except Exception:
+        return out
+    for sec in ("wechat", "bilibili"):
+        for w in subs.get(sec, []) or []:
+            n = (w.get("name") or "").strip()
+            exc = w.get("series_exclude") or []
+            if n and exc:
+                out[n] = exc
+    return out
+
+
+def series_title_excluded(season_title: str, exclude: list) -> bool:
+    """判断 B站季名是否命中排除名单（互为子串即命中，空白项忽略）。"""
+    if not season_title or not exclude:
+        return False
+    return any(x and (x in season_title or season_title in x) for x in exclude)
+
+
 def match_series(account: str, title: str, body: str = "") -> str:
     """按账号的 series_patterns 匹配标题/正文，返回系列名或 ''。
 

@@ -370,6 +370,29 @@ def _bili_extract_bvid(url: str) -> Optional[str]:
 # fetch_subtitle_only 拿到 view 信息后写入，_handle_single_video 读取注入保存链路。
 LAST_PUBDATE = 0
 
+# 最近一次抓取是否命中「充电专属·仅试看」（2026-09-20）：
+# fetch_subtitle_only 读 view API 后写入，fetch_bilibili_transcript 据此**不再走 ASR 兜底**
+# ——充电专属 B站只给试看片段，ASR 也只会转出残缺内容（详见 bili_is_charging_exclusive）。
+LAST_CHARGING_EXCLUSIVE = False
+
+
+def bili_is_charging_exclusive(info: Optional[Dict]) -> bool:
+    """判断该 B站视频是否为「充电专属**且当前账号只能看试看片段**」（2026-09-20 新增）。
+
+    为什么需要单独判断：充电专属视频 B站只返回试看片段（实证：88 分钟的视频只拿到 299.9s、
+    28 分钟只拿到 179.9s），**换 cookie、换下载方式都拿不到全片**。此前的行为是把试看片段
+    当全片转写并落盘，笔记静默丢掉 90%+ 的内容且无任何告警——属于最隐蔽的一类数据损失。
+
+    判据：view API 的 `is_upower_exclusive` 与 `is_upower_preview` **同时为真**
+    （只看 `is_upower_exclusive` 会在「账号已充电、可看全片」时误杀）；
+    兼容投稿列表 API 的 `is_charging_arc`（老入口没有 upower 字段时用它兜底）。
+    """
+    if not info:
+        return False
+    if info.get("is_upower_exclusive") and info.get("is_upower_preview"):
+        return True
+    return bool(info.get("is_charging_arc"))
+
 
 def _bili_get_video_info(bvid: str) -> Optional[Dict]:
     """返回视频基础信息 + 所有分P（多P系列课）列表。
@@ -405,6 +428,14 @@ def _bili_get_video_info(bvid: str) -> Optional[Dict]:
                 "pages": pages or [{"cid": d["cid"], "page": 1, "part": ""}],
                 # 系列课（UP主聚合的多个独立视频）：含 sections[].episodes[]
                 "ugc_season": d.get("ugc_season"),
+                # 视频总时长（秒）。ASR 侧用它做「源完整性」校验：本地音频时长若
+                # 明显短于它，说明拿到的是残缺源（充电专属试看 / 下载截断），
+                # 此时必须拒绝产出笔记（2026-09-20 实踩，原为静默产出残缺品）。
+                "duration": int(d.get("duration") or 0),
+                # 充电专属（UP 主付费内容）：B站只给试看片段，任何下载方式都拿不到全片。
+                # 命中时 ASR 直接跳过并给出明确原因，避免把试看片段当全片总结。
+                "is_upower_exclusive": bool(d.get("is_upower_exclusive")),
+                "is_upower_preview": bool(d.get("is_upower_preview")),
             }
     except Exception as e:
         if _is_http_412(e):
@@ -947,11 +978,18 @@ def fetch_subtitle_only(url: str, lang: str = "zh", page: int = None) -> Optiona
     info = _bili_get_video_info(bvid)
     if not info:
         return None
-    global LAST_PUBDATE
+    global LAST_PUBDATE, LAST_CHARGING_EXCLUSIVE
     LAST_PUBDATE = int(info.get("pubdate") or 0)
     aid = info["aid"]
     title = info["title"]
     pages = info.get("pages") or []
+
+    # 充电专属·仅试看：B站只给试看片段，字幕/ASR 都拿不到全片内容。
+    # 在此拦截（而不是等到 ASR 再拦）可覆盖所有走本函数的入口，且不会浪费一次音频下载。
+    LAST_CHARGING_EXCLUSIVE = bili_is_charging_exclusive(info)
+    if LAST_CHARGING_EXCLUSIVE:
+        print(f"   ⛔ 充电专属视频（当前账号仅可试看），跳过抓取：{title}")
+        return None
 
     target = None
     if page and pages:
@@ -1055,6 +1093,11 @@ def fetch_bilibili_transcript(url: str, lang: str = "zh", page: int = None) -> O
     sub = fetch_subtitle_only(url, lang=lang, page=page)
     if sub:
         return sub
+    # 充电专属·仅试看：fetch_subtitle_only 已判定并置位，这里**不再走 ASR 兜底**——
+    # 只拿到了试看片段，ASR 只会产出残缺内容（2026-09-20 实踩：88 分钟的视频只拿到 5.6%）。
+    if is_bilibili(url) and LAST_CHARGING_EXCLUSIVE:
+        print("   ⛔ 该集为充电专属（当前账号仅可试看），跳过 ASR 兜底：拿不到完整源，不产出残缺笔记。")
+        return None
     # 风控熔断（批量场景 BILI_FAILFAST_412=1）：412 命中后不再下载音频做 ASR
     if _risk_412_failfast():
         print("   STOP 风控412命中，跳过 ASR 兜底")

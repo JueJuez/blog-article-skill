@@ -33,6 +33,7 @@
   - 用户口头说「关注 / 订阅 / 监控 XXX」时：
     - **B站UP主**：**走机械命令** `python monitors/run.py --subscribe --uid <id> --name <名> --category <类> [--sub-all | --sub-window <天>]`（命令会先查重，已在名单则回「已在监控名单内」且不添加，不手搓 JSON）。
     - **公众号 / scys 领域**：编辑 `monitors/subscriptions.json`，格式参考 `monitors/subscriptions.example.json`（公众号：`{"mp_id":"..."}` 或 `{"share_url":"..."}`；scys：`{"project":"领域名"}`）。
+    - **去掉某系列课（2026-09-19）**：账号条目加 `"series_exclude": ["B站 ugc_season 季名", ...]` → 监控管线内命中即整体跳过（不抓/不总结/不入队），已落盘笔记与登记表条目需另行清理；机制见 `monitors/README.md`「系列排除」。
     - 不要手搓抓取代码。
 - **运行**
   - **公众号源现状（2026-09-19 全链路打通）**：旧代理源（wewe-rss）已死永久停用；接替方案「微信读书直连」**已开发落地**（`monitors/weread.py`）——`.env` 设 `WEREAD_SOURCE_ENABLED=1` 启用后随每日监控自动发现新文：**时间窗语义**（`WEREAD_WINDOW_DAYS=2` 基础窗，断跑自动补齐封顶 30 天；日更号 30 天≈30 篇、周更号≈4 篇，与更新频率无关），正文走 mp 直链同普通公众号管线。**登录失效自动弹码**（`WEREAD_AUTO_RELOGIN=1`：截二维码落 `monitors/weread_login_qr.png` + `RELOGIN_QR:` 提示，你扫码后 cookie 浏览器内自动生效、自动续抓）；**人机检测自动过码**（会话内模型识图 → `scripts/weread_captcha.py --shot`/`--grid "行,列" --confirm`，实测跑通）；历史补全：`python monitors/run.py --weread-backfill --names 哥飞 --since 2026-03-01 --apply`（补到指定日期，未翻到再跑即续批）。**双层配额熔断**（日 25 / 小时 6，`.weread_quota.json` 按天/小时计数）：到线自动跳过公众号源或停止补续批，绝不硬闯。**连环码熔断**：正常只 1 次人机验证，同日第 2 次提交 = 高危风控信号 → 自动熔断 12 小时不发任何请求（`WEREAD_CAPTCHA_SERIAL_LIMIT`/`WEREAD_RISK_COOLDOWN_HOURS`）。bookId 映射在 `monitors/weread.py` 的 `BOOK_ID_FALLBACK` + `.mp_cache.json`。机制/翻页规则/防封纪律真源 `references/weread-direct-source.md`。

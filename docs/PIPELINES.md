@@ -135,8 +135,8 @@
 | 想做什么 | 现成的调用点 | 备注 |
 |---|---|---|
 | 抓任意文章正文（scys 自动分流 CDP 登录态） | `articles.fetch.fetch_web_content` | 入口：`articles/run.py` |
-| 抓 B站字幕 / 转写 | `videos.fetch.fetch_transcript` / `fetch_bilibili_transcript` | 入口：`videos/run.py` |
-| 无字幕视频转写（ASR） | `videos.asr.transcribe_video` / `transcribe_audio_chunked` | >30min 自动分片，见 `references/asr-bilibili-sandbox.md` |
+| 抓 B站字幕 / 转写 | `videos.fetch.fetch_transcript` / `fetch_bilibili_transcript` | 入口：`videos/run.py`。**「充电专属·仅试看」已在字幕层拦截**（`bili_is_charging_exclusive`），拿不到全片就不产出残缺笔记 |
+| 无字幕视频转写（ASR） | `videos.asr.transcribe_video` / `transcribe_audio_chunked` | >30min 自动分片；⚠️ **依赖版本有红线**：`ctranslate2==4.5.0`、`onnxruntime==1.19.2`、`nvidia-cublas-cu12` + `nvidia-cudnn-cu12`(cuDNN 9) —— 见 `references/asr-bilibili-sandbox.md`「本机运行环境版本要求」 |
 | 抓 YouTube 字幕 | `videos.fetch.fetch_youtube_transcript` / `..._cdp` | 登录态走 CDP |
 | 字幕清洗（填词/去重/合并） | `shared.subtitle_clean.preprocess_segments` / `preprocess_text` | 已在 fetch 链路自动接入 |
 | 长文分块 / 两阶段总结 | `shared.chunking.chunk_text` / `two_stage_summarize` | |

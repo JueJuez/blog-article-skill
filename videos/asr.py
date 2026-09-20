@@ -59,7 +59,14 @@ def _apply_env_defaults():
     - HF_HOME=系统临时目录       : 默认 cache 的 .incomplete 清理会被沙箱安全删除拦截 →
                                   改放 %TEMP%，其中的 unlink 走原生、不受拦截
     - HF_ENDPOINT=镜像          : 沙箱直连 huggingface.co 超时 → 自动走 hf-mirror.com
+    - KMP_DUPLICATE_LIB_OK=TRUE : anaconda 的 MKL 自带一份 libiomp5md.dll，ctranslate2 也自带
+                                  一份，同时驻留时推理会打印 "OMP: Error #15 ... multiple copies
+                                  of the OpenMP runtime" 并**直接 Aborted**（原生崩溃，try/except
+                                  抓不住，日志里只留一行 Fatal Python error）。Intel 官方给的
+                                  逃生开关即此变量（2026-09-20 实踩补齐，此前项目完全没有）。
     """
+    if not os.environ.get("KMP_DUPLICATE_LIB_OK"):
+        os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
     if not os.environ.get("HF_HUB_DISABLE_XET"):
         os.environ["HF_HUB_DISABLE_XET"] = "1"
     if not os.environ.get("HF_HUB_ENABLE_HF_TRANSFER"):
@@ -187,7 +194,16 @@ except Exception:
 
 
 def _resolve_device(device: str = "auto") -> Tuple[str, str]:
-    """返回 (device, compute_type)。auto 时优先 CUDA/float16，否则 CPU/int8。"""
+    """返回 (device, compute_type)。auto 时优先 CUDA/float16，否则 CPU/int8。
+
+    `ASR_DEVICE` 环境变量（auto|cpu|cuda）优先于入参，可在本机 GPU/驱动异常时强制回退。
+
+    历史澄清（2026-09-20）：2026-09-15~20 那段「ASR 必崩」**不是 CUDA 或 CPU 的问题**——
+    真正原因是 ctranslate2 升到 4.8.2 后在本机构造模型即原生 access violation（CPU 与 CUDA
+    都崩），降回 4.5.0 即好；当时的 `ASR_DEVICE=cpu` 只是碰巧绕开了崩溃点。版本红线与排错
+    顺序见 `references/asr-bilibili-sandbox.md`「本机运行环境版本要求」。
+    """
+    device = os.environ.get("ASR_DEVICE") or device
     if device == "cpu":
         return "cpu", "int8"
     if device == "cuda":
@@ -257,8 +273,19 @@ _CUDA_DLL_HANDLES: list = []
 def _ensure_cuda_dlls():
     """把含 cublas64_12.dll 的目录加进进程 DLL 搜索路径（Windows 专用）。
 
-    这样即使用户没手动配 PATH，只要本机有 CUDA 运行库（如 Lenovo/预装 NVIDIA 驱动
-    附带的），GPU 转写就能直接生效；找不到则靠 transcribe 的 CPU 回退兜底。
+    这样即使用户没手动配 PATH，只要本机有 CUDA 运行库（pip 装的 nvidia-* wheel，或
+    Lenovo/预装 NVIDIA 驱动附带的），GPU 转写就能直接生效；找不到则靠 transcribe 的
+    CPU 回退兜底。
+
+    🔧 **GPU 依赖找不到了看这里**（2026-09-20 定版）：
+    - 需要的包：`nvidia-cublas-cu12` + `nvidia-cudnn-cu12`（cuDNN **9.x**），安装命令
+      `python -m pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`，落地在
+      `site-packages/nvidia/<pkg>/bin`（本函数会扫这些目录）。
+    - 配套的**版本红线**与排错顺序见 `references/asr-bilibili-sandbox.md`
+      「本机运行环境版本要求」节：`ctranslate2` 必须 4.5.0、`onnxruntime` 必须 1.19.2、
+      `KMP_DUPLICATE_LIB_OK=TRUE`（已由 `_apply_env_defaults()` 自动设置）。
+    - 症状对照：缺 cublas → `cublas64_12.dll is not found`；缺 cuDNN 9 组件 →
+      `Could not locate cudnn_ops64_9.dll`；两者都会静默回退 CPU（0.8x，比 GPU 慢 3 倍以上）。
 
     幂等但「非一次性失效」：仅当本次/此前已成功加入 cublas 目录才跳过；若某次扫描被
     沙箱/时序拦截导致一个都没加成功，下次调用（如 transcribe_video 内的显式调用）会
@@ -793,18 +820,24 @@ def transcribe_video(url: str, lang: str = "zh",
     _ensure_cuda_dlls()          # 必须在 import ctranslate2 之前（Windows 导入即绑定 cublas）
 
     # 强制 CUDA（优化 D）：只要 ctranslate2 能看见 GPU 就锁 cuda/float16，
-    # 绝不在无提示下掉 CPU（本次曾因掉 CPU 单集卡 1h5m）。
-    try:
-        import ctranslate2 as _ct
-        if _ct.get_cuda_device_count() > 0:
-            device = "cuda"
-    except Exception:
-        pass
+    # 绝不在无提示下掉 CPU（曾因掉到 CPU 单集卡 1h5m）。
+    # ⚠️ 但显式 `ASR_DEVICE=cpu` 必须被尊重——2026-09-20 修：此前这里无条件改回 cuda，
+    # 使 `_resolve_device` 文档承诺的 ASR_DEVICE 开关在 transcribe_video 上实际失效
+    # （GPU/驱动异常时无法按文档强制回退 CPU）。
+    if (os.environ.get("ASR_DEVICE") or "").strip().lower() != "cpu":
+        try:
+            import ctranslate2 as _ct
+            if _ct.get_cuda_device_count() > 0:
+                device = "cuda"
+        except Exception:
+            pass
     wall_timeout = wall_timeout or int(os.environ.get("ASR_WALL_TIMEOUT", "1800") or 0)
 
     # B站：注入登录态 cookie（部分视频匿名无法下载）；并取标题/UP主
     cookie_str = None
     title, author = "", ""
+    expect_dur = 0.0        # 视频总时长（秒），用于「源完整性」校验
+    upower_preview = False  # 充电专属·仅试看：拿不到全片
     try:
         from . import fetch
         if fetch.is_bilibili(url):
@@ -813,8 +846,19 @@ def transcribe_video(url: str, lang: str = "zh",
             if info:
                 title = info.get("title", "")
                 author = info.get("author", "")
+                expect_dur = float(info.get("duration") or 0)
+                upower_preview = bool(info.get("is_upower_exclusive")
+                                      and info.get("is_upower_preview"))
     except Exception as e:
         print(f"   ℹ️ B站元数据/ cookie 获取跳过：{e}")
+
+    # 充电专属·仅试看：B站只给试看片段，换 cookie / 换下载方式都拿不到全片。
+    # 2026-09-20 实踩：此前的行为是「下载到试看片段照样转写并落盘」，产出的笔记只覆盖
+    # 全片 5%~11% 的内容且**没有任何告警**——属于最隐蔽的一类数据损失，故在此硬拦。
+    if upower_preview:
+        print(f"   ⛔ 该集为「充电专属·仅试看」：B站只提供试看片段（全片 {expect_dur:.0f}s），"
+              f"拿不到完整源，跳过 ASR（不产出残缺笔记）。需账号已充电才能收录。")
+        return None
 
     # 断点续跑：非强制且命中 ASR 缓存 → 跳过下载音频 + GPU 转写，直接返回文本
     if not force:
@@ -850,6 +894,14 @@ def transcribe_video(url: str, lang: str = "zh",
                     except Exception as e:
                         print(f"   ℹ️ B站音频下载失败且 cookie 刷新异常：{e}，跳过 ASR。")
                         return None
+            return None
+        # 源完整性校验（2026-09-20）：本地音频若明显短于视频总时长，说明拿到的是残缺源
+        # （充电专属试看 / 下载被截断 / CDN 只返回一段）。此前无此校验，会把残缺音频当全片
+        # 转写并落盘，笔记静默丢失大部分内容。宁可失败（进失败账本、可人工排查）也不产出残品。
+        got_dur = _wav_duration(wav) or 0.0
+        if expect_dur and got_dur and got_dur < expect_dur * 0.9:
+            print(f"   ⛔ 源不完整：本地音频 {got_dur:.0f}s 仅覆盖视频 {expect_dur:.0f}s 的 "
+                  f"{got_dur / expect_dur * 100:.0f}%（阈值 90%），跳过 ASR 以免产出残缺笔记。")
             return None
         segs = transcribe_audio_chunked(wav, model_size, lang, device, wall_timeout=wall_timeout)
         if not segs:

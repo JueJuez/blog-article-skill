@@ -23,7 +23,8 @@
           "pattern": "直播回放",
           "series": "直播回放"
         }
-      ]
+      ],
+      "series_exclude": ["要去掉的系列课名（B站 ugc_season 季名，互为子串即命中，监控管线整体跳过）"]
     }
   ],
   "scys": [

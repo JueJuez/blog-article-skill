@@ -26,7 +26,7 @@
 - **无干货动态屏蔽**：去掉链接后正文 <15 字，或命中系统通知模板（充电专属问答 /「我回复了@」/「快来围观吧」/「为我充电」）→ 直接丢弃，不进总结管线（但仍记入 `seen`，避免下次重复拉取）。
 - **短动态轻量化**：动态正文净化后 ≤ `BILI_SHORT_DYNAMIC_MAX`=**80 字** → 存「短动态速览」（原文 + 元信息），不走重 LLM 总结模板，省 token、防短评灌水。
 - **新鲜度标签**：笔记自动带 `#🔥当日` / `#本周` / `#更早`（按内容**原始发布时间**判定，中国时区），正文元信息同步写入「**发布时间**：YYYY-MM-DD HH:MM」行（publish_time>0 时），不再只用"我们处理它的时间"。
-- **充电专属视频**：标记 `is_charging`，apply 阶段跳过正文抓取（付费内容无 transcript），仅监控"发过"。
+- **充电专属视频**：标记 `is_charging`，apply 阶段跳过正文抓取（付费内容无 transcript），仅监控"发过"。**补齐/补源路径另有一道同源护栏（2026-09-20 补）**：`videos/fetch.py::bili_is_charging_exclusive()`，按 view API 的 `is_upower_exclusive && is_upower_preview` 判定——`backfill_series` / 系列课走的是 `ugc_season` 列表、拿不到投稿列表的 `is_charging_arc`，此前这个口子会把 B站给的「试看片段」当全片抓下来（实测 88 分钟的视频只拿到 299.9s），且全程无告警。
 
 ## 频率与风控
 
@@ -130,6 +130,8 @@
 ## 系列课（2026-09-08 起去流程化）
 
 B站系列课（多集连续内容）不再走独立闭环：**单集与散文一样逐 URL 走通用五步管线**（`summarize_series_episode`，PLAN-20260908），防重靠登记表 URL 键，不主动回溯旧集。
+
+**系列排除（2026-09-19）**：`subscriptions.json` 账号条目加 `"series_exclude": ["季名", ...]`，监控总结管线内 ugc_season 季名命中（互为子串）即整体跳过——不抓字幕、不总结、不入队、不落盘（`shared/routing.py: load_series_exclude` / `videos/main.py` 守卫；测试 `tests/test_series_exclude.py`）。用于用户点名去掉的系列课；手动单视频入口不传该参数不受影响。
 
 **核心语义（用户决策 · D6/D8）**：
 - **增量（每日 `auto`）**：UP 更新后，登记表按 URL 键过滤已总结的集，**只把未总结的新集**入队，避免重复总结。

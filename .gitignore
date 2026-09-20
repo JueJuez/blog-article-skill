@@ -4,6 +4,8 @@ __pycache__/
 venv/
 # Trae：技能镜像含 .env 密钥不提交；项目规则(.trae/rules)与配置(skill-config.json)需提交
 .trae/skills/
+# ZCode：同类技能镜像（.zcode/skills/*/.env 含密钥），同理不提交
+.zcode/skills/
 .env
 # .env 备份（含 cookie/密钥，绝不提交）
 .env.bak*
