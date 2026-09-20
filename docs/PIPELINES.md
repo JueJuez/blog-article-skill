@@ -19,10 +19,10 @@
 | 总结一个视频（B站 / YouTube） | `python videos/run.py --url "<url>"` | 直接调 `videos.fetch` |
 | 每日跑一遍订阅（B站UP/公众号/scys） | `python monitors/run.py --mode auto --apply` | 手改队列 JSON |
 | 新订阅一个 B站UP | `python monitors/run.py --subscribe --uid <id> --name <名> --category <类>` | 手搓 `subscriptions.json`（公众号/scys 才手改） |
-| 公众号历史回溯 | `python monitors/run.py --backfill --names <名> --since <日期> --batch 15` | — |
+| 公众号历史回溯 | `python monitors/run.py --weread-backfill --names <名> --since <日期> --apply`（未翻到再加 `--batch` 续批） | ❌ `--backfill`（旧 wewe-rss 代理，已永久停用） |
 | **把库里已有的旧笔记按新版 prompt 重写** | **「3. 存量重做」四步**（`build_resummarize_queue.py` → `build_resum_batches.py` → 派子 Agent → `resum_save_batch.py`） | ❌ `save_summary_only` / `_save_summary_from_file.py`（会重新推导文件名 → `-N` 副本） |
 | 某篇笔记的源文本丢了，只想补源 | `scripts/fetch_bili_by_bvids.py` / `scripts/fetch_scys_by_ids.py` | `scys_batch_fetch.py` / `fetch_up_range.py`（会被 dedup 闸门跳过） |
-| 补齐某个 UP 主全部历史视频 | `scripts/list_up_videos.py --uid` → `scripts/_run_with_env.py -- python scripts/fetch_up_range.py 1 N --uid ... --author ...` | 直接跑 `fetch_up_range.py`（不读 `.env`，cookie 取不到） |
+| 补齐某个 UP 主全部历史视频 | `scripts/list_up_videos.py --uid` → `scripts/run_with_env.py -- python scripts/fetch_up_range.py 1 N --uid ... --author ...` | 直接跑 `fetch_up_range.py`（不读 `.env`，cookie 取不到） |
 | 补齐生财有术某领域全部帖子 | `python scripts/launch_scys_backfill.py`（数小时任务） | 前台直跑（会话结束被回收） |
 | 补齐/重做某系列课整季 | `python scripts/backfill_series.py --series <名>` | ❌ `monitors/apply_pending_series.py`（文件已不存在） |
 | 迁移期体检 / 清异常 | `python scripts/migrate_gate.py --vault <path> --scope=` + `--apply` | — |
@@ -93,9 +93,10 @@
 
 ## 6. UP 主全量补齐管线（B站）
 
-**入口**：`scripts/list_up_videos.py --uid <UID>` → `python scripts/_run_with_env.py -- python scripts/fetch_up_range.py 1 N --uid <UID> --author <UP名>`
+**入口**：`scripts/list_up_videos.py --uid <UID>` → `python scripts/run_with_env.py -- python scripts/fetch_up_range.py 1 N --uid <UID> --author <UP名>`
 → `python scripts/filter_pending.py` → 派子 Agent 消费队列。
-⚠️ `fetch_up_range.py` 自身不读 `.env`，必须经 `_run_with_env.py` 包装。
+⚠️ `fetch_up_range.py` 自身不读 `.env`，必须经 `run_with_env.py` 包装（逻辑在 `shared.env.run_with_env`；
+前身 `scripts/_run_with_env.py` 因 `_` 前缀被 `.gitignore` 忽略、从未入库，2026-09-20 改名入库，旧名仅留转发）。
 **零件**：`videos/fetch.py`、`videos/asr.py`（ASR 兜底）、`monitors/asr_pool.py`。
 
 ## 7. 生财有术补齐管线
@@ -142,7 +143,7 @@
 | 长文分块 / 两阶段总结 | `shared.chunking.chunk_text` / `two_stage_summarize` | |
 | 判重 / 登记 / 跨源去重 | `articles.dedup.is_summarized` / `mark_summarized` / `find_cross_duplicate` / `normalize_title_for_match` | ⚠️ 判重用的标题归一叫 `normalize_title_for_match`（2026-09-18 改名），与 `shared.title_norm.normalize_title`（落盘标题清洗）**同名不同义，不可互换** |
 | 单篇笔记抽检（四类判据） | `shared.note_audit.audit_one` / `evidence` / `score_of` | 2026-09-18 下沉，resum_audit_batch 与 audit_gate_signals 共用 |
-| 加载 .env | `shared.env.load_env(force_obsidian=False)` | 2026-09-18 收敛：此前 scripts/ 下 6 份各自实现（`_run_with_env` / `_save_summary_from_file` / `resum_save_batch` / `fetch_bili_by_bvids` / `land_scys_by_key` / `persist_summary`） |
+| 加载 .env / 包装子命令 | `shared.env.load_env(force_obsidian=False)` / `shared.env.run_with_env(cmd)`（CLI 壳 `scripts/run_with_env.py`） | 2026-09-18 收敛 load_env：此前 scripts/ 下 6 份各自实现（`_run_with_env` / `_save_summary_from_file` / `resum_save_batch` / `fetch_bili_by_bvids` / `land_scys_by_key` / `persist_summary`）。2026-09-20 再把「加载 .env 后 subprocess 执行」下沉为 `run_with_env()`——前身 `scripts/_run_with_env.py` 被 `.gitignore`（`scripts/_*`）忽略却未入库，是 `launch_backfill_series_detached` / `launch_fetch_up_detached` 的必需环节，换机即断 |
 | 文件夹路由 | `shared.routing.resolve_folder` / `category_from_tags` | 落盘自动调用 |
 | 语义标签（四维度） | `shared.note_classify.infer_semantic_tags` / `extract_and_strip_topics` | 落盘自动调用 |
 | 笔记类型判定 | `prompts.classify.classify_note_type` | |
