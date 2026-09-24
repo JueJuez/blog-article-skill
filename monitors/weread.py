@@ -48,8 +48,12 @@ BOOK_ID_FALLBACK = {
     "生财有术": "MP_WXS_3891906515",
 }
 
-# 每号列表请求间隔下限（秒），叠加 0~1s 抖动；防封纪律见模块 docstring
-LIST_GAP = float(os.environ.get("WEREAD_LIST_GAP", "2"))
+# 换号间隔（秒）：区间内随机抖动，防封纪律见模块 docstring
+WEREAD_ACCOUNT_GAP_MIN = float(os.environ.get("WEREAD_ACCOUNT_GAP_MIN", "6"))
+WEREAD_ACCOUNT_GAP_MAX = float(os.environ.get("WEREAD_ACCOUNT_GAP_MAX", "10"))
+# 翻页间隔（秒）：同一号内连翻多页时页间随机停顿，避免连发触发风控
+WEREAD_PAGE_GAP_MIN = float(os.environ.get("WEREAD_PAGE_GAP_MIN", "10"))
+WEREAD_PAGE_GAP_MAX = float(os.environ.get("WEREAD_PAGE_GAP_MAX", "20"))
 # 每号每次运行拉的页数（1 页 = 20 条）。日常增量保持 1；历史补齐另起任务显式传大值
 DAILY_PAGES = int(os.environ.get("WEREAD_DAILY_PAGES", "1"))
 # 增量时间窗（天）：只抓窗口内发布的文章（按 createTime 过滤，与更新频率无关——
@@ -264,7 +268,9 @@ def paginate(fetch_page, book_id: str, max_pages: int = 1, cutoff_ts: int = None
     """
     reviews, offset = [], 0
     last_resp = None
-    for _ in range(max_pages):
+    for i in range(max_pages):
+        if i > 0:
+            time.sleep(random.uniform(WEREAD_PAGE_GAP_MIN, WEREAD_PAGE_GAP_MAX))  # 翻页间隔 10~20s
         last_resp = fetch_page(book_id, offset)
         cat = classify_list_response(last_resp)
         if cat == "empty":
@@ -743,7 +749,7 @@ def discover_weread(state: dict, entries: list, session=None,
                 health["baseline"].append(name)
             else:
                 health["new"] += res["new_n"]
-            time.sleep(LIST_GAP + random.uniform(0, 1))  # 号间退避；最后一号多睡一次无害
+            time.sleep(random.uniform(WEREAD_ACCOUNT_GAP_MIN, WEREAD_ACCOUNT_GAP_MAX))  # 号间退避 6~10s
     finally:
         if own_session:
             try:
@@ -853,7 +859,7 @@ def discover_weread_backfill(state: dict, entries: list, since_ts: int,
                 oldest = min(int(r.get("createTime", 0) or 0) for r in reviews)
                 if oldest < since_ts:
                     break  # 已翻过 since 起点，该号补全完成
-                time.sleep(LIST_GAP + random.uniform(0, 1))
+                time.sleep(random.uniform(WEREAD_ACCOUNT_GAP_MIN, WEREAD_ACCOUNT_GAP_MAX))  # 号间退避 6~10s
             items.extend(its_all)
             if not stop or its_all:
                 health["ok"] += 1

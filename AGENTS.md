@@ -54,7 +54,7 @@
        - ⚠️ 系列课增量语义（PLAN-20260908 后）：每日重跑时，`videos.main` 按登记表 URL 键去重，**只把未总结的集**入队；UP 更新后自动只抓新增集，已总结的旧集不会重复总结/落盘。
        - ⚠️ 系列课落盘结构：系列容器挂 `【监控】/<平台>/<UP>/<系列名>/` 下（不是根），由统一路由器 `shared/routing.py: resolve_folder` 算路径；五步管线 `_save_series_note` 收到的 `folder` **只到账号层**（`rsplit('/',1)[0]`），系列容器由 `ensure_series_node` 单建——否则系列名被建两次造成嵌套。`_read_series_from_feishu` 的 `parent_token` 已是容器 token 时直接用，不再内部 `ensure_series_node`。
     5. 末尾看健康度行（视频/动态/文章/跳过/限流待重试/错误）确认是否异常。
-    - 内置重试（无需手动）：weread cookie 失效弹码等扫码(≤180s，扫到即续抓) / 人机验证自动过码 / 配额到线熔断跳过（次日自动恢复）/ 正文限流进 `pending_refetch` 下次重抓。（旧代理的 401×3 / 空轮退避随源停用而失效）
+    - 内置重试（无需手动）：weread cookie 失效弹码等扫码(≤180s，扫到即续抓) / 配额到线熔断跳过（次日自动恢复）/ 正文限流进 `pending_refetch` 下次重抓。**人机验证不自动解**：撞码时自动监控 `stop=True` 跳过公众号源（后续号也不测），须会话内模型走 `weread_captcha.py --shot/--grid/--confirm` 过码（点选类验证码 OCR 无解，识别须模型在场）。（旧代理的 401×3 / 空轮退避随源停用而失效）
 - **抓取规则**：按时间窗口（首跑 30 天 / 每日 1 天，断跑自动拉长封顶 30 天）+ 无干货动态屏蔽 + 短动态轻量化 + 新鲜度标签。细节见 `monitors/README.md`。
 - **历史回溯（续批）**：**现役 = weread 版** `python monitors/run.py --weread-backfill --names <逗号名> --since <YYYY-MM-DD> [--batch 页数] --apply`（补到指定日期全部入队，正文走 mp 直链；未翻到 since 再跑一次即续批，seen 去重不重复入队；受双层配额约束自动分摊）。触发词：「公众号补全 / 补到什么时候」。旧代理版 `--backfill` 已随代理停用（`WECHAT_SOURCE_ENABLED=0`），机制描述见 `monitors/README.md`「公众号历史回溯（续批）」。
 - **UP 主全量补齐（B站，2026-09-03 收编管线）**：把某 UP 主历史视频全部抓字幕+总结归档，与 scys 补齐同构（抓完入 `pending_summaries` 队列，prompt/folder 预计算，子 Agent 消费），**不依赖会话手搓**。触发词：「补齐 <UP名> 的视频 / 把某 UP 主视频归档」。机械三步：`list_up_videos.py --uid <UID>` → `fetch_up_range.py 1 N --uid <UID> --author <UP名>`（限速+412熔断+抓到即入队）→ `filter_pending.py` 清洗后派子 Agent 消费队列。落盘路由：名单外 UP → `【我的总结】/作者/<名>`（加监控名单走 `--subscribe`，两者独立）。完整说明见 `references/config.md`「UP 视频批量字幕抓取」。
