@@ -889,6 +889,20 @@ def rotate_bili_cookie_if_dead(trigger: str = "manual", force: bool = False,
     print(f"   ⚠️ 触发 B站 cookie 轮换（trigger={trigger}, force={force}, "
           f"cur_valid={cur_valid}）→ 走 CDP 活会话提取…")
     fresh = _bili_extract_cookies_cdp()
+    if not (fresh and validate_bilibili_cookies(fresh)):
+        # 首次提取未拿到有效 cookie：克隆会话可能已被服务端作废（cookie 文件还在但
+        # nav 判死）→ 立即强制重克隆默认 profile 取活会话，再重试一次提取。用户
+        # 2026-09-24 拍板：克隆死就立即触发，不加任何守卫（自动监控轮次亦然）。
+        print("   ⚠️ 首次 CDP 提取未拿到有效 cookie（克隆会话可能已死）"
+              "→ 立即强制重克隆默认 profile 后重试…")
+        try:
+            from shared.cdp_session import force_refresh_clone
+            if force_refresh_clone():
+                fresh = _bili_extract_cookies_cdp()
+            else:
+                print("   ℹ️ 强制重克隆未成功，不再重试。")
+        except Exception as e:
+            print(f"   ℹ️ 强制重克隆触发失败：{type(e).__name__}: {e}")
     if fresh and validate_bilibili_cookies(fresh):
         print("   ♻️ cookie 已轮换（来源：CDP 活会话），后续请求使用新 cookie")
         _persist_cookie_to_env(fresh)

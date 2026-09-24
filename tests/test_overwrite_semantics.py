@@ -71,3 +71,54 @@ class TestOverwriteSemantics:
         """覆盖后的文件名在 vault 中真实存在（守住「登记表不得指向已删文件」）。"""
         _, name = _save("https://g.com/o4", "内容" * 20, self.FOLDER, overwrite=True)
         assert (vault / name.replace("/", "/")).exists()
+
+
+class TestForceRevisionNoCopy:
+    """force 修订不得留下 `-N` 副本（2026-09-24 补齐）。
+
+    事故来源：队列 / 子 Agent 路径只传 `force=True`（绕 dedup），而 force 历史上
+    **不接管文件名冲突策略** → 新版落成 `-1`、旧版留在库里，登记表指向副本。
+    `save_summary_only` 现已把「force + 有旧登记」升级为就地覆盖。本类钉死该行为。
+    """
+
+    def _call(self, url, text, force=False):
+        return articles_main.save_summary_only({
+            "summarized_content": text,
+            "original_url": url,
+            "author": "作者A",
+            "original_title": "测试标题",
+            "folder": "测试目录",
+            "note_type": "structured",
+            "obsidian": True,
+            "force": force,
+        })
+
+    def _body(self, tag):
+        # 无 H1（门禁硬拦）、无 URL 字面量；含 structured 必备模块且正文 >300 字
+        return ("## 分层速览\n\n" + f"{tag}速览内容" * 40 + "\n\n"
+                "## 正反例对照\n\n" + f"{tag}对照内容" * 40 + "\n\n"
+                "## 我的想法\n\n" + f"{tag}想法内容" * 40 + "\n")
+
+    def test_force_revision_replaces_in_place(self, vault):
+        url = "https://g.com/force1"
+        r1 = self._call(url, self._body("第一版"))
+        assert r1.get("success"), r1
+        r2 = self._call(url, self._body("第二版"), force=True)
+        assert r2.get("success"), r2
+
+        files = list(vault.rglob("*.md"))
+        assert len(files) == 1, [p.name for p in files]  # 不留 -1 副本
+        assert "第二版" in files[0].read_text(encoding="utf-8")
+
+        rec = dedup.is_summarized(url=url)
+        assert rec, "修订后登记表仍须有记录"
+        assert (vault / rec["filename"]).exists(), "登记表不得指向已删文件"
+
+    def test_force_revision_repeated_never_accumulates(self, vault):
+        url = "https://g.com/force2"
+        for i in range(3):
+            r = self._call(url, self._body(f"第{i}版"), force=(i > 0))
+            assert r.get("success"), r
+        files = list(vault.rglob("*.md"))
+        assert len(files) == 1, [p.name for p in files]
+        assert "第2版" in files[0].read_text(encoding="utf-8")

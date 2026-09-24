@@ -701,13 +701,37 @@ def save_summary_only(input_data: dict) -> dict:
         return {'success': False, 'message': '请提供总结好的内容'}
     # 机械去重闸门（DECISION-20260825）：URL 已总结过 → 不再写飞书，按成功出队；
     # force=True 为强制重写逃生舱。AI 只交总结，写不写由代码决定。
-    if original_url and not input_data.get('force', False):
+    _force = bool(input_data.get('force', False))
+    if original_url and not _force:
         rec = dedup.is_summarized(url=original_url)
         if rec:
             print(f"⏭️ 该链接已总结过，机械跳过写入（{rec.get('filename', '')}）。如需重写传 force=True")
             return {'success': True, 'skipped': True,
                     'message': f"ALREADY_EXISTS:{rec.get('filename', '')}",
                     'filename': rec.get('filename', '')}
+    # ── force 修订语义补全（2026-09-24）──
+    # force **只绕 dedup 闸门**，不接管文件名冲突策略：OutputManager 照旧把新版改名成 `-1`，
+    # 旧版留在库里、登记表却指向副本（历史坑，2026-09-15 修过一次，但仅修在显式传 overwrite 的
+    # `_save_summary_from_file.py` 入口；队列 / 子 Agent 路径只传 force → 副本照产）。
+    # 现补齐：force 且该 URL 确有旧登记 → 定位旧版路径 in-place 覆盖（永不产 -N 副本）；
+    # 拿不到旧路径时退化为 overwrite=True（覆盖同名文件）兜底。
+    _note_path = ""
+    _overwrite = bool(input_data.get('overwrite', False))
+    if _force and original_url:
+        try:
+            _old = dedup.is_summarized(url=original_url) or {}
+        except Exception:
+            _old = {}
+        _old_fn = _old.get('filename', '')
+        if _old_fn:
+            _vault = os.getenv('OBSIDIAN_VAULT_PATH', '')
+            _abs = os.path.join(_vault, _old_fn) if _vault else ''
+            # note_path 分支只写本地（精确路径对飞书无意义），故仅在显式 obsidian 时用
+            if _abs and os.path.exists(_abs) and input_data.get('obsidian', False):
+                _note_path = _abs
+                print(f"   ♻️ force 修订：就地覆盖旧版 {_old_fn}（不产生 -N 副本）")
+            else:
+                _overwrite = True
     # 机械质量门禁（DECISION-20260905 → DECISION-20260915 content-first）：卫生类硬拦
     # （H1/来源链接/URL）+ 极端字数硬拦（内容缺失 <300 / 失控 >max(8000,源长×3)）+ 内容判据触发抽检。
     # 接入顺序硬约束：在 dedup 闸门之后（已总结条目机械出队优先于质量拦截），
@@ -758,7 +782,8 @@ def save_summary_only(input_data: dict) -> dict:
             folder=folder, obsidian=obsidian,
             note_type=input_data.get('note_type', ''),
             topics=_topics,
-            overwrite=bool(input_data.get('overwrite', False)),
+            overwrite=_overwrite,
+            note_path=_note_path,
         )
         # 无人值守降级：落盘命中参考值抽检信号 → 入 needs_review 队列（filename 已知）
         _review_flags = _gate.get("review_flags", [])

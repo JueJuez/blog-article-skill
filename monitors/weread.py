@@ -484,12 +484,45 @@ RELOGIN_QR_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "were
 
 
 def has_login_cookie(session) -> bool:
-    """weread 域是否存在登录 cookie wr_skey（只看名，不读值）。"""
+    """weread 域是否存在会话键 cookie wr_skey（短期，频繁过期，仅作快路径判定，
+    不再作为「是否登录」的闸门——见 has_refresh_token）。"""
     try:
         cookies = session.context.cookies("https://weread.qq.com")
         return any(c.get("name") == "wr_skey" for c in cookies)
     except Exception:
         return False
+
+
+def has_refresh_token(session) -> bool:
+    """weread 域是否存在刷新令牌 wr_rt（长期）。wr_rt 在 ⇒ 会话可由服务端静默续期，
+    无需重新扫码。判定「能否自愈」以 wr_rt 为准，不再以 wr_skey 缺失误判为未登录。"""
+    try:
+        cookies = session.context.cookies("https://weread.qq.com")
+        return any(c.get("name") == "wr_rt" for c in cookies)
+    except Exception:
+        return False
+
+
+def try_silent_renew(session, wait_s: float = 8.0) -> bool:
+    """wr_rt 在但 wr_skey 短暂过期时，导航书架页触发服务端用 wr_rt 静默续期 wr_skey。
+
+    仅页面加载，不消耗业务配额。返回续期后 wr_skey 是否出现（即会话已恢复）。
+    若本来就有 wr_skey 直接返回 True（无需续）。续期失败（如 wr_rt 也被服务端吊销）
+    返回 False，交由上层走扫码分支。
+    """
+    if has_login_cookie(session):
+        return True
+    page = _find_or_open_weread_page(session)
+    try:
+        page.goto("https://weread.qq.com/#shelf", wait_until="domcontentloaded", timeout=30000)
+    except Exception:
+        pass
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        time.sleep(1.5)
+        if has_login_cookie(session):
+            return True
+    return False
 
 
 def trigger_weread_relogin(session, timeout: int, qr_path: str = None) -> bool:
@@ -674,14 +707,21 @@ def discover_weread(state: dict, entries: list, session=None,
             its, rids, res = _process_one_account(lister, state, e, cutoff,
                                                   WEREAD_MAX_PAGES, baseline_only=False)
             if res["status"] in ("auth", "unknown_err") and not relogin_used \
-                    and WEREAD_AUTO_RELOGIN and WEREAD_RELOGIN_WAIT > 0 \
-                    and not has_login_cookie(session):
-                # 登录 cookie 缺失 = 真过期 → 自动弹码等扫码（页面内 fetch 的 cookie
-                # 由浏览器实时携带，扫码成功即自动生效）。
-                # wr_skey 仍在 → 大概率人机检测（风控），不走扫码（白等），
-                # 落到下方停手上报，由会话内模型过码。
-                if trigger_weread_relogin(session, WEREAD_RELOGIN_WAIT):
-                    health["relogin"] = True
+                    and WEREAD_AUTO_RELOGIN and WEREAD_RELOGIN_WAIT > 0:
+                # 以 wr_rt 为准判定能否自愈：wr_rt 在 ⇒ 多半是 wr_skey 短暂过期，
+                # 先静默续期（导航书架触发服务端用 wr_rt 续发 wr_skey）再重试，避免误弹码；
+                # 续期仍失败（wr_rt 也被吊销）或本就无 wr_rt ⇒ 才走弹码分支。
+                recovered = False
+                if has_refresh_token(session):
+                    if try_silent_renew(session):
+                        its, rids, res = _process_one_account(
+                            lister, state, e, cutoff, WEREAD_MAX_PAGES, baseline_only=False)
+                        if res["status"] == "ok":
+                            recovered = True
+                            relogin_used = True
+                if not recovered and trigger_weread_relogin(session, WEREAD_RELOGIN_WAIT):
+                    # 真过期/续期失败 → 弹二维码等扫码（页面内 fetch 的 cookie 由浏览器实时
+                    # 携带，扫码成功即自动生效）。wr_skey 仍在 → 该函数内部判为风控、不弹码。
                     relogin_used = True
                     its, rids, res = _process_one_account(
                         lister, state, e, cutoff, WEREAD_MAX_PAGES, baseline_only=False)
@@ -778,6 +818,11 @@ def discover_weread_backfill(state: dict, entries: list, since_ts: int,
                     code = last_resp.get("errCode") if isinstance(last_resp, dict) else "?"
                     if cat in ("auth", "unknown_err") and not relogin_used \
                             and WEREAD_AUTO_RELOGIN and WEREAD_RELOGIN_WAIT > 0:
+                        # 以 wr_rt 为准：在 ⇒ 先静默续期再重试；失败/无 ⇒ 弹码。
+                        if has_refresh_token(session):
+                            if try_silent_renew(session):
+                                relogin_used = True  # 续期成功但调用仍失败=风控，放行下方 stop，不循环
+                                continue
                         if trigger_weread_relogin(session, WEREAD_RELOGIN_WAIT):
                             health["relogin"] = True
                             relogin_used = True

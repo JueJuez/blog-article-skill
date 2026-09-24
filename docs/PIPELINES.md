@@ -69,6 +69,20 @@
 **零件**：`monitors/run_source.py`、`monitors/bilibili.py`、`monitors/weread.py`、`monitors/wechat.py`（旧代理，永久停用）、
 `monitors/state.py`、`pending_summaries.json` 队列、`scripts/filter_pending.py`（派单前清洗，属于队列维护不是入口）。
 
+**队列消费落盘 runner（2026-09-24 新增 · 子 Agent 派单的唯一落盘出口）**：
+`python scripts/save_pending.py --queue monitors|scys --key <url|topicId> --file <总结稿.md> [--force]`
+统一处理 `.env` 前置 + `sys.path`（`python scripts/x.py` 时 sys.path[0] 是 scripts/）+ 两队列字段差异
+（monitors 键 `url`、原文 `raw_file`、目录取条目 `folder`；scys 键 `topicId`、原文 `output`、目录
+`生财有术/<project>`），避免子 Agent 手搓 `save_summary_only` 出错。
+⚠️ 成功落盘**不改队列**：多子 Agent 并发 read-modify-write 会互相覆盖，收工统一跑 `filter_pending.py`
+按 dedup 索引出队（2026-09-24 实测 22 条一次清空）。
+✅ `--force` 修订**已会就地覆盖旧版**（2026-09-24 修）：`save_summary_only` 在 force + 该 URL 已登记时
+自动定位旧版路径 in-place 覆盖（拿不到旧路径则退化为覆盖同名），**不再产 `-N` 副本**；
+回归测试 `tests/test_overwrite_semantics.py::TestForceRevisionNoCopy`。
+⚠️ force 只用于「该 URL 已落过盘」的修订场景，新条目别传（无旧版可覆盖）。
+派单 prompt 里写死两个拦点可显著提高一次通过率：**原话必须改写**（20 字片段重合 >20% 硬拦）、
+**硬锚点入正文**（发布日期 / BV 号或帖号 / 作者 / 关键数字，召回 <60% 硬拦）。并发 4 个子 Agent 未触发 429。
+
 **weread 直连公众号源（2026-09-19 起现役，PLAN-20260919）**：旧 wewe-rss 代理已死，
 接替方案 `monitors/weread.py` 随每日监控自动参与（`WEREAD_SOURCE_ENABLED=1` 已启用）。
 增量按时间窗（`WEREAD_WINDOW_DAYS=2` 基础、断跑补齐封顶 30 天，按 createTime 过滤、
@@ -76,6 +90,7 @@
 异常自动处置：cookie 失效 → 自动截二维码等扫码（扫到即续抓）；验证码 → 会话内模型过码
 （`scripts/weread_captcha.py`）；双层配额熔断（日 `WEREAD_DAILY_QUOTA=25` / 小时
 `WEREAD_HOURLY_QUOTA=6`，到线跳过公众号源或停止补续批）。
+**登录判定修正（2026-09-24）**：「是否过期 / 能否自愈」改以长期刷新令牌 `wr_rt` 为准，不再以短期 `wr_skey` 缺失误判未登录——`wr_rt` 在即先导航书架页触发服务端静默续期 `wr_skey` 再重试，续期失败（`wr_rt` 也被吊销）或无 `wr_rt` 才弹码。避免 `wr_skey` 短暂过期就白等扫码。
 历史补全：`--weread-backfill --names X --since 日期 --apply`（未翻到再跑即续批）。
 机制/防封纪律见 `references/weread-direct-source.md`。
 **weread 探针工具（2026-09-18/19 探索用，非生产入口，勿接入管线）**：
@@ -159,7 +174,7 @@
 | 带登录态抓页面（CDP） | `shared.cdp_session.SharedCdpSession` | 委托用户级 SKILL |
 | 从渲染页抽取正文 | `shared.cdp_session.extract_body(page)` | 2026-09-18 收敛：此前 3 份逐字相同实现（`articles.fetch._extract_body_scys` / `scys_batch_fetch.ScysBatchFetcher._extract_body` / `SharedCdpSession._extract_body`），现统一为模块级单点，改规则只改一处 |
 | 飞书外链全文（懒加载） | `scripts/feishu_ext_refetch.py: collect_full_text` | `.bear-web-x-container` 增量滚动 |
-| B站 cookie 健康 / 刷新 | `monitors.bilibili.refresh_cookie_if_dead`、`videos.set_cookie.set_bilibili_cookie` | |
+| B站 cookie 健康 / 刷新 | `monitors.bilibili.refresh_cookie_if_dead`、`videos.set_cookie.set_bilibili_cookie` | **克隆死即重克隆闭环（2026-09-24）**：CDP 活会话提取拿不到有效 cookie（克隆会话已被服务端作废）→ 立即 `shared.cdp_session.force_refresh_clone()` 强制全量重克隆默认 profile 取活会话、重试一次。用户拍板：克隆死就立即触发，不加任何守卫（自动监控轮次亦然） |
 | 监控去重状态 | `monitors.state.get_seen` / `mark_seen` | |
 | 滚动日志 | `shared.rolling_log.append_rolling` | |
 | 登记表全量重建 | `scripts/rebuild_registry.py` | vault 是唯一真源，登记表可重建 |

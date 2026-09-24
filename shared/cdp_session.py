@@ -220,3 +220,60 @@ CdpSession = _skill.CdpSession
 EnsureResult = _skill.EnsureResult
 ensure_endpoint = _skill.ensure_endpoint
 probe_endpoint = _skill.probe_endpoint
+
+
+_ENSURE_MODULE_NAME = "cdp_automation_profile_ensure"
+
+
+def _import_ensure_module(skill_dir: str):
+    """动态加载 ensure_cdp_profile.py（与 _import_skill_module 同源机制，单例缓存）。
+
+    返回已加载模块或 None（找不到/加载失败）。不直接 import 技能、不污染 sys.path。
+    """
+    mod = sys.modules.get(_ENSURE_MODULE_NAME)
+    if mod is not None:
+        return mod
+    ensure_py = Path(skill_dir) / "ensure_cdp_profile.py"
+    if not ensure_py.is_file():
+        print(f"   ℹ️ 强制重克隆：找不到 {ensure_py}")
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location(_ENSURE_MODULE_NAME, str(ensure_py))
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[_ENSURE_MODULE_NAME] = module
+        spec.loader.exec_module(module)
+        return module
+    except Exception as e:
+        print(f"   ℹ️ 强制重克隆：加载 ensure_cdp_profile 失败：{type(e).__name__}: {e}")
+        sys.modules.pop(_ENSURE_MODULE_NAME, None)
+        return None
+
+
+def force_refresh_clone() -> bool:
+    """强制全量重克隆默认 profile（关 Chrome + robocopy 覆盖克隆目录）。
+
+    用于 B站 cookie 轮换发现克隆会话已死（CDP 提取拿不到有效 cookie）时，
+    立即从默认 profile 取活会话、救回 cookie 源。用户 2026-09-24 拍板：
+    克隆死就立即触发，不加任何守卫（自动监控轮次亦然）。
+
+    返回是否成功触发重克隆。失败（技能定位不到/重克隆异常）返回 False，
+    让调用方按原 failed 路径处理，绝不抛异常阻断主流程。
+    """
+    try:
+        skill_dir = _resolve_skill_dir()
+    except Exception as e:
+        print(f"   ℹ️ 强制重克隆：定位技能失败：{type(e).__name__}: {e}")
+        return False
+    ensure_mod = _import_ensure_module(skill_dir)
+    if ensure_mod is None:
+        return False
+    try:
+        clone_dir = Path(ensure_mod.DEFAULT_DIR)
+        src = Path(ensure_mod.DEFAULT_SRC)
+        ensure_mod.ensure_profile(clone_dir, src, force=True)
+        return True
+    except Exception as e:
+        print(f"   ℹ️ 强制重克隆失败：{type(e).__name__}: {e}")
+        return False
