@@ -30,6 +30,15 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+# 加载 .env（使 WEREAD_SOURCE_ENABLED / BILI_COOKIE 等配置生效；load_dotenv 默认不覆盖已 export 的环境变量）。
+# 历史坑：run.py 曾从不加载 .env，导致 .env 中已设好的 WEREAD_SOURCE_ENABLED=1 不生效，
+# 公众号源退化去执行旧 wewe-rss 代理废墟代码（其停用提示文案误称"等代理源站恢复"），新路径形同虚设。
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(BASE_DIR, ".env"))
+except Exception:
+    pass
+
 # 状态 Ledger（P0, PLAN-20260828-parallel-monitor）：每源结果可查询/重驱；
 # 同目录模块，run.py 作为脚本执行时 monitors/ 已在 sys.path[0]。
 from status_store import (  # noqa: E402
@@ -641,7 +650,8 @@ def _discover_wechat_retry(src, state, mode, name, retries: int = 3) -> tuple:
 
 
 def discover_all(subs: dict, state: dict, mode: str = "auto",
-                 force_all: bool = False, session_holder: dict = None) -> list:
+                 force_all: bool = False, session_holder: dict = None,
+                 include_weread: bool = False) -> list:
     all_new: list = []
     token, vid = load_weread_auth()
 
@@ -658,9 +668,12 @@ def discover_all(subs: dict, state: dict, mode: str = "auto",
     #      但全部源零结果且持续 401 时，仍触发重登并刷新后重试一轮——根治「过期却不弹码」。
     wechat_subs = subs.get("wechat", [])
     if wechat_subs and not WECHAT_SOURCE_ENABLED:
-        # 源站级停摆：不探代理、不弹码、不重试，避免每日增量在死链上空转。
-        print("⏸ [微信读书] 公众号源已停用（WECHAT_SOURCE_ENABLED=0，代理源站 502 自 2026-08-28 起）。"
-              "B站/scys 照常；源站恢复后设 WECHAT_SOURCE_ENABLED=1 即可复开。", file=sys.stderr)
+        # 旧 wewe-rss 代理已永久停用（2026-07-20 平台下线），此处仅负责「旧路径」开关；
+        # 新路径由下方 WEREAD_SOURCE_ENABLED 段接管，启用时不打印任何误导提示。
+        if not WEREAD_SOURCE_ENABLED:
+            print("⏸ [旧代理] wewe-rss 公众号代理已永久停用（2026-07-20 平台下线）。"
+                  "如需公众号源，请在 .env 设 WEREAD_SOURCE_ENABLED=1（微信读书直连新路径）。",
+                  file=sys.stderr)
         wechat_subs = []
     if wechat_subs:
         # 选一个真实 share_url 作为探针：resolve_mp(force=True) 对过期 token 稳定 401，
@@ -762,7 +775,7 @@ def discover_all(subs: dict, state: dict, mode: str = "auto",
     # 会话：调用方给了 session_holder（--apply 轮次）则惰性建一个共享会话，
     # 后续 apply_summaries / scys 复用（one-kill）；否则 weread 自管（预览模式）。
     _wr_health = None
-    if WEREAD_SOURCE_ENABLED and subs.get("wechat") \
+    if include_weread and WEREAD_SOURCE_ENABLED and subs.get("wechat") \
             and os.environ.get("WECHAT_BACKFILL") != "1":
         try:
             from monitors.weread import discover_weread, resolve_book_ids, format_health
@@ -795,7 +808,8 @@ def discover_all(subs: dict, state: dict, mode: str = "auto",
     # B站 cookie 失效检测（2026-09-09）：失效表现是 -101/空数据而非 412，被动钩子不触发，
     # 轮次开始主动 nav 探测；失效自动 CDP 轮换（会短暂关闭 Chrome）。仅在有 B站订阅时运行。
     # 放在 discover_all（而非 main）里，串行与并行模式共用此入口，天然两态覆盖。
-    if subs.get("bilibili"):
+    # ⚠️ --mode weread 时整段跳过（公众号单独跑，B站/scys 不在此轮执行）。
+    if mode != "weread" and subs.get("bilibili"):
         _cookie_evt = _bili_mod.refresh_cookie_if_dead()
         if _cookie_evt == "rotated":
             print("♻️ [B站] cookie 已失效并自动轮换（CDP 提取），本轮使用新 cookie。")
@@ -804,21 +818,22 @@ def discover_all(subs: dict, state: dict, mode: str = "auto",
                   "请登录本机 Chrome 的 B站后重跑，或手动 python scripts/bili_cookie_refresh.py。",
                   file=sys.stderr)
 
-    for b in subs.get("bilibili", []):
-        src = BilibiliSource(b["uid"], types=b.get("types"),
-                             all_videos=b.get("all_videos", False),
-                             window_days=b.get("window_days"),
-                             force_all=force_all)
-        try:
-            found = src.discover(state, first_run_limit=FIRST_RUN_LIMIT, mode=mode)
-            for it in found:
-                it["category"] = b.get("category", "")
-                it["sub_name"] = b.get("name", "")
-            all_new.extend(found)
-        except Exception as e:
-            print(f"[warn] bilibili {b} 失败: {e}", file=sys.stderr)
-        # B站频率退避，规避 -352/-412 风控。加 ±5s 抖动，避免固定周期被识别为脚本。
-        time.sleep(max(5, _SOURCE_GAP + random.uniform(-5, 5)))
+    if mode != "weread":
+        for b in subs.get("bilibili", []):
+            src = BilibiliSource(b["uid"], types=b.get("types"),
+                                 all_videos=b.get("all_videos", False),
+                                 window_days=b.get("window_days"),
+                                 force_all=force_all)
+            try:
+                found = src.discover(state, first_run_limit=FIRST_RUN_LIMIT, mode=mode)
+                for it in found:
+                    it["category"] = b.get("category", "")
+                    it["sub_name"] = b.get("name", "")
+                all_new.extend(found)
+            except Exception as e:
+                print(f"[warn] bilibili {b} 失败: {e}", file=sys.stderr)
+            # B站频率退避，规避 -352/-412 风控。加 ±5s 抖动，避免固定周期被识别为脚本。
+            time.sleep(max(5, _SOURCE_GAP + random.uniform(-5, 5)))
 
     return all_new
 
@@ -1267,9 +1282,14 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
 def main():
     parser = argparse.ArgumentParser(description="订阅监控")
     parser.add_argument("--apply", action="store_true", help="发现后直接调用总结管线")
-    parser.add_argument("--mode", choices=["auto", "first"], default="auto",
-                        help="auto=首次抓最近N、之后增量抓最近N+去重(默认,每天调度用它)；first=强制首跑(最近N,忽略已处理)")
+    parser.add_argument("--mode", choices=["auto", "first", "weread"], default="auto",
+                        help="auto=首次抓最近N、之后增量抓最近N+去重(默认,每天调度用它)；"
+                             "first=强制首跑(最近N,忽略已处理)；"
+                             "weread=只跑公众号/weread 直连源（撞人机验证时需人在场过码），B站/scys 不跑")
     parser.add_argument("--first-run", action="store_true", help="等价 --mode first")
+    parser.add_argument("--with-weread", action="store_true",
+                        help="在 auto/first 模式下额外带上公众号/weread 源（默认 auto 不含 weread，"
+                             "因其撞人机验证无法在无人值守时自动过码；需在人在场时单独用 --mode weread 跑）")
     parser.add_argument("--refetch-only", action="store_true",
                         help="统一抓取重试入口：重抓 pending_refetch 中的限流文章，并把 pending_summaries 里 raw 为空的条目也提升回重试；重抓后自动重总结")
     parser.add_argument("--obsidian", action="store_true",
@@ -1315,8 +1335,8 @@ def main():
     args = parser.parse_args()
     mode = "first" if args.first_run else args.mode
 
-    # 并行编排模式：转发到 run_parallel（保留旧串行路径回退）
-    if args.parallel:
+    # 并行编排模式：转发到 run_parallel（保留旧串行路径回退）。weread 模式不走并行（需人在场过码）。
+    if args.parallel and mode != "weread":
         from monitors.run_parallel import run_parallel_main
         run_parallel_main(mode=mode, obsidian=args.obsidian, all_videos=args.all_videos)
         return
@@ -1357,12 +1377,20 @@ def main():
         cmd_weread_backfill(args, subs, state)
         return
 
+    # --mode weread：只跑公众号/weread 直连源（撞人机验证需人在场过码）。
+    # 前置校验：WEREAD_SOURCE_ENABLED 必须开，否则等于空跑。
+    if mode == "weread" and not WEREAD_SOURCE_ENABLED:
+        print("❌ --mode weread 需要 .env 中 WEREAD_SOURCE_ENABLED=1（微信读书直连源开关）。"
+              "请先开启后再跑。", file=sys.stderr)
+        return
+    include_weread = (mode == "weread") or args.with_weread
+
     # --apply 轮次：会话 holder 提前建好传给 discover_all（weread 直连源需要登录态页面），
     # weread 发现 / 撞墙文批量 / scys 复用同一会话，Chrome 全轮最多 kill 一次。
     # 预览（无 --apply）：传 None，weread 自管会话。
     _session_holder = {"obj": None} if args.apply else None
     all_new = discover_all(subs, state, mode=mode, force_all=args.all_videos,
-                           session_holder=_session_holder)
+                           session_holder=_session_holder, include_weread=include_weread)
 
     if not all_new:
         # 首跑踩坑：discover_all 返回 0 时容易被误认成「成功无新内容」，这里显式提示，
@@ -1388,7 +1416,8 @@ def main():
             all_new, args.obsidian, session=None, session_holder=_session_holder,
         )
         # scys（生财有术）日常增量：复用同一会话，抓到的原文进 scys 专属待总结队列
-        if subs.get("scys"):
+        # ⚠️ --mode weread 时跳过（公众号单独跑，scys 不在此轮执行）
+        if mode != "weread" and subs.get("scys"):
             _s = _session_holder["obj"]
             if _s is None:
                 from shared.cdp_session import SharedCdpSession

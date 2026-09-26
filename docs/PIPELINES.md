@@ -17,7 +17,8 @@
 |---|---|---|
 | 给我一篇/几条链接，总结归档 | `python articles/run.py "<url>"` | 手搓抓取脚本 |
 | 总结一个视频（B站 / YouTube） | `python videos/run.py --url "<url>"` | 直接调 `videos.fetch` |
-| 每日跑一遍订阅（B站UP/公众号/scys） | `python monitors/run.py --mode auto --apply` | 手改队列 JSON |
+| 每日跑一遍订阅（B站UP / scys，无 captcha） | `python monitors/run.py --mode auto --apply` | 手改队列 JSON |
+| 跑公众号 / 公众号增量 / weread 直连源（**撞码由 agent 自动截图识图过码**） | `python monitors/run.py --mode weread --apply` | `--mode auto` 里跑 weread（撞人机验证无人值守过不了，默认已排除） |
 | 新订阅一个 B站UP | `python monitors/run.py --subscribe --uid <id> --name <名> --category <类>` | 手搓 `subscriptions.json`（公众号/scys 才手改） |
 | 公众号历史回溯 | `python monitors/run.py --weread-backfill --names <名> --since <日期> --apply`（未翻到再加 `--batch` 续批） | ❌ `--backfill`（旧 wewe-rss 代理，已永久停用） |
 | **把库里已有的旧笔记按新版 prompt 重写** | **「3. 存量重做」四步**（`build_resummarize_queue.py` → `build_resum_batches.py` → 派子 Agent → `resum_save_batch.py`） | ❌ `save_summary_only` / `_save_summary_from_file.py`（会重新推导文件名 → `-N` 副本） |
@@ -64,8 +65,15 @@
 
 ## 4. 订阅监控管线
 
-**入口**：`python monitors/run.py --mode auto --apply`（每日）/ `--mode first --apply`（首跑 30 天）/
-`--parallel --mode auto`（三源并行）/ `--subscribe ...`（加订阅）/ `--backfill ...`（公众号历史·旧代理）/`--weread-backfill --names X --since 日期 --apply`（weread 历史补全，未翻到再跑即续批）
+**入口**：`python monitors/run.py --mode auto --apply`（每日，仅 B站+scys）/
+`--mode weread --apply`（公众号/weread 直连源，**撞人机验证需人在场过码**，与 auto 分开跑）/
+`--mode first --apply`（首跑 30 天）/
+`--parallel --mode auto`（三源并行，仅 B站+scys）/
+`--subscribe ...`（加订阅）/ `--backfill ...`（公众号历史·旧代理）/
+`--weread-backfill --names X --since 日期 --apply`（weread 历史补全，未翻到再跑即续批）/
+`--with-weread`（可选：在 auto/first 里强制带上 weread 源，仅当人在场准备过码时用）
+⚠️ **2026-09-26 起 `--mode auto` 默认不含 weread**：公众号撞人机验证无法在无人值守时自动过码，
+故抽出独立 `--mode weread` 单独跑（人在场时撞码→`scripts/weread_captcha.py --shot` 识图→`--grid --confirm` 过码→重跑）。
 **零件**：`monitors/run_source.py`、`monitors/bilibili.py`、`monitors/weread.py`、`monitors/wechat.py`（旧代理，永久停用）、
 `monitors/state.py`、`pending_summaries.json` 队列、`scripts/filter_pending.py`（派单前清洗，属于队列维护不是入口）。
 
@@ -84,7 +92,10 @@
 **硬锚点入正文**（发布日期 / BV 号或帖号 / 作者 / 关键数字，召回 <60% 硬拦）。并发 4 个子 Agent 未触发 429。
 
 **weread 直连公众号源（2026-09-19 起现役，PLAN-20260919）**：旧 wewe-rss 代理已死，
-接替方案 `monitors/weread.py` 随每日监控自动参与（`WEREAD_SOURCE_ENABLED=1` 已启用）。
+接替方案 `monitors/weread.py`。⚠️ **2026-09-26 起不再随 `--mode auto` 自动参与**：因撞人机验证
+无法在无人值守时自动过码，默认 auto 已排除 weread（省 weread 日配额、免白开 CDP）。
+需公众号时单独 `python monitors/run.py --mode weread --apply`（人在场过码）；
+`--with-weread` 可在 auto 里强制带上（仅当人准备过码时）。`WEREAD_SOURCE_ENABLED=1` 仍须开启。
 增量按时间窗（`WEREAD_WINDOW_DAYS=2` 基础、断跑补齐封顶 30 天，按 createTime 过滤、
 与更新频率无关；首跑只建基线），正文走 mp 原文直链与普通公众号同管线。
 异常自动处置：cookie 失效 → 自动截二维码等扫码（扫到即续抓）；验证码 → 会话内模型过码

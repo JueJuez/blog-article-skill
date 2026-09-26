@@ -74,9 +74,12 @@ WEREAD_RELOGIN_WAIT = int(os.environ.get("WEREAD_RELOGIN_WAIT", "180"))
 # 防突发（6/小时，2026-09-19 连环验证码事故教训：短时密集请求比日总量更危险）
 WEREAD_DAILY_QUOTA = int(os.environ.get("WEREAD_DAILY_QUOTA", "25"))
 WEREAD_HOURLY_QUOTA = int(os.environ.get("WEREAD_HOURLY_QUOTA", "6"))
-# 连环码熔断（用户定策 2026-09-19）：正常仅 1 次人机验证；同日第 2 次「确定」提交
-# = 高危风控信号（行为像人机/请求过多才会连环触发），熔断 N 小时不发任何请求
+# 连环码熔断（用户定策 2026-09-19，2026-09-27 修正判定）：正常仅 1 次人机验证；
+# 真·连环 = 解码后短时间内（滑动窗口，默认 30min）又立即要求验证，视为高危行为信号，
+# 熔断 N 小时不发任何请求。判定改用滑动窗口（不再按自然日计数——旧逻辑跨午夜会被
+# quota_record 改写的 date 字段污染，导致隔数小时的两次验证误判为"同日第2次"而假熔断）。
 WEREAD_CAPTCHA_SERIAL_LIMIT = int(os.environ.get("WEREAD_CAPTCHA_SERIAL_LIMIT", "2"))
+WEREAD_CAPTCHA_SERIAL_WINDOW_MIN = float(os.environ.get("WEREAD_CAPTCHA_SERIAL_WINDOW_MIN", "30"))
 WEREAD_RISK_COOLDOWN_HOURS = float(os.environ.get("WEREAD_RISK_COOLDOWN_HOURS", "12"))
 QUOTA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".weread_quota.json")
 
@@ -144,25 +147,28 @@ def risk_blocked_seconds() -> float:
 def record_captcha_event() -> str | None:
     """记一次人机验证「确定」提交（每次提交 = 消耗一个挑战）。
 
-    同日提交次数 ≥ WEREAD_CAPTCHA_SERIAL_LIMIT → 高危熔断：置 risk_until 并返回
-    用户可读的熔断消息（未触发返回 None）。事件列表按自然日判定、跨天清零。
+    连环码判定 = 滑动窗口：最近 WEREAD_CAPTCHA_SERIAL_WINDOW_MIN 分钟内出现
+    ≥ WEREAD_CAPTCHA_SERIAL_LIMIT 次「确定」提交，才视为高危（解码后立即又来）→ 熔断。
+    不再用"自然日第N次"——跨午夜/跨日时 quota_record 改写的 date 字段会污染
+    captcha 计数（见 2026-09-27 修复），导致隔数小时的两次验证误判为同日连环。
+    只认数值时间戳；旧格式("HH:MM"串)在读取时丢弃，避免历史脏数据参与判定。
     """
-    today = time.strftime("%Y-%m-%d")
+    now = time.time()
     q = _load_quota()
-    if q.get("date") != today:
-        q = {"date": today, "count": 0,
-             "hour": time.strftime("%Y-%m-%d %H"),
-             "hour_count": q.get("hour_count", 0) if q.get("hour") == time.strftime("%Y-%m-%d %H") else 0,
-             "captcha_events": []}
-    events = [e for e in (q.get("captcha_events") or []) if isinstance(e, str)]
-    events.append(time.strftime("%H:%M"))
-    q["captcha_events"] = events
-    _save_quota(q)
+    events = [float(t) for t in (q.get("captcha_events_ts") or [])
+              if isinstance(t, (int, float))]
+    events.append(now)
+    # 仅保留窗口附近的时间戳，防止列表无限增长
+    cutoff = now - (WEREAD_CAPTCHA_SERIAL_WINDOW_MIN * 60 + 120)
+    events = [t for t in events if t >= cutoff]
+    q["captcha_events_ts"] = events
+    q.pop("captcha_events", None)  # 旧字段作废，清掉以免混淆
     if len(events) >= WEREAD_CAPTCHA_SERIAL_LIMIT:
-        until = time.time() + WEREAD_RISK_COOLDOWN_HOURS * 3600
+        until = now + WEREAD_RISK_COOLDOWN_HOURS * 3600
         q["risk_until"] = until
         _save_quota(q)
         return weread_block_message()
+    _save_quota(q)
     return None
 
 

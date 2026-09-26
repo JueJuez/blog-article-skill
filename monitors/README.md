@@ -9,7 +9,7 @@
 |------|------|
 | `state.py` | 每源去重状态（`state.json`），per-source 裁剪防膨胀 |
 | `wechat.py` | 公众号源（旧 wewe-rss 代理，**永久停用** `WECHAT_SOURCE_ENABLED=0`，代理平台 2026-07-20 下线；保留不动） |
-| `weread.py` | **weread 直连公众号源（现役接替方案，PLAN-20260919）**：`WEREAD_SOURCE_ENABLED=1` 启用；微信读书登录态页内 fetch `/web/mp/articles` 发现新文（时间窗语义，断跑补齐封顶 30 天），正文走 mp 原文直链；登录失效自动弹码扫码续期、验证码停手转过码、双层配额熔断（日 `WEREAD_DAILY_QUOTA=25` / 小时 `WEREAD_HOURLY_QUOTA=6`）、**连环码高危熔断**（同日第 2 次验证码提交 → 停 12 小时）；历史补全 `run.py --weread-backfill`；bookId 映射在 `BOOK_ID_FALLBACK` + `.mp_cache.json`；实测真源 `references/weread-direct-source.md` |
+| `weread.py` | **weread 直连公众号源（现役接替方案，PLAN-20260919）**：`WEREAD_SOURCE_ENABLED=1` 启用；微信读书登录态页内 fetch `/web/mp/articles` 发现新文（时间窗语义，断跑补齐封顶 30 天），正文走 mp 原文直链；登录失效自动弹码扫码续期、验证码停手转过码、双层配额熔断（日 `WEREAD_DAILY_QUOTA=25` / 小时 `WEREAD_HOURLY_QUOTA=6`）、**连环码高危熔断**（滑动窗口内第 2 次验证码提交，默认 30min → 停 12 小时）；历史补全 `run.py --weread-backfill`；bookId 映射在 `BOOK_ID_FALLBACK` + `.mp_cache.json`；实测真源 `references/weread-direct-source.md` |
 | `bilibili.py` | B站UP主源（官方 API + WBI 签名，带登录 Cookie） |
 | `ad_filter.py` | 广告过滤：整篇纯广告 skip / 干货夹广告净化保留 |
 | `run.py` | CLI + 调度入口（`--apply` 直接调总结管线）；`--apply` 时按 `subscriptions.json` 的 `scys` 列表逐领域子进程跑 `scripts/scys_batch_fetch.py` 增量抓新帖（见下方「scys 新帖监控」） |
@@ -35,18 +35,20 @@
 - 重试退避 `BILI_BACKOFF`=**5s**（动态接口偶发 `-352`/`4101129`/`4101133` 列入退避重试）。
 - **B站 cookie 失效检测（2026-09-09 接入）**：监控轮次开始（`discover_all`，有 B站订阅时）主动 nav 探测一次——B站监控的失效表现是 **-101/空数据**而非 412，补齐管线那套「412 后被动轮换」钩子在监控场景不会触发。失效自动走 CDP 从本机 Chrome 轮换新 cookie（轮换会短暂关闭 Chrome；**未配置 `BILI_COOKIE` 的游客态跳过检测**，不被惊动），并刷新进程内 cookie/环境变量/会话缓存。结果并入末尾健康度行：`cookie已轮换`（♻️ 已自动修复）/ `cookie检测失败`（⚠️ 需登录本机 Chrome 后重跑，或手动 `python scripts/bili_cookie_refresh.py`），正常态静默。
 - **抓取条数多少不影响风控，频率（请求次数）才影响**——已放慢到 30±5s/UP，风控无忧。
-- **触发方式（2026-07-24 更新 · 已移除自动调度）**：不再挂每日 10:00/17:00 自动化。改为**用户主动触发**——用户说「跑一次 / 跑一下」等关键词即运行 `python monitors/run.py --mode auto --apply`（抓公众号 + B站UP 并总结：默认写飞书，需 Obsidian 时双写，见 `RULES.md` §3.0）。
+- **触发方式（2026-07-24 更新 · 已移除自动调度）**：不再挂每日 10:00/17:00 自动化。改为**用户主动触发**——用户说「跑一次 / 跑一下」等关键词即运行 `python monitors/run.py --mode auto --apply`（**仅抓 B站UP + scys** 并总结，无 captcha、可无人值守；默认写本地 Obsidian，见 `RULES.md` §3.0）。**公众号（weread 直连）撞人机验证无法无人值守，已抽出独立 `--mode weread --apply`**，用户说「跑公众号 / 跑一下公众号 / 抓公众号」时单独跑（撞码由 agent 自动截图识图过码，无需你动手）。
 
 ## 新会话快速执行（跑一次 / 跑一下）
 
 > 目标：换会话 / 新前端模型也能**照着跑通**，不踩已知坑。完整坑见下方「注意事项」。
 
-1. **运行**：`python monitors/run.py --mode auto --apply`（仅看发现列表就去掉 `--apply`）。
+1. **运行**：
+   - 日常「跑一下」：`python monitors/run.py --mode auto --apply`（**仅 B站 + scys**，无 captcha；仅看发现列表去掉 `--apply`）。
+   - 公众号（需人在）：`python monitors/run.py --mode weread --apply`（**只跑 weread 直连源**，撞人机验证由 agent 自动截图识图过码；`--with-weread` 可在 auto 里强制带上公众号）。
 2. **发现阶段（discover_all）**：
-   - 公众号（weread 直连源，2026-09-19 起现役）：旧 wewe-rss 代理已死（`WECHAT_SOURCE_ENABLED=0` 永久停用）；接替方案 `monitors/weread.py`，`WEREAD_SOURCE_ENABLED=1` 启用。监控名单 = `subscriptions.json` wechat 列表（当前：中金点睛、哥飞；生财有术走 scys 渠道，DeepVan 已退订）。**时间窗增量**（基础 2 天、断跑自动补齐封顶 30 天，按 createTime 过滤与更新频率无关；首跑只建基线）；正文走 mp 原文直链（与普通公众号同管线）。异常自动处置：cookie 失效 → 自动截二维码等扫码（扫码即续抓）；验证码 → 会话内模型过码（`scripts/weread_captcha.py`）；**双层配额熔断**（日 25/小时 6，到线跳过/停止续批）。机制/翻页规则/防封纪律见 `references/weread-direct-source.md`。
+   - 公众号（**仅 `--mode weread` / `--with-weread` 时**；weread 直连源，2026-09-19 起现役）：旧 wewe-rss 代理已死（`WECHAT_SOURCE_ENABLED=0` 永久停用）；接替方案 `monitors/weread.py`，`WEREAD_SOURCE_ENABLED=1` 启用。监控名单 = `subscriptions.json` wechat 列表（当前：中金点睛、哥飞；生财有术走 scys 渠道，DeepVan 已退订）。**时间窗增量**（基础 2 天、断跑自动补齐封顶 30 天，按 createTime 过滤与更新频率无关；首跑只建基线）；正文走 mp 原文直链（与普通公众号同管线）。异常自动处置：cookie 失效 → 自动截二维码等扫码（扫码即续抓）；验证码 → 会话内模型过码（`scripts/weread_captcha.py`）；**双层配额熔断**（日 25/小时 6，到线跳过/停止续批）；**连环码高危熔断**（滑动窗口内连续 2 次验证码提交 → 停 12 小时）。机制/翻页规则/防封纪律见 `references/weread-direct-source.md`。
    - B站：官方 API 一步拿视频 + 动态，号间 30±5s 退避；某号异常只跳过该号、其他号照跑。
 3. **抓取 + 总结（apply_summaries）**：
-   - 公众号文章：`fetch_web_content` **直连微信**抽正文（`WECHAT_GAP=6s`+抖动防限流），异常/空页进 `pending_refetch` 下次重抓；直连撞墙的批次自动合并走一次 CDP 批量会话抓正文。
+   - 公众号文章（weread 模式产出）：`fetch_web_content` **直连微信**抽正文（`WECHAT_GAP=6s`+抖动防限流），异常/空页进 `pending_refetch` 下次重抓；直连撞墙的批次自动合并走一次 CDP 批量会话抓正文。
    - **跨来源去重（2026-09-03）**：生财有术公众号文章送总结前与 `notes/_scraped/scys/` 归档做标题/正文前缀相似比对（`articles/dedup.py: find_cross_duplicate`），同一篇双渠道帖子只总结一次；命中日志 `[cross-dedup]`、健康度计 `scys重复`。URL 去重挡不住跨渠道同帖（两边 URL 天然不同），此比对补上该盲区。
    - B站视频/动态：视频 `summarize_video`；动态 API 正文内联，短动态存「速览」、完整动态走重模板。B站无字幕自动进 ASR 兜底（需本机装 `yt_dlp faster_whisper ctranslate2 imageio_ffmpeg`，2026-09-03 已装）。
    - FORCE_AGENT_MODE=1：**不自动总结**，全部进 `pending_summaries.json` 队列。

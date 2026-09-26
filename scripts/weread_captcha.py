@@ -210,8 +210,8 @@ def _solve_grid(page, cells: list, confirm: bool) -> None:
         # 连环码记账：每次「确定」提交 = 消耗一个挑战；同日第 2 次 = 高危风控 → 熔断
         warn = record_captcha_event()
         if warn:
-            print(f"⚠️ {warn}
-   （本次验证已完成提交；熔断期内 weread 不再发任何请求，"
+            print(f"⚠️ {warn}\n"
+                  f"   （本次验证已完成提交；熔断期内 weread 不再发任何请求，"
                   f"请停止后续操作，让账号冷却）")
 
 

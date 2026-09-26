@@ -276,7 +276,7 @@ https://mp.weixin.qq.com/s/<token>     ← 原文直链，项目既有 fetch_web
      浏览器内自动生效、自动续抓；`WEREAD_AUTO_RELOGIN`/`WEREAD_RELOGIN_WAIT`）；
    - wr_skey 仍在的 -2041 → 大概率人机检测，**不白等扫码**，转过码流程
      （`scripts/weread_captcha.py`，识别需模型在场）；
-   - 连环码（同日第 2 次提交）→ 高危熔断 12 小时（见 §8）。
+   - 连环码（滑动窗口内第 2 次提交，默认 30min）→ 高危熔断 12 小时（见 §8）。
    仍然成立的红线：绝不自动重试硬闯、绝不猜测性换 cookie。
 4. 请求量：现役监控名单 2 号（中金点睛、哥飞；生财有术/DeepVan 已于 2026-09-19 移除），时间窗语义下日常 ≈ **2-4 请求/天**（正文走 mp 直链不耗 weread 配额），远低于原代理。
    - **节流（2026-09-24 调优）**：换号退避 `WEREAD_ACCOUNT_GAP_MIN/MAX=6/10`s（号间 6~10s 抖动）；同号内翻页间隔 `WEREAD_PAGE_GAP_MIN/MAX=10/20`s（第 2 页起每页 10~20s），全部 env 可覆盖（`monitors/weread.py`）。前置步骤（开页 / 等签名器就绪 / 读 cookie / 检测验证码）全是不计数的本地操作，**不消耗配额**。
@@ -325,7 +325,7 @@ https://mp.weixin.qq.com/s/<token>     ← 原文直链，项目既有 fetch_web
 **检测要点**：`detect_captcha` 必须**遍历全部 iframe frames**（只查主 frame 漏检），
 标记词需含「最符合描述的图片」。
 
-**连环码 = 高危风控信号（2026-09-19 用户定策）**：正常状态只出 **1 次**人机验证；同日第 2 次提交（`scripts/weread_captcha.py --confirm` 每次提交记账）说明行为像人机/请求过多，自动熔断 12 小时不发任何 weread 请求（`WEREAD_CAPTCHA_SERIAL_LIMIT=2`/`WEREAD_RISK_COOLDOWN_HOURS=12`，台账 `.weread_quota.json` 的 `captcha_events`/`risk_until`，跨天清零）。2026-09-19 事故实录：超量后连续 4 轮码（溪流→花园→瀑布→礁石），正是该规则的实证。
+**连环码 = 高危风控信号（2026-09-19 用户定策，2026-09-27 修正判定）**：正常状态只出 **1 次**人机验证；按滑动窗口判定，最近 `WEREAD_CAPTCHA_SERIAL_WINDOW_MIN`（默认 30min）分钟内出现第 2 次提交（`scripts/weread_captcha.py --confirm` 每次提交记账）说明"解码后立刻又来"、行为像人机/请求过多，自动熔断 12 小时不发任何 weread 请求（`WEREAD_CAPTCHA_SERIAL_LIMIT=2`/`WEREAD_CAPTCHA_SERIAL_WINDOW_MIN=30`/`WEREAD_RISK_COOLDOWN_HOURS=12`，台账 `.weread_quota.json` 的 `captcha_events_ts`/`risk_until`，按时间戳滑动窗口判定、不再按自然日清零——旧"自然日第2次"逻辑跨午夜会被 quota_record 改写的 date 污染而误熔断，见 2026-09-27 修复）。2026-09-19 事故实录：超量后连续 4 轮码（溪流→花园→瀑布→礁石），正是该规则的实证。
 
 **自动监控边界（2026-09-24 澄清）**：`monitors/run.py --mode auto` 撞 captcha 时 `stop=True` **跳过整个公众号源**（后续号也不测，互不隔离），不会主动调本脚本。解验证码必须在会话内由模型走 `--shot`（模型读图出格子）→ `--grid "行,列"` → `--confirm`，因点选类验证码 OCR 无解、识别需模型在场。当前条件策略：先靠 §5.4 节流调优观察；若日常仍频繁 -2041，则把公众号从「跑一下」抽出，改为独立触发（在小时配额刷新后由模型 deliberate 过码），避免自动尝试无谓烧掉 weread 配额。
 
