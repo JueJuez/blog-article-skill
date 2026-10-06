@@ -96,7 +96,7 @@ Obsidian Charts 插件与 HTML 导出器是它的两个消费者，互不另外�
 ⚠️ **2026-09-26 起 `--mode auto` 默认不含 weread**：公众号撞人机验证无法在无人值守时自动过码，
 故抽出独立 `--mode weread` 单独跑（人在场时撞码→`scripts/weread_captcha.py --shot` 识图→`--grid --confirm` 过码→重跑）。
 **零件**：`monitors/run_source.py`、`monitors/bilibili.py`、`monitors/weread.py`、`monitors/wechat.py`（旧代理，永久停用）、
-`monitors/state.py`、`pending_summaries.json` 队列、`scripts/filter_pending.py`（派单前清洗，属于队列维护不是入口）。
+`monitors/state.py`、`pending_summaries.json` 队列、`scripts/filter_pending.py`（派单前清洗，属于队列维护不是入口；2026-10-06 起清洗时**默认按当前模板重算队列内预计算 prompt**——长跑补齐进程加载的模板可能落后于仓库，老条目消费前统一刷新）。
 
 **队列消费落盘 runner（2026-09-24 新增 · 子 Agent 派单的唯一落盘出口）**：
 `python scripts/save_pending.py --queue monitors|scys --key <url|topicId> --file <总结稿.md> [--force]`
