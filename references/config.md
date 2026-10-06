@@ -171,6 +171,23 @@ YT_PROXY=http://127.0.0.1:7890   # 本地代理端口（如 Clash 系统代理�
 
 设置后脚本自动映射到 `HTTP_PROXY` / `HTTPS_PROXY` 供底层请求使用。
 
+## 七之二、ASR 转写配置（长音频静音切段 + 并发，2026-10-06）
+
+核心变量（`ASR_BACKEND` / `ASR_MODEL` / `ASR_DEVICE` 等）见 `videos/asr.py` 模块 docstring；
+下面是**静音切段 + 并发转写**（2026-10-06 新增，仅 whisper 分支；FunASR 自带 fsmn-vad 不需要）：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `ASR_SILENCE_SPLIT` | `1` | >30min 的 whisper 转写用 ffmpeg `silencedetect` 在理想切点 ±60s 内的静音中点切片（不切断半句话）；置 `0` 回退旧「固定 600s 硬切 + 串行」 |
+| `ASR_SPLIT_CONCURRENCY` | cuda=`2` / cpu=`1` | 分片转写并发线程数；任一片失败整段放弃（与串行路径语义一致） |
+| `ASR_MODEL_NUM_WORKERS` | cuda=`2` / cpu=`1` | faster-whisper `WhisperModel(num_workers=N)`，>1 才能真并发（权重共享不翻倍显存）；参与模型缓存键 |
+
+```env
+# ASR_SILENCE_SPLIT=0          # 关闭静音切段，回退固定时长硬切
+# ASR_SPLIT_CONCURRENCY=2      # 显式指定分片并发数
+# ASR_MODEL_NUM_WORKERS=2      # 显式指定模型并发 worker 数
+```
+
 ## 八、常见问题
 
 ### Q: 飞书CLI 安装失败？

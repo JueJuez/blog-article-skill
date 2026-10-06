@@ -28,6 +28,7 @@
 | 补齐/重做某系列课整季 | `python scripts/backfill_series.py --series <名>` | ❌ `monitors/apply_pending_series.py`（文件已不存在） |
 | 迁移期体检 / 清异常 | `python scripts/migrate_gate.py --vault <path> --scope=` + `--apply` | — |
 | 归档开源项目到项目库 | `python tools/project_import/assets/main.py "<repo url>"` | — |
+| 把一篇已有笔记出分享版 HTML | `python scripts/export_note_html.py "<md路径>"` | 见「2.1 分享版 HTML 出口」；新笔记分享不用这条（落盘时带 `share_html`） |
 
 ## 2. 增量生产管线（抓新内容 → 落新笔记）
 
@@ -36,8 +37,27 @@
 
 **零件（非入口）**：`articles.fetch_web_content`（scys 自动分流 CDP）、`summarize_content`（调 AI）、
 `save_summary_only`（去重闸门 + 机械门禁 + 路由，是 `skill_main` 的内部分支）、
-`save_summarized_article`（最终落盘；2026-09-17 起它同时服务存量重做，见下）、
+`save_summarized_article`（最终落盘；2026-09-17 起它同时服务存量重做，见下；2026-10-06 起支持
+`share_html=True` 落盘后自动出分享版，见 2.1）、
 `articles/manager.py: OutputManager`（飞书/Obsidian/本地三选一）。
+
+## 2.1 分享版 HTML 出口（2026-10-06）
+
+**适用场景**：想把一篇笔记发给别人看（浏览器打开即读，无需 Obsidian / 飞书）。产物是
+**单个自包含 .html**（CSS / Chart.js 全内联、零外链资源），默认与笔记同目录同名。
+
+| 路径 | 触发方式 | 说明 |
+|---|---|---|
+| A · 存量笔记 | `python scripts/export_note_html.py "<md路径>"`（vault 内唯一文件名也行） | 手动按需导出 |
+| B · 新笔记分享 | 用户说「**分享 / 出分享版 / HTML 版**」→ 落盘调用带 `share_html:1`（`save_summary_only` 的 input_data 键 / `save_summarized_article` 参数） | 没说就只落盘，不产 HTML |
+
+**转换规则（确定性代码，零 AI）**：Obsidian callout → 样式块；`chart` 数据块 → Chart.js 图
+（Chart.js 缺失时降级数据表格）；元数据行 → 页眉；`##` 标题自动生成目录。
+**chart 数据块是单一格式真源**（```chart JSON：`type: bar|line|pie` + `title/unit/labels/data`），
+Obsidian Charts 插件（用户本机已装/需装）与 HTML 导出器是它的两个消费者，互不另外定义格式。
+
+**零件（非入口）**：`articles/html_export.py: render_note_html` / `export_note_html`（含自包含校验）；
+`articles/main.py: _export_html_safe`（落盘钩子，失败只告警不拦落盘）。
 
 ## 3. 存量重做管线（旧笔记重写 → in-place 覆盖原路径）
 
@@ -181,6 +201,7 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 | 笔记类型判定 | `prompts.classify.classify_note_type` | |
 | 生成总结 prompt / 篇幅目标 | `prompts.templates.get_note_prompt` / `render_coverage_guide` | |
 | 笔记格式化（标签行/来源链接） | `prompts.templates.format_note_with_prompt` | |
+| 笔记 → 自包含分享版 HTML | `articles.html_export.render_note_html` / `export_note_html` | 入口见 §2.1（CLI 或落盘 `share_html`）；chart 块/callout/目录全机械转换 |
 | 机械门禁（零 AI） | `prompts.verifier.verify_note_mechanical` | |
 | 内容判据（锚点/破碎/结构/照搬） | `prompts.content_signals.content_flags` | |
 | 抽检留痕 / 根因台账 | `prompts.review_rubric.log_review` / `queue_for_review` | |
@@ -208,6 +229,7 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 | `articles/main.py` | 落盘主链路（路由 / 门禁 / 保存 / 对外入口） | `save_*`、`skill_*`、`autoroute_*` |
 | `articles/ai_provider.py` | AI provider 抽象与各家实现（Trae/OpenAI/Anthropic/Google…） | `call_*_summarize`、`get_*_provider` |
 | `articles/feishu.py`、`articles/obsidian.py` | 飞书 / Obsidian 输出端实现 | `ensure_*`、`move_node`、`save` |
+| `articles/html_export.py` | 笔记 → 自包含分享版 HTML（callout / chart 块 / 目录，机械转换零 AI） | `render_note_html`、`export_note_html`、`self_contained_violations` |
 | `videos/fetch.py` | 字幕抓取（B站 / YouTube / 412 风控 / cookie 轮换） | `fetch_*_transcript`、`rotate_bili_cookie_*` |
 | `videos/asr.py` | 无字幕转写（下载音频 + Whisper/FunASR 双后端 + 语言感知路由 `auto`，长音频自动分片） | `transcribe_*`、`extract_audio`、`detect_language`、`auto_route_backend`、`unload_whisper_model` |
 | `videos/asr_funasr.py` | FunASR 中文特化后端（独立 venv 常驻 worker，零污染 whisper 进程） | `transcribe_audio_funasr`、`close_funasr_worker` |
@@ -241,7 +263,8 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 `articles/_save_summary.py`（外层对话保存总结的专用入口）、
 `scripts/_save_one_summary.py`（单条 JSON → `save_summary_only`）、
 `scripts/land_migrate_entry.py`（migrate 队列落盘）、
-`scripts/land_scys_batch.py`（scys 飞书双写路径，需 `DISABLE_FEISHU_SYNC=0`）。
+`scripts/land_scys_batch.py`（scys 飞书双写路径，需 `DISABLE_FEISHU_SYNC=0`）、
+`scripts/export_note_html.py`（已有笔记 → 自包含分享版 HTML，见 §2.1 路径 A）。
 
 **凭据 / 登录态**
 `scripts/login_cdp_fetch.py`（接管 Chrome 抓需登录页）、`scripts/bili_cookie_refresh.py`、
@@ -265,6 +288,10 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 `scripts/reset_up_backfill.py`（重置补齐状态）、`scripts/reconcile_series_bvid.py`（bvid 对账，只读）、
 `scripts/fetch_transcript_only.py`（只抓字幕不总结）、`videos/cdp_capture.py`（CDP 抓 YouTube 字幕）、
 `videos/yt_bridge.py`（YouTube 字幕桥接）、`videos/build_bookmarklet_html.py`（小书签安装页生成）。
+
+**ASR 运维（2026-10-06 补登记，FunASR 接入时漏）**
+`scripts/setup_funasr.py`（装/修 FunASR 独立 venv：Paraformer-zh + fsmn-vad + ct-punc + 版本红线）、
+`scripts/asr_backend_compare.py`（同段音频 whisper vs funasr 对照报告，诊断路由质量用）。
 
 **其它项目域**
 `tools/project_import/*`（开源项目归档，见能力 5；内部 `assets/pipeline.py`、`assets/ingest_repo.py`、

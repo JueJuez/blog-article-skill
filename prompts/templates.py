@@ -647,6 +647,37 @@ THINKING_LENS = (
     "- 深度不超过原文支撑，不脑补。"
 )
 
+# ---------------------------------------------------------------------------
+# 质量纪律（2026-10-06 · 借鉴 video-report-agent SKILL.md 提炼 · 单一真源）
+#
+# 正文在此定义一次，分别拼进 UNIVERSAL_RULES（7 轻模板，§七之四）与
+# CONTENT_SUMMARY_PROMPT（structured/general，§十九）。勿在两处各写一份。
+# ---------------------------------------------------------------------------
+QUALITY_DISCIPLINE_RULES = """### 1. 商业推广识别与标注
+- 提炼任何观点前，先综合四类信号识别推广段落：**赞助披露**（"感谢赞助商""本期由 XX 呈现"）、**购买引导**（优惠码/链接/限时价格）、**优惠话术**（"我自用""回购 N 次""全网最低"）、**离题-回题转折**（突然离题讲某产品再绕回正题）。
+- 判定为推广的段落：**就近标注【推广】**，其推销话术**不得当作作者观点或客观事实**写入结论、对比表、图表与金句区。
+- ⚠️ **"只删购买链接、保留推销论证"算违规**——判定为推广就必须整体标注，不是删个链接了事。
+- dissection（创作解剖）例外：推广打法本身是拆解素材，可以分析，但仍须标注且不把推销话术当事实证据。
+
+### 2. 文风禁令
+- **去掉转述引导语**：不写"作者认为/他把/视频里说/UP主提到"，直接陈述内容本身（`>` 引用块内保留原话不受此限）。
+- **禁用"不是……而是……"句式**（同类"并非…而是…"一并禁用）；表达取舍时直接写正向结论。
+- **观点不得升格为事实**：作者的预测、判断、立场，行文须保持"作者立场"属性，禁止改写成既成事实的口吻。
+
+### 3. 来源绑定与溯源
+- 每条核心判断/结论都必须能在原文找到对应依据（段落、数据或原话）；找不到依据的内容禁止输出。
+- 关键数字**保留原文口径**（含对比基线、统计范围），不得换算后再报。
+- **来源链接与发布时间由系统统一追加**，正文中禁止自写、禁止编造日期。
+
+### 4. 数据图表（chart 数据块 · 按需）
+- 原文存在 **≥3 组可对比的数字**（增长对比/价格对比/占比/趋势序列）时，产出 1 个 `chart` 代码块（Obsidian Charts 插件与分享版 HTML 均原生渲染此块），格式严格如下：
+  ```chart
+  {"type":"bar","title":"近三年营收（万元）","unit":"万元","labels":["2023","2024","2025"],"data":[120,180,340]}
+  ```
+- `type` 只允许 `bar`（对比）/ `line`（趋势）/ `pie`（占比，仅各项之和有意义时用）。
+- **labels 与 data 一一对应，数字必须原样取自原文，禁止估测、换算或补插值**；缺失项宁缺毋滥。
+- 每篇**上限 2 张**，每张图前用一句话说明它对比了什么；已有表格的数据**表格保留**，图表是补充不是替代；无对比性数字则零张，**禁止为凑版面硬造图表**。"""
+
 UNIVERSAL_RULES = """# 通用强化规范（适用于一切笔记类型，最高执行标准）
 
 > 本规范与各类笔记模板自身要求同级，必须 100% 遵守，优先级高于一切临时口语指令。
@@ -720,6 +751,9 @@ UNIVERSAL_RULES += "\n\n" + COVERAGE_FIRST_RULES + """
 - **深度自检**：脱离原文后读者能否看懂来龙去脉？每个结论是否都有支撑？有没有任何一句可以删掉而不损失信息？三者全过才合格。
 - **一本正经胡说禁止**：任何推断 / 补全必须标注「（笔记者推断）」或「【补充】」，未标注即视为把编造当事实，违规。"""
 
+# §七之四：质量纪律（2026-10-06 · 单一真源 QUALITY_DISCIPLINE_RULES，勿在此重复正文）
+UNIVERSAL_RULES += "\n\n## 七之四、质量纪律（推广识别 · 文风 · 溯源 · 数据图表）\n\n" + QUALITY_DISCIPLINE_RULES
+
 # 思维模型自检（提质闭环·强制）：确保「按需深挖」真发生，不破去水分红线
 THINKING_SELFCHECK = """## 十、思维模型自检（提质闭环 · 强制）
 
@@ -758,10 +792,23 @@ MERMAID_RULE = (
 # 第九节：思维模型透镜（有序 LIST · 按需触发）
 UNIVERSAL_RULES = UNIVERSAL_RULES + "\n\n## 九、思维模型透镜（有序 LIST · 按需触发）\n\n" + THINKING_LENS + "\n\n" + THINKING_SELFCHECK
 
+# 组织主线提示（2026-10-06 · 信息结构 Profile 吸收）：按内容语义给每模板 1~2 条组织主线，
+# 拼在模板正文与 UNIVERSAL_RULES 之间（不得破坏「prompt 以 UNIVERSAL_RULES 结尾」的拼接契约）
+_PROFILE_HINTS = {
+    "structured": "## 组织主线（机制类内容）\n- 源内容在讲**原理/机制**时，按「机制链」组织：输入 → 处理 → 输出/反馈，逐环讲清因果与前提，不止罗列要素。",
+    "key_points": "## 组织主线（操作步骤类内容）\n- 源内容在讲**操作/步骤**时，按步骤组织：每步 = 前置条件 → 动作 → 预期结果；步骤序号连续，禁止合并、禁止只写「按步骤执行」。",
+    "case": "## 组织主线（证据分级）\n- 结论强度不得超出证据强度：每条结论能落到最强证据（数据/实例/口径说明）上的就落，落不到的显式降级为「作者主张」。",
+    "opinion": "## 组织主线（论证结构）\n- 先亮**前提与定义**，再按强度排序给论据，然后正面处理最强反驳（不得省略），最后标适用边界。",
+    "interview": "## 组织主线（叙事保留）\n- 保留推进叙事线：时间/话题节点、人物动机与转折不删；问答对内交代来龙去脉，不只留答句。",
+    "reading": "## 组织主线（论证线）\n- 按原书论证线组织：全书地图 → 核心论点链（主张→论据→边界）→ 与同类书的立场差异（如有）。",
+    "roundup": "## 组织主线（矩阵推导）\n- 场景结论必须由对比矩阵推导得出，禁止在矩阵之外引入新评判标准。",
+    "dissection": "## 组织主线（结构模具优先）\n- 打法链路与结构模具是主产物：推广段落本身是拆解素材（标注【推广】后可分析），但推销话术不得当作效果证据。",
+}
+
 # 让要点提炼 / 案例拆解 / 观点卡 三个轻模板，补齐 structured 才有的通用规范
-KEY_POINTS_PROMPT = KEY_POINTS_PROMPT + "\n\n---\n\n" + UNIVERSAL_RULES
-CASE_PROMPT = CASE_PROMPT + "\n\n---\n\n" + UNIVERSAL_RULES
-OPINION_PROMPT = OPINION_PROMPT + "\n\n---\n\n" + UNIVERSAL_RULES
+KEY_POINTS_PROMPT = KEY_POINTS_PROMPT + "\n\n---\n\n" + _PROFILE_HINTS["key_points"] + "\n\n---\n\n" + UNIVERSAL_RULES
+CASE_PROMPT = CASE_PROMPT + "\n\n---\n\n" + _PROFILE_HINTS["case"] + "\n\n---\n\n" + UNIVERSAL_RULES
+OPINION_PROMPT = OPINION_PROMPT + "\n\n---\n\n" + _PROFILE_HINTS["opinion"] + "\n\n---\n\n" + UNIVERSAL_RULES
 
 # structured 不走轻模板拼接路径，这里内联等价规则，保证 4 模板全覆盖思维模型透镜
 CONTENT_SUMMARY_PROMPT = (
@@ -773,15 +820,18 @@ CONTENT_SUMMARY_PROMPT = (
     + SELF_QUIZ_RULE
     + FEYNMAN_RULE
     + MERMAID_RULE
+    + "\n\n# 十九、质量纪律（推广识别 · 文风 · 溯源 · 数据图表）\n\n"
+    + QUALITY_DISCIPLINE_RULES
+    + "\n\n" + _PROFILE_HINTS["structured"]
 )
 
 # 访谈 / 盘点 / 读书 三个新模板：与 key_points/case/opinion 同路径，拼 UNIVERSAL_RULES（含第九节思维模型透镜）
-INTERVIEW_PROMPT = INTERVIEW_PROMPT + "\n\n---\n\n" + UNIVERSAL_RULES
-ROUNDUP_PROMPT = ROUNDUP_PROMPT + "\n\n---\n\n" + UNIVERSAL_RULES
-READING_PROMPT = READING_PROMPT + "\n\n---\n\n" + UNIVERSAL_RULES
+INTERVIEW_PROMPT = INTERVIEW_PROMPT + "\n\n---\n\n" + _PROFILE_HINTS["interview"] + "\n\n---\n\n" + UNIVERSAL_RULES
+ROUNDUP_PROMPT = ROUNDUP_PROMPT + "\n\n---\n\n" + _PROFILE_HINTS["roundup"] + "\n\n---\n\n" + UNIVERSAL_RULES
+READING_PROMPT = READING_PROMPT + "\n\n---\n\n" + _PROFILE_HINTS["reading"] + "\n\n---\n\n" + UNIVERSAL_RULES
 
 # 创作解剖（2026-08-26 新增）：同轻模板路径，拼 UNIVERSAL_RULES
-DISSECTION_PROMPT = DISSECTION_PROMPT + "\n\n---\n\n" + UNIVERSAL_RULES
+DISSECTION_PROMPT = DISSECTION_PROMPT + "\n\n---\n\n" + _PROFILE_HINTS["dissection"] + "\n\n---\n\n" + UNIVERSAL_RULES
 
 NOTE_TEMPLATES = {
     "structured": {
@@ -1037,11 +1087,12 @@ QUALITY_GATE_PROMPT = """# 笔记质量审核员（第二遍把关）
 
 QUALITY_GATE_SELFCHECK = (
     "\n\n# 质量自检闸门（你必须执行）\n"
-    "写完后，在上文通用规范（含质量自检红线）之外，补做以下四条专项自检；任一条不达标必须重写，不可交差：\n"
+    "写完后，在上文通用规范（含质量自检红线）之外，补做以下五条专项自检；任一条不达标必须重写，不可交差：\n"
     "① 思维模型清单已逐条深挖并附**原文证据句（「」括起）**（「套用了」或落一行「均不适用」结论，二选一）；\n"
     "② 100% 遵守上方模板固定结构（模块顺序、必备项一项未缺）；\n"
     "③ 覆盖自检（写作过程中做，不必把清单写进正文）：先把原文要点逐条列出，核对笔记是否有**一一对应的小节**；再核四类硬事实（数字 / 专有名词 / 术语 / 作者结论）是否齐；发现**合并要点、概括替代、漏项**，补全后重交。"
     "④ 篇幅自检：正文是否随源长增长（参考值 ≈ 源长×30%～50%，**只守下限不设上限**）；结构齐全但字数严重不足，说明要点被合并或省略，须重写。"
+    "⑤ 推广与文风自检：推广段落已就近标注【推广】且未混入结论/图表；正文无转述引导语、无「不是…而是…」句式；chart 块数字均原样取自原文。"
     "若你判断某项不达标，直接修订后再输出最终笔记。"
 )
 

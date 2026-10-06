@@ -277,7 +277,29 @@ def _guess_source(url: str) -> str:
     return ""
 
 
-def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "", topics: list = None, overwrite: bool = False, note_path: str = "") -> tuple:
+def _saved_note_disk_path(manager, filename: str) -> str:
+    """落盘后在可用输出里找已写入的本地 md 路径（分享版 HTML 只对本地文件有意义）。"""
+    for o in manager.get_available_outputs():
+        try:
+            p = o.get_output_path(filename)
+        except Exception:
+            continue
+        if p and os.path.isfile(p):
+            return p
+    return ""
+
+
+def _export_html_safe(md_path: str) -> None:
+    """落盘钩子：导出分享版 HTML；任何失败只告警，绝不影响笔记落盘结果。"""
+    try:
+        from articles.html_export import export_note_html
+        out = export_note_html(md_path)
+        print(f"   🌐 分享版 HTML 已生成：{out}")
+    except Exception as e:
+        print(f"   ⚠️ 分享版 HTML 导出失败（不影响笔记落盘）：{e}")
+
+
+def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "", topics: list = None, overwrite: bool = False, note_path: str = "", share_html: bool = False) -> tuple:
     """保存已总结的文章内容到所有可用目标。
 
     Args:
@@ -302,6 +324,9 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
                    只写本地（精确路径只在本地库有意义，飞书/总览索引不适用）。
                    默认 "" = 走原有「推导文件名」逻辑，行为零变化。
                    调用方：`scripts/resum_save_batch.py`（批量重做的唯一落盘入口）。
+        share_html: 落盘成功后把本篇导出为自包含分享版 HTML（`articles/html_export.py`，
+                    与笔记同目录同名）。触发约定：用户说「分享/出分享版/HTML 版」时由
+                    执行模型传 True；默认 False 只落盘不导出。导出失败只告警，不拦落盘。
     """
     tags = list(tags or [])
 
@@ -415,6 +440,8 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
                                   note_type=note_type, source=_guess_source(original_url))
         print(f"\n♻️ in-place 重做落盘完成（覆盖既有路径，不产生副本）")
         print(f"路径: {note_path}")
+        if share_html:
+            _export_html_safe(note_path)
         return formatted_note, filename
 
     # ── P2 Draft-only 模式（并行 worker 用，避免并发落飞书；Landing 阶段统一落盘）──
@@ -474,6 +501,12 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
     print(f"\n文章总结保存完成！")
     print(f"文件名: {filename}")
     print(f"已保存到: {', '.join([o.name for o in manager.get_available_outputs()])}")
+    if share_html:
+        _md_disk = _saved_note_disk_path(manager, filename)
+        if _md_disk:
+            _export_html_safe(_md_disk)
+        else:
+            print("   ⚠️ 未找到本地落盘文件，跳过分享版 HTML（飞书-only 落盘不支持导出）")
 
     return formatted_note, filename
 
@@ -784,6 +817,7 @@ def save_summary_only(input_data: dict) -> dict:
             topics=_topics,
             overwrite=_overwrite,
             note_path=_note_path,
+            share_html=bool(input_data.get('share_html', False)),
         )
         # 无人值守降级：落盘命中参考值抽检信号 → 入 needs_review 队列（filename 已知）
         _review_flags = _gate.get("review_flags", [])

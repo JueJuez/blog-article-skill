@@ -22,6 +22,8 @@
   - **scys 按领域批量抓取**：`python scripts/scys_batch_fetch.py --project <领域>`（领域 / menuId / 时间窗在 `scripts/scys_projects.json` 配置，换领域每半年重抓只改 JSON 不改代码）。**触发词：用户说「补齐scys / 补齐生财有术」即自动启动全流程（默认=精华+高互动非精华，2026-08-21 起），后缀自然语言改参数（领域/时间/仅精华），语义见 `references/scys-fetch-sop.md` §9。** **长任务归属（2026-09-12 修正）**：数小时 / 多域补齐走 `python scripts/launch_scys_backfill.py`——**调度器自身非 DETACHED，每域 spawn 一个独立 DETACHED 子进程**（脱离会话、抗轮次回收；串行 wait 保证全局单 Chrome）。勿用 `run_in_background` 跑数小时任务（进程在会话进程树里，轮次结束被回收，见 `RULES.md` §4.7）。
   - 视频：`python videos/run.py --url "https://..."` 或 `from videos import summarize_video; summarize_video({"url": url})`（含 ASR 兜底）
 - 自动按内容类型选模板（`structured` / `key_points` / `interview` / `roundup` / `reading` / `case` / `opinion` / `dissection` 创作解剖——爆款拆解/带货/涨粉/账号运营复盘额外提炼可复用结构模具）；**默认写本地 Obsidian（2026-09-04 起），不写飞书**。
+- **质量纪律（2026-10-06 全模板内置）**：商业推广识别（推广段就近标注【推广】，不得当作者观点/事实进结论）、文风禁令（去转述引导语、禁「不是…而是…」句式、观点不升格为事实）、来源绑定（核心结论须有原文依据）、数据图表（原文有 ≥3 组可对比数字时产出 ` ```chart ` JSON 块——Obsidian Charts 插件与分享版 HTML 共用这一份格式真源，数字必须原样取自原文、每篇上限 2 图）。定义在 `prompts/templates.py: QUALITY_DISCIPLINE_RULES`（单一真源，勿在模板里另写）。
+- **分享版 HTML（2026-10-06）**：用户说「**分享 / 出分享版 / HTML 版**」→ 落盘调用带 `share_html:1`（`save_summary_only` 的 input_data 键），落盘成功后自动在同目录生成自包含 `.html`（CSS/Chart.js 全内联、零外链，浏览器打开即看）；**没说就只落盘不产 HTML**。存量笔记单独导出走 `python scripts/export_note_html.py "<md路径>"`。机制与转换规则见 `docs/PIPELINES.md` §2.1。
 - **降级**：无外部 AI 时 `skill_main` 返回 `need_continue_summary` + 原文 + 模板 prompt；外层模型总结后调 `save_summary_only` 存档。
 
 ### 能力 2 · 订阅监控（关注 B站UP主 / 公众号 / scys 领域）
@@ -90,6 +92,7 @@
 - 给链接 → 走**能力 1**。
 - 说「关注 / 订阅 / 监控 XXX」 → 走**能力 2**（改 `subscriptions.json` + 跑一次首跑）。
 - 说「重做 / 重写一批旧笔记」 → 走**能力 3**。
+- 说「分享 / 出分享版 / HTML 版」（新笔记落盘时带 `share_html`，或对已有笔记跑 `scripts/export_note_html.py`） → 走**能力 1** 的分享版 HTML 出口。
 - 不确定走哪条 → 先读本文件 + `RULES.md`，不要凭空造流程。
 
 ### 能力 5 · 开源项目抽取归档（`tools/project_import`）
@@ -132,6 +135,7 @@
 - **复用入口，不手写抓取 / 总结**：一律走 `skill_main` / `summarize_video` / `fetch_transcript` / `monitors/run.py`，
   不要临时写 `_xxx.py` 脚本、不要手搓 URL、不要 diagnose 平台私有接口。
 - **无字幕自动走 ASR 兜底（2026-08-06 授权）**：`fetch_transcript` 返回 None（真无 CC 字幕）时，`videos.main` 自动调 `videos.asr` 下载音频 + 本地 Whisper/FunASR 双后端转写（按语言自动路由：中文→FunASR 中文特化、其余→Whisper 多语种，`ASR_BACKEND=auto`；默认 whisper 零风险）；成功则继续总结并落盘（默认本地 Obsidian，带飞书时双写需 `DISABLE_FEISHU_SYNC=0`），仅 ASR 也失败才回「无可用字幕」文案并停止。环境坑由 `asr.py` 自动处理，勿手敲 export / 勿额外开发兜底（FunASR 后端细节见 `references/asr-bilibili-sandbox.md`「坑 7」）。
+- **长音频静音切段 + 并发转写（2026-10-06，仅 whisper 分支）**：>30min 的 whisper 转写默认用 ffmpeg `silencedetect` 在每 ~600s 理想切点 ±60s 内的静音中点下刀（不切断半句话），再按 `ASR_SPLIT_CONCURRENCY`（默认 cuda=2 / cpu=1）并发转写各片、按真实偏移拼时间戳；静音检测/切片失败自动回退旧「固定 600s 硬切 + 串行」。**FunASR 分支不动**——它自带 fsmn-vad（同类静音切分技术，内部处理任意时长），只有 whisper 需要我们预切。开关：`ASR_SILENCE_SPLIT`（默认开）、`ASR_MODEL_NUM_WORKERS`（默认 cuda=2/cpu=1，faster-whisper 并发 worker）。
 
 ---
 

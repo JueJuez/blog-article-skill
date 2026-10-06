@@ -192,8 +192,10 @@ class TestWordLimitsConsistency:
 class TestSelfcheckAndGatePrompt:
     """建议 5：AI 审核员链路的篇幅自检维度（SELFCHECK 第③条 + GATE_PROMPT 评分项）。"""
 
-    def test_selfcheck_declares_four_items(self):
-        assert "四条专项自检" in templates_mod.QUALITY_GATE_SELFCHECK
+    def test_selfcheck_declares_five_items(self):
+        # 2026-10-06：④ 篇幅自检后新增 ⑤ 推广与文风自检（质量纪律进自检闸门）
+        assert "五条专项自检" in templates_mod.QUALITY_GATE_SELFCHECK
+        assert "⑤ 推广与文风自检" in templates_mod.QUALITY_GATE_SELFCHECK
 
     def test_selfcheck_has_coverage_and_length_items(self):
         # ③ 覆盖自检（内容完整优先）；④ 篇幅自检（只守下限）

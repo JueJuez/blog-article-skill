@@ -435,6 +435,22 @@ def _ensure_cuda_dlls():
                 pass
 
 
+def _resolve_model_num_workers(dev: str) -> int:
+    """并发转写 worker 数（faster-whisper WhisperModel num_workers）。
+
+    num_workers>1 时 CTranslate2 允许多线程并发调用同一模型实例（权重共享，
+    只增少量 per-worker 状态，不翻倍显存）；默认 1 会把并发请求串行化。
+    ASR_MODEL_NUM_WORKERS 可覆盖；CUDA 默认 2（配合静音切段并发），CPU 默认 1。
+    """
+    raw = os.environ.get("ASR_MODEL_NUM_WORKERS")
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return 2 if dev == "cuda" else 1
+
+
 def _load_model(model_size: str, device: str = "auto"):
     """加载（并缓存）faster-whisper 模型；CUDA 创建失败自动回退 CPU。
 
@@ -450,12 +466,13 @@ def _load_model(model_size: str, device: str = "auto"):
     except Exception as e:
         print(f"   ❌ 模型解析/下载失败：{e}")
         raise
-    key = (model_path, dev, ct)
+    nw = _resolve_model_num_workers(dev)
+    key = (model_path, dev, ct, nw)
     if key in _MODEL_CACHE:
         return _MODEL_CACHE[key]
     try:
-        print(f"   🎛️ 加载 Whisper 模型 {model_size}（device={dev}, compute_type={ct}）...")
-        model = faster_whisper.WhisperModel(model_path, device=dev, compute_type=ct)
+        print(f"   🎛️ 加载 Whisper 模型 {model_size}（device={dev}, compute_type={ct}, num_workers={nw}）...")
+        model = faster_whisper.WhisperModel(model_path, device=dev, compute_type=ct, num_workers=nw)
     except Exception as e:
         if dev == "cuda":
             print(f"   ⚠️ CUDA 加载失败（{e}），回退 CPU/int8")
@@ -819,18 +836,25 @@ def transcribe_audio_chunked(wav: str, model_size: str = "medium",
                             wall_timeout: Optional[float] = None,
                             segment_sec: int = 600,
                             auto_threshold: float = 1800.0) -> Optional[List[Dict]]:
-    """长音频安全转写：wav 超过 auto_threshold 秒（默认 30min）自动分片逐段转写
+    """长音频安全转写：wav 超过 auto_threshold 秒（默认 30min）自动分片转写
     并拼接绝对时间戳；短于此则走原整段快路径（transcribe_audio）。
 
     长音频整段一次性喂给 GPU 推理会在 CUDA 层段错误崩溃（无 Python traceback，
     无法被 except 捕获、连看门狗都救不了），切片后每段 VRAM 占用有界，彻底规避。
     2026-09-13 实踩修复（两个 2h+ B站视频）。
 
+    2026-10-06 升级（借鉴 video-report-agent）：默认优先「静音处切段 + 并发转写」——
+    ffmpeg silencedetect 找静音区间，理想切点（每 segment_sec 秒）±60s 内有静音就在
+    静音中点下刀（不切断半句话），再以 ASR_SPLIT_CONCURRENCY（默认 cuda=2/cpu=1）
+    个线程并发转写各片（faster-whisper num_workers 配合，权重共享不翻倍显存）。
+    静音检测/切片失败自动回退旧「固定时长硬切 + 串行」路径，语义不变。
+
     任一片转写失败（返回 None）即整段失败返回 None，由上层走 CPU 降级 / 跳过。
     """
     # 后端切换：
-    # - funasr（本地中文特化 Paraformer-zh）：原生支持任意时长（VAD 内部切片），
-    #   无需我们这套 ffmpeg 分片；以常驻 worker 整组复用，避免逐视频 reload。
+    # - funasr（本地中文特化 Paraformer-zh）：原生支持任意时长（fsmn-vad 内部按
+    #   语音/静音边界切片），无需我们这套 ffmpeg 分片，也不并发（常驻 worker 串行）；
+    #   以常驻 worker 整组复用，避免逐视频 reload。
     # - auto：先对前 30s 做 whisper 语言检测，中文→funasr、其余/未知→whisper。
     #   整批处理时 whisper 与 FunASR 均驻留（whisper 在 _MODEL_CACHE、FunASR 在常驻
     #   worker），不反复装卸，规避两模型来回切换的显存抖动。
@@ -852,13 +876,29 @@ def transcribe_audio_chunked(wav: str, model_size: str = "medium",
     if dur is None or dur <= auto_threshold:
         return transcribe_audio(wav, model_size, language, device, wall_timeout)
     seg_dir = tempfile.mkdtemp(prefix="asr_seg_")
-    segs = _ffmpeg_segment(wav, seg_dir, segment_sec)
-    if not segs:
-        print("   ⚠️ 切片为空，回退整段转写")
-        return transcribe_audio(wav, model_size, language, device, wall_timeout)
-    print(f"   ✂️ 长音频 {dur:.0f}s 超过阈值，切 {len(segs)} 片逐段转写")
-    all_segs: List[Dict] = []
     try:
+        # —— 新路径：静音处切段 + 并发转写（ASR_SILENCE_SPLIT=0 关闭）——
+        if (os.environ.get("ASR_SILENCE_SPLIT", "1").lower()
+                not in ("0", "false", "no")):
+            workers = _resolve_split_concurrency(device)
+            silences = _detect_silences(wav)
+            boundaries = (_pick_silence_boundaries(dur, silences, segment_sec)
+                          if silences else [])
+            if boundaries:
+                chunks = _ffmpeg_segment_silence(wav, seg_dir, boundaries, dur)
+                if chunks:
+                    print(f"   ✂️ 长音频 {dur:.0f}s 超过阈值，静音切 {len(chunks)} 片"
+                          f"（{workers} 并发）逐段转写")
+                    return _transcribe_chunks_concurrent(
+                        chunks, model_size, language, device, workers, time)
+            print("   ℹ️ 静音切段不可用，回退固定时长切片")
+        # —— 旧路径：固定时长硬切 + 串行（回退保底，行为与 2026-09-13 版一致）——
+        segs = _ffmpeg_segment(wav, seg_dir, segment_sec)
+        if not segs:
+            print("   ⚠️ 切片为空，回退整段转写")
+            return transcribe_audio(wav, model_size, language, device, wall_timeout)
+        print(f"   ✂️ 长音频 {dur:.0f}s 超过阈值，切 {len(segs)} 片逐段转写")
+        all_segs: List[Dict] = []
         for idx, sg in enumerate(segs):
             t0 = time.time()
             # 内层不设硬超时看门狗（避免与外层嵌套 Timer）；单片宽松上限 600s。
@@ -870,11 +910,163 @@ def transcribe_audio_chunked(wav: str, model_size: str = "medium",
                 x["start"] = x.get("start", 0) + idx * segment_sec
             all_segs.extend(s)
             print(f"   ✅ 第 {idx+1}/{len(segs)} 片完成（{len(s)} 段, {time.time()-t0:.0f}s）")
+        if not all_segs:
+            return None
+        return all_segs
     finally:
         _cleanup(seg_dir)
-    if not all_segs:
+
+
+# ---------------------------------------------------------------------------
+# 静音处切段 + 并发转写（2026-10-06，借鉴 video-report-agent 的中点静音切段）
+# ---------------------------------------------------------------------------
+
+def _detect_silences(wav: str) -> List[Tuple[float, float]]:
+    """ffmpeg silencedetect 扫静音区间，返回 [(start, end), ...]（秒，升序）。
+
+    阈值 -35dB / 最短 0.5s：B站视频片头片尾、句间停顿都落得进去；
+    失败返回 []（调用方回退固定切片，绝不阻断转写）。
+    """
+    ffmpeg_exe = _ffmpeg_exe()
+    if not ffmpeg_exe:
+        return []
+    try:
+        rc = subprocess.run(
+            [ffmpeg_exe, "-i", wav,
+             "-af", "silencedetect=noise=-35dB:d=0.5", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=300)
+    except Exception as e:
+        print(f"   ℹ️ 静音检测失败（回退固定切片）: {e}")
+        return []
+    silences: List[Tuple[float, float]] = []
+    cur_start: Optional[float] = None
+    for line in (rc.stderr or "").splitlines():
+        m = re.search(r"silence_start:\s*([0-9.]+)", line)
+        if m:
+            cur_start = float(m.group(1))
+            continue
+        m = re.search(r"silence_end:\s*([0-9.]+)", line)
+        if m and cur_start is not None:
+            silences.append((cur_start, float(m.group(1))))
+            cur_start = None
+    return silences
+
+
+def _pick_silence_boundaries(duration: float, silences: List[Tuple[float, float]],
+                             target_sec: int = 600, tolerance: float = 60.0,
+                             min_span: float = 30.0) -> List[float]:
+    """在每个理想切点 k*target_sec 附近 ±tolerance 秒内找静音区间，取其中点下刀。
+
+    找不到满足条件的静音则回退理想切点本身（与旧行为一致）。返回严格递增的
+    切点列表；相邻切点、首尾间隔不足 min_span 秒时丢弃后到者，保证每片 ≥30s。
+    """
+    raw: List[float] = []
+    n = max(1, round(duration / target_sec))
+    for k in range(1, n):
+        b = float(k * target_sec)
+        best: Optional[float] = None
+        best_dist = tolerance
+        for (s, e) in silences:
+            mid = (s + e) / 2.0
+            if s - tolerance <= b <= e + tolerance:
+                dist = 0.0 if s <= b <= e else min(abs(b - s), abs(b - e))
+                if dist <= best_dist:
+                    best, best_dist = mid, dist
+            elif abs(mid - b) < best_dist:
+                best, best_dist = mid, abs(mid - b)
+        raw.append(best if best is not None else b)
+    points: List[float] = []
+    last = 0.0
+    for p in sorted(raw):
+        p = min(max(p, min_span), duration - min_span)
+        if p - last >= min_span and duration - p >= min_span:
+            points.append(p)
+            last = p
+    return points
+
+
+def _ffmpeg_segment_silence(wav: str, seg_dir: str,
+                            boundaries: List[float], duration: float
+                            ) -> List[Tuple[str, float]]:
+    """按静音切点用 -ss/-t 切出子段，返回 [(路径, 该片起点偏移秒), ...]。
+
+    切点落在静音中点，语音不被切断，无需重叠余量；-c copy 对 pcm wav 无重编码开销。
+    失败返回 []（调用方回退固定切片）。
+    """
+    ffmpeg_exe = _ffmpeg_exe()
+    if not ffmpeg_exe or not boundaries:
+        return []
+    os.makedirs(seg_dir, exist_ok=True)
+    edges = [0.0] + list(boundaries) + [duration]
+    out: List[Tuple[str, float]] = []
+    for i in range(len(edges) - 1):
+        start, end = edges[i], edges[i + 1]
+        path = os.path.join(seg_dir, f"sil_{i:03d}.wav")
+        try:
+            rc = subprocess.run(
+                [ffmpeg_exe, "-y", "-ss", f"{start:.3f}", "-i", wav,
+                 "-t", f"{max(0.1, end - start):.3f}", "-c", "copy", path],
+                capture_output=True, text=True, timeout=300)
+        except Exception as e:
+            print(f"   ❌ 静音切片失败（第 {i+1} 段）: {e}")
+            return []
+        if rc.returncode != 0 or not os.path.isfile(path):
+            print(f"   ❌ 静音切片失败（第 {i+1} 段, rc={rc.returncode}）: {rc.stderr[-300:]}")
+            return []
+        out.append((path, start))
+    return out
+
+
+def _resolve_split_concurrency(device: str = "auto") -> int:
+    """并发转写线程数：ASR_SPLIT_CONCURRENCY 优先；默认 cuda=2 / cpu=1。"""
+    raw = os.environ.get("ASR_SPLIT_CONCURRENCY")
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    try:
+        dev, _ = _resolve_device(device)
+    except Exception:
+        dev = "cpu"
+    return 2 if dev == "cuda" else 1
+
+
+def _transcribe_chunks_concurrent(chunks: List[Tuple[str, float]],
+                                  model_size: str, language: Optional[str],
+                                  device: str, workers: int, time_mod) -> Optional[List[Dict]]:
+    """并发转写各片并按真实偏移拼绝对时间戳；任一片失败整段返回 None（语义同串行路径）。
+
+    片内不设看门狗（与旧分片路径一致，wall_timeout=None）；外层整调用级看门狗
+    （_ASR_ABORT）在生成器逐段检查时依然生效，一片超时会中止所有片——这正是期望语义。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    ordered = list(enumerate(chunks))  # [(idx, (path, offset)), ...]
+
+    def _one(item):
+        idx, (sg, off) = item
+        t0 = time_mod.time()
+        s = transcribe_audio(sg, model_size, language, device, wall_timeout=None)
+        return idx, s, off, time_mod.time() - t0
+
+    by_idx: Dict[int, List[Dict]] = {}
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+            for idx, s, off, dt in ex.map(_one, ordered):
+                if not s:
+                    print(f"   ❌ 第 {idx+1}/{len(chunks)} 片转写失败，整段放弃")
+                    return None
+                for x in s:
+                    x["start"] = x.get("start", 0) + off
+                by_idx[idx] = s
+                print(f"   ✅ 第 {idx+1}/{len(chunks)} 片完成（{len(s)} 段, {dt:.0f}s）")
+    except Exception as e:
+        print(f"   ❌ 并发转写异常，整段放弃: {e}")
         return None
-    return all_segs
+    all_segs: List[Dict] = []
+    for idx in sorted(by_idx):
+        all_segs.extend(by_idx[idx])
+    return all_segs or None
 
 
 # ---------------------------------------------------------------------------
