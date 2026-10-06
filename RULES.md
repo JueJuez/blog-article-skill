@@ -108,6 +108,7 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
 - **文章总结**：`articles/run.py --url/--content/--batch` 或 `skill_main({...})`；无外部 AI 时入 `pending_summaries.json` 交子 Agent（见 `monitors/README.md`「降级闭环」）。
 - **视频总结**：`videos/run.py --url/--file/--content` 或 `summarize_video({...})`；YouTube 本机无出口走 CDP（见 `references/youtube-cdp-workflow.md`）。模板种类与分类优先级见 `prompts/templates.py` / `prompts/classify.py`。
 - **订阅监控**：`monitors/run.py --mode first|auto --apply`；关注某账号走机械命令 `--subscribe`（详见 `monitors/README.md`）。
+- **分享版 HTML（2026-10-06）**：存量笔记 `python scripts/export_note_html.py "<md路径>"`；新笔记用户说「分享 / 出分享版 / HTML 版」→ 落盘带 `share_html:1`，没说只落盘。`chart` 数据块两个消费者（Obsidian Charts 插件 + HTML 导出器）共用同一份格式真源，见 `docs/PIPELINES.md` §2.1。
 
 ---
 
@@ -150,7 +151,7 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
   - ASR 也失败（音频下载或本地转写未成功，可能需 B站登录态 / 网络受限 / YouTube 无出口）→ 才回下面这句并停止：
   > **【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】**
   - **不要**在 `videos/asr.py` 已提供的兜底之外「自作主张开发新兜底」。环境坑（HF 镜像 / xet / CUDA dll / 沙箱安全删除）已由 `asr.py` 的 `_apply_env_defaults()` + `_ensure_cuda_dlls()` 自动处理，**无需手敲 export、不要 diagnose**。
-  - **B站/远程视频 ASR 沙箱专属坑**（B站 CDN 域名轮换致 ffmpeg 直下 `-138` 崩溃、长音频整段塞 GPU 的 CUDA 原生段错误、nvidia dll 路径缺失）已固化进 `videos/asr.py`：urllib 下载抗 host 轮换、>30min 自动 600s 分片转写（`transcribe_audio_chunked`）、`_ensure_cuda_dlls()` 注入 dll。根因、修复与验证见 `references/asr-bilibili-sandbox.md`，**勿在调用层重写兜底**。
+  - **B站/远程视频 ASR 沙箱专属坑**（B站 CDN 域名轮换致 ffmpeg 直下 `-138` 崩溃、长音频整段塞 GPU 的 CUDA 原生段错误、nvidia dll 路径缺失）已固化进 `videos/asr.py`：urllib 下载抗 host 轮换、>30min 自动 600s 分片转写（`transcribe_audio_chunked`）、`_ensure_cuda_dlls()` 注入 dll。根因、修复与验证见 `references/asr-bilibili-sandbox.md`，**勿在调用层重写兜底**。2026-10-06 起 whisper 分支分片升级为**静音中点切段 + 并发转写**（`ASR_SILENCE_SPLIT`/`ASR_SPLIT_CONCURRENCY`/`ASR_MODEL_NUM_WORKERS`，见 `references/config.md` §七之二；FunASR 分支不动——fsmn-vad 自带静音切分）。
   - **⚠️ ASR 依赖有版本红线（2026-09-20 定版，换机/出错先看这里）**：`ctranslate2==4.5.0`（4.8.2 在本机构造模型即原生 access violation，**CPU 与 CUDA 都崩**）、`onnxruntime==1.19.2`（1.29.0 导入即 DLL 初始化失败，VAD 依赖）、`nvidia-cublas-cu12` + `nvidia-cudnn-cu12`(cuDNN **9**，GPU 必需，约 700MB)、`KMP_DUPLICATE_LIB_OK=TRUE`（已由 `_apply_env_defaults()` 自动设）。**表在 `references/asr-bilibili-sandbox.md`「本机运行环境版本要求」**，`_ensure_cuda_dlls()` 的 docstring 里也指向了它。
   - **ASR 三个失败类别必须先分清，别一律当「环境坏了」**（2026-09-20 实踩）：① **环境崩型**（上面那批版本问题，可修）；② **源没人声型**（录屏+音乐短片，转写返回空或只吐 Whisper 幻觉 → 任何 ASR 都无解，应剔除）；③ **充电专属型**（B站付费内容，`is_upower_exclusive && is_upower_preview`）。⚠️ **③ 不等于「拿不到内容」**——它限制的是**媒体流**，**字幕流可能完整**（实证：音频只给 1/41 分钟、字幕却给了全片，笔记完全合法）。故 ③ 的正确处置是「**有字幕就用字幕过；没字幕才走 ASR，由覆盖率校验裁决**」，**不要一刀切拒收**。**不要反复重跑刷失败账本**。
   - **抓取层已内置的源质量护栏（2026-09-20，含当日策略微调）**：`videos/fetch.py::bili_is_charging_exclusive()`（**只作判据/打印原因，不作拦截依据**）；**唯一硬闸门**在 `videos/asr.py::transcribe_video`——本地音频时长 < 视频时长 **×90%** 即拒绝转写（充电专属试看、下载截断、CDN 只给一段，全由它拦）。⚠️ 字幕侧**故意不做**密度校验（没遇到过字幕不完整，不为没见过的场景加机制——用户 2026-09-20 定）。回归测试 `tests/test_charging_exclusive_guard.py`。
@@ -190,6 +191,7 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
 - **D. 元数据归一（去 H1 更新 2026-09-07）**：**标签行由系统权威追加**（LLM 禁止输出任何形式的标签行，`tags` 代码侧权威：`summarize_and_save`→`suggest_default_tags`、`save_summary_only`→`input_data.tags`；旧 `monitors/drain_pending.py`→TAGMAP 链路已随 2026-09-11 文档清理归档至 `_archive/code/`，现行落盘一律走 `save_summary_only`）；`normalize_note_metadata()` 仍把旧格式 `**标签**：xxx` 机械归一，`format_note_with_prompt` 自动应用并剥离 LLM 残留标签行（围栏感知，代码块内 `#` 注释不误剥）。
 - **D2. 命名空间语义标签（2026-09-13 方案A·多次修订定稿）**：落盘时 `save_summarized_article` 在 `format_note_with_prompt` 之前调用 `shared/note_classify.infer_semantic_tags(content, folder, author, note_type, …)` 自动算出新标签并入 `tags`，**4 维度**：`#父/子领域`（命名空间，仅此维度含 `/`）、`#topic/实体`（主题词，**裸标签**，唯一交由总结 LLM 顺手生成，强相关 3–5 可少于3 不可多于5）、`#用途/…`（**裸标签**）、`#类型/…`（**裸标签**，如 `#结构化复盘`）。**命名空间标签不含 `#` 前缀，由 formatter 统一加**。已移除 `#来源/`（文件夹路径 + Obsidian `path:` 搜索已覆盖作者聚合）与 `#更早` 等时效标签（无检索价值）；`#文章总结`/`#转载` 早停生成。**路由安全**：`category_from_tags` 与 `save_summarized_article` 分类推算均跳过含 `/` 标签 + `CATEGORY_SKIP_TAGS`（含全部裸笔记类型值），裸标签永不抢「分类」、不污染文件夹路由。详 `shared/note_classify.py` 与 `docs/decisions/DECISION-20260913-namespace-semantic-tags.md`。**存量 1087 篇不回填**（决策 C），检索由 `index` 表覆盖。
 - **E. 读书争议维度**：`reading` 模板含「争议与不同声音」段（作者回避点 / 学界不同声音 / 与已知冲突，标笔记者补充存疑）——**推荐、非强制**，非争议类书评不硬凑。
+- **F. 质量纪律（2026-10-06 · 全模板内置）**：`prompts/templates.py: QUALITY_DISCIPLINE_RULES` 单一真源，拼接进 `UNIVERSAL_RULES`（7 轻模板）与 `CONTENT_SUMMARY_PROMPT`（structured），四节——①商业推广识别（推广段就近标注【推广】，不得当作者观点/事实进结论，「只删链接保留推销论证」算违规）；②文风禁令（去转述引导语、禁「不是…而是…」句式、观点不升格为事实）；③来源绑定（核心结论须有原文依据，与锚点门禁对齐）；④chart 数据块（原文 ≥3 组可对比数字时产图，schema 与 Obsidian Charts 插件原生一致 `labels + series[{title,data}]`，数字原样取自原文；图数按内容动态——基准 1~2 张、≥4 组独立对比硬上限 4 张、禁同数据重复画图；密集多维数据落表格，图是补充不是替代）。每模板另拼 1-3 行 Profile 提示（`_PROFILE_HINTS`）。配套：`filter_pending.py` 派单前按当前模板重算队列预计算 prompt（长跑进程模板断层兜底）。
 
 **去哪里开关（质量闸门 A）**：
 
