@@ -17,6 +17,11 @@
 - ASR_MODEL   模型大小/名称（默认 medium；可设 large-v3 / Belle-faster-whisper-large-v3-zh-punct 等）
 - ASR_DEVICE  auto|cpu|cuda（默认 auto：有 CUDA 走 cuda/float16，否则 CPU/int8）
 - ASR_LANG    转写语言（默认 zh）
+- ASR_BACKEND whisper|funasr|auto（默认 whisper；funasr 走本地中文特化 Paraformer-zh 后端，
+              模型与 whisper 同根目录管理；auto=按语言检测路由：中文→funasr、其余/未知→whisper，
+              见 videos/asr_funasr.py）。auto 模式对**每条视频**前 30s 做一次 whisper 语言检测，
+              因此整批处理时 whisper 与 FunASR 均驻留、不反复装卸（FunASR 另以常驻 worker 整组复用）。
+- ASR_HOTWORDS 分号分隔的领域热词（仅 funasr 后端生效，注入解码提术语精度，如 "量化宽松;ETF套利"）
 
 注意（PRD 风险边界）：
 - 首次运行会下载 Whisper 模型（medium ~1.5GB / large-v3 ~3GB），需联网。
@@ -43,6 +48,10 @@ try:
     _HAS_HF_HUB = True
 except Exception:
     _HAS_HF_HUB = False
+
+# FunASR 后端（中文特化，可选）：模块级只引用派发函数，不 import funasr 本体，
+# 因此对 whisper 进程零污染、零额外依赖（funasr/torch 只存在于独立 venv）。
+from .asr_funasr import transcribe_audio_funasr  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +264,77 @@ def check_asr_deps() -> Tuple[bool, List[str]]:
         except Exception:
             missing.append(mod)
     return (len(missing) == 0, missing)
+
+
+# ---------------------------------------------------------------------------
+# 语言检测 + 后端路由（ASR_BACKEND=auto 用）
+# ---------------------------------------------------------------------------
+
+def _read_wav_float16k(wav: str, max_sec: int = 30):
+    """读 wav 前 max_sec 秒，返回 16kHz 单声道 float32 数组（whisper detect_language 输入）。
+
+    extract_audio 产出的 wav 恒为 16k mono，但若上游有差异也会在此安全降级
+    （非 16k 可能轻微影响检测，可接受；多声道会被混为单声道）。
+    """
+    try:
+        import numpy as np
+        import wave
+        with wave.open(wav, "rb") as wf:
+            fr = wf.getframerate()
+            n = wf.getnframes()
+            ch = wf.getnchannels()
+            if not fr:
+                return None
+            max_frames = int(max_sec * fr)
+            data = wf.readframes(min(n, max_frames))
+        sig = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        if ch > 1:
+            try:
+                sig = sig.reshape(-1, ch).mean(axis=1)
+            except Exception:
+                pass
+        return sig
+    except Exception as e:
+        print(f"   ℹ️ 读取音频做语言检测失败: {e}")
+        return None
+
+
+def detect_language(wav: str, max_sec: int = 30) -> Tuple[Optional[str], float]:
+    """用已加载（或加载）的 whisper 模型检测语言。
+
+    Returns: (lang_code 或 None, score)。检测失败返回 (None, 0.0)——调用方应回退 whisper，
+    绝不抛异常（语言检测只是路由辅助，不应阻断转写）。
+    """
+    try:
+        model_size = os.environ.get("ASR_MODEL") or "medium"
+        model = _load_model(model_size, "auto")
+        audio = _read_wav_float16k(wav, max_sec)
+        if audio is None:
+            return (None, 0.0)
+        lang, score, _ = model.detect_language(audio)
+        return (lang, float(score))
+    except Exception as e:
+        print(f"   ℹ️ 语言检测失败（回退 whisper）: {e}")
+        return (None, 0.0)
+
+
+def auto_route_backend(lang: Optional[str]) -> str:
+    """按检测结果路由：仅中文（zh*）走 FunASR 中文特化；其余/未知走 whisper 多语种覆盖。"""
+    return "funasr" if (lang or "").startswith("zh") else "whisper"
+
+
+def unload_whisper_model() -> None:
+    """释放 whisper 模型显存（清空 _MODEL_CACHE + CUDA 缓存）。
+
+    批量场景：确认本批不再需要 whisper（如整批中文已转完）后可调用，给 FunASR 腾出显存；
+    **逐视频处理时切勿调用**——否则每次都要 reload whisper（正是要避开的来回切换）。
+    """
+    _MODEL_CACHE.clear()
+    try:
+        import torch
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 _MODEL_CACHE: Dict[Tuple[str, str, str], object] = {}
@@ -748,6 +828,25 @@ def transcribe_audio_chunked(wav: str, model_size: str = "medium",
 
     任一片转写失败（返回 None）即整段失败返回 None，由上层走 CPU 降级 / 跳过。
     """
+    # 后端切换：
+    # - funasr（本地中文特化 Paraformer-zh）：原生支持任意时长（VAD 内部切片），
+    #   无需我们这套 ffmpeg 分片；以常驻 worker 整组复用，避免逐视频 reload。
+    # - auto：先对前 30s 做 whisper 语言检测，中文→funasr、其余/未知→whisper。
+    #   整批处理时 whisper 与 FunASR 均驻留（whisper 在 _MODEL_CACHE、FunASR 在常驻
+    #   worker），不反复装卸，规避两模型来回切换的显存抖动。
+    backend = (os.environ.get("ASR_BACKEND") or "whisper").lower()
+    if backend == "auto":
+        lang, score = detect_language(wav)
+        print(f"   🌐 语言检测：{lang}（置信度 {score:.2f}）")
+        backend = auto_route_backend(lang)
+    if backend == "funasr":
+        try:
+            segs = transcribe_audio_funasr(wav, device=device)
+            if segs:
+                return segs
+            print("   ℹ️ FunASR 返回空/失败，回退 faster-whisper")
+        except Exception as e:
+            print(f"   ⚠️ FunASR 后端异常，回退 faster-whisper: {e}")
     import time
     dur = _wav_duration(wav)
     if dur is None or dur <= auto_threshold:

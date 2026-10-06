@@ -1,7 +1,7 @@
 # ASR 转写：B站/远程视频沙箱踩坑与固化
 
 > 维护位置：`videos/asr.py`（代码固化）+ 本文件（知识固化）
-> 最近更新：2026-09-15（新增「字幕可用性判定 & 硬字幕识别」一节；新增「坑 4：ASR 同进程连续转写必崩」；2026-09-13 的三坑已固化）
+> 最近更新：2026-10-06（新增「坑 7：FunASR 中文特化后端」—— 语言感知路由 + 独立 venv + 版本红线固化；2026-09-15 的三节已固化）
 
 ## 背景
 
@@ -125,6 +125,44 @@ D:/App/anaconda3/python.exe -m pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 - 宁可失败进失败账本（可人工排查），也不产出残缺笔记——加闸门前是静默产出残品的。
 - **为什么闸门设在 ASR、而不是靠「充电」标记拦截**：只有实测覆盖率才能区分坑 5 里那两集相反的走向。
 
+### 坑 7：FunASR 中文特化后端（2026-10-06 接入）—— 治 Whisper 中文精度丢失
+
+- **动机**：实测 Whisper（faster-whisper medium）在中文上错漏明显——同音词、专有名词、中英混读、数字/术语不准，B站中文长视频笔记被拖累。引入阿里达摩院 **FunASR（Paraformer-zh）** 作为本地中文特化 ASR，与 Whisper **并存、按语言自动选**，不替换。
+- **架构（零污染）**：FunASR 装在**独立 venv** `~/.venvs/funasr`（基于 anaconda3 的 3.11.5 建，**绝不进 anaconda 的 whisper 生产环境**——否则 torch 会拉 `nvidia-*` 包砸掉 `ctranslate2==4.5.0` 红线）。`videos/asr_funasr.py` 被 `asr.py` 导入时**只做 subprocess 派发、不 import funasr**，whisper 进程 `sys.modules` 里永远不出现 funasr/torch；真正加载转写只在 venv 子进程。
+- **模型位置**：三模型下在 `~/.cache/asr_whisper/funasr_models/`（与 whisper 模型**同根目录**统一管理）：`paraformer-zh`（881MB）/ `fsmn-vad`（1.7MB）/ `ct-punc`（292MB），均 pytorch 版。
+- **安装**：`python scripts/setup_funasr.py`（建 venv + 装包 + 下模型；支持 `--check` 校验 / `--models-only` 只下模型）。**必须 sandbox bypass 跑**（否则被 safe-delete shim 拦死）。
+
+**FunASR venv 版本红线（换机 / 排查必看，已固化进 setup_funasr.py）**：
+
+| 包 | 必须 | 为什么 |
+|----|------|--------|
+| `torch` | **2.8.0+cu126**（CUDA 版，从 pytorch 官方 index 拉） | 默认装的 2.14.1 在本机 Win11 `c10.dll` 加载即 `WinError 1114`（社区 2.9.x 同坑），降到 2.8.0 即好；且必须 CUDA 版（pypi 默认是 CPU-only，无 GPU 加速） |
+| `sentencepiece` | **0.1.99** | 0.2.2 的 wheel 加载即 **segfault**（access violation），0.1.99 是 funasr 1.4.x 时代标配 |
+| `kaldi-native-fbank` | 任意近期版 | FunASR 做特征提取缺 fbank 后端会 `ImportError`；纯 C++、不依赖 torch 版本 |
+| `funasr` / `modelscope` | 1.4.x / 1.40.x | 注意 `modelscope>=1.40` 已移除 `snapshot_download(local_dir_use_symlinks=)` 参数，脚本已适配 |
+
+**本机踩过的坑（均已固化进 setup_funasr.py / asr_funasr.py）**：
+1. torch 2.14.1 → `c10.dll` 1114 崩（红线见上）；
+2. sentencepiece 0.2.2 → segfault（红线见上）；
+3. 缺 `kaldi-native-fbank` → 转写 `ImportError`（红线见上）；
+4. `modelscope>=1.40` 移除 `local_dir_use_symlinks` → 下载脚本已去掉该参数；
+5. **sandbox safe-delete shim** 拦 pip 临时文件清理 → 安装/下载必须 bypass（真实机器跑不触发）；
+6. **派发子进程 PATH 污染**：venv 运行时 PATH 挂着 anaconda3 旧运行库目录，需清理后再 spawn，否则旧 UCRT/c10 冲突；
+7. **常驻 worker stdout 污染**：funasr 在 import 期会往 stdout 打 torchaudio notice，破坏 JSON 握手协议 → worker 侧已静默；派发侧容忍 READY 前的杂行。
+
+**后端路由（`ASR_BACKEND`，2026-10-06）**：
+- `whisper`（默认）/ `funasr` / `auto`。
+- `auto`：**不按 host 路由**——B站有外语转载、YouTube 有国内博主中文视频，host 与后端解耦。改为对每条视频**前 30s 用 whisper `detect_language`** 检测：中文(zh*)→FunASR，其余/未知→Whisper。`auto_route_backend(en)=whisper / (zh)=funasr / (None)=whisper` 已单元验证。
+- **字幕优先不变**：有字幕（含 AI 中文字幕）直接用字幕、不进 ASR，覆盖「外语视频带中文字幕」场景。
+- FunASR 失败自动回退 Whisper（零风险）。
+
+**批量零切换（避免中英文混批时两模型反复装卸）**：
+- FunASR 改成**进程级常驻 worker**：启动一次、加载一次 `AutoModel`，经 stdin/stdout 协议处理整批所有中文视频；实测同进程二次调用 0.3s vs 首次 15s（提速 ~50×）。
+- whisper 模型在缓存驻留；`auto` 模式下两模型可同时驻留（~4GB / 8GB 卡，安全）。整批无论中英文怎么夹杂，**都不卸载/重装任一模型**，最多一次切换。
+- `unload_whisper_model()` 仅整批全中文时可选调用、腾显存给 FunASR；逐视频别调（否则每次 reload 反而慢）。
+
+**已知瑕疵（非阻塞）**：FunASR 的 `fsmn-vad` 在连续说话无长停顿时切分偏粗（实测首段可达 60s），内容质量没问题、仅时间戳粒度粗；要的话后续在段内按标点再细分。
+
 ## 🔧 本机运行环境版本要求（2026-09-20 实测定版 · 换机 / 排查先看这里）
 
 | 包 / 开关 | **必须是** | 为什么 |
@@ -170,6 +208,15 @@ D:/App/anaconda3/python.exe -m pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 - 断点续跑：转写文本缓存到 `transcripts/<bvid>.md`，非强制模式下命中缓存即跳过下载/转写。
 - ⚠️ 受限/残缺源会被主动拒绝并**不会写缓存**：充电专属仅试看、音频覆盖率 <90%
   （见坑 5 / 坑 6）——这两类集请勿反复重跑，应记录为「不可达」。
+- **FunASR 后端用法（2026-10-06 接入）**：
+  - 按语言自动选后端（推荐）：`python videos/run.py --url "..." --asr-backend auto`
+    （中文→FunASR 中文特化 + 热词；其余→Whisper 多语种；字幕优先不变）。
+  - 强制中文特化：`ASR_BACKEND=funasr python videos/run.py --url "..."`，
+    可叠加领域热词提精度：`ASR_HOTWORDS=量化宽松;ETF套利;北向资金`。
+  - 强制 / 默认 Whisper：`ASR_BACKEND=whisper ...`（默认，零风险）。
+  - 批量（批量模式自动继承 `ASR_BACKEND`）：`python videos/run.py --batch-file xxx.json --asr-backend auto`。
+  - 同一音频跑两后端比精度：`python scripts/asr_backend_compare.py --wav <音频路径>`。
+  - 校验 FunASR 安装：`python scripts/setup_funasr.py --check`。
 
 ## 字幕可用性判定 & 硬字幕识别（2026-09-15）
 

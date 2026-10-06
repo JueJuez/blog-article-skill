@@ -163,7 +163,7 @@
 |---|---|---|
 | 抓任意文章正文（scys 自动分流 CDP 登录态） | `articles.fetch.fetch_web_content` | 入口：`articles/run.py` |
 | 抓 B站字幕 / 转写 | `videos.fetch.fetch_transcript` / `fetch_bilibili_transcript` | 入口：`videos/run.py`。**充电专属不阻断**（有字幕就用字幕）；源不完整由 ASR 层的覆盖率闸门兜住 |
-| 无字幕视频转写（ASR） | `videos.asr.transcribe_video` / `transcribe_audio_chunked` | >30min 自动分片；**唯一源质量硬闸门**：本地音频 < 视频时长×90% 即拒绝转写（充电试看/下载截断）；⚠️ **依赖版本有红线**：`ctranslate2==4.5.0`、`onnxruntime==1.19.2`、`nvidia-cublas-cu12` + `nvidia-cudnn-cu12`(cuDNN 9) —— 见 `references/asr-bilibili-sandbox.md`「本机运行环境版本要求」 |
+| 无字幕视频转写（ASR） | `videos.asr.transcribe_video` / `transcribe_audio_chunked` | >30min 自动分片；**唯一源质量硬闸门**：本地音频 < 视频时长×90% 即拒绝转写（充电试看/下载截断）；⚠️ **依赖版本有红线**：`ctranslate2==4.5.0`、`onnxruntime==1.19.2`、`nvidia-cublas-cu12` + `nvidia-cudnn-cu12`(cuDNN 9) —— 见 `references/asr-bilibili-sandbox.md`「本机运行环境版本要求」；FunASR 中文特化后端（独立 venv，见同文件「坑 7」）支持 `ASR_BACKEND=auto` 按语言自动路由（中文→FunASR、其余→Whisper），默认仍 whisper |
 | 抓 YouTube 字幕 | `videos.fetch.fetch_youtube_transcript` / `..._cdp` | 登录态走 CDP |
 | 字幕清洗（填词/去重/合并） | `shared.subtitle_clean.preprocess_segments` / `preprocess_text` | 已在 fetch 链路自动接入 |
 | 长文分块 / 两阶段总结 | `shared.chunking.chunk_text` / `two_stage_summarize` | |
@@ -203,7 +203,8 @@
 | `articles/ai_provider.py` | AI provider 抽象与各家实现（Trae/OpenAI/Anthropic/Google…） | `call_*_summarize`、`get_*_provider` |
 | `articles/feishu.py`、`articles/obsidian.py` | 飞书 / Obsidian 输出端实现 | `ensure_*`、`move_node`、`save` |
 | `videos/fetch.py` | 字幕抓取（B站 / YouTube / 412 风控 / cookie 轮换） | `fetch_*_transcript`、`rotate_bili_cookie_*` |
-| `videos/asr.py` | 无字幕转写（下载音频 + Whisper，长音频自动分片） | `transcribe_*`、`extract_audio` |
+| `videos/asr.py` | 无字幕转写（下载音频 + Whisper/FunASR 双后端 + 语言感知路由 `auto`，长音频自动分片） | `transcribe_*`、`extract_audio`、`detect_language`、`auto_route_backend`、`unload_whisper_model` |
+| `videos/asr_funasr.py` | FunASR 中文特化后端（独立 venv 常驻 worker，零污染 whisper 进程） | `transcribe_audio_funasr`、`close_funasr_worker` |
 | `shared/routing.py` | 文件夹路由（账号 / 系列 / 分类命中） | `resolve_folder`、`match_series` |
 | `shared/note_classify.py` | 语义标签与父子领域判定 | `infer_semantic_tags`、`*_from_lede` |
 | `shared/feishu_overview.py` | 飞书总览索引（账号容器内的文章清单） | `ensure_overview`、`add_entry`、`rebuild` |

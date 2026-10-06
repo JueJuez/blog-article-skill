@@ -16,6 +16,9 @@ videos/run.py — 视频总结命令行入口
 
   # 指定笔记类型 / 作者 / 标签
   python videos/run.py --url "..." --note-type key_points --author "作者" --tags "AI,教程"
+
+  # ASR 后端：whisper（默认）/ funasr（中文特化）/ auto（按语言自动选，中文走 FunASR）
+  python videos/run.py --url "..." --asr-backend auto
 """
 
 import sys
@@ -47,6 +50,10 @@ def _run_batch(args) -> int:
     """
     from videos import summarize_video
     from videos import fetch as _fetch
+
+    # ASR 后端（--asr-backend）：auto=按语言自动路由（中文→FunASR），整批生效
+    if args.asr_backend:
+        os.environ["ASR_BACKEND"] = args.asr_backend
 
     with open(args.batch_file, encoding="utf-8") as f:
         entries = json.load(f)
@@ -135,8 +142,13 @@ def main():
     parser.add_argument('--delay-min', type=float, default=15.0, help='批量模式条间最小延迟秒')
     parser.add_argument('--delay-max', type=float, default=30.0, help='批量模式条间最大延迟秒')
     parser.add_argument('--max-per-hour', type=int, default=100, help='批量模式每小时条数预算')
+    parser.add_argument('--asr-backend', type=str, default='',
+                        help='ASR 后端：whisper（默认）/ funasr / auto（按语言自动选，中文走 FunASR）')
 
     args = parser.parse_args()
+
+    if args.asr_backend:
+        os.environ["ASR_BACKEND"] = args.asr_backend
 
     if args.batch_file:
         return _run_batch(args)

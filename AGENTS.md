@@ -131,7 +131,7 @@
 - **输出默认本地 Obsidian、飞书按需（强制 · 2026-09-04 翻转，取代 2026-08-08）**：写两遍浪费，故**默认只落本地 Obsidian**；飞书仅在 `DISABLE_FEISHU_SYNC=0`（双写）或整库镜像 `audit_sync.py` 时写入。由 `OutputManager` 代码门禁 + `.env` 开关保证，不靠 AI 记性。`.env`：`OBSIDIAN_WRITE=1`（Obsidian 默认）+ `DISABLE_FEISHU_SYNC=1`（关飞书）。本地 `notes/` 仅在 lark-cli 实际不可用且未请求 Obsidian 时兜底。飞书落盘走 lark-cli，与面板 feishu MCP 连接器状态无关。禁止 AI 手动写 `notes/`、禁止只存本地漏飞书（双写场景）。
 - **复用入口，不手写抓取 / 总结**：一律走 `skill_main` / `summarize_video` / `fetch_transcript` / `monitors/run.py`，
   不要临时写 `_xxx.py` 脚本、不要手搓 URL、不要 diagnose 平台私有接口。
-- **无字幕自动走 ASR 兜底（2026-08-06 授权）**：`fetch_transcript` 返回 None（真无 CC 字幕）时，`videos.main` 自动调 `videos.asr` 下载音频 + 本地 Whisper 转写；成功则继续总结并落盘（默认本地 Obsidian，带飞书时双写需 `DISABLE_FEISHU_SYNC=0`），仅 ASR 也失败才回「无可用字幕」文案并停止。环境坑由 `asr.py` 自动处理，勿手敲 export / 勿额外开发兜底。
+- **无字幕自动走 ASR 兜底（2026-08-06 授权）**：`fetch_transcript` 返回 None（真无 CC 字幕）时，`videos.main` 自动调 `videos.asr` 下载音频 + 本地 Whisper/FunASR 双后端转写（按语言自动路由：中文→FunASR 中文特化、其余→Whisper 多语种，`ASR_BACKEND=auto`；默认 whisper 零风险）；成功则继续总结并落盘（默认本地 Obsidian，带飞书时双写需 `DISABLE_FEISHU_SYNC=0`），仅 ASR 也失败才回「无可用字幕」文案并停止。环境坑由 `asr.py` 自动处理，勿手敲 export / 勿额外开发兜底（FunASR 后端细节见 `references/asr-bilibili-sandbox.md`「坑 7」）。
 
 ---
 
