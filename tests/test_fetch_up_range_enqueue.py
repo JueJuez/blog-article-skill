@@ -78,3 +78,36 @@ class TestFilterByRegistry:
         todo, hits = fur.filter_by_registry(items)
         assert todo == items
         assert hits == set()
+
+
+class TestSeriesRouting:
+    """合集识别（2026-10-06）：入队带官方合集名 → 路由到系列目录；排除名单命中不入队。"""
+
+    def test_enqueue_with_series_routes_to_series_folder(self, queue_env):
+        status = fur.enqueue_pending(
+            "https://www.bilibili.com/video/BV1ser", "系列单集", "测试UP",
+            1700000000, __file__, series="说话之道")
+        assert status == "queued"
+        e = json.load(open(queue_env, encoding="utf-8"))[0]
+        # 非监控作者 + 显式 series → 路由器第②级：【我的总结】/作者/<名>/<系列>
+        assert e["folder"].endswith("/说话之道")
+        assert e["series"] == "说话之道"
+        assert "【日更】" not in e["folder"]
+
+    def test_enqueue_without_series_stays_daily(self, queue_env):
+        status = fur.enqueue_pending(
+            "https://www.bilibili.com/video/BV1day", "散集视频", "测试UP",
+            1700000000, __file__, series="")
+        assert status == "queued"
+        e = json.load(open(queue_env, encoding="utf-8"))[0]
+        assert e["series"] == ""
+
+    def test_enqueue_series_excluded_skips(self, queue_env, monkeypatch):
+        import shared.routing as routing
+        monkeypatch.setattr(routing, "load_series_exclude",
+                            lambda: {"测试UP": ["小猪仔与生活"]})
+        status = fur.enqueue_pending(
+            "https://www.bilibili.com/video/BV1exc", "被排除的单集", "测试UP",
+            1700000000, __file__, series="合集·小猪仔与生活")
+        assert status == "series-excluded"
+        assert not queue_env.exists() or json.load(open(queue_env, encoding="utf-8")) == []

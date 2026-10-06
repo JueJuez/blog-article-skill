@@ -123,7 +123,13 @@
 → `python scripts/filter_pending.py` → 派子 Agent 消费队列。
 ⚠️ `fetch_up_range.py` 自身不读 `.env`，必须经 `run_with_env.py` 包装（逻辑在 `shared.env.run_with_env`；
 前身 `scripts/_run_with_env.py` 因 `_` 前缀被 `.gitignore` 忽略、从未入库，2026-09-20 改名入库，旧名仅留转发）。
-**零件**：`videos/fetch.py`、`videos/asr.py`（ASR 兜底）、`monitors/asr_pool.py`。
+**零件**：`videos/fetch.py`、`videos/asr.py`（ASR 兜底）、`monitors/asr_pool.py`、
+`scripts/up_seasons.py`（官方合集→BV 映射，带缓存）。
+**合集识别（2026-10-06）**：入队时按官方合集（ugc_season）显式传 series →
+【监控】/<平台>/<账号>/<合集名>；命中账号 `series_exclude` 的合集跳过不入队；
+映射拉取失败降级全部落【日更】。存量已落盘笔记分拣：`scripts/split_notes_by_season.py
+--uid <UID> --author <名> [--apply]`（登记表 filename 精确反查优先 + difflib 兜底，
+dry-run 默认，--apply 迁移并回写 summary_registry）。
 
 ## 7. 生财有术补齐管线
 

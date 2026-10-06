@@ -313,7 +313,11 @@ python scripts/fetch_up_range.py 1 242 --uid <UID> --author <UP名>
 python scripts/filter_pending.py
 ```
 
-- 入队条目：url/title/author/note_type（分类器）/tags/publish_time/folder（统一路由器预计算）/raw_file/prompt（`get_note_prompt + QUALITY_GATE_SELFCHECK`）/queued_at；
+- 入队条目：url/title/author/note_type（分类器）/tags/publish_time/folder（统一路由器预计算）/series（官方合集名，无则空）/raw_file/prompt（`get_note_prompt + QUALITY_GATE_SELFCHECK`）/queued_at；
+- **合集识别（2026-10-06）**：入队时经 `scripts/up_seasons.py` 拉官方合集（ugc_season）→BV 映射
+  （缓存 `notes/_scraped/bili_<uid>_seasons.json`，`--refresh-seasons` 重拉），命中合集的条目
+  folder 归【监控】/<平台>/<账号>/<合集名>；合集名命中账号 `series_exclude` → 跳过不入队
+  （返回 `series-excluded`）；映射拉取失败降级全部落【日更】（不阻塞抓取）；
 - 已在队列或已总结过（dedup 闸门）→ 自动跳过；`--no-enqueue` 可退回纯抓取；
 - 队列路径可被 `MON_PENDING_SUMMARY_PATH` 覆盖（与 monitors 并行模式约定一致）；
 - **待抓过滤三合一（2026-09-06，V4）**：todo = 列表切片 − fetch_results 真完成条目 −

@@ -95,17 +95,25 @@ def _save_risk_skip(author: str, skip: set) -> None:
 
 
 def enqueue_pending(url: str, title: str, author: str, publish_time: int,
-                    raw_file: str) -> str:
+                    raw_file: str, series: str = "") -> str:
     """抓成功的视频入待总结队列（与 monitors._queue_pending_summary 同 schema）。
 
     - URL 已在队列 / 已总结过（dedup 闸门）→ 跳过，返回 skip 原因；
+    - series 非空（官方合集/系列名，来自 up_seasons.fetch_seasons_map）：
+      先过账号 series_exclude 黑名单（命中返回 series-excluded，不总结不入队），
+      再显式传给统一路由器 → 【监控】/<平台>/<账号>/<系列>；
     - note_type 由分类器定，prompt 预计算（get_note_prompt + QUALITY_GATE_SELFCHECK）；
     - folder 走统一路由器预计算（监控作者→【监控】区，非监控→【我的总结】/作者/<名>）。
     """
     from articles import dedup as _dedup
     from articles.prompt import classify_note_type, get_note_prompt, source_chars_of
     from prompts.templates import QUALITY_GATE_SELFCHECK
-    from shared.routing import resolve_folder
+    from shared.routing import resolve_folder, load_series_exclude, series_title_excluded
+
+    if series:
+        exc = load_series_exclude().get(author) or []
+        if series_title_excluded(series, exc):
+            return "series-excluded"
 
     ppath = _pending_path()
     pending = []
@@ -132,7 +140,8 @@ def enqueue_pending(url: str, title: str, author: str, publish_time: int,
         "tags": [author] if author else [],
         "publish_time": publish_time,
         "folder": resolve_folder({"author": author, "url": url, "title": title,
-                                  "source": "bili_backfill"}),
+                                  "series": series, "source": "bili_backfill"}),
+        "series": series,
         "raw_file": raw_file,
         # 预计算 prompt（三队列统一口径：monitors/scys/UP）：子 Agent 直接按此总结，无需自调任何 CLI
         "prompt": get_note_prompt(note_type, source_chars_of(content)) + QUALITY_GATE_SELFCHECK,
@@ -280,6 +289,8 @@ def main():
                     help="批量也跑 ASR 音频转写（默认关：无 AI 字幕视频留待后续单独处理）")
     ap.add_argument("--reset-risk-skip", action="store_true", default=False,
                     help="清空已记录的 412 风险跳过列表，让这些视频重新参与抓取")
+    ap.add_argument("--refresh-seasons", action="store_true", default=False,
+                    help="忽略合集映射缓存重拉（up_seasons）")
     ap.add_argument("--log-ttl-days", type=int, default=7,
                     help="无异常运行日志保留天数（默认 7，运行开始时自动清理；0=不清理）")
     args = ap.parse_args()
@@ -287,6 +298,16 @@ def main():
     started_at = time.time()
     list_path, out_path = _paths(args.uid, args.author)
     items = json.load(open(list_path, encoding="utf-8"))["items"]
+    # 合集识别（2026-10-06）：官方合集→BV 映射（up_seasons 带缓存），入队时显式传
+    # series 给路由器 → 【监控】/<平台>/<账号>/<合集名>；拉取失败降级为全部落【日更】。
+    season_map = {}
+    if args.enqueue:
+        try:
+            from scripts.up_seasons import fetch_seasons_map
+            season_map = fetch_seasons_map(args.uid, force=args.refresh_seasons)
+            _log(f"[seasons] 合集映射加载成功：{len(season_map)} 条 BV 归入官方合集")
+        except Exception as e:
+            _log(f"[seasons] 合集映射拉取失败，降级为全部落【日更】：{e}")
     pub_by_idx = {it["idx"]: it.get("created", 0) for it in items}
     results = []
     if os.path.exists(out_path):
@@ -464,11 +485,17 @@ def main():
                 raw_file = rec.get("raw_file") or ""
                 if (args.enqueue and rec.get("ok")
                         and raw_file and os.path.exists(raw_file)):
+                    series_name = season_map.get(it["bvid"], "")
                     status = enqueue_pending(url, title, args.author,
-                                             pub_by_idx.get(idx, 0), raw_file)
+                                             pub_by_idx.get(idx, 0), raw_file,
+                                             series=series_name)
                     if status == "queued":
                         enqueued += 1
-                        _log(f"[queue] 已入队: {title[:36]}")
+                        _log(f"[queue] 已入队: {title[:36]}"
+                             + (f"（系列: {series_name}）" if series_name else ""))
+                    elif status == "series-excluded":
+                        skipped += 1
+                        _log(f"[queue] 系列「{series_name}」在排除名单，跳过入队: {title[:36]}")
                     else:
                         skipped += 1
                         _log(f"[queue] 跳过入队（{status}）: {title[:36]}")
