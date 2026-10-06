@@ -53,8 +53,9 @@
 
 **转换规则（确定性代码，零 AI）**：Obsidian callout → 样式块；`chart` 数据块 → Chart.js 图
 （Chart.js 缺失时降级数据表格）；元数据行 → 页眉；`##` 标题自动生成目录。
-**chart 数据块是单一格式真源**（```chart JSON：`type: bar|line|pie` + `title/unit/labels/data`），
-Obsidian Charts 插件（用户本机已装/需装）与 HTML 导出器是它的两个消费者，互不另外定义格式。
+**chart 数据块是单一格式真源**（```chart：`type: bar|line|pie` + `title` + `labels` + `series[{title, data}]`，
+与 Obsidian Charts 插件**原生 schema 一致**，见 `prompts/templates.py` §质量纪律 4），
+Obsidian Charts 插件与 HTML 导出器是它的两个消费者，互不另外定义格式。
 
 **零件（非入口）**：`articles/html_export.py: render_note_html` / `export_note_html`（含自包含校验）；
 `articles/main.py: _export_html_safe`（落盘钩子，失败只告警不拦落盘）。

@@ -39,7 +39,12 @@ SAMPLE_MD = """#标签/A #领域/测试
 > 普通引用块保留原话
 
 ```chart
-{"type":"bar","title":"近三年营收","unit":"万元","labels":["2023","2024","2025"],"data":[120,180,340]}
+type: bar
+title: 近三年营收
+labels: ["2023", "2024", "2025"]
+series:
+  - title: 营收（万元）
+    data: [120, 180, 340]
 ```
 """
 
@@ -95,6 +100,20 @@ class TestRender:
         assert "data-chart=" in html
         spec = json.loads(_first_chart_payload(html))
         assert spec["type"] == "bar" and spec["labels"][0] == "2023"
+        assert spec["datasets"][0]["label"] == "营收（万元）"
+        assert spec["datasets"][0]["data"] == [120.0, 180.0, 340.0]
+        assert spec["title"] == "近三年营收"
+
+    def test_chart_multi_series(self, tmp_path):
+        p = tmp_path / "n.md"
+        p.write_text(
+            '## 一、x\n\n```chart\ntype: bar\ntitle: 营收 vs 利润\nlabels: ["2024", "2025"]\n'
+            'series:\n  - title: 营收\n    data: [100, 200]\n  - title: 利润\n    data: [10, 40]\n```\n',
+            encoding="utf-8")
+        html = open(hx.render_note_html(str(p)), encoding="utf-8").read()
+        spec = json.loads(_first_chart_payload(html))
+        assert [d["label"] for d in spec["datasets"]] == ["营收", "利润"]
+        assert spec["datasets"][1]["data"] == [10.0, 40.0]
 
     def test_chart_bad_json_keeps_code_block(self, tmp_path):
         p = tmp_path / "n.md"
@@ -103,6 +122,14 @@ class TestRender:
         assert '<figure class="chart-block"' not in html
         assert "{bad json}" in html
 
+    def test_chart_label_mismatch_keeps_code_block(self, tmp_path):
+        p = tmp_path / "n.md"
+        p.write_text(
+            '## 一、x\n\n```chart\ntype: bar\nlabels: ["a", "b"]\n'
+            'series:\n  - title: x\n    data: [1, 2, 3]\n```\n', encoding="utf-8")
+        html = open(hx.render_note_html(str(p)), encoding="utf-8").read()
+        assert '<figure class="chart-block"' not in html
+
     def test_chart_fallback_table_without_chartjs(self, tmp_path, monkeypatch):
         monkeypatch.setattr(hx, "_chartjs_file", lambda: "")
         p = tmp_path / "n.md"
@@ -110,6 +137,17 @@ class TestRender:
                      '"data":[3,7]}\n```\n', encoding="utf-8")
         html = open(hx.render_note_html(str(p)), encoding="utf-8").read()
         assert "chart-fallback" in html and "<table>" in html
+
+    def test_chart_fallback_multi_series_table(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hx, "_chartjs_file", lambda: "")
+        p = tmp_path / "n.md"
+        p.write_text(
+            '## 一、x\n\n```chart\ntype: bar\ntitle: 对比\nlabels: ["2024", "2025"]\n'
+            'series:\n  - title: 营收\n    data: [100, 200]\n  - title: 利润\n    data: [10, 40]\n```\n',
+            encoding="utf-8")
+        html = open(hx.render_note_html(str(p)), encoding="utf-8").read()
+        assert "<th>营收</th><th>利润</th>" in html
+        assert "<td>40</td>" in html
 
 
 def _first_chart_payload(html: str) -> str:

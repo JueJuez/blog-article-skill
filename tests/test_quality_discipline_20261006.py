@@ -6,7 +6,8 @@
    必须拼进全部 9 个模板（7 轻模板走 UNIVERSAL_RULES §七之四，structured/general 走 §十九）。
 2. 每个模板带各自的组织主线提示（Profile 吸收），且不得破坏
    「prompt 以 UNIVERSAL_RULES 结尾」的拼接契约（test_prompt_hygiene 同款锚点）。
-3. chart 块格式约定：JSON 单行、type 三选一、数字取自原文的措辞存在。
+3. chart 块格式约定：与 Obsidian Charts 插件原生 schema 一致（labels + series[{title,data}]）、
+   type 三选一、数字取自原文的措辞存在。
 """
 
 from prompts.templates import (
@@ -69,9 +70,11 @@ class TestProfileHints:
 
 class TestChartBlock:
     def test_chart_format_contract(self):
-        assert '"type"' in QUALITY_DISCIPLINE_RULES
-        assert '"labels"' in QUALITY_DISCIPLINE_RULES
-        assert '"data"' in QUALITY_DISCIPLINE_RULES
+        # schema 与 Obsidian Charts 插件原生一致：labels + series[{title,data}]
+        assert "labels" in QUALITY_DISCIPLINE_RULES
+        assert "series" in QUALITY_DISCIPLINE_RULES
+        assert "title:" in QUALITY_DISCIPLINE_RULES
+        assert "data:" in QUALITY_DISCIPLINE_RULES
         for t in ("bar", "line", "pie"):
             assert t in QUALITY_DISCIPLINE_RULES
 

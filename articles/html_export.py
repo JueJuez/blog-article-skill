@@ -7,7 +7,7 @@
 产物：单个自包含 .html（CSS / Chart.js 全部内联，零外链资源），默认与笔记同目录同名。
 转换规则（全部确定性代码）：
 - Obsidian callout（`> [!warning]` / `[!quote]` / `[!question]` …）→ 样式块；
-- `chart` 数据块（```chart JSON，与 Obsidian Charts 插件同一份格式真源）→ Chart.js 图；
+- `chart` 数据块（YAML/JSON，schema 与 Obsidian Charts 插件原生一致：type/title/labels + series）→ Chart.js 图；
   Chart.js 缺失（assets/chart.umd.min.js 未 vendored）时降级为数据表格，不失败；
 - 笔记头部元数据行（#标签行 / **作者** / **来源链接** / **发布时间**）→ 页眉与来源区；
 - `## 二级标题` 自动注入锚点并生成目录（TOC）。
@@ -134,33 +134,68 @@ def _render_callout(buf_lines):
             f'<div class="callout-body">{content_html}</div></div>')
 
 
-def _render_chart(json_text: str):
-    """```chart JSON 块 → Chart.js 容器；格式非法返回 None 保留原代码块。
+def _parse_chart_yaml(text: str):
+    """chart 块解析：优先 JSON（合法 YAML 子集），失败回退 PyYAML（插件式 YAML 写法）。
 
+    Obsidian Charts 插件同样按 YAML 解析，两种写法它都吃；这里对齐该语义。
+    """
+    stripped = text.strip()
+    try:
+        return json.loads(stripped)
+    except Exception:
+        import yaml
+        return yaml.safe_load(stripped)
+
+
+def _render_chart(json_text: str):
+    """```chart 数据块 → Chart.js 容器；格式非法返回 None 保留原代码块。
+
+    schema 与 Obsidian Charts 插件原生一致：type / title / labels + series[{title,data}]。
+    旧扁平 {labels,data} 单序列写法仍容忍解析（首个 series 无 title 时用 unit/空串兜底）。
     Chart.js 未 vendored 时降级为数据表格（自包含优先于图表效果）。
     """
     try:
-        data = json.loads(json_text.strip())
+        data = _parse_chart_yaml(json_text)
         ctype = data["type"]
-        labels = list(data["labels"])
-        values = list(data["data"])
-        if ctype not in ("bar", "line", "pie") or len(labels) != len(values) or not labels:
+        labels = [str(l) for l in data["labels"]]
+        if ctype not in ("bar", "line", "pie") or not labels:
             raise ValueError("bad chart spec")
-        values = [float(v) for v in values]
+        raw_series = data.get("series")
+        if isinstance(raw_series, list) and raw_series:
+            datasets = []
+            for s in raw_series:
+                vals = [float(v) for v in s["data"]]
+                if len(vals) != len(labels):
+                    raise ValueError("labels/data length mismatch")
+                datasets.append({"label": str(s.get("title", "")), "data": vals})
+        else:
+            vals = [float(v) for v in data["data"]]
+            if len(vals) != len(labels):
+                raise ValueError("labels/data length mismatch")
+            datasets = [{"label": str(data.get("unit", "")), "data": vals}]
     except Exception:
         return None
     title = str(data.get("title", ""))
-    unit = str(data.get("unit", ""))
     if not _chartjs_file():
-        rows = "".join(
-            f"<tr><td>{_html.escape(str(l))}</td><td>{v:g}</td></tr>"
-            for l, v in zip(labels, values))
-        cap = _html.escape(f"{title}（{unit}）" if unit else title)
+        if len(datasets) == 1:
+            rows = "".join(
+                f"<tr><td>{_html.escape(str(l))}</td><td>{v:g}</td></tr>"
+                for l, v in zip(labels, datasets[0]["data"]))
+            head = "<tr><th>项目</th><th>数值</th></tr>"
+        else:
+            head = "<tr><th>项目</th>" + "".join(
+                f"<th>{_html.escape(d['label'])}</th>" for d in datasets) + "</tr>"
+            rows = "".join(
+                "<tr><td>{}</td>{}</tr>".format(
+                    _html.escape(str(labels[i])),
+                    "".join(f"<td>{d['data'][i]:g}</td>" for d in datasets))
+                for i in range(len(labels)))
+        cap = _html.escape(title)
         return (f'<figure class="chart-fallback"><figcaption>{cap}</figcaption>'
-                f'<table><thead><tr><th>项目</th><th>数值</th></tr></thead>'
+                f'<table><thead>{head}</thead>'
                 f'<tbody>{rows}</tbody></table></figure>')
-    payload = json.dumps({"type": ctype, "title": title, "unit": unit,
-                          "labels": labels, "data": values}, ensure_ascii=False)
+    payload = json.dumps({"type": ctype, "title": title,
+                          "labels": labels, "datasets": datasets}, ensure_ascii=False)
     return (f'<figure class="chart-block" data-chart=\'{_html.escape(payload, quote=True)}\'>'
             f'<canvas></canvas></figure>')
 
@@ -281,17 +316,19 @@ footer.note-foot { margin-top:64px; padding-top:14px; border-top:1px solid var(-
 _CHART_INIT_JS = """
 (function(){
   if (typeof Chart === 'undefined') return;
+  var PALETTE = ['rgba(9,105,218,0.55)', 'rgba(234,120,0,0.55)', 'rgba(26,127,55,0.55)'];
   document.querySelectorAll('.chart-block').forEach(function(fig){
     var spec = JSON.parse(fig.getAttribute('data-chart'));
-    var label = spec.title + (spec.unit ? '（' + spec.unit + '）' : '');
+    var ds = spec.datasets.map(function(d, i){
+      return { label: d.label, data: d.data,
+               backgroundColor: spec.type === 'pie' ? undefined : PALETTE[i % PALETTE.length] };
+    });
     new Chart(fig.querySelector('canvas'), {
       type: spec.type,
-      data: { labels: spec.labels,
-              datasets: [{ label: label, data: spec.data,
-                           backgroundColor: spec.type === 'pie' ? undefined : 'rgba(9,105,218,0.55)' }] },
+      data: { labels: spec.labels, datasets: ds },
       options: { responsive: true, maintainAspectRatio: false,
-                 plugins: { title: { display: !!label, text: label },
-                            legend: { display: spec.type === 'pie' } } }
+                 plugins: { title: { display: !!spec.title, text: spec.title },
+                            legend: { display: spec.type === 'pie' || ds.length > 1 } } }
     });
   });
 })();
