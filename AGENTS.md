@@ -64,6 +64,8 @@
   - ⚠️ **两点实操坑（2026-09-11 实踩）**：① `fetch_up_range.py` 从 `os.environ["BILI_COOKIE"]` 读 cookie、且需 `OBSIDIAN_WRITE=1`/`DISABLE_FEISHU_SYNC=1` 才落本地 Obsidian——但**它自身不读 `.env`**；务必用 `python scripts/run_with_env.py -- python scripts/fetch_up_range.py ...` 包装（该包装器加载 `.env` 注入上述变量后转发子命令；实现在 `shared.env.run_with_env`），否则 cookie 取不到、落盘走错目标。⚠️ 2026-09-20 改名：前身 `scripts/_run_with_env.py` 因 `_` 前缀被 `.gitignore` 忽略、**从未入库**，导致 clone/换机后 `launch_*_detached.py` 一类入口全部 rc=1；旧名保留为转发壳，勿再引用。② 批量**默认跳过 ASR**（`BILI_BATCH_NO_ASR=1`）：只抓现成 CC 字幕，无字幕视频 `fetch` 直接返回 None → 不入队也不收集；要转写无字幕视频须显式加 `--with-asr`（音频下载受沙箱网络/登录态限制，可能失败，无解时标记待补）。
 - B站需要登录态：`BILI_COOKIE` 环境变量（动态接口硬性要求）。
 
+公众号登录恢复补充（2026-10-10）：每5秒仅本地检测cookie变化，检测到变化后以当前账号正式第一页请求验证并消费结果，不再用哥飞重复探活；未发送的签名失败不扣列表配额，发送状态未知保守占额。入口不变，真源见 `references/weread-direct-source.md` §5 第4项。
+
 ### 能力 3 · 存量重做（旧笔记按新版 prompt 重写，2026-09-17 转正）
 
 与能力 1/2 的**增量生产**相对：这条管线服务「库里已有的旧笔记」——抓源/补源 → 重写 → **in-place 覆盖原路径**，

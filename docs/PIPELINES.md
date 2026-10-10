@@ -131,6 +131,8 @@ Obsidian Charts 插件与 HTML 导出器是它的两个消费者，互不另外�
 `scripts/launch_weread_probe.py`（CDP 被动抓包 + DETACHED 启动器）、`scripts/weread_sig_probe.py`
 （签名复用验证）、`scripts/weread_hook_sr.py`（hook __WRPA__.sr 记录真实调用）。
 
+公众号登录恢复：只读本地cookie变化，不按5秒发探活；恢复后的当前账号业务请求只试一次并消费结果。请求统计与异常边界见 `references/weread-direct-source.md` §5 第4项（2026-10-10修订），入口命令不变。
+
 ## 5. 系列课管线
 
 **入口**：`python scripts/backfill_series.py --series <名>`（清单外整季补齐）；

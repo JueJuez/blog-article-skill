@@ -355,6 +355,10 @@ def format_health(health: dict) -> str:
         seg += f" · 异常 {name}({kind}: {detail})"
     if health.get("skipped"):
         seg += f" · 本轮跳过 {'/'.join(health['skipped'])}"
+    stats = health.get("request_stats")
+    if stats:
+        seg += (f" · 列表调用 {stats['attempted']}（发送 {stats['sent']} / "
+                f"未发送 {stats['not_sent']} / 发送未知 {stats['uncertain']}）")
     return seg
 
 
@@ -434,21 +438,23 @@ def _ensure_wrpa_ready(page, timeout_s: float = None) -> bool:
 _FETCH_JS = """async (args) => {
   const [api, maxLen] = args;
   const full = 'https://weread.qq.com' + api;
+  let sent = false;
   try {
     let sig = '';
     try {
       sig = (await window.__WRPA__.sr(full)).join(',');
     } catch (e) {
-      return { ok: false, err: 'no_signature:' + e };
+      return { ok: false, sent: false, err: 'no_signature:' + e };
     }
+    sent = true;
     const r = await fetch(full, {
       credentials: 'include',
       headers: { Accept: 'application/json, text/plain, */*', 'x-wrpa-0': sig },
     });
     const t = await r.text();
-    return { ok: true, status: r.status, body: t.slice(0, maxLen), len: t.length };
+    return { ok: true, sent: true, status: r.status, body: t.slice(0, maxLen), len: t.length };
   } catch (e) {
-    return { ok: false, err: String(e) };
+    return { ok: false, sent, err: String(e) };
   }
 }"""
 
@@ -462,28 +468,52 @@ class WereadLister:
     def __init__(self, session):
         self.session = session
         self.page = _find_or_open_weread_page(session)
+        self.request_stats = {"attempted": 0, "sent": 0, "not_sent": 0, "uncertain": 0}
 
     def fetch_list_raw(self, book_id: str, offset: int = 0, max_len: int = 2_000_000) -> dict:
         """拉一页列表，返回解析后的 JSON（可能含 errCode）。请求层异常抛 RuntimeError。
 
-        单一请求咽喉：每次调用计入当日配额（WEREAD_DAILY_QUOTA），耗尽抛
+        单一请求咽喉：确认发出的请求和发送状态未知的调用计入配额，耗尽抛
         WereadQuotaExhausted 熔断（调用方按场景跳过或停止续批）。
         """
+        self.request_stats["attempted"] += 1
         blocked = weread_block_message()
         if blocked:
+            self.request_stats["not_sent"] += 1
+            print(f"[weread-request] bookId={book_id} offset={offset} not_sent=quota", file=sys.stderr)
             raise WereadQuotaExhausted(blocked)
-        quota_record(1)
         api = LIST_API.format(book_id=book_id, offset=offset)
-        res = self.page.evaluate(_FETCH_JS, [api, max_len])
+        try:
+            res = self.page.evaluate(_FETCH_JS, [api, max_len])
+        except Exception:
+            # CDP 中断时无法确认 fetch 是否发送；保守占额，但不冒称真实发送。
+            quota_record(1)
+            self.request_stats["uncertain"] += 1
+            print(f"[weread-request] bookId={book_id} offset={offset} sent=unknown quota=1", file=sys.stderr)
+            raise RuntimeError("列表请求执行中断，发送状态未知；保守计入配额") from None
+        if isinstance(res, dict) and res.get("sent") is False:
+            self.request_stats["not_sent"] += 1
+        else:
+            quota_record(1)
+            confirmed_sent = isinstance(res, dict) and (res.get("sent") is True or res.get("ok"))
+            self.request_stats["sent" if confirmed_sent else "uncertain"] += 1
         if not isinstance(res, dict) or not res.get("ok"):
             err = (res or {}).get("err", "evaluate 返回空") if isinstance(res, dict) else res
+            print(f"[weread-request] bookId={book_id} offset={offset} sent={res.get('sent', 'unknown') if isinstance(res, dict) else 'unknown'} failed", file=sys.stderr)
             raise RuntimeError(f"页内 fetch 失败: {err}")
         if res.get("status") != 200:
+            print(f"[weread-request] bookId={book_id} offset={offset} HTTP={res.get('status')}", file=sys.stderr)
             raise RuntimeError(f"列表接口 HTTP {res.get('status')}")
         try:
-            return json.loads(res.get("body") or "{}")
+            response = json.loads(res.get("body") or "{}")
         except json.JSONDecodeError:
             raise RuntimeError(f"列表响应非 JSON（前 200 字）：{(res.get('body') or '')[:200]}")
+        code = response.get("errCode", 0) if isinstance(response, dict) else "invalid_json_shape"
+        print(f"[weread-request] bookId={book_id} offset={offset} HTTP=200 errCode={code} articles={len(parse_reviews(response))}", file=sys.stderr)
+        if code and isinstance(response, dict):
+            error = {k: response[k] for k in ("errCode", "errMsg", "message") if k in response}
+            print("[weread-response] " + json.dumps(error, ensure_ascii=False), file=sys.stderr)
+        return response
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +533,28 @@ def has_login_cookie(session) -> bool:
         return any(c.get("name") == "wr_skey" for c in cookies)
     except Exception:
         return False
+
+
+def _login_cookie_fingerprint(session) -> tuple:
+    """仅在内存比较登录凭据变化；不打印、不落盘凭据值。"""
+    cookies = session.context.cookies("https://weread.qq.com")
+    return tuple(sorted((c.get("name", ""), c.get("domain", ""), c.get("path", ""),
+                         c.get("value", "")) for c in cookies
+                        if c.get("name") == "wr_skey" and c.get("value")))
+
+
+def _wait_login_cookie_change(session, before: tuple, timeout: int) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            current = _login_cookie_fingerprint(session)
+            if current and current != before:
+                print("[relogin] 检测到登录 cookie 变化（仅本地读取，未发列表请求）", file=sys.stderr)
+                return True
+        except Exception:
+            pass
+        time.sleep(min(5, max(0, deadline - time.monotonic())))
+    return False
 
 
 def has_refresh_token(session) -> bool:
@@ -540,16 +592,16 @@ def try_silent_renew(session, wait_s: float = 8.0) -> bool:
 def trigger_weread_relogin(session, timeout: int, qr_path: str = None) -> bool:
     """登录态失效续期：打开登录页 → 截二维码 → 等扫码 → 轮询登录态恢复。
 
-    - 二维码截图落 qr_path 并打印 RELOGIN_QR:<path>（上层会话/用户据此扫码）。
+    - 登录页面截图落 qr_path 并打印 RELOGIN_QR:<path>（可能为快捷登录面板或二维码）。
     - 列表请求在页面内发、cookie 由浏览器实时携带：**扫码成功即新 cookie 自动生效**，
       无任何落盘凭据需要更换。
-    - 返回 True=登录态已恢复（wr_skey 在且列表接口探活 200）；False=超时/失败。
+    - 返回 True=检测到登录 cookie 变化；调用方用当前公众号的业务请求验证并消费结果。
     """
     qr_path = qr_path or RELOGIN_QR_PATH
+    before = _login_cookie_fingerprint(session)
     if has_login_cookie(session):
-        # wr_skey 仍在：登录没丢，-2041 是人机检测/风控而非过期——扫码无意义
-        print("[relogin] 登录 cookie 仍在（wr_skey），-2041 非过期所致；"
-              "请走人机检测过码（python scripts/weread_captcha.py --shot）", file=sys.stderr)
+        # cookie存在不能证明服务端接受；避免再循环登录，交给错误码/页面检测判断。
+        print("[relogin] 登录 cookie 仍在，不重复登录；请检查接口返回与页面安全检测。", file=sys.stderr)
         return False
     page = _find_or_open_weread_page(session)
     try:
@@ -569,28 +621,13 @@ def trigger_weread_relogin(session, timeout: int, qr_path: str = None) -> bool:
         os.makedirs(os.path.dirname(qr_path), exist_ok=True)
         page.screenshot(path=qr_path)
         print(f"RELOGIN_QR:{qr_path}", file=sys.stderr)
-        print(f"[relogin] 二维码已截图（{qr_path}），请用微信扫码登录微信读书"
+        print(f"[relogin] 登录页面已截图（{qr_path}），请完成微信快捷登录或扫码"
               f"（最长等 {timeout}s）…", file=sys.stderr)
     except Exception as e:
         print(f"[relogin] 打开登录页失败: {e}", file=sys.stderr)
         return False
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        time.sleep(5)
-        if not has_login_cookie(session):
-            continue  # wr_skey 尚未出现
-        # cookie 已出现：打 1 次列表探活确认服务端会话有效（不额外消耗业务配额）
-        try:
-            lister = WereadLister(session)
-            resp = lister.fetch_list_raw(BOOK_ID_FALLBACK["哥飞"], 0)
-            if classify_list_response(resp) == "ok":
-                print("[relogin] ✅ 扫码成功，登录态已恢复", file=sys.stderr)
-                return True
-        except WereadQuotaExhausted:
-            print(f"[relogin] {quota_block_message()}（探活未执行）", file=sys.stderr)
-            return False
-        except Exception:
-            continue
+    if _wait_login_cookie_change(session, before, timeout):
+        return True
     print(f"[relogin] ⏰ 等待扫码超时（{timeout}s）", file=sys.stderr)
     return False
 
@@ -735,8 +772,15 @@ def discover_weread(state: dict, entries: list, session=None,
                     # 真过期/续期失败 → 弹二维码等扫码（页面内 fetch 的 cookie 由浏览器实时
                     # 携带，扫码成功即自动生效）。wr_skey 仍在 → 该函数内部判为风控、不弹码。
                     relogin_used = True
+                    health["relogin"] = True
+                    # 登录页可能不加载签名器；重新定位 SPA 后只重试当前账号一次。
+                    lister.page = _find_or_open_weread_page(session)
                     its, rids, res = _process_one_account(
                         lister, state, e, cutoff, WEREAD_MAX_PAGES, baseline_only=False)
+                    if res["status"] == "ok":
+                        print("[relogin] 当前公众号列表验证成功，直接消费本次结果", file=sys.stderr)
+                    elif res["status"] == "quota":
+                        res["detail"] = "已检测到登录 cookie 变化，但配额不足，恢复后的列表请求未发送；" + res["detail"]
             if res["status"] != "ok":
                 if res["status"] == "captcha":
                     health["captcha"] = True
@@ -757,6 +801,7 @@ def discover_weread(state: dict, entries: list, session=None,
                 health["new"] += res["new_n"]
             time.sleep(random.uniform(WEREAD_ACCOUNT_GAP_MIN, WEREAD_ACCOUNT_GAP_MAX))  # 号间退避 6~10s
     finally:
+        health["request_stats"] = getattr(lister, "request_stats", {}) if 'lister' in locals() else {}
         if own_session:
             try:
                 session.close()
@@ -838,6 +883,7 @@ def discover_weread_backfill(state: dict, entries: list, since_ts: int,
                         if trigger_weread_relogin(session, WEREAD_RELOGIN_WAIT):
                             health["relogin"] = True
                             relogin_used = True
+                            lister.page = _find_or_open_weread_page(session)
                             continue  # 同一 offset 重试（扫码后 cookie 自动生效）
                     health["errors"].append((name, cat, f"errCode={code}"))
                     stop = True
@@ -874,6 +920,7 @@ def discover_weread_backfill(state: dict, entries: list, since_ts: int,
             if n_pages >= max_pages and oldest is not None and oldest >= since_ts:
                 health["reached_since"] = False  # 截断未到 since，再跑一次续
     finally:
+        health["request_stats"] = getattr(lister, "request_stats", {}) if 'lister' in locals() else {}
         if own_session:
             try:
                 session.close()

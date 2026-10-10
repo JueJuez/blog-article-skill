@@ -80,6 +80,8 @@
 - 细节与触发规则以 `tools/project_import/SKILL.md` 为准；本路线**不**走 `OutputManager`（不写 wiki 笔记、不碰 Obsidian 笔记）。
 - scys 新帖监控窗口以 `scripts/scys_projects.json` 的 `defaults.since_days` / `subscriptions.json` 的 scys 条目覆盖为准（不写死）。
 
+公众号登录恢复与配额统计以 `references/weread-direct-source.md` §5 第4项 和 `monitors/weread.py` 为准：本地cookie变化检测不耗列表额度，恢复后只验证当前账号一次并直接消费结果，不额外探活；未发送与发送状态未知分开报告。
+
 ### 3.4 Obsidian 库结构（与飞书镜像 · 2026-09-04 调整）
 
 > 默认只写本地 Obsidian 后，库结构**直接镜像 `shared/routing.resolve_folder` 的飞书结构**（落盘代码把路由路径拼进 filename，Obsidian 原样保留）。三层根与飞书一一对应：

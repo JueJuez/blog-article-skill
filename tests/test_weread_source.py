@@ -26,6 +26,7 @@ from monitors import run as run_mod  # noqa: E402
 def _isolated_quota(tmp_path, monkeypatch):
     """所有用例默认使用临时配额台账（与真实 .weread_quota.json 隔离）。"""
     monkeypatch.setattr(wr, "QUOTA_PATH", str(tmp_path / "quota.json"))
+    monkeypatch.setattr(wr.time, "sleep", lambda _: None)
 
 
 def _review(rid: str, title: str, ts: int) -> dict:
@@ -167,6 +168,7 @@ def test_resolve_book_ids_fallback_and_cache(tmp_path, monkeypatch):
 
 class FakePage:
     def __init__(self, responses=None, text=""):
+        self.url = "https://weread.qq.com/web/shelf"
         self.responses = list(responses or [])
         self.text = text
         self.fetch_apis = []
@@ -179,7 +181,7 @@ class FakePage:
             return self.text
         self.fetch_apis.append(args[0])
         resp = self.responses.pop(0) if self.responses else {}
-        return {"ok": True, "status": 200, "body": json.dumps(resp), "len": 0}
+        return {"ok": True, "sent": True, "status": 200, "body": json.dumps(resp), "len": 0}
 
     def screenshot(self, path=None):
         self.shots.append(path)
@@ -214,7 +216,10 @@ def _entries(n=2):
 
 def test_discover_first_run_baseline_only(tmp_path, monkeypatch):
     """首跑语义：seen 为空的号只建基线（全部 reviewId 入 seen），不产总结条目。"""
-    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MAX", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MAX", 0)
     page = FakePage(responses=[_resp([f"MP_WXS_1_{c}" for c in "abc"])])
     state = {"sources": {}}
     items, health = wr.discover_weread(state, _entries(1), session=FakeSession(page))
@@ -225,7 +230,10 @@ def test_discover_first_run_baseline_only(tmp_path, monkeypatch):
 
 
 def test_discover_incremental_dedup(tmp_path, monkeypatch):
-    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MAX", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MAX", 0)
     monkeypatch.setattr(wr, "WEREAD_WINDOW_DAYS", 0)  # 关时间窗（测试用旧时间戳）
     state = {"sources": {"weread:MP_WXS_100": {"seen": ["MP_WXS_1_a"]}}}
     page = FakePage(responses=[_resp([f"MP_WXS_1_{c}" for c in "abc"])])
@@ -236,7 +244,10 @@ def test_discover_incremental_dedup(tmp_path, monkeypatch):
 
 def test_discover_auth_error_stops_remaining_accounts(monkeypatch):
     """-2041 → 观测上报路径：记录错误码、停手、剩余号跳过且零请求。"""
-    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MAX", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MAX", 0)
     monkeypatch.setattr(wr, "WEREAD_AUTO_RELOGIN", False)  # 本测关闭自动弹码，验上报语义
     page = FakePage(responses=[{"errCode": -2041}])   # 只有 1 个响应：号1 若被请求会拿空
     state = {"sources": {"weread:MP_WXS_1": {"seen": ["x"]}}}
@@ -249,7 +260,10 @@ def test_discover_auth_error_stops_remaining_accounts(monkeypatch):
 
 
 def test_discover_captcha_screenshots_and_stops(monkeypatch, tmp_path):
-    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MAX", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MAX", 0)
     monkeypatch.setattr(wr, "CAPTCHA_DIR", str(tmp_path))
     page = FakePage(responses=[_resp([f"MP_WXS_1_{c}" for c in "abc"])],
                     text="安全检测中，请完成验证后继续访问")
@@ -262,7 +276,10 @@ def test_discover_captcha_screenshots_and_stops(monkeypatch, tmp_path):
 
 def test_discover_unreachable_token_skipped_and_not_seen(monkeypatch):
     """含 ~ 的非 /s/ 型 token（实测 mp 直链「参数错误」）：不入队、不标 seen，健康度暴露。"""
-    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MAX", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MAX", 0)
     monkeypatch.setattr(wr, "WEREAD_WINDOW_DAYS", 0)
     state = {"sources": {"weread:MP_WXS_100": {"seen": ["MP_WXS_100_dummy"]}}}
     page = FakePage(responses=[_resp(["MP_WXS_100_okToken1", "MP_WXS_100_bad~Token"])])
@@ -309,7 +326,7 @@ def test_run_discover_all_weread_enabled(monkeypatch):
     monkeypatch.setattr(wr, "resolve_book_ids", lambda subs: [
         {"name": "哥飞", "book_id": "MP_WXS_2399233620", "category": ""}])
     all_new = run_mod.discover_all({"wechat": [{"name": "哥飞"}], "bilibili": []},
-                                   {"sources": {}})
+                                   {"sources": {}}, mode="weread", include_weread=True)
     assert captured["entries"][0]["book_id"] == "MP_WXS_2399233620"
     assert all_new == [item]
 
@@ -330,7 +347,10 @@ def test_run_discover_all_weread_skipped_in_backfill(monkeypatch):
 def test_discover_window_filters_by_publish_time(monkeypatch):
     """30 天窗语义：日更号窗口内全要、窗口外不翻；周更号窗口内几篇抓几篇。"""
     now = int(time.time())
-    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MAX", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MAX", 0)
     monkeypatch.setattr(wr, "WEREAD_WINDOW_DAYS", 7)
     state = {"sources": {"weread:MP_WXS_100": {"seen": ["MP_WXS_100_dummy"]}}}
     resp = {"reviews": [{"subReviews": [
@@ -346,7 +366,10 @@ def test_discover_window_filters_by_publish_time(monkeypatch):
 def test_discover_relogin_retries_account(monkeypatch):
     """登录态错误 → 自动弹码 → 扫码成功 → 重试本号并产出条目（页面内 cookie 自动生效）。"""
     now = int(time.time())
-    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MAX", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MAX", 0)
     monkeypatch.setattr(wr, "WEREAD_WINDOW_DAYS", 0)
     monkeypatch.setattr(wr, "WEREAD_AUTO_RELOGIN", True)
     monkeypatch.setattr(wr, "WEREAD_RELOGIN_WAIT", 1)
@@ -368,7 +391,10 @@ def test_discover_relogin_retries_account(monkeypatch):
 
 def test_discover_relogin_failure_reports(monkeypatch):
     """扫码超时/失败：记错误停手，剩余号跳过（不硬闯）。"""
-    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MAX", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MAX", 0)
     monkeypatch.setattr(wr, "WEREAD_WINDOW_DAYS", 0)
     monkeypatch.setattr(wr, "WEREAD_AUTO_RELOGIN", True)
     monkeypatch.setattr(wr, "WEREAD_RELOGIN_WAIT", 1)
@@ -384,7 +410,10 @@ def test_discover_relogin_failure_reports(monkeypatch):
 def test_backfill_collects_until_since(monkeypatch):
     """补全语义：since 之内未抓的全入队；翻到早于 since 的页即停（reached_since）。"""
     now = int(time.time())
-    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MAX", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MAX", 0)
     monkeypatch.setattr(wr, "WEREAD_WINDOW_DAYS", 0)
     state = {"sources": {"weread:MP_WXS_100": {"seen": ["MP_WXS_100_dummy"]}}}
     resp = {"reviews": [{"subReviews": [
@@ -404,7 +433,10 @@ def test_backfill_collects_until_since(monkeypatch):
 def test_backfill_page_cap_reports_continue(monkeypatch):
     """页数上限截断未到 since：reached_since=False，再跑一次即续批。"""
     now = int(time.time())
-    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MAX", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MAX", 0)
     state = {"sources": {"weread:MP_WXS_100": {"seen": []}}}
     # 每次取页都返回同一批 20 条（FakePage 弹尽后返回 {} → 但这里让 responses 循环）
     resp = {"reviews": [{"subReviews": [
@@ -481,7 +513,10 @@ def test_backfill_stops_when_quota_exhausted_midway(tmp_path, monkeypatch):
     monkeypatch.setattr(wr, "QUOTA_PATH", str(tmp_path / "quota.json"))
     monkeypatch.setattr(wr, "WEREAD_DAILY_QUOTA", 16)
     monkeypatch.setattr(wr, "WEREAD_HOURLY_QUOTA", 6)
-    monkeypatch.setattr(wr, "LIST_GAP", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_ACCOUNT_GAP_MAX", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MIN", 0)
+    monkeypatch.setattr(wr, "WEREAD_PAGE_GAP_MAX", 0)
     wr.quota_record(5)                       # 小时层剩 1：第 1 页成功，第 2 页熔断
     state = {"sources": {"weread:MP_WXS_100": {"seen": []}}}
     now = int(time.time())
