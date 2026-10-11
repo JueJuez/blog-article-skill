@@ -1,161 +1,46 @@
-# blog-article-skill — 项目入口（平台无关 · 真源）
+# blog-article-skill — Agent 工作入口
 
-> **本文件是跨平台「真源」引导入口。** 无论你用 WorkBuddy / Cursor / Claude / Codex / Copilot / 裸 API，
-> 只要把本文件（或它指向的 `RULES.md`）加载进模型上下文，下面这套**流程、功能、配置**就全部接上。
-> WorkBuddy 专属的 `SKILL.md` 只是「薄触发层」，所有真规则以本文件 + `RULES.md` 为准，避免平台切换时流程丢失。
+将文章、视频、字幕和订阅内容转成结构化笔记，默认归档到本地 Obsidian；开源项目抽取单独入项目库。
 
-## 一句话定位
+## 开工读取顺序
 
-> **找管线入口先看 `docs/PIPELINES.md`（唯一真源）**：本文只做能力导览，每条管线的「入口命令 / 零件清单 /
-> 常见误用」以 PIPELINES 为准。新增或改造管线必须先更新它，否则下一个 Agent 会找不到入口而新开重复实现。
-把「文章 / 视频链接、原文、字幕、订阅的 B站UP主 / 公众号」自动转成结构化笔记，归档到 **本地 Obsidian（默认，2026-09-04 起）；飞书不再默认写入**。
+1. [docs/PIPELINES.md](docs/PIPELINES.md)：管线入口唯一真源，先确定任务入口。
+2. [RULES.md](RULES.md)：强制规则、输出与质量契约，按任务读取相关小节。
+3. [docs/README.md](docs/README.md)：文档职责、模块边界、计划与历史导航。
+4. 再读所选管线的专项说明，不默认加载全部历史日志。
 
----
+## 任务路由
 
-## 五个核心能力
-
-### 能力 1 · 一次性总结（文章 / 视频）
-用户给**文章链接、原文、或视频（YouTube / Bilibili）链接 / 字幕** → 总结成笔记。
-- **入口（任选）**
-  - **统一入口（推荐）**：`python articles/run.py "https://..."` 或 `from articles import skill_main; skill_main({"content": url_or_text})` —— `fetch_web_content` 检测到 `scys.com` 链接自动分流 CDP 登录态抓取，普通博客走 requests。**用户给单篇或多篇混合链接（普通博客 + scys）都逐条自动分流，前端无感。**（回归测试 `tests/test_scys_routing.py`）
-  - **需登录态（scys 付费文 / 监控）底层路径**：统一走 `shared/cdp_session.py` 的 `SharedCdpSession` 单一入口（**实例层已上移用户级技能 `cdp-automation-profile`：内核含 `SharedCdpSession` 会话 + `ensure_endpoint` 三段式编排，项目侧仅为业务薄子类**）——**健康复用优先（2026-09-10）**：克隆目录有活调试 Chrome（DevToolsActivePort 可探测）直接 connect_over_cdp 复用（close 只断开不杀，多 Agent 不互杀）；探测失败先自愈 stale 端口文件（按活进程命令行找真实端口，命中回写直接复用），仍失败按旧端口 + 克隆目录双重清僵尸；仅 clone 陈旧/缺失（`clone_is_fresh()`，3 天 marker）才关 Chrome + **一次性全量复制**真实 profile 到非默认目录 `CdpAutomationProfile\Chrome` + 调试端口接管（用户零操作；可用 `CDP_PROFILE_DIR` 覆盖，旧 `ProfileClone` 目录已弃用）。2026-09-04 已验证：全量复制能完整保留书签、cookies、扩展、Google 登录态；增量同步部分文件会破坏 Secure Preferences 导致扩展/登录态丢失，已废弃。Chrome 151+ 已废弃 junction / 活 Chrome 调试端口方案（会触发扩展被删）。监控 `monitors/run.py` 与 `scripts/scys_batch_fetch.py` 内部已用，无需手动调 `login_cdp_fetch.py`（仅端口探测诊断）。scys 付费文 SOP 见 `references/scys-fetch-sop.md`；CDP 机制见 `references/login-required-cdp-workflow.md` §1.1。**实例层（会话 + `ensure_endpoint`）与 profile 复制/间隔计时/实例清理统一在用户级 SKILL `cdp-automation-profile`（`~/.workbuddy/skills/cdp-automation-profile/`）——跨项目单一真源，新会话/新项目直接委托它（`ensure_profile_clone` 已委托）；生命周期统一为「实例常驻、连接只断开、marker 过期才清理」（无定期全量复制；强杀兜底走技能 CLI `--kill`），不要重造编排/复制逻辑。**
-  - **scys 按领域批量抓取**：`python scripts/scys_batch_fetch.py --project <领域>`（领域 / menuId / 时间窗在 `scripts/scys_projects.json` 配置，换领域每半年重抓只改 JSON 不改代码）。**触发词：用户说「补齐scys / 补齐生财有术」即自动启动全流程（默认=精华+高互动非精华，2026-08-21 起），后缀自然语言改参数（领域/时间/仅精华），语义见 `references/scys-fetch-sop.md` §9。** **长任务归属（2026-09-12 修正）**：数小时 / 多域补齐走 `python scripts/launch_scys_backfill.py`——**调度器自身非 DETACHED，每域 spawn 一个独立 DETACHED 子进程**（脱离会话、抗轮次回收；串行 wait 保证全局单 Chrome）。勿用 `run_in_background` 跑数小时任务（进程在会话进程树里，轮次结束被回收，见 `RULES.md` §4.7）。
-  - 视频：`python videos/run.py --url "https://..."` 或 `from videos import summarize_video; summarize_video({"url": url})`（含 ASR 兜底）
-- 自动按内容类型选模板（`structured` / `key_points` / `interview` / `roundup` / `reading` / `case` / `opinion` / `dissection` 创作解剖——爆款拆解/带货/涨粉/账号运营复盘额外提炼可复用结构模具）；**默认写本地 Obsidian（2026-09-04 起），不写飞书**。
-- **质量纪律（2026-10-06 全模板内置）**：商业推广识别（推广段就近标注【推广】，不得当作者观点/事实进结论）、文风禁令（去转述引导语、禁「不是…而是…」句式、观点不升格为事实）、来源绑定（核心结论须有原文依据）、数据图表（原文有 ≥3 组可对比数字时产出 ` ```chart ` 数据块，schema 与 Obsidian Charts 插件原生一致：`type: bar|line|pie` + `title` + `labels` + `series[{title,data}]`——插件与分享版 HTML 共用这一份格式真源，数字必须原样取自原文；图数按内容动态——基准 1~2 张，原文 ≥4 组独立对比时硬上限 4 张，禁止同数据重复画图）。定义在 `prompts/templates.py: QUALITY_DISCIPLINE_RULES`（单一真源，勿在模板里另写）。
-- **分享版 HTML（2026-10-06）**：用户说「**分享 / 出分享版 / HTML 版**」→ 落盘调用带 `share_html:1`（`save_summary_only` 的 input_data 键），落盘成功后自动在同目录生成自包含 `.html`（CSS/Chart.js 全内联、零外链，浏览器打开即看）；**没说就只落盘不产 HTML**。存量笔记单独导出走 `python scripts/export_note_html.py "<md路径>"`。机制与转换规则见 `docs/PIPELINES.md` §2.1。
-- **降级**：无外部 AI 时 `skill_main` 返回 `need_continue_summary` + 原文 + 模板 prompt；外层模型总结后调 `save_summary_only` 存档。
-
-### 能力 2 · 订阅监控（关注 B站UP主 / 公众号 / scys 领域）
-让用户「持续订阅某账号，自动发现新内容并总结」。
-- **配置订阅**：编辑 `monitors/subscriptions.json`（参考 `monitors/subscriptions.example.json`）
-  - B站：`{"uid": "数字UP主ID"}`
-  - 公众号：`{"mp_id": "..."}` 或 `{"share_url": "公众号分享链接"}`
-  - scys：`{"project": "领域名"}`（领域→menuId 映射在 `scripts/scys_projects.json`；当前订阅 **7 域**见 `monitors/subscriptions.json` 的 `scys` 列表：AI产品开发 / 小程序 / 出海 / 自媒体 / AI自媒体 / 虚拟产品 / 垂直小号）
-  - 用户口头说「关注 / 订阅 / 监控 XXX」时：
-    - **B站UP主**：**走机械命令** `python monitors/run.py --subscribe --uid <id> --name <名> --category <类> [--sub-all | --sub-window <天>]`（命令会先查重，已在名单则回「已在监控名单内」且不添加，不手搓 JSON）。
-    - **公众号 / scys 领域**：编辑 `monitors/subscriptions.json`，格式参考 `monitors/subscriptions.example.json`（公众号：`{"mp_id":"..."}` 或 `{"share_url":"..."}`；scys：`{"project":"领域名"}`）。
-    - **去掉某系列课（2026-09-19）**：账号条目加 `"series_exclude": ["B站 ugc_season 季名", ...]` → 监控管线内命中即整体跳过（不抓/不总结/不入队），已落盘笔记与登记表条目需另行清理；机制见 `monitors/README.md`「系列排除」。
-    - 不要手搓抓取代码。
-- **运行**
-  - **公众号源现状（2026-09-19 全链路打通）**：旧代理源（wewe-rss）已死永久停用；接替方案「微信读书直连」**已开发落地**（`monitors/weread.py`）——`.env` 设 `WEREAD_SOURCE_ENABLED=1` 启用后随每日监控自动发现新文：**时间窗语义**（`WEREAD_WINDOW_DAYS=2` 基础窗，断跑自动补齐封顶 30 天；日更号 30 天≈30 篇、周更号≈4 篇，与更新频率无关），正文走 mp 直链同普通公众号管线。**登录失效自动弹码**（`WEREAD_AUTO_RELOGIN=1`：截二维码落 `monitors/weread_login_qr.png` + `RELOGIN_QR:` 提示，你扫码后 cookie 浏览器内自动生效、自动续抓）；**人机检测自动过码**（会话内模型识图 → `scripts/weread_captcha.py --shot`/`--grid "行,列" --confirm`，实测跑通）；历史补全：`python monitors/run.py --weread-backfill --names 哥飞 --since 2026-03-01 --apply`（补到指定日期，未翻到再跑即续批）。**双层配额熔断**（日 25 / 小时 6，`.weread_quota.json` 按天/小时计数）：到线自动跳过公众号源或停止补续批，绝不硬闯。**连环码熔断**：正常只 1 次人机验证，同日第 2 次提交 = 高危风控信号 → 自动熔断 12 小时不发任何请求（`WEREAD_CAPTCHA_SERIAL_LIMIT`/`WEREAD_RISK_COOLDOWN_HOURS`）。bookId 映射在 `monitors/weread.py` 的 `BOOK_ID_FALLBACK` + `.mp_cache.json`。机制/翻页规则/防封纪律真源 `references/weread-direct-source.md`。
-  - 首跑（回填最近 30 天）：`python monitors/run.py --mode first --apply`
-  - **每日增量（B站 + scys）**：`python monitors/run.py --mode auto --apply`（**不再挂自动调度**；用户说「跑一次 / 跑一下 / 跑监控」等关键词即触发）——**只跑 B站 + scys 七领域新帖增量**（窗口/门槛以 `scripts/scys_projects.json` 为准，详见 `monitors/README.md`「scys 新帖监控」）。⚠️ **2026-09-26 起 `--mode auto` 默认不含公众号/weread**：公众号撞人机验证无法在无人值守时自动过码，已抽出独立命令。
-  - **公众号增量（weread 直连，需过码）**：用户说「跑公众号 / 跑一下公众号 / 抓公众号 / 公众号增量」即触发 `python monitors/run.py --mode weread --apply`（撞人机验证时由本会话**自动截图+识图+点选过码**，无需你动手）；配额熔断 / 连环码（滑动窗口内连续）熔断时自动停手，次日或冷却后再跑。历史补全见下方「历史回溯」。
-  - **并行模式（可选，2026-08-29 起）**：`python monitors/run.py --parallel --mode auto` 走三源并行 worker（B站/微信/scys 各一 worker，各自写独立 staging 文件 → 父进程合并，消除并发写 `pending_summaries`/`pending_refetch` 队列的竞态；父进程建一次 CDP 会话、各 worker 经 `from_endpoint` 复用，仅一次 kill Chrome）。串行 `--mode auto --apply` 仍是**默认且推荐的日常路径**（惰性 CDP：纯 B站/动态轮次 0 kill）。并行路径代码层 + 单测已通过；真环境端到端已验证（2026-09-02 三源并行实跑；边界与验证见 `docs/plans/PLAN-20260828-parallel-monitor.md` §边界矩阵 #11/#12）。
-  - **新会话执行步骤（照做即一帆风顺）**：
-    1. 直接运行 `python monitors/run.py --mode auto --apply`（B站 + scys，无 captcha，可无人值守）。
-    2. 公众号/weread 源**不再**随 `--mode auto` 跑（2026-09-26 起默认排除）。需抓公众号时，**人在场**再单独跑 `python monitors/run.py --mode weread --apply`；撞人机验证时按如下处置：**cookie 失效** → 自动截登录二维码（`monitors/weread_login_qr.png` + `RELOGIN_QR:` 提示），用户微信扫码后 cookie 浏览器内自动生效、本次运行即继续抓取；**人机验证** → 会话内执行模型识图过码（`scripts/weread_captcha.py --shot`/`--grid "行,列" --confirm`，自动核验）。请求全程挂双层配额（日 25/小时 6），到线熔断跳过公众号源。headless/无人看码则不要跑 `--mode weread`（会白撞码、浪费 weread 日配额）。
-    3. 发现 → 抓正文 → 进 `pending_summaries.json` 队列（FORCE_AGENT_MODE 下不自动总结；系列课单集经五步管线与单视频同队列，PLAN-20260908 后无独立系列队列）；scys 新帖进 `notes/_scraped/scys/pending_summaries.json` 队列。
-    4. 运行结束后，本会话（执行模型）**必须**在本次会议内闭环两类待总结队列（全自动，无需用户手动命令）：
-       - **派单前先跑 `python scripts/filter_pending.py`**（机械清洗两队列：URL 命中 dedup 索引的已总结条目自动出队、scys 队列清 `summarized:true`——多 Agent 接力时已总结内容不再浪费 AI token、不重复落盘；2026-10-06 起同时**默认按当前模板重算各条目的预计算 prompt**，长跑补齐进程的老模板条目在消费前自动刷新，无需重抓）。
-       - **跨来源去重（2026-09-03，代码自动）**：生财有术公众号文章在总结管线前会与 scys 归档做标题/正文前缀相似比对，命中直接跳过（日志 `[cross-dedup]`、健康度 `scys重复 N`），无需人工干预（详见 `docs/decisions/DECISION-20260903-cross-source-dedup.md`）。
-       - **单篇**：读 `pending_summaries.json`，派**子 Agent** 消费条目已预计算的 prompt 总结并 `save_summary_only` 落盘（默认本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0）。
-       - **scys**：读 `notes/_scraped/scys/pending_summaries.json`，派**子 Agent** 按 `references/scys-fetch-sop.md` §9 语义总结并落盘（folder=生财有术/<领域>）-> 出队。⚠️ **三队列统一 prompt 预计算（2026-09-05 起）**：monitors 降级队列 / scys 批量队列 / UP 队列三个入队写点（`monitors/run.py:_queue_pending_summary`、`scripts/scys_batch_fetch.py:build_pending_entry`、`scripts/fetch_up_range.py`）都会按分类器选定模板 + 按源长算好的「篇幅目标块」（`render_coverage_guide`，内容完整优先）+ `QUALITY_GATE_SELFCHECK` 把 prompt 算好塞进队列条目（条目缺 note_type 时自动兜底分类），子 Agent 直接消费该 prompt 总结并 `save_summary_only` 落盘，**无需自调任何 CLI**。**不要全部用 structured 模板**（2026-08-22 分类修复，详见 `docs/decisions/DECISION-20260821-scys-classification-fix.md`）。
-       - ⚠️ **落盘门禁 retry 契约（2026-09-18 统一）**：`save_summary_only` 返回 `VERIFIER_FAILED`（机械：H1/来源链接/URL/字数）或 `VERIFIER_CONTENT_FAILED`（内容：结构缺失/锚点召回不足/照搬未合成，带 `retry:true`）时，子 Agent 按 `issues` 重写后重交（≤2 次）；仍失败则 `--force` 逃生或跳过。**队列路径此前只有机械门禁、内容判据是软抽检，现与重抓 `resum_save_batch` / 视频实时 `_summarize_and_save`（source_text 取字幕原文）/ 维护 `_save_series_note` 三方对齐为「内容缺陷也拦 + 重试」**——这正是补齐的缺口（注意：视频实时路径此前根本不过 `verify_note_mechanical`，本次一并补上）。
-       - **系列课**：单集已随单篇队列消费（五步管线 `summarize_series_episode`，无独立系列队列）；点名补齐整季走 `python scripts/backfill_series.py --series <名>`（登记表自动滤已总结，同集失败 3 次转人工，PLAN-20260908/D8）。默认只落本地 Obsidian（2026-09-04 起，见 `RULES.md` §3.0）；用户明确要求写飞书时才写。
-       - ⚠️ 系列课增量语义（PLAN-20260908 后）：每日重跑时，`videos.main` 按登记表 URL 键去重，**只把未总结的集**入队；UP 更新后自动只抓新增集，已总结的旧集不会重复总结/落盘。
-       - ⚠️ 系列课落盘结构：系列容器挂 `【监控】/<平台>/<UP>/<系列名>/` 下（不是根），由统一路由器 `shared/routing.py: resolve_folder` 算路径；五步管线 `_save_series_note` 收到的 `folder` **只到账号层**（`rsplit('/',1)[0]`），系列容器由 `ensure_series_node` 单建——否则系列名被建两次造成嵌套。`_read_series_from_feishu` 的 `parent_token` 已是容器 token 时直接用，不再内部 `ensure_series_node`。
-    5. 末尾看健康度行（视频/动态/文章/跳过/限流待重试/错误）确认是否异常。
-    - 内置重试（无需手动）：weread cookie 失效弹码等扫码(≤180s，扫到即续抓) / 配额到线熔断跳过（次日自动恢复）/ 正文限流进 `pending_refetch` 下次重抓。**人机验证不自动解**：撞码时自动监控 `stop=True` 跳过公众号源（后续号也不测），须会话内模型走 `weread_captcha.py --shot/--grid/--confirm` 过码（点选类验证码 OCR 无解，识别须模型在场）。（旧代理的 401×3 / 空轮退避随源停用而失效）
-- **抓取规则**：按时间窗口（首跑 30 天 / 每日 1 天，断跑自动拉长封顶 30 天）+ 无干货动态屏蔽 + 短动态轻量化 + 新鲜度标签。细节见 `monitors/README.md`。
-- **历史回溯（续批）**：**现役 = weread 版** `python monitors/run.py --weread-backfill --names <逗号名> --since <YYYY-MM-DD> [--batch 页数] --apply`（补到指定日期全部入队，正文走 mp 直链；未翻到 since 再跑一次即续批，seen 去重不重复入队；受双层配额约束自动分摊）。触发词：「公众号补全 / 补到什么时候」。旧代理版 `--backfill` 已随代理停用（`WECHAT_SOURCE_ENABLED=0`），机制描述见 `monitors/README.md`「公众号历史回溯（续批）」。
-- **UP 主全量补齐（B站，2026-09-03 收编管线）**：把某 UP 主历史视频全部抓字幕+总结归档，与 scys 补齐同构（抓完入 `pending_summaries` 队列，prompt/folder 预计算，子 Agent 消费），**不依赖会话手搓**。触发词：「补齐 <UP名> 的视频 / 把某 UP 主视频归档」。机械三步：`list_up_videos.py --uid <UID>` → `fetch_up_range.py 1 N --uid <UID> --author <UP名>`（限速+412熔断+抓到即入队）→ `filter_pending.py` 清洗后派子 Agent 消费队列。**合集识别（2026-10-06）**：入队按官方合集（ugc_season）归【监控】/<平台>/<账号>/<合集名>（`scripts/up_seasons.py` 带缓存，`--refresh-seasons` 重拉；命中 `series_exclude` 的合集跳过；拉取失败降级落日更）；存量已落盘笔记分拣迁移用 `scripts/split_notes_by_season.py --uid <UID> --author <名> [--apply]`。落盘路由：名单外 UP → `【我的总结】/作者/<名>`（加监控名单走 `--subscribe`，两者独立）。完整说明见 `references/config.md`「UP 视频批量字幕抓取」。
-  - ⚠️ **两点实操坑（2026-09-11 实踩）**：① `fetch_up_range.py` 从 `os.environ["BILI_COOKIE"]` 读 cookie、且需 `OBSIDIAN_WRITE=1`/`DISABLE_FEISHU_SYNC=1` 才落本地 Obsidian——但**它自身不读 `.env`**；务必用 `python scripts/run_with_env.py -- python scripts/fetch_up_range.py ...` 包装（该包装器加载 `.env` 注入上述变量后转发子命令；实现在 `shared.env.run_with_env`），否则 cookie 取不到、落盘走错目标。⚠️ 2026-09-20 改名：前身 `scripts/_run_with_env.py` 因 `_` 前缀被 `.gitignore` 忽略、**从未入库**，导致 clone/换机后 `launch_*_detached.py` 一类入口全部 rc=1；旧名保留为转发壳，勿再引用。② 批量**默认跳过 ASR**（`BILI_BATCH_NO_ASR=1`）：只抓现成 CC 字幕，无字幕视频 `fetch` 直接返回 None → 不入队也不收集；要转写无字幕视频须显式加 `--with-asr`（音频下载受沙箱网络/登录态限制，可能失败，无解时标记待补）。
-- B站需要登录态：`BILI_COOKIE` 环境变量（动态接口硬性要求）。
-
-公众号登录恢复补充（2026-10-10）：每5秒仅本地检测cookie变化，检测到变化后以当前账号正式第一页请求验证并消费结果，不再用哥飞重复探活；未发送的签名失败不扣列表配额，发送状态未知保守占额。入口不变，真源见 `references/weread-direct-source.md` §5 第4项。
-
-### 能力 3 · 存量重做（旧笔记按新版 prompt 重写，2026-09-17 转正）
-
-与能力 1/2 的**增量生产**相对：这条管线服务「库里已有的旧笔记」——抓源/补源 → 重写 → **in-place 覆盖原路径**，
-不产生 `-N` 副本。触发词：「重做一批笔记」「按新版 prompt 重跑」「源丢了补一下」。
-
-| 步骤 | 命令 |
+| 用户意图 | 完整流程 |
 |---|---|
-| 建重做队列（registry + vault 反查：笔记在库 + 源可定位） | `python scripts/build_resummarize_queue.py` |
-| 按源长切批 + 逐条预计算 prompt（>10000→4 条/批，4000~10000→8，<4000→16） | `python scripts/build_resum_batches.py` |
-| 派子 Agent 写临时稿 `_tmp/resum_c/out/<batch>_<NN>.md`（**必读 `notes/_meta/resum_batches/DISPATCH_PROMPT.md`**） | 见 HANDOFF |
-| ✅ **in-place 落盘**（唯一入口；校验主题词行 + 机械门禁 → 调生产函数覆盖 `note_path`） | `python scripts/resum_save_batch.py <batch.json> <out_dir> --force` |
-| 抽检（只读） | `python scripts/resum_audit_batch.py <batch.json>` |
-| 补源（笔记在库但源丢失，按 ID 列表绕过 dedup、不入队不总结） | `scripts/fetch_bili_by_bvids.py` / `scripts/fetch_scys_by_ids.py` |
-| 重做前备份旧版 | `python scripts/archive_old_before_resum.py <batch.json>` |
+| 总结文章链接、原文、视频或字幕 | PIPELINES §2；文章 `articles/run.py`，视频 `videos/run.py` |
+| 跑一次 / 跑监控 | PIPELINES §4；默认 B站 + scys，公众号单独 `--mode weread` |
+| 关注 / 订阅账号 | [监控说明](monitors/README.md)；B站走 `--subscribe` 查重，不手改名单 |
+| 公众号补全 / 补到指定日期 | PIPELINES §4；`--weread-backfill`，旧代理 `--backfill` 已停用 |
+| 补齐 UP 主历史视频 | PIPELINES §6；抓取须经 `scripts/run_with_env.py` 包装 |
+| 补齐 scys / 生财有术 | PIPELINES §7 + [scys SOP](references/scys-fetch-sop.md) §9；长任务走 launcher |
+| 补齐系列课 | PIPELINES §5；单集随普通队列，整季走 `backfill_series.py` |
+| 重做旧笔记 / 补丢失的源 | PIPELINES §3；重做用 `resum_save_batch.py` 原路径覆盖 |
+| 分享 / HTML 版 | PIPELINES §2.1；按需生成，无此要求只落笔记 |
+| 评估 / 归档开源项目，从文章或视频提取项目 | [项目抽取技能](tools/project_import/SKILL.md)；不触发原文总结 |
+| 迁移体检 / 清异常笔记 | PIPELINES §8；先只读扫描，成功替换并核验后才清旧文 |
 
-- ⚠️ **重做不要走 `save_summary_only` / `_save_summary_from_file.py`**：它们的文件名由
-  `generate_filename(publish_time + title)` **重新推导**，标题一旦与磁盘名错配（本次 690 条里有 18 条）
-  就落成新文件 → `-N` 副本。（`overwrite=True` 只覆盖**同名**，扑空时无效。）
-- ⚠️ `scripts/_*` 被 `.gitignore` 忽略 —— 新增有长期价值的脚本**不要用下划线前缀**，否则不入库。
-- ✅ in-place 能力已**下沉到 `articles.main.save_summarized_article(note_path=...)`**（生产函数），
-  `resum_save_batch.py` 是薄壳；**不要直接调生产函数落盘**（会跳过门禁）。回归测试
-  `tests/test_inplace_resum_pipeline.py` 钉死两条管线互不干扰。
-- 完整 SOP 与判据噪音档案：`docs/HANDOFF-阶段C-重总结.md` + `notes/_meta/resum_batches/PROGRESS.md`。
+## 执行必守
 
-### 能力 4 · 用户侧怎么用（给链接 / 怎么关注）
-- 给链接 → 走**能力 1**。
-- 说「关注 / 订阅 / 监控 XXX」 → 走**能力 2**（改 `subscriptions.json` + 跑一次首跑）。
-- 说「重做 / 重写一批旧笔记」 → 走**能力 3**。
-- 说「分享 / 出分享版 / HTML 版」（新笔记落盘时带 `share_html`，或对已有笔记跑 `scripts/export_note_html.py`） → 走**能力 1** 的分享版 HTML 出口。
-- 不确定走哪条 → 先读本文件 + `RULES.md`，不要凭空造流程。
+- 默认只写本地 Obsidian；飞书仅明确启用双写或镜像时使用。配置与兜底见 RULES §3.0，不手动写 `notes/` 充当成品。
+- 复用入口，抓取、路由、门禁、登记由代码负责。不要手搓平台私有接口、临时抓取脚本或直接调生产落盘函数绕过门禁。
+- `FORCE_AGENT_MODE=1` 下消费入口返回的 prompt 与原文；批量总结派子 Agent，主会话负责编排与核验。
+- 监控结束在本次会话闭环 monitors / scys 队列：`filter_pending.py` 刷新 prompt 并清已总结条目 → 子 Agent 按条目 prompt 写稿 → `save_pending.py` 落盘 → 编排方统一再清队列。字段与命令见 PIPELINES §4。
+- 返回 `VERIFIER_FAILED` 或 `VERIFIER_CONTENT_FAILED` 时按 issues 修稿重交，最多两次；机械缺陷不能用 force 绕过。仍失败按 RULES §4.6 处理，不静默声称完成。
+- 存量重做走原路径覆盖入口，不能用增量脚本重新推导文件名；重做前备份，见 PIPELINES §3。
+- 单视频无 CC 字幕自动 ASR 兜底；UP 批量默认不做 ASR，需显式 `--with-asr`。环境限制见 [ASR 手册](references/asr-bilibili-sandbox.md)。
+- 公众号恢复只本地检测 cookie 变化，恢复后消费当前账号正式第一页结果；不能绕过配额与风险冷却。见 [weread 手册](references/weread-direct-source.md) §5。
+- 数小时任务用登记的 launcher 或用户自带终端；不要假定会话后台进程能跨会话存活。见 RULES §4.7。
+- 不提交 `.env`、`notes/`、cookie、签名和私人库数据。
+- 新增 / 改造管线先更新 PIPELINES；规则改 RULES，专项机制改 references。文档维护检查见 docs/README。
 
-### 能力 5 · 开源项目抽取归档（`tools/project_import`）
+## 配置与平台入口
 
-把「GitHub / Gitee 开源项目」调研分类后存入**本地 Obsidian 项目库**（每个项目一个 `.md` + YAML frontmatter）。选本地而非飞书，是因为别的项目的 agent 能零鉴权直接检索，便于「哪些项目能用上」的发现；飞书多维表格仅作可选回退。
+变量说明见 [references/config.md](references/config.md)，配置模板为 `.env.example`；当前订阅以 `monitors/subscriptions.json` 为准，scys 窗口以 `scripts/scys_projects.json` 为准。
 
-- **两类入口（直接给链接 + 从内容里抽，都满足）**：
-  - **直接给仓库链接**：`python tools/project_import/assets/main.py "https://github.com/owner/repo ..."` → 采集 README+Stars → LLM 分类打分 → 写本地项目库。
-  - **从文章/视频里抽项目**（enrichment，**不总结原文**）：给文章/视频链接，自动从内容抠出提到的仓库并归档：
-    - 文章：`python tools/project_import/assets/main.py --from-article "<文章URL>"`
-    - 视频：`python tools/project_import/assets/main.py --from-video "<视频URL>"`（**优先扫视频描述/简介找仓库链接**，字幕只作补充；字幕里只提仓库名没给地址的暂不解析）
-  - **只有项目名、没给地址**：`python tools/project_import/assets/main.py --from-name "<项目名>"` —— 调 GitHub Search API 反查并收录（`source_kind=name-search`）。未认证限流 10 次/分钟，设 `GITHUB_TOKEN` 可升到 5000 次/小时。
-- **关键边界**：能力 4 只做「抽项目 → 入本地项目库」，**不触发文章/视频的笔记总结**（那是能力 1）。两者是独立动作，不要混为一谈。
-- **触发词**：「评估/归档/入库这些项目」「提取这篇文章/视频里提到的开源项目」「批量导入 GitHub」。
-- **配置**：默认 `PROJECT_LIBRARY_DIR`（建议 Obsidian vault 根下的 `开源项目/`）；不设则回退 `OBSIDIAN_VAULT_PATH/开源项目`。设 `PROJECT_STORAGE=feishu` 时回退写飞书多维表格（需 `FEISHU_BASE_TOKEN`）。字段映射见 `tools/project_import/feishu_fields.example.json`。
-- **真源**：`tools/project_import/SKILL.md`（激活条件 + 完整流程 + 子代理工作流）。
-
----
-
-## 迁移质量门禁 v3（2026-09-08 · 检测出清单、重抓替换）
-
-- **命令**：`python scripts/migrate_gate.py --vault "$env:OBSIDIAN_VAULT_PATH" --scope=`（dry-run 只读出清单）+ `--apply` 才动文件。五步：dedup → fm_sync → scan（5 类异常+链接指纹分组）→ queue（重抓队列，只生成不执行）→ verify。清单 JSON+MD 写 vault 同级 `_migrate_gate_archive/`。
-- **铁律**：重抓**成功落盘→校验→才删旧文**；失败旧文原地保留停留清单持续重试；B站重传 URL 会变，用队列 `old_titles` 做标题+内容相似度匹配，不能只凭 URL。串位文件也全量重抓（H1 改名机制已删）。
-- **消费队列**：一律走 `scripts/consume_migrate_queue.py`（2026-09-09 落地，2026-09-10 加无CC暂缓；测试 `tests/test_consume_migrate_queue.py` 45 例）——`--plan`（registered/deferred/to_fetch 进度）→ `--fetch --limit 15`（抓正文入 staging `notes/_scraped/migrate/pending_summaries.json`，prompt/note_type 预计算，B站标题 difflib 相似度 <0.55 或失败 3 次转 manual，412 熔断；**无 CC 字幕条目直接暂缓**——探测 `fetch_transcript` 返回 None 即标 `deferred`，不重试、不占 limit 配额）→ 执行模型派子 Agent 按 staging 内 prompt 总结并 `articles/_save_summary.py` 落盘（自动登记）→ `--clean`（已登记出队 done）→ 循环至清零 → `--cleanup-old --apply`（先 dry-run：登记命中才删旧文）。**无 CC 暂缓维护**：`--defer-failed` 把历史无CC失败批量暂缓（幂等）；`--classify-deferred`（默认 dry-run，`--apply` 落盘）三分类——**view API 先行**（2026-09-10 v2 修熔断盲点：`fetch_transcript` 吞异常返 None，412 到不了外层熔断）：code `-404`/`62002`→`removed_video` 定档；连续 2 次请求层异常=风控熔断 abort；环境健康才**直调 ASR 转写**（v3 2026-09-10：deferred 入场即「字幕层上次已确认空」，跳过字幕层不重复问已知答案）——ASR 出文本=误标→清 `deferred`+`fails` 清零回队，None=`no_cc_confirmed`；B站活视频缺 `BILI_COOKIE` 拦截为 probe_error（防 ASR 静默失败误判）；ASR 依赖缺失整批 probe_error 不猜；间隔 60-180s 随机（`CLASSIFY_SLEEP_RANGE`）。路由：`bili_video`→`summarize_video`、`article`→`skill_main`（folder=folder_hint 落同目录）、`manual_no_url`→人工补链接。脚本不加载 .env，运行须显式 `--archive-dir "<vault同级>/_migrate_gate_archive"`。
-- **真源**：`docs/decisions/DECISION-20260908-regen-gate-v3.md`；测试 `tests/test_migrate_gate.py`（70 例）。
-
----
-
-## 配置（`.env`）
-复制 `.env.example` → `.env`，至少关注：
-- `FORCE_AGENT_MODE=1`（默认）：不调用外部 AI，总结一律由执行模型（主/子 Agent）完成；旧 `AI_PROVIDER` 配置已废弃。
-- `OBSIDIAN_VAULT_PATH` —— Obsidian 库路径（**默认落盘端**；2026-09-04 起）
-- `FEISHU_WIKI_SPACE` + `FEISHU_WIKI_PARENT_NODE` —— 飞书知识库（**可选副本端**；2026-09-04 起默认不写，仅整库镜像 `audit_sync.py` 时启用）
-- `BILI_COOKIE` —— B站登录态 Cookie（订阅监控动态接口必需）
-- 监控可调参：`BILI_GAP`(30) / `BILI_FIRST_WINDOW_DAYS`(30) / `BILI_DAILY_WINDOW_DAYS`(1) / `BILI_PAGE_SIZE`(50) / `STATE_KEEP`(1000) / `BILI_SHORT_DYNAMIC_MAX`(80)
-- 完整变量见 `references/config.md`
-
-## 红线（必须遵守）
-- **输出默认本地 Obsidian、飞书按需（强制 · 2026-09-04 翻转，取代 2026-08-08）**：写两遍浪费，故**默认只落本地 Obsidian**；飞书仅在 `DISABLE_FEISHU_SYNC=0`（双写）或整库镜像 `audit_sync.py` 时写入。由 `OutputManager` 代码门禁 + `.env` 开关保证，不靠 AI 记性。`.env`：`OBSIDIAN_WRITE=1`（Obsidian 默认）+ `DISABLE_FEISHU_SYNC=1`（关飞书）。本地 `notes/` 仅在 lark-cli 实际不可用且未请求 Obsidian 时兜底。飞书落盘走 lark-cli，与面板 feishu MCP 连接器状态无关。禁止 AI 手动写 `notes/`、禁止只存本地漏飞书（双写场景）。
-- **复用入口，不手写抓取 / 总结**：一律走 `skill_main` / `summarize_video` / `fetch_transcript` / `monitors/run.py`，
-  不要临时写 `_xxx.py` 脚本、不要手搓 URL、不要 diagnose 平台私有接口。
-- **无字幕自动走 ASR 兜底（2026-08-06 授权）**：`fetch_transcript` 返回 None（真无 CC 字幕）时，`videos.main` 自动调 `videos.asr` 下载音频 + 本地 Whisper/FunASR 双后端转写（按语言自动路由：中文→FunASR 中文特化、其余→Whisper 多语种，`ASR_BACKEND=auto`；默认 whisper 零风险）；成功则继续总结并落盘（默认本地 Obsidian，带飞书时双写需 `DISABLE_FEISHU_SYNC=0`），仅 ASR 也失败才回「无可用字幕」文案并停止。环境坑由 `asr.py` 自动处理，勿手敲 export / 勿额外开发兜底（FunASR 后端细节见 `references/asr-bilibili-sandbox.md`「坑 7」）。
-- **长音频静音切段 + 并发转写（2026-10-06，仅 whisper 分支）**：>30min 的 whisper 转写默认用 ffmpeg `silencedetect` 在每 ~600s 理想切点 ±60s 内的静音中点下刀（不切断半句话），再按 `ASR_SPLIT_CONCURRENCY`（默认 cuda=2 / cpu=1）并发转写各片、按真实偏移拼时间戳；静音检测/切片失败自动回退旧「固定 600s 硬切 + 串行」。**FunASR 分支不动**——它自带 fsmn-vad（同类静音切分技术，内部处理任意时长），只有 whisper 需要我们预切。开关：`ASR_SILENCE_SPLIT`（默认开）、`ASR_MODEL_NUM_WORKERS`（默认 cuda=2/cpu=1，faster-whisper 并发 worker）。
-
----
-
-## 各平台如何加载本文件
-- **WorkBuddy**：激活 `blog-article-skill` skill（`SKILL.md` 触发）；也可作为项目级 rules 注入。
-- **Cursor**：`.cursorrules` 或 `.cursor/rules/*.mdc`；也认 `AGENTS.md`。
-- **Trae**：原生认 `AGENTS.md`（需在 Settings → Import Settings 开启「Include AGENTS.md in the context」）；也支持 `.trae/rules/*.md` 项目规则（放一份 `alwaysApply: true` 的薄指针到 `AGENTS.md`+`RULES.md`，确保即使没开开关也必加载）。
-- **Claude Code / Desktop**：`CLAUDE.md`（根目录；可 `cp AGENTS.md CLAUDE.md` 或软链）。
-- **Codex / OpenAI**：`AGENTS.md`（本文件即）。
-- **GitHub Copilot**：`.github/copilot-instructions.md`。
-- **裸 API / 其他**：把本文件全文作为 system prompt 前置。
-
-> ⚠️ 为避免规则漂移：**各平台入口文件应引用或复制本 `AGENTS.md`，真规则只维护一处**（本文件 + `RULES.md`）。
-
-## 自举指针（不确定时读这些，按序）
-0. **`docs/PIPELINES.md` —— 管线入口唯一真源**（干什么 → 走哪个入口命令 + 哪些是零件别当入口）
-1. `RULES.md` —— 规则唯一来源（地图 + 强制规则，最权威）
-2. `SKILL.md` —— WorkBuddy 触发层 + 对话输出规范（位于 `.workbuddy/skills/blog-article-skill/SKILL.md`，该目录已 gitignore，不进仓库）
-3. `monitors/README.md` —— 订阅监控运营细节与已知坑
-4. `references/config.md` —— 全部环境变量说明
-5. `docs/decisions/` —— 关键架构决策记录（≤15 行 / 篇）
+本文件是项目维护的跨平台入口。平台是否自动加载须核对实际设置与会话；未自动加载时显式读取本文及 RULES。WorkBuddy 本地触发层位于 `.workbuddy/skills/blog-article-skill/SKILL.md`（不入库）；缺失时仍从本文及 PIPELINES 查流程。

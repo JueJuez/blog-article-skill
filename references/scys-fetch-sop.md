@@ -1,60 +1,33 @@
 # 抓取 scys.com（生财有术）付费文章 · 实操 SOP
 
-> **用途**：把一个「需登录态」的 scys.com 文章正文化为本地 Markdown，供后续总结 / 落盘飞书。
-> **定位**：本文件是 `references/login-required-cdp-workflow.md` 的 **scys 专用子集**。新会话 / 新模型想抓 scys，照本文件做即可，**不必先读通用文档**（需要机制细节再去看通用文档）。
-> **通用入口**：`python scripts/login_cdp_fetch.py "<URL>" [out.md]` —— 同样适用于知乎 / csdn / 掘金 / Notion 私页 / substack / github 私有 repo 等任何需登录态的 URL。
+状态：现行 scys 操作说明。入口与零件以 [PIPELINES](../docs/PIPELINES.md) §2 / §7 为准，浏览器机制见 [CDP 工作流](login-required-cdp-workflow.md)。
+
+## 0. 选择入口
+
+```powershell
+# 单篇总结归档（自动按 scys URL 分流）
+python articles/run.py "<scys文章URL>"
+# 单领域抓取，入待总结队列
+python scripts/scys_batch_fetch.py --project <领域>
+# 多领域或数小时补齐
+python scripts/launch_scys_backfill.py
+```
+
+`FORCE_AGENT_MODE=1` 下抓取后仍需会话模型总结并通过门禁落盘，默认本地 Obsidian。队列写稿与保存走 PIPELINES §4 的 `save_pending.py`，成功后统一清队列；不要直接调用 `OutputManager.save_all` 绕过门禁。`login_cdp_fetch.py` 仅用于诊断，不作为单篇或监控生产入口。
+
+## 1. 登录态与浏览器生命周期
+
+用户须已登录 scys。生产入口经 `SharedCdpSession` 委托用户级 `cdp-automation-profile`：先探测健康的克隆调试实例并复用；端口失效先自愈，克隆缺失或过期才按技能内核重建。连接关闭只断开，不杀常驻实例；不承诺每次运行都关闭用户 Chrome 或重新复制 profile。
+
+全量复制、marker、进程清理和端口编排以用户级技能内核为准。禁止增量复制和 junction；操作与故障表见 CDP 工作流 §1.1。scys 抓取和 weread 等源共享实例，批量任务串行安排浏览器使用。
 
 ---
 
-## 0. 一句话（复制即可跑）
+## 2. 生产执行与诊断
 
-```bash
-cd <项目根>
-python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544148552844858"
-```
+生产总结按 §0 选择入口，读取返回的真实正文与 prompt，消费后通过门禁保存。批量抓取与队列消费见 §7–§9；确认成品路径、登记和队列清理后才报告完成。
 
-成功 → 正文落 `notes/_scraped/<slug>.md`（默认），或你指定的 `out.md`。
-
----
-
-## 1. 前提（用户侧一次性，其余全自动）
-
-1. **用户已在浏览器登录 scys.com**（用户唯一被允许做的事）。
-2. **脚本自动处理登录态浏览器**（无需用户手动启 debug，无需 junction）：
-   - 监控流水线（`monitors/run.py`）与 scys 批量抓取经 `shared/cdp_session.py` 的 `SharedCdpSession` 在需要登录态时，**自动走唯一路径**：先确保用户 Chrome 完全关闭（释放 cookie 独占锁）→ 复制真实 profile 到**非默认** `CdpAutomationProfile\Chrome` 目录 → 用该目录以调试端口启动 Chrome → `connect_over_cdp` 接管。
-   - 非默认目录 + 调试端口 = Chrome 151+ 放行调试；复制的 profile 含 cookie → 登录态继承。
-   - 代价：每次该路径会**短暂关闭用户的 Chrome** 再重启一个带登录态的克隆浏览器；抓取完成后克隆浏览器退出，用户重开原 Chrome 即可。
-
-> ⚠️ **Chrome 151+ 禁止默认 user-data-dir 开调试端口**（实测）：junction 方案（`DebugUDD` → `User Data`）会被 Chrome 检测并触发 `extension_garbage_collector` 删除扩展（实测 22 个扩展被删）、清 Google 账号关联 —— **永久禁用 junction**。
-> 活 Chrome 接管（默认 profile 开 `--remote-debugging-port`）在 151+ 也不可用（端口文件写了但不监听）。
-> **当前唯一路径**：`SharedCdpSession` 复制真实 profile 到**非默认** `CdpAutomationProfile\Chrome` 目录 → 该目录以调试端口启动（151+ 放行）→ `connect_over_cdp` 接管。登录态由复制的 cookie 文件继承，不会触发扩展清理。
-
-> ⚠️ **登录态所在的浏览器是用户的 Chrome，不是 Edge** —— Edge 里没有 scys 登录态。2026-08-19 实测确认。
-
----
-
-## 2. 操作步骤（linear · 照做）
-
-| 步骤 | 命令 / 动作 | 期望 |
-|---|---|---|
-| 1 | 打开项目根目录终端 | — |
-| 2 | `python scripts/login_cdp_fetch.py smoke` | `[OK] port 5494 ws ... devtools-bridge alive`（失败见 §4） |
-| 3 | `python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544148552844858"` | 见下方真实输出示例 |
-| 4 | 读产物（默认 `notes/_scraped/&lt;topic-id&gt;.md`）→ 按 `articles/skill_main` 模板总结 → `OutputManager.save_all` 落盘（默认本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0） | — |
-
-**步骤 3 真实输出示例（[1/3]→[3/3]）**：
-
-```
-[1/3] ws endpoint = ws://127.0.0.1:5494/devtools/browser/<uuid>  port 5494 (已通过 /json/version 验证)
-[2/3] connect_over_cdp …
-        goto https://scys.com/articleDetail/xq_topic/45544148552844858
-[3/3] title = '研究了几个月，我终于把公众号做到了99%自动化'  body_chars = 21264  login_wall = 无
-        saved → notes/_scraped/&lt;topic-id&gt;.md
-```
-
-**退出码**：`0` = 成功且登录态生效；`2` = Chrome 没启 debug；`3` = 撞登录墙（见 §4）。
-
-> 机制（`SharedCdpSession` 唯一路径）：确保用户 Chrome 已关 → 复制 profile 到非默认 `CdpAutomationProfile\Chrome` 目录 → 该目录以调试端口启动 Chrome → `connect_over_cdp(ws)` 接管 → 新标签 → `page.goto` → 等 SPA 渲染 → 取正文（selector 链取最长段，兜底 `body.innerText`）→ 落盘。登录态由复制的 cookie 继承；抓取结束克隆浏览器退出，用户重开原 Chrome 即可。
+诊断时可运行 `python scripts/login_cdp_fetch.py smoke` 查看调试端口，或传 URL 只抓原文；这是历史诊断工具，输出不代表已完成总结，也不保证自动启动共享实例。生产浏览器编排以 `SharedCdpSession` 为准。
 
 ---
 
@@ -72,14 +45,10 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 
 ## 4. 故障排查
 
-| 现象 | 根因 | 修法 |
-|---|---|---|
-| `SharedCdpSession` 克隆路径启动时失败 | Chrome 复制/调试端口启动异常 | 查看 stderr；脚本会先自动 kill 用户 Chrome 释放 cookie 锁再重试；仍失败则让用户先手动关闭所有 Chrome 再重跑 |
-| 抓取后命中登录墙（无登录态） | 复制时 Chrome 仍在跑，cookie 独占锁未释放 | 确保抓取前用户 Chrome 已完全关闭（脚本会主动 kill）；或让用户在该站重新登录后重跑 |
-| `[FAIL] Chrome 还在跑，user-data-dir 被锁` | Chrome 没完全退出 | 脚本会自动 kill Chrome；如手动跑 profile_clone_fetch 则先 taskkill |
-| `[3/3] body_chars 很小 + login_wall 命中` | 用户在 scys 没登录，或登录态过期 | 确认 Chrome 已登录 scys（打开 scys 看页面是否已登录），然后重跑 |
-| 页面空白 / 长白雪 | SPA 还没渲染完 | 脚本默认等 8s；在 `fetch()` 调 `wait_ms=` 调大（如 15000） |
-| `ModuleNotFoundError: playwright` | 缺包 | `D:\App\anaconda3\python.exe -m pip install playwright` |
+- 连接失败：先看共享实例探测与端口自愈结果，再按 [CDP 故障表](login-required-cdp-workflow.md) 处理；不要每次手动强杀 Chrome。
+- 登录墙：确认当前克隆实例是否已登录目标站点；正文壳不能进入总结。原始文件存在不证明抓取成功。
+- SPA 空白或正文截断：检查渲染等待与正文提取结果；外链正文补抓见 §8，PDF 预览文本须单独处理。
+- 配额、限流或浏览器占用：按入口的冷却、断点与串行约束暂停或续跑，不绕过保护。
 
 ---
 
@@ -94,7 +63,7 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 
 ## 6. 不要再做的事（防漂移）
 
-- ❌ **不要再用项目根的临时脚本 `scys_fetch.py`** —— 它硬编码了 URL 和输出路径，已被 `scripts/login_cdp_fetch.py` 取代（2026-08-20 已删除）。
+- ❌ **不要再用项目根的临时脚本 `scys_fetch.py`** —— 它硬编码了 URL 和输出路径，生产能力已由统一入口承接（2026-08-20 已删除）。
 - ❌ 不要手搓 cookie 导出 / 抓登录 API / 重新登录。
 - ❌ 不要把「PW」理解成密码 —— 本项目语境 **PW ≡ Playwright**。
 - ❌ 不要以为 Edge 能代替 Chrome 抓 scys（Edge 无该站登录态）。
@@ -112,8 +81,8 @@ python scripts/login_cdp_fetch.py "https://scys.com/articleDetail/xq_topic/45544
 - 自动处理：站内 `articleDetail` 引用（前情提要）递归抓一层；外部知识库（飞书/语雀等）滚动到底抓全文；登录墙检测
 - **限速（模拟人类）**：篇间随机 15~40s；每 10~15 篇歇 3~8 分钟；翻页间 3~6s；CDP 页面被关自动重试（实测救回过）
 - 断点续传：`notes/_scraped/scys/state.json`；中断重跑自动跳过已抓（关机/杀进程都不丢进度）
-- 产物：原文 `notes/_scraped/scys/<topicId>.md`；队列 `pending_summaries.json`（总结后标 `summarized:true` 防重复落盘）
-- 总结落盘：子 Agent 读原文 -> **消费队列中已算好的 prompt**（入队写点 `scripts/scys_batch_fetch.py:build_pending_entry` 按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好随条目投递，无需自调 CLI；2026-09-05 起三队列统一此口径）-> 按该 prompt 总结 -> `python articles/_save_summary.py <md> --url ... --tags "生财有术,<项目>" --title ...`（默认本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0；**已内置机械去重闸门**：URL 已总结过自动跳过，强制重写加 `--force`）。⚠️ **不要全部用 structured 模板**：分类器会按内容自动选 structured/interview/opinion/case/roundup/key_points/reading/dissection 八种模板（2026-08-26 起含 dissection 创作解剖：爆款拆解/带货/涨粉/账号运营类 scys 文章会走它，额外提炼可复用结构模具）。
+- 产物：原文 `notes/_scraped/scys/<topicId>.md`；队列 `pending_summaries.json`（成功登记后由 `filter_pending.py` 清队列）
+- 总结落盘：子 Agent 读原文并消费队列中的预计算 prompt，写稿后运行 `python scripts/save_pending.py --queue scys --key <topicId> --file <稿件.md>`；成功保存不改队列，编排方统一跑 `filter_pending.py` 出队。默认本地 Obsidian，失败按门禁反馈重写。不要全部使用 structured：类型和分类优先级以 `prompts/templates.py`、`prompts/classify.py` 为准。
 - 已知限制：飞书 **PDF 预览型**文档文字在 canvas 里抓不到（落盘文件头有页码碎片），此类需下载 PDF 另行处理；文字型 wiki 滚动方案有效
 - python 环境：用 managed venv `C:\Users\O1830\.workbuddy\binaries\python\versions\3.13.12\python`（已带 playwright）；anaconda python 未必有
 

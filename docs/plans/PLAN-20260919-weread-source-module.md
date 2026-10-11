@@ -1,5 +1,7 @@
 # PLAN-20260919 · weread 源模块（微信读书直连公众号源）+ 半自动过码
 
+> 状态：初始方案记录，源模块与过码工具已存在；后续登录恢复、配额与选源已演进。当前操作以 [weread 手册](../../references/weread-direct-source.md) 和 [PIPELINES](../PIPELINES.md) §4 为准。下方“触发即开发”属于当时任务，继续前先核对实现差距，勿重复开发。
+
 > **触发词：「开发weread源模块」** —— 用户说出此词即开工：通读本文档 → 按第 4 节任务清单开发。
 > 本文档自包含：所有探索结论（2026-09-18/19 两日实测）已内联，**不需要重新探索、重新试错**。
 > 深读补充：`references/weread-direct-source.md`（实测真源）+ `references/wechat-mp-sources.md`（外部资料索引）。

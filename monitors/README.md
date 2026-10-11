@@ -117,7 +117,8 @@
 
 `FORCE_AGENT_MODE=1`（默认）时，`skill_main` / 监控管线均不自动总结：入队写点把原文 + 预计算模板 `prompt`（分类器选模板 + `QUALITY_GATE_SELFCHECK`，2026-09-05 起三队列统一）+ `raw_file` + `folder` 写入 **`pending_summaries.json`**（按 `url` 去重），`run.py` 末尾打印 `NEED_CONTINUE_SUMMARY` 提示。该队列**不会自动消化**，由外层模型接单：
 
-- **派子 Agent 执行（强制，保持主会话干净）**：每文件夹起一个子 Agent（如 `副业增长/生财有术` 一个、`投资交易/中金点睛` 一个），串行处理避免并发写冲突（飞书双写时避免并发建节点重复）；子 Agent 读 `raw_file` → 按条目已预计算的 prompt 总结（无需自己组 prompt / 调 CLI）→ 调 `scripts/persist_summary.py` 落盘（默认本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0，保存成功后**自动从队列移除该条**，中途停止可安全重跑）。
+- **派子 Agent 执行（强制，保持主会话干净）**：读条目的原文与预计算 prompt 写稿，统一运行 `python scripts/save_pending.py --queue monitors|scys --key <url|topicId> --file <稿件.md>`。成功保存不会改队列；所有子 Agent 完成后由编排方再次运行 `filter_pending.py` 统一出队，避免并发写覆盖。字段、force 修订与返回结果见 `docs/PIPELINES.md` §4。飞书双写仍须避免并发建同一系列节点。
+
 - **派单前先跑 `python scripts/filter_pending.py`**（机械清洗两队列：URL 命中 dedup 索引的条目自动出队，scys 队列同时清 `summarized:true`——多 Agent 接力时已总结内容不再消耗 AI token、不再重复落盘；决策见 `docs/decisions/DECISION-20260825-dedup-frontload-and-lock-release.md`）。
 - 严禁在主会话里直接总结——会污染上下文、降低总结质量。
 
@@ -126,7 +127,7 @@
 | 队列 | 含义 | 重试入口 |
 |------|------|------|
 | `pending_refetch.json` | **抓取失败**：正文被限流成空 / fetch 报错 | `python monitors/run.py --refetch-only` |
-| `pending_summaries.json` | **有正文但无 AI**：等待外层派子 Agent 总结 | 外层派子 Agent 读 raw → `persist_summary.py` |
+| `pending_summaries.json` | **有正文但无 AI**：等待外层派子 Agent 总结 | 外层派子 Agent 写稿 → `save_pending.py` → 编排方清队列 |
 
 - 不变量：`pending_summaries` 里的条目**必须携带真实正文**；若某条 raw 缺失 / 过短（限流空壳），`--refetch-only` 会自动把它**提升回 `pending_refetch`** 重抓。故 `--refetch-only` 是唯一抓取重试入口，`scripts/refetch_recover.py` 已删除（其职责被该提升逻辑吸收）。
 - 频率保护：`--refetch-only` 逐篇 `WECHAT_GAP=6s` + 抖动，避免再被限流。
@@ -147,7 +148,7 @@ B站系列课（多集连续内容）不再走独立闭环：**单集与散文�
 | 文件 | 含义 | 去重/重试入口 |
 |------|------|------|
 | `pending_refetch.json` | **抓取失败**：正文被限流成空 / fetch 报错 | `python monitors/run.py --refetch-only` |
-| `pending_summaries.json` | **单篇有正文但无 AI**：等外层派子 Agent 总结（系列课单集同队列） | 外层派子 Agent 读 raw → `persist_summary.py` |
+| `pending_summaries.json` | **单篇有正文但无 AI**：等外层派子 Agent 总结（系列课单集同队列） | 外层派子 Agent 写稿 → `save_pending.py` → 编排方清队列 |
 | `notes/_meta/summary_registry.json` | **登记表（真源）**：vault 已总结内容登记，URL 键防重；落盘自动追加 | 初次 `python scripts/rebuild_registry.py --vault <路径> --apply`；日常落盘自动 |
 
 **关键工程纪律**：
@@ -172,42 +173,14 @@ python monitors/run.py --mode first --apply
 
 ## 公众号历史回溯（续批）
 
-把某公众号**最近稳定窗口内**漏抓的文章补回来。
+把目标公众号补到指定日期，现役入口为：
 
-**现役补全入口 = weread 版**：`python monitors/run.py --weread-backfill --names <名> --since <日期> --apply`
-（补到指定日期全部入队，正文走 mp 直链；页数上限未翻到 since 再跑一次即续批；受双层配额约束自动分摊）。
-
-⚠️ 下方为旧代理版 `--backfill` 的**历史机制描述**（依赖死掉的 weread 代理，`WECHAT_SOURCE_ENABLED=0`
-时直接拒绝执行），保留供参考：
-
-weread 免费代理（历史）可稳定返回约 **最近 30~35 天**的文章（哥飞 23 篇 raw 全落在 2026-07-24~08-19，即 27 天内）；超过此边界代理乱序分片 + `publishTime` 伪造，极不可靠，**不再补**。如需深挖请显式 `--since`，但预期会漏段（详见 `PROXY_NOTES.md`）。
-
-### 核心机制
-
-- **稳定边界**：默认 `since = 今天 - 35 天`（`WECHAT_BACKFILL_DAYS` 可调，真源 `monitors/backfill.py:32`）。这是根据磁盘证据定下的稳定窗口——哥飞 23 篇 raw 全落在 2026-07-24~08-19（27 天内），更老历史代理不可靠。
-- 游标 = `state.json` 的 `seen`（与日常监控同一套去重）；`discover` 的 backfill 分支**只 mark 本批 `new` 为 seen**。
-- **不再写 `backfill_done`**：`wechat.py` 的 discover 内已彻底移除 `reached_since`/`proxy_depth` 完成判定，因为 `publishTime` 元数据伪造会导致假完成。队列 job 跑一次即标记 done（不追求 exhaustive 抓全）。
-- **短退避重试**：代理偶发空窗，回溯入口对 `discover_all` 加最多 **5 次、8→30s** 递增退避；空窗持续则跳过本次。
-- 范围保护：只处理目标号，绝不波及其他订阅源（`WECHAT_BACKFILL_NAMES` 门禁）。
-- ⚠️ **代理全部坑与认知详见 `monitors/PROXY_NOTES.md`**（乱序分片 / 空窗 / 401-500 翻转 / publishTime 伪造 / 假完成三次 / 操作铁律）——新会话先读它，别再把坑踩一遍。
-
-用法
-```bash
-# 1) 补最近稳定窗口（默认 35 天）——推荐日常用法，since 可省略
-python monitors/run.py --backfill --names 哥飞,生财有术 --apply
-
-# 2) 指定更窄窗口（例如只补最近 15 天）
-python monitors/run.py --backfill --names 哥飞 --since 2026-08-04 --apply
-
-# 3) 自动化续批：从 backfill_targets.json 取第一个未完成 job 跑一次
-python monitors/run.py --backfill --drain --apply
-
-# 4) 重置某号回溯状态（极少用；稳定窗口内跑一次即完成）
-python monitors/run.py --backfill --reset-backfill 哥飞,生财有术
+```powershell
+python monitors/run.py --weread-backfill --names <公众号名> --since <YYYY-MM-DD> --apply
 ```
 
-队列文件 `monitors/backfill_targets.json`（已 gitignore）：
-```json
-[{"names":["哥飞","生财有术"], "since":"2026-07-15", "batch":15, "done":false}]
-```
-注意：微信 token 数小时(~2h)失效；自动化设 `WECHAT_RELOGIN_WAIT=0` 防无人值守阻塞，失效时跳过、token 有效时自动续。**recurring 自动化「公众号历史回溯续批」当前 PAUSED**：代理深历史回溯不可靠、投入过大，2026-08-19 决定收手（哥飞仅近期落盘、生财 0 篇）。
+未翻到目标日期时再次运行续批，可通过 `--batch` 限制本批页数。正文走 mp 原文直链，seen 去重避免重复入队；列表请求受日 / 小时配额及风险冷却限制。运行后按上文消费待总结队列，不能把“已发现”当作“已总结”。
+
+首次登录和验证码须有人 / 会话模型在场。登录恢复与实际发送统计见 [weread 手册](../references/weread-direct-source.md) §5，命令契约见 [PIPELINES](../docs/PIPELINES.md) §4。
+
+旧代理 `--backfill` 已停用；原稳定窗口、乱序分片和假完成诊断仅作 [历史证据](PROXY_NOTES.md)，不用于直连源的完成判断。

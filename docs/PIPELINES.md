@@ -68,7 +68,7 @@ Obsidian Charts 插件与 HTML 导出器是它的两个消费者，互不另外�
 |---|---|---|
 | 1 | `python scripts/build_resummarize_queue.py` | 从 `summary_registry.json` + vault 反查，挑出「笔记在库 + 源可定位」的条目 |
 | 2 | `python scripts/build_resum_batches.py` | 按源长切批（>10000→4 条/批，4000~10000→8，<4000→16）+ 逐条预计算 prompt |
-| 3 | 派子 Agent（**必读** `notes/_meta/resum_batches/DISPATCH_PROMPT.md`） | 产出 `_tmp/resum_c/out/<batch>_<NN>.md`，并发 2 安全、3–4 必 429 |
+| 3 | 派子 Agent（**必读** `notes/_meta/resum_batches/DISPATCH_PROMPT.md`） | 产出 `_tmp/resum_c/out/<batch>_<NN>.md`，原阶段并发观察不作为当前平台保证；并发量按本次配额与返回结果调整 |
 | 4 | `python scripts/resum_save_batch.py <batch.json> <out_dir> --force` | **唯一落盘入口**：校验主题词行 + 机械门禁 → 调生产函数 in-place 覆盖 `note_path` |
 | 5 | `python scripts/resum_audit_batch.py <batch.json>` | 抽检（只读），命中项填 `root_cause` |
 | 附 | `python scripts/archive_old_before_resum.py <batch.json>` | 重做前备份旧版 |
@@ -89,8 +89,8 @@ Obsidian Charts 插件与 HTML 导出器是它的两个消费者，互不另外�
 **入口**：`python monitors/run.py --mode auto --apply`（每日，仅 B站+scys）/
 `--mode weread --apply`（公众号/weread 直连源，**撞人机验证需人在场过码**，与 auto 分开跑）/
 `--mode first --apply`（首跑 30 天）/
-`--parallel --mode auto`（三源并行，仅 B站+scys）/
-`--subscribe ...`（加订阅）/ `--backfill ...`（公众号历史·旧代理）/
+`--parallel --mode auto`（并行 worker，默认仅 B站+scys）/
+`--subscribe ...`（加订阅）/
 `--weread-backfill --names X --since 日期 --apply`（weread 历史补全，未翻到再跑即续批）/
 `--with-weread`（可选：在 auto/first 里强制带上 weread 源，仅当人在场准备过码时用）
 ⚠️ **2026-09-26 起 `--mode auto` 默认不含 weread**：公众号撞人机验证无法在无人值守时自动过码，
@@ -110,7 +110,7 @@ Obsidian Charts 插件与 HTML 导出器是它的两个消费者，互不另外�
 回归测试 `tests/test_overwrite_semantics.py::TestForceRevisionNoCopy`。
 ⚠️ force 只用于「该 URL 已落过盘」的修订场景，新条目别传（无旧版可覆盖）。
 派单 prompt 里写死两个拦点可显著提高一次通过率：**原话必须改写**（20 字片段重合 >20% 硬拦）、
-**硬锚点入正文**（发布日期 / BV 号或帖号 / 作者 / 关键数字，召回 <60% 硬拦）。并发 4 个子 Agent 未触发 429。
+**硬锚点入正文**（发布日期 / BV 号或帖号 / 作者 / 关键数字，召回 <60% 硬拦）。历史一次并发 4 个子 Agent 未触发 429，不保证其他平台或当前配额同样可用。
 
 **weread 直连公众号源（2026-09-19 起现役，PLAN-20260919）**：旧 wewe-rss 代理已死，
 接替方案 `monitors/weread.py`。⚠️ **2026-09-26 起不再随 `--mode auto` 自动参与**：因撞人机验证
@@ -310,7 +310,7 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 
 ## 12. 变更纪律
 
-- 改任何入口的**命令形态**（改名/换参数）→ 同步更新本文 + `AGENTS.md` 对应能力小节。
+- 改任何入口的**命令形态**（改名/换参数）→ 同步更新本文 + `AGENTS.md` 对应任务路由。
 - 新增脚本：有长期价值的**不要用 `_` 前缀**（`.gitignore:50` 忽略 `scripts/_*`，会漏入库）。
 - 发现本文没覆盖的场景 → **先补本文再动手**，不要自己新开一条并行实现。
 - 新写任何可复用函数前 → 先扫「§10 能力索引」；只有在确认没有、或现有实现需要大改时才新写，

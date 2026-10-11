@@ -1,5 +1,7 @@
 # PLAN-20260911 · CDP 统一方案：实例层上移技能 + 项目侧薄适配
 
+> 状态：实施记录，§13 记录 S1–S6 完成。方案中的待执行步骤保留作历史；现行会话生命周期与环境限制见 [CDP 工作流](../../references/login-required-cdp-workflow.md)。
+
 > 状态：**✅ 设计全部拍板（2026-09-11）**——D1-D5 + 方案 b + 双轨 + D4 + §3.2 文件锁 + §3.4 方案 A（死回退已清理）+ D6 退出机制（持有者注册表）+ §3.1 get_html + §6 观察期 7 天，全部确认。无剩余待批项；**新会话从 §9 S1（技能纯增量）开始执行**，S1-S6 每步独立 commit、独立验证。
 > 设计对象：`shared/cdp_session.py`（550 行）→ 用户级技能 `cdp-automation-profile`；`videos/cdp_launch.py`（230 行）退役；YouTube 两消费方迁移共享端点。
 > 讨论结论存档：`C:\Users\O1830\AppData\Local\Temp\handoff-20260911-133406.md`

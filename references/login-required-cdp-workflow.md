@@ -258,13 +258,13 @@ Playwright `connect_over_cdp` **可以**创建多个 `page` 并发在同一 cont
 
 | 入口 | 用途 | 登录态 | 输出 |
 |---|---|---|---|
-| `articles/skill_main`（默认） | 单篇公众号 / 普通 URL | 无（直连） | 飞书 |
-| `articles/skill_main --fetch_web` | 普通 URL 抓正文 | 无（直连） | 飞书 |
-| `monitors/run.py --apply` | 公众号/B站订阅 | 公众号：Cookie；B站：`BILI_COOKIE` | 飞书 |
-| `videos/run.py --url` | YouTube/B站视频 | 无（视频不需登录；走字幕 API 或 CDP 拦截） | 飞书 |
-| **`scripts/login_cdp_fetch.py`**（本方案） | **任何需登录态的 URL** | **接管用户 Chrome 继承** | **`out.md`**（本地） |
+| `articles/run.py "<URL>"` / `articles.skill_main` | 普通文章、公众号直链；scys 自动分流 CDP | 普通网页直连；scys 继承浏览器登录态 | 经总结和门禁后默认 Obsidian |
+| `monitors/run.py --mode auto --apply` | B站 + scys 增量 | B站 cookie；scys 共享 CDP | 待总结队列，消费后落盘 |
+| `monitors/run.py --mode weread --apply` | 公众号直连列表 | 微信读书浏览器登录态；需过码时人在场 | 待总结队列，消费后落盘 |
+| `videos/run.py --url` | 视频字幕 / ASR | 是否需要登录以平台与抓取路径为准 | 经总结和门禁后默认 Obsidian |
+| `scripts/login_cdp_fetch.py` | 页面正文 / 端口诊断 | 共享 CDP | 原始 Markdown，不代表已总结 |
 
-> 总结：**本方案是项目内「唯一」的「需登录态抓取」通用解**。其他入口均假设 URL 是公开可达的；碰到付费 / 登录墙 / 私有内容 / 公司内网 → 一律走 `scripts/login_cdp_fetch.py`。
+生产入口经 `shared/cdp_session.py` 委托用户级技能；不要把诊断脚本当作通用总结入口。当前入口与参数见 [PIPELINES](../docs/PIPELINES.md)，实例健康复用、marker 与 close 语义见本文 §1.1。
 
 ---
 

@@ -8,14 +8,11 @@
 
 ## 0. 同步约定（本文件 ↔ 平台规则）
 
-本文件会持续更新。为保证「换会话/换 AI 也不遗忘」，确立以下同步机制：
+本文件是版本管理中的规则真源，跨平台入口为 [AGENTS.md](AGENTS.md)。平台是否自动读取、是否注入记忆须以实际设置与会话验证为准。
 
-1. **每次更新本文件后，AI 必须同步**：
-   - 把关键变更写入 `.workbuddy/memory/MEMORY.md` 的「规则摘要」区块（该文件在会话开始时被注入，是跨会话不忘的兜底）；
-   - 确保 `SKILL.md` 顶部保持指向本文件；
-   - 后续会话把本文件作为**强制规则**加载。
-2. **AI 平台加载方式**：会话开始时注入的 `MEMORY.md` 携带「规则摘要 + 指向 RULES.md」；技能被触发时 `SKILL.md` 也指向本文件。两者结合，本文件即被「加载进规则」。
-3. **`alwaysApply: true` 类规则（平台级）必须同步**：本文件中带「平台级/alwaysApply」语义的条款——**尤其是 §6 grill_rules（认知拉齐拷问规则）**——各 AI 平台须作为平台级规则加载并在更新时同步，不得只在单次会话内存活。任何涉及「架构级改动 / 新功能链路 / 跨多模块改动」的开发任务，**先按 §6 grill_rules 拷问拉齐认知，再动手编码**。
+1. 更新规则时同步相关文档指针；WorkBuddy 本地触发层存在时保持指向本文件，不要求依赖未入库文件才能开工。
+2. 本地规则摘要只作缓存，不能建立第二份真源；未经用户明确要求，不写平台记忆。
+3. §6 grill_rules 是项目开发约定，满足触发条件时执行；纯文档整理直接进行。本文的 `alwaysApply` 元数据不代表所有平台已自动加载。
 
 ---
 
@@ -25,14 +22,14 @@
 |------|------|-----------|
 | **RULES.md（本文件）** | 规则 + 地图索引（规则唯一来源） | ❌ 只放条目与指针 |
 | `SKILL.md` | 技能触发条件 + 调用入口 + 对话输出规范（面向「怎么用」）。**实际位置** `.workbuddy/skills/blog-article-skill/SKILL.md`（该目录已 gitignore，不进仓库） | 少量用法，规则指向 RULES.md |
-| `AGENTS.md` | **平台无关真源入口**（跨 WorkBuddy / Cursor / Claude / Codex / Copilot / 裸 API 通用） | 能力清单 + 接口速查 + 配置引导 + 各平台加载方式，指向本文件 |
-| `references/` | 专项详细文档。现行 **9 篇**：`config.md`（全部环境变量）/ `login-required-cdp-workflow.md`（需登录态抓取唯一路径 + 故障表）/ `scys-fetch-sop.md`（scys 抓取 SOP）/ `youtube-cdp-workflow.md`（YouTube CDP 抓取）/ `feishu-cli.md`（飞书 CLI 4 坑）/ `glossary.md`（术语表，新 Agent 先读）/ `testing_rules.md`（TDD 流程）/ `weread-direct-source.md`（**微信读书直连源·本项目实测真源**）/ `wechat-mp-sources.md`（**公众号抓取外部资料索引**：博客/开源项目/六条路线） | ✅ 放深入细节 |
+| `AGENTS.md` | **平台无关真源入口**（跨 WorkBuddy / Cursor / Claude / Codex / Copilot / 裸 API 通用） | 读取顺序 + 任务路由 + 必守约束，详细入口指向 PIPELINES |
+| `references/` | 专项详细文档。专项文档包括：`config.md`（全部环境变量）/ `login-required-cdp-workflow.md`（需登录态抓取唯一路径 + 故障表）/ `scys-fetch-sop.md`（scys 抓取 SOP）/ `youtube-cdp-workflow.md`（YouTube CDP 抓取）/ `feishu-cli.md`（飞书 CLI 4 坑）/ `glossary.md`（术语表，新 Agent 先读）/ `testing_rules.md`（TDD 流程）/ `weread-direct-source.md`（**微信读书直连源·本项目实测真源**）/ `wechat-mp-sources.md`（**公众号抓取外部资料索引**：博客/开源项目/六条路线） | ✅ 放深入细节 |
 | `references/PRD.md`、`references/scys-cdp-lessons-learned.md` | **已归档桩文件**：原处仅留「已归档 + 指向 `_archive/`」的 5 行指针，正文在 `_archive/PRD.md` / `_archive/scys-cdp-lessons-learned.md`。**勿照做**（PRD 是 pre-监控时期；lessons 已 SUPERSEDED） | — |
 | `monitors/README.md` | 订阅监控的运营文档 + 已知坑（三源机制 / 双队列 / 系列课 / 公众号回溯） | ✅ 放运营细节 |
-| `monitors/PROXY_NOTES.md` | weread 代理的坑（乱序分片 / 空窗 / publishTime 伪造）+ **代理死亡诊断** + 直连接替方案指针（§11）——动公众号前必读 | ✅ 放细节 |
-| `tools/project_import/SKILL.md` | **能力 4（开源项目归档）的真源**：激活条件 + 完整流程 + 子代理工作流 | ✅ 放细节 |
+| `monitors/PROXY_NOTES.md` | 旧 weread 代理的历史坑（乱序分片 / 空窗 / publishTime 伪造）+ **代理死亡诊断** + 直连接替方案指针（§11）——历史证据，不作为现役操作入口 | ✅ 放细节 |
+| `tools/project_import/SKILL.md` | **开源项目归档的真源**：激活条件 + 完整流程 + 子代理工作流 | ✅ 放细节 |
 | `docs/decisions/` | grill_rules 的「产出 A：决策清单」存放地（`DECISION-YYYYMMDD-{slug}.md`，≤15 行） | ✅ 极轻量 |
-| `docs/plans/`、`docs/*.md` | 执行计划与运维手册（并行监控 runbook 等） | ✅ 放细节 |
+| `docs/plans/`、`docs/*.md` | 计划、交接与过程记录，当前适用状态见 `docs/README.md` | ✅ 放细节 |
 | `_archive/` | 已归档的过期文档与废弃脚本。**只进不出**——新文档不要在现役目录重复它们的内容 | — |
 | `articles/` `videos/` `prompts/` `shared/` `monitors/` `scripts/` `tools/` | 实现细节的唯一真相 | ✅ 代码即文档 |
 | `.workbuddy/memory/MEMORY.md` | 长期要点 + 「规则摘要」（会话开始注入） | ❌ 只摘要点 |
@@ -43,16 +40,16 @@
 
 ## 2. 项目定位与适用场景
 
-- **一句话定位**：把「文章/视频链接、原文、字幕」自动转成结构化/要点笔记，并归档到本地 Obsidian（默认 · 2026-09-04 起）/ 飞书（可选副本，仅整库镜像 `audit_sync.py` 时启用）。
+- **一句话定位**：把「文章/视频链接、原文、字幕」自动转成结构化/要点笔记，并归档到本地 Obsidian（默认 · 2026-09-04 起）/ 飞书（可选副本，明确双写或整库镜像 `audit_sync.py` 时启用）。
 - **触发场景（同时满足）**：① 用户说「总结/提炼/整理/归档/保存笔记」类词；② 给了素材（文章链接、原文粘贴、视频/字幕）。
 - **不触发**：只聊概念没给素材、或纯答疑。
 - **默认行为**：不在对话框输出完整笔记正文，只给 1~3 句核心结论 + 成品路径。
 
 ---
 
-## 3. 两条业务路线（怎么跑）
+## 3. 业务路线与输出约定（怎么跑）
 
-> 两条路线都复用 `prompts/`（笔记模板）与 `articles` 的保存能力（`OutputManager`），**入口函数即真相**，勿手写抓取/总结。详细运行流程与已知坑见 **`monitors/README.md`**（监控运营）与各模块 `run.py --help`。
+> 文章、视频与订阅笔记复用 `prompts/`（笔记模板）与 `articles` 的保存能力（`OutputManager`）；开源项目抽取独立运行。**入口函数即真相**，勿手写抓取/总结。详细运行流程与已知坑见 **`monitors/README.md`**（监控运营）与各模块 `run.py --help`。
 
 ### 3.0 默认只写本地 Obsidian、不写飞书（强制 · 2026-09-04 翻转）
 
@@ -103,13 +100,13 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
 - **三场景映射**：跑一下 → `【监控】`；补齐 → 同一 `【监控】` 树（历史回溯只是窗口更大）；散文 → `【我的总结】/`（`作者/` 认得作者、`系列课/` 独立系列、`<分类>/` 有主题）。
 - **存量迁移**：旧方案遗留文件夹（`01_独立开发`…`副业增长/生财有术`/`千刀千法`/`哲学思辨`/`【00_待归类】` 等）已由 `scripts/migrate_obsidian_vault.py` 按 `resolve_folder` 重路由 + 主题标签注入（先 `--dry-run` 预览；迁移日志 `scripts/migration_obsidian_log.json` 可回退）。`.bak` 备份整体暂存 `备份_遗留bak/`，未删，待用户确认后清理。
 - **落盘文件名日期前缀强制（2026-09-07）**：`articles/main.generate_filename` 产出 `YYYYMMDD_【分类】标题[:50].md` / `YYYYMMDD_标题[:50].md`（日期=内容发布时间，缺失时用处理时间）——日期在最前，按文件名排序即按时间排序，取代旧「标题-日期」后缀格式；空/短标题兜底 `未命名笔记-时间戳.md` 不变。测试 `tests/test_patch_trio.py`。
-- **迁移质量门禁 v3（2026-09-08）**：迁移存量异常（来源块重复/残留行/缺fm链接/多链接/集数串位/同链接不同总结）一律走 `scripts/migrate_gate.py` 扫描出清单→重抓替换，**不做正文级手工修复**（H1 改名机制已删）；重抓成功落盘并校验后才许删旧文，不可达条目停留清单持续重试。命令与铁律见 AGENTS.md「迁移质量门禁 v3」；首扫数据见 `docs/decisions/DECISION-20260908-regen-gate-v3.md`。
+- **迁移质量门禁 v3（2026-09-08）**：迁移存量异常（来源块重复/残留行/缺fm链接/多链接/集数串位/同链接不同总结）一律走 `scripts/migrate_gate.py` 扫描出清单→重抓替换，**不做正文级手工修复**（H1 改名机制已删）；重抓成功落盘并校验后才许删旧文，不可达条目停留清单持续重试。命令与铁律见 `docs/PIPELINES.md` §8；首扫数据见 `docs/decisions/DECISION-20260908-regen-gate-v3.md`。
 
 ### 路线入口速查
 
 - **文章总结**：`articles/run.py --url/--content/--batch` 或 `skill_main({...})`；无外部 AI 时入 `pending_summaries.json` 交子 Agent（见 `monitors/README.md`「降级闭环」）。
 - **视频总结**：`videos/run.py --url/--file/--content` 或 `summarize_video({...})`；YouTube 本机无出口走 CDP（见 `references/youtube-cdp-workflow.md`）。模板种类与分类优先级见 `prompts/templates.py` / `prompts/classify.py`。
-- **订阅监控**：`monitors/run.py --mode first|auto --apply`；关注某账号走机械命令 `--subscribe`（详见 `monitors/README.md`）。
+- **订阅监控**：`monitors/run.py --mode auto --apply`（B站 + scys）；公众号单独 `--mode weread --apply`，首跑和选源见 `docs/PIPELINES.md` §4；关注某账号走机械命令 `--subscribe`（详见 `monitors/README.md`）。
 - **分享版 HTML（2026-10-06）**：存量笔记 `python scripts/export_note_html.py "<md路径>"`；新笔记用户说「分享 / 出分享版 / HTML 版」→ 落盘带 `share_html:1`，没说只落盘。`chart` 数据块两个消费者（Obsidian Charts 插件 + HTML 导出器）共用同一份格式真源，见 `docs/PIPELINES.md` §2.1。
 
 ---
@@ -125,8 +122,8 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
 - **长内容必走两段式分块**：超过单模型上下文的内容，先经 `shared.chunking` 分块再总结，禁止整篇直接喂模型。
 
 - **批量派单三禁令（2026-09-15 新增 · 血泪教训，务必写进每个派单 prompt）**：
-  1. **禁止子 Agent 自写脚本直调 API**（`save_summary_only` 等），一律只走 `scripts/_save_summary_from_file.py`。绕过 CLI 是 2026-09-15 那批 15 条悬空登记的根因。
-  2. **禁止对已存在的笔记用 `force`**；返回 `ALREADY_EXISTS` 一律视为成功（已落盘）。需要修订时用正规入口 `_save_summary_from_file.py <bvid> <md> --force`（已实现「覆盖同名」，不再产生 `-N` 副本）。
+  1. **禁止子 Agent 自写脚本直调生产落盘函数**。监控 / scys 队列统一走 `scripts/save_pending.py`（见 PIPELINES §4）；存量重做走 `scripts/resum_save_batch.py`（§3），不要混用。
+  2. 已登记条目先核验产物，普通重复视为跳过成功；明确修订才用对应入口的 `--force`。队列修订按登记旧路径覆盖；存量重做指定 `note_path`。成功保存后由编排方统一跑 `filter_pending.py` 出队，子 Agent 不并发改队列。
   3. **笔记末尾必须独占一行写 `【核心主题词】词1 | 词2 | 词3`**（3~5 个，不加 `#`）。该行缺失会被落盘门禁直接拒绝（`MISSING_TOPIC_LINE`），这是硬要求不是建议。
   > 另注：**`Agent` 工具报错 ≠ 子 Agent 没干活**——2026-09-15 曾出现工具报错但目标目录已实际落盘 4 篇的情况。派单「失败」后**先核验目标产物**再决定是否重派。
 - **大批量 → 子 Agent 隔离主线程（防上下文胀爆）**：当待处理内容达到批量阈值（如 >3 条笔记/视频，或单批原文大到会撑爆主会话上下文）时，**必须**用 Agent 工具派发子 Agent 并行处理，勿把全部原文/中间稿堆在主线程。注意：① 子 Agent 上下文是空白的，派发 prompt 必须**自包含**（嵌入输出契约：落盘闸门＝默认本地 Obsidian（2026-09-04 起）、飞书仅 `DISABLE_FEISHU_SYNC=0` 时追加；入口函数 `videos/run.py --url` 或 `skill_main`、`note_type`、YouTube/无字幕规则按需）；② **飞书并发重复坑**：多子 Agent 同时 `save_series` 写飞书会因集级无查重建重复节点（见 §4.7）；**安全模式**＝子 Agent 只**返回成品 Markdown 文本＋元数据**（标题/作者/url/tags/note_type），由编排方**串行**调保存入口（`_save_series_note` / `save_all`）落盘，绝不让多子 Agent 并发各自调 `save_series`。
@@ -184,9 +181,9 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
 - **A. 质量闸门（second-pass verifier）**：总结后再调一次 AI 按 7 评分维度打 0–100 分（含「内容完整」·权重最高），低于阈值带反馈重试一次。**默认关闭**（省一轮 AI 调用）；开关见下方「去哪里开关」。无外部 AI 的降级路径走 `QUALITY_GATE_SELFCHECK` 自检段（模板 prompt 内嵌四条专项自检——思维模型深挖 + 固定结构合规 + 覆盖自检 + 篇幅自检，与 `UNIVERSAL_RULES` §八红线不重复，外层模型自核对）。**语义层质检（通顺/完整/忠实）的实际落地**：机械门禁读不懂语义，故由**父 Agent 按 `prompts/review_rubric.py` 的五维 rubric（合成度/完整性/通顺度/忠实度/合规度）抽检产出**，命中问题就地修（fix_inline）或打回重做（resummarize）；无父 LLM 在环时降级为入 `notes/_review_queue.jsonl` 等人工/外接AI审。
 - **A2. 机械落盘门禁（零 AI 依赖 · 2026-09-05 → **content-first · 2026-09-15**）**：`prompts/verifier.py` 的 `verify_note_mechanical` 在 `save_summary_only` 落盘前机械校验。
   **硬拦（issues，不落盘）**：① 正文 0 个一级标题（去 H1：标题由文件名承担，扫描前剥离代码围栏）；② 正文不写来源链接行、不出现原文 URL（防 formatter 权威追加后出现两个链接）；③ 字数 `< MIN_WORDS(300)`（内容缺失兜底）；④ 字数 `> max(8000, 源长×3)`（**失控保护**，纯防程序跑飞）。
-  **触发抽检（review_flags，不拦落盘）**：来自 `prompts/content_signals.py` 四类**内容判据**——① 硬锚点召回 < 60%（数字/术语/公司名/股票代码；源锚点 < 4 时该判据不适用）② 破碎形态 A 超长句 / C 逗号密度 / D 相邻段高相似 ③ 结构缺失（模板声明的「必备」模块没写）④ 照搬重合（与源 20 字片段重合超 20%）。
+  **内容硬拦 + 软抽检（2026-09-18 后）**：来自 `prompts/content_signals.py` 四类**内容判据**——① 硬锚点召回 < 60%（数字/术语/公司名/股票代码；源锚点 < 4 时该判据不适用）② 破碎形态 A 超长句 / C 逗号密度 / D 相邻段高相似 ③ 结构缺失（模板声明的「必备」模块没写）④ 照搬重合（与源 20 字片段重合超 20%）。其中锚点、结构、照搬由 `classify_content_flags` 归入 `content_blockers`，落盘入口拦截并返回重试反馈；形态信号只软抽检。阈值和适用条件以代码为准。
   **❗禁止复活的三条（均被数据证伪，详见 `docs/decisions/DECISION-20260915-content-first-gate.md`）**：a) 任何形式的**字数上限压制**（只要存在「不能比 X 长」的线，子 Agent 就会去贴它 → 为过门禁而砍内容）；b) 「字数比例带」`源长×0.25~0.45`（与源质量无稳定因果：同一批语音识别稿里长源报「偏短」、短源报「超参考值」，跨度近 10 倍）；c) **括号类形态信号**（模板本身要求「专业名词首现必须附大白话解释」，括号是规定动作）。
-  接入顺序：dedup 闸门之后（已总结出队优先）、folder 自动路由之前；**重试放行逃生舱已删除**（内容缺失/失控保护是确定性缺陷，放行等于坏笔记入库）。`review_flags` 非空时 `save_summary_only` 自动写 `notes/_review_queue.jsonl`（无人值守降级）。
+  接入顺序：dedup 闸门之后（已总结出队优先）、folder 自动路由之前；**机械缺陷不允许重试后自动放行**。队列返回 `VERIFIER_FAILED` 或 `VERIFIER_CONTENT_FAILED` 后按 issues 重写再交（最多两次）；仍失败保留待办并报告。`force` 可绕过内容拦截并用于明确修订，但不绕过机械门禁，不作为新条目默认参数。`review_flags` 非空时 `save_summary_only` 自动写 `notes/_review_queue.jsonl`（无人值守降级）。
   **抽检的定位**：不是人工兜底，而是**归因飞轮**——抽检必须填 `root_cause`（`prompts/review_rubric.py`，落 `notes/_root_cause_ledger.jsonl`），同一根因累计 ≥3 次即提示去改 prompt/模板；**长期高频命中是红灯**（说明流程有系统缺陷未修），目标状态是每批只随机抽 1~3 篇当哨兵。
 - **B. 字幕清洗层**：`shared/subtitle_clean.py` 纯函数（`preprocess_segments`/`preprocess_text`），已在 `videos/fetch.py` 三路径（B站原生 / YouTube API+CDP / yt-dlp 兜底）自动接入；只清洗口误填充词（删独立语气词 嗯/啊/呃）、合并相邻近重、≥8 字长句去重——**不激进折叠**（保留"然后/那个"等自然语流）。
 - **C. 强制证据红线（思维模型透镜）**：全部 9 模板共用 `UNIVERSAL_RULES` 第九节（structured 内联第十四节），6 模型按序 LIST（第一性原理→5-Why冰山→二阶思维→脉络还原→奥卡姆剃刀→类比迁移）逐条过、不适用跳过；**每条适用模型须给「洞察（不同视角）+ 原文证据句（「」括起原话，禁改写）」**，禁只写"用了X 模型"；全不适用须逐条列 6 模型理由。与去水分红线兼容，不硬凑固定章节。
@@ -231,16 +228,16 @@ NOTE_GATE_THRESHOLD=85     # 评分阈值，默认 85；低于此分触发重试
 
 ## 5. AI 执行约定（防遗忘清单）
 
-- [ ] 会话开始：先读 **RULES.md（本文件）** + `SKILL.md`，确认两条路线入口与降级逻辑。
+- [ ] 会话开始：先读 **RULES.md（本文件）** + `docs/PIPELINES.md`，确认所选管线与降级逻辑。
 - [ ] 收到「总结/整理」+ 素材 → 调 `skill_main` / `summarize_video`，**不要手写抓取或手写总结**。
 - [ ] 触发降级（`need_continue_summary`）→ **派子 Agent** 用返回的 `prompt` + `raw_file` 做总结，再调 `save_summary_only` 存档（主会话只做编排，不直写总结，保上下文干净）。
 - [ ] **存档后自检落盘**：确认 Obsidian vault（`OBSIDIAN_VAULT_PATH`）出现对应文件（2026-09-04 起默认落盘端，见 §3.0）；飞书仅在双写/镜像模式（`DISABLE_FEISHU_SYNC=0` 或 `audit_sync.py`）时检查——届时飞书 user 身份须 `lark-cli auth status` ready，否则只告警不落飞书；本地 `notes/` **预期为空**（有外部目标即不落本地），**不要因本地为空而误判失败**。
-- [ ] 本文件（RULES.md）变更 → 同步进 `MEMORY.md`「规则摘要」并视作平台规则。
+- [ ] 本文件（RULES.md）变更 → 更新相关文档指针；平台记忆仅在用户明确要求时写入。
 - [ ] 遇到网络/代理问题 → 先查 `references/youtube-cdp-workflow.md`，不要绕去挖代理配置。
 - [ ] YouTube 字幕抓取返回 None 且页面已加载、`captionTracks` 为空 → `videos/main` 自动走 ASR 兜底；ASR 也失败才回终态文案「【此视频暂无可用字幕（CC 与 ASR 兜底均失败），无法总结内容。】」并停止（§4.4）。
 - [ ] 笔记作者栏**必须显示真实作者/UP主**；视频链路 `series.get("author","") or input_data.get("author","")` 已兜底，调用方无需手传，禁止无端输出【作者未知】（§4.5）。
 - [ ] **质量闸门（可选 · 默认关）**：要更严质检时在 `.env` 设 `NOTE_QUALITY_GATE=1`（阈值 `NOTE_GATE_THRESHOLD` 默认 85）；降级无外部 AI 时闸门自动转自检段，按三条专项自检（思维模型深挖 + 固定结构合规 + 篇幅区间）自核对，无需手动开。详见 `references/config.md` §九 与 §4.6。
-- [ ] **机械落盘门禁（默认生效 · content-first · 2026-09-15）**：`save_summary_only` 落盘前自动过 `verify_note_mechanical`（去 H1 / 来源链接卫生 / **字数只两档**：内容缺失 `<300`、失控保护 `>max(8000,源长×3)`）；抽检触发改由 `prompts/content_signals.py` 的四类内容判据提供（锚点召回 / 破碎形态 / 结构缺失 / 照搬重合），**不拦落盘**；被拦返回 `VERIFIER_FAILED:<issues>` 时子 Agent 按 issues 修复后重试同一入口（**不再有重试放行**）；`review_flags` 非空自动入 `notes/_review_queue.jsonl`，父 Agent 抽检后必须填 `root_cause`。详见 `docs/decisions/DECISION-20260915-content-first-gate.md`。
+- [ ] **落盘门禁与重试**：执行 §4.6 的机械硬拦、内容硬拦与形态软抽检；按 issues 修稿后重交，仍失败保留条目并报告，不把抽检或 force 当作质量验收。
 - [ ] **涉及架构级改动 / 新功能链路 / 跨多模块改动** → 先按 §6 grill_rules 拷问拉齐认知，再动手。
 - [ ] **长任务（补齐 / 迁移 / 监控多轮，或数小时级）→ 用 launcher `scripts/launch_*.py`（每域独立 DETACHED 子抗回收）或用户自带终端，不要用 `run_in_background` 跑数小时任务**（进程在会话进程树里，轮次结束被回收；见 §4.7）。⚠️ launcher 自身须**非 DETACHED**，只让每域子进程 DETACHED（DETACHED 父 + 多子会失能）。
 
