@@ -39,9 +39,11 @@ _DEGRADE_RESULT = {"summary": None, "usage": None, "model": None, "source": None
 def _patch_degrade(monkeypatch, tmp_path):
     """把 AI 总结打为不可用并拦截 raw 落盘，稳定触发降级路径。"""
     monkeypatch.setattr(am, "summarize_content", lambda *a, **k: dict(_DEGRADE_RESULT))
-    monkeypatch.setattr(
-        am, "save_raw_content_to_file",
-        lambda content, title="", prefix="_raw_": str(tmp_path / "raw.md"))
+    def fake_save_raw(content, title="", prefix="_raw_"):
+        path = tmp_path / "raw.md"
+        path.write_text(content, encoding="utf-8")
+        return str(path)
+    monkeypatch.setattr(am, "save_raw_content_to_file", fake_save_raw)
 
 
 def _scys_body() -> str:
@@ -252,9 +254,9 @@ class TestHandleSingleVideoPublishTime:
             return ("", "", True, "字幕原文", "key_points")
 
         monkeypatch.setattr(vm, "_summarize_and_save", fake_sas)
-        monkeypatch.setattr(
-            am, "save_raw_content_to_file",
-            lambda content, title="", prefix="_raw_": str(tmp_path / "raw.md"))
+        raw = tmp_path / "raw.md"
+        raw.write_text("字幕原文", encoding="utf-8")
+        monkeypatch.setattr(am, "save_raw_content_to_file", lambda *a, **k: str(raw))
         res = vm._handle_single_video(self.URL, {"url": self.URL})
         assert res.get("need_continue_summary") is True
         assert res.get("publish_time") == PT
@@ -274,7 +276,7 @@ class TestRunBatchPublishTime:
         monkeypatch.setattr("videos.summarize_video",
                             lambda input_data: {"success": True})
         monkeypatch.setattr(vrun.time, "sleep", lambda s: None)
-        args = SimpleNamespace(batch_file=str(batch_file),
+        args = SimpleNamespace(batch_file=str(batch_file), asr_backend=None,
                                delay_min=0, delay_max=0, max_per_hour=0)
         rc = vrun._run_batch(args)
         assert rc == 0

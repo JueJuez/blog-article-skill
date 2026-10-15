@@ -41,6 +41,12 @@
 `share_html=True` 落盘后自动出分享版，见 2.1）、
 `articles/manager.py: OutputManager`（飞书/Obsidian/本地三选一）。
 
+**质量零件更新（2026-10-14，入口不变）**：9种模板共享 `prompts/templates.py:SOURCE_FIDELITY_RULES`；硬必备结构以同模块 `SECTION_CONTRACTS` 为真源，由 `prompts/content_signals.py` 消费。无依据的公式、反例、全书地图、问答、排名和CTA允许省略，有依据的重要内容仍须覆盖。会话模型自检与父Agent语义抽检按 RULES §4.6 执行；条件模块是否有依据不能由机械标题检查证明。实施与效果边界见 [模板质量计划](plans/PLAN-20261014-template-quality.md)，不据此批量重写旧库。
+
+**类型与过程追踪（2026-10-15，批次2）**：分类理由和版本由 `prompts/classify.py:classify_note_type_with_evidence` 提供；证据不足保守general。`prompts/provenance.py` 统一派单的实际type、auto/manual/legacy来源、源文本hash和prompt hash。文章/视频降级、监控/scys/UP入队、存量重做派单复用该实现，沿现有保存入口传入登记表；元数据不参与去重键和文件名。prompt_scope区分派单模板、文章最终调用模板和视频各次调用；hash不证明模型实际遵循prompt，审核状态不冒充全文通过。
+
+**证据检查（2026-10-15，批次3）**：沿现有verifier/content_signals与只读审计入口加入明确原话定位、资源名称/入口绑定和常量复算检查。共同证据结构、适用语法与不判定边界见 [证据契约](../references/note-evidence-contract.md)。确定缺陷进issues，不受force豁免；疑点进入现有复核队列，不把机械检查当全文语义验收。
+
 ## 2.1 分享版 HTML 出口（2026-10-06）
 
 **适用场景**：想把一篇笔记发给别人看（浏览器打开即读，无需 Obsidian / 飞书）。产物是
@@ -97,6 +103,8 @@ Obsidian Charts 插件与 HTML 导出器是它的两个消费者，互不另外�
 故抽出独立 `--mode weread` 单独跑（人在场时撞码→`scripts/weread_captcha.py --shot` 识图→`--grid --confirm` 过码→重跑）。
 **零件**：`monitors/run_source.py`、`monitors/bilibili.py`、`monitors/weread.py`、`monitors/wechat.py`（旧代理，永久停用）、
 `monitors/state.py`、`pending_summaries.json` 队列、`scripts/filter_pending.py`（派单前清洗，属于队列维护不是入口；2026-10-06 起清洗时**默认按当前模板重算队列内预计算 prompt**——长跑补齐进程加载的模板可能落后于仓库，老条目消费前统一刷新）。
+
+**派单刷新边界（2026-10-15取代旧的无差别刷新）**：仅已知auto且源可读的条目重算type与prompt，manual保留type；legacy只报建议差异，原type/prompt/路径不改，只有chars而无全文的条目跳过。`python scripts/filter_pending.py --dry-run` 仅预览分类/刷新，不执行去重或写入（包含已总结条目）；默认命令继续去重并保存允许的刷新。报告含分类变更理由。本次开发仅运行dry-run，不改生产队列。`save_pending.py` 与通用保存/原路径重做入口校验已记录版本，失配报 `PROVENANCE_MISMATCH`，force不能豁免；新schema不为旧稿猜历史版本。
 
 **队列消费落盘 runner（2026-09-24 新增 · 子 Agent 派单的唯一落盘出口）**：
 `python scripts/save_pending.py --queue monitors|scys --key <url|topicId> --file <总结稿.md> [--force]`

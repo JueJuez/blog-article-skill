@@ -217,6 +217,14 @@ def write_report(path: str, corpus: list, results: list, ranked: list, args) -> 
           f"｜形态 {'、'.join(r['form']['signals']) or '无'}"
           f"｜缺 {('、'.join(r['structure']['missing']) or '无')}")
     A("")
+    A('## 范围证据检查（批次3）')
+    A('')
+    scoped = [f for r in ok for f in r.get('evidence_report', {}).get('findings', [])]
+    for decision, label in [('block', '确定缺陷'), ('review', '待复核')]:
+        counts = collections.Counter(f['code'] for f in scoped if f['decision'] == decision)
+        A(f'- {label}：{dict(counts)}')
+    A('- 字符定位和常量验算不等于语义通过；JSON保留源/稿hash、原始行号和片段。')
+    A('')
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(L) + "\n")
 
@@ -260,6 +268,9 @@ def main():
               f"{gms:>4}/{len(gm):<4}    {gr:>4}/{len(gs):<4}")
 
     print("\n=== 判据详情 ===")
+    scoped = [f for r in ok for f in r.get('evidence_report', {}).get('findings', [])]
+    print('证据确定缺陷:', dict(collections.Counter(f['code'] for f in scoped if f['decision'] == 'block')))
+    print('证据待复核:', dict(collections.Counter(f['code'] for f in scoped if f['decision'] == 'review')))
     usable = [r for r in ok if r["anchors"]["total"] >= args.min_anchors]
     print(f"① 锚点：适用 {len(usable)}/{len(ok)}，命中 "
           f"{sum(1 for r in usable if r['anchors']['recall'] is not None and r['anchors']['recall'] < CS.RECALL_THRESHOLD)}")

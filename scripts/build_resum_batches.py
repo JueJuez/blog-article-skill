@@ -62,7 +62,11 @@ def main() -> int:
         for i in range(0, len(rs), sizes[name]):
             part = rs[i:i + sizes[name]]
             for r in part:
-                r["prompt"] = get_note_prompt(r["note_type"], r["source_words"]) + QUALITY_GATE_SELFCHECK
+                from prompts.provenance import dispatch_fields
+                source = open(r["source_path"], encoding="utf-8").read()
+                # 旧登记来源不明，保留type；仅记录这次实际派单，不声称历史为auto。
+                origin = r.get("generation_context", {}).get("type_origin", "legacy")
+                r.update(dispatch_fields(r["title"], source, r["note_type"], origin))
             batches.append(part)
     if suspect:
         batches.append(suspect)   # 存疑单列一批，重跑前人工核对

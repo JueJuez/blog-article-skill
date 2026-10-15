@@ -47,7 +47,7 @@ def audit_one(item: dict, with_evidence: bool = False,
     src_raw = open(item["source_path"], encoding="utf-8").read()
     note = CS.strip_note(note_raw)
     source = CS.strip_source(src_raw)
-    cf = CS.content_flags(note, source, item.get("note_type") or "")
+    cf = CS.content_flags(note_raw, src_raw, item.get("note_type") or "", source_author=item.get('author', ''))
     out = {
         "title": (item.get("title") or "")[:26],
         "note_words": CS.count_words(note),
@@ -58,6 +58,8 @@ def audit_one(item: dict, with_evidence: bool = False,
         "structure": cf["details"]["structure"],
         "verbatim": cf["details"].get("verbatim", 0.0),
         "flags": cf["flags"],
+        "evidence_report": cf['details']['evidence'],
+        "evidence_blockers": [f for f in cf['details']['evidence']['findings'] if f['decision'] == 'block'],
     }
     if passthrough_keys:
         # 放最后：允许调用方用原始字段（如未截断的 title）覆盖上面的摘要字段
@@ -77,4 +79,7 @@ def score_of(r: dict, min_anchors: int) -> int:
     s += len(r["form"]["signals"])
     s += 2 * len(r["structure"]["missing"])
     s += 2 if r["verbatim"] > CS.VERBATIM_THRESHOLD else 0
+    scoped = r.get('evidence_report', {}).get('findings', [])
+    s += 2 * len({f['code'] for f in scoped if f['decision'] == 'block'})
+    s += len({f['code'] for f in scoped if f['decision'] == 'review'})
     return s

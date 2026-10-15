@@ -95,7 +95,7 @@ def detect_compression_issues(note: str) -> list[str]:
 
 def verify_note_mechanical(note: str, note_type: str = "", source_url: str = "",
                            max_words: int = None, source_chars: int = None,
-                           source_text: str = "") -> dict:
+                           source_text: str = "", source_author: str = "") -> dict:
     """机械校验：卫生类硬拦 + 极端字数硬拦 + 内容判据触发抽检。
 
     Args:
@@ -140,12 +140,16 @@ def verify_note_mechanical(note: str, note_type: str = "", source_url: str = "",
     # 旧的区间类越界（源本身撑不起区间）；内容缺失与失控保护属确定性缺陷，永不放行。
 
     # 内容判据（取代旧「字数比例带」）。flags 非空只触发抽检，不拦落盘。
-    cf = CS.content_flags(note, source_text or "", note_type)
+    cf = CS.content_flags(note, source_text or "", note_type, source_author=source_author)
     review_flags.extend(cf["flags"])
     review_details = cf["details"]
     # 硬失败分级（2026-09-18 统一落盘门禁）：锚点召回/照搬/结构缺失 = 应拦 + 触发重试；
     # 形态信号（A超长句/C逗号密度/D相邻段重复）只做软抽检。落盘层据 content_blockers 决定是否拦。
     content_blockers = CS.classify_content_flags(cf["flags"])["hard"]
+    evidence_report = cf["details"]["evidence"]
+    evidence_blockers = [f"证据缺陷[{f['code']}] 第{f['note']['line_start']}行：{f['reason']}"
+                         for f in evidence_report["findings"] if f["decision"] == "block"]
+    issues.extend(evidence_blockers)
 
     compression_warnings = detect_compression_issues(note)
     warnings.extend(compression_warnings)
@@ -158,5 +162,7 @@ def verify_note_mechanical(note: str, note_type: str = "", source_url: str = "",
         "review_flags": review_flags,
         "review_details": review_details,
         "content_blockers": content_blockers,
+        "evidence_report": evidence_report,
+        "evidence_blockers": evidence_blockers,
         "word_count": count,
     }

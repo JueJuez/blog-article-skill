@@ -54,7 +54,7 @@ def _ai_summarize(prompt: str, content: str) -> Optional[str]:
     return meta.get("content") if meta else None
 
 
-def _summarize_segments(segments, note_type: str, title: str = "", visual_context: str = "") -> Optional[str]:
+def _summarize_segments(segments, note_type: str, title: str = "", visual_context: str = "", generation_calls: list = None) -> Optional[str]:
     """两段式总结：分块 → 逐块小结 → 二次合并（P2.2）。
 
     visual_context: P4 多模态理解的画面上下文；非空时拼接到首块，供 AI 参考。
@@ -80,17 +80,24 @@ def _summarize_segments(segments, note_type: str, title: str = "", visual_contex
 
     prompt = get_note_prompt(note_type)
 
+    def generate(actual_prompt, actual_text):
+        from prompts.provenance import text_hash
+        if generation_calls is not None:
+            generation_calls.append({"prompt_sha256": text_hash(actual_prompt),
+                                     "input_sha256": text_hash(actual_text)})
+        return _ai_summarize(actual_prompt, actual_text)
+
     def summarize_fn(text: str, i: int, total: int) -> Optional[str]:
         chunk_prompt = (prompt +
                         f"\n\n（这是第 {i+1}/{total} 段，请先独立小结这一段，"
                         f"严格保持笔记结构，不要补全未出现的内容）")
-        return _ai_summarize(chunk_prompt, text)
+        return generate(chunk_prompt, text)
 
     def merge_fn(partials: List[str]) -> Optional[str]:
         merge_prompt = (prompt +
                         "\n\n以下是各分段的小结，请合并为一篇完整笔记"
                         "（去重、保持结构、控制单篇篇幅、不要重复章节）：")
-        return _ai_summarize(merge_prompt, "\n\n---\n\n".join(partials))
+        return generate(merge_prompt, "\n\n---\n\n".join(partials))
 
     final = two_stage_summarize(chunks, summarize_fn, merge_fn)
     if final and note_type:
@@ -101,10 +108,10 @@ def _summarize_segments(segments, note_type: str, title: str = "", visual_contex
             crit = build_gate_critique(gate)
 
             def summarize_fn2(text, i, total):
-                return _ai_summarize(prompt + crit, text)
+                return generate(prompt + crit, text)
 
             def merge_fn2(partials):
-                return _ai_summarize(prompt + crit, "\n\n---\n\n".join(partials))
+                return generate(prompt + crit, "\n\n---\n\n".join(partials))
 
             retry = two_stage_summarize(chunks, summarize_fn2, merge_fn2)
             if retry:
@@ -116,13 +123,16 @@ def _summarize_and_save(segments, source_url: str, title: str, author: str,
                         tags: list, note_type: str, force: bool, visual_context: str = "",
                         publish_time: int = 0, folder: str = "", obsidian: bool = False):
     """总结并保存；返回 (filename, final_text, degraded, article_content, note_type)。"""
+    type_origin = "manual" if note_type else "auto"
     if not note_type:
         sample = (segments_to_text(segments)
                   if isinstance(segments, list) and segments and isinstance(segments[0], dict)
                   else (segments if isinstance(segments, str) else ""))
         note_type = classify_note_type(title, sample)
 
-    final = _summarize_segments(segments, note_type, title, visual_context=visual_context)
+    generation_calls = []
+    final = _summarize_segments(segments, note_type, title, visual_context=visual_context,
+                                generation_calls=generation_calls)
     if final is None:
         content = (segments_to_text(segments)
                    if isinstance(segments, list) and segments and isinstance(segments[0], dict)
@@ -137,8 +147,10 @@ def _summarize_and_save(segments, source_url: str, title: str, author: str,
                         if isinstance(segments, list) and segments and isinstance(segments[0], dict)
                         else (segments if isinstance(segments, str) else ""))
     _gate = verify_note_mechanical(final, note_type, source_url=source_url,
-                                   source_text=_transcript_text)
+                                   source_text=_transcript_text, source_author=author)
     if not _gate["passed"]:
+        from shared.gate_blockers import log_gate_block
+        log_gate_block('video', note_type, source_url, title, _gate['issues'], evidence=_gate['evidence_report'])
         raise ValueError("VERIFIER_FAILED: " + "；".join(_gate["issues"]))
     if _gate.get("content_blockers") and not force:
         raise ValueError("VERIFIER_CONTENT_FAILED: " + "；".join(_gate["content_blockers"]))
@@ -147,11 +159,21 @@ def _summarize_and_save(segments, source_url: str, title: str, author: str,
     save_tags = list(tags) if tags else [label]
     # 视频真实标题（fetch/ASR 来源）经确定性清洗再落盘，不依赖模型自创标题
     clean_title = choose_node_title(title, "") or "视频总结"
+    from prompts.provenance import generation_context
+    trace = generation_context(title, _transcript_text, note_type, type_origin, "", "video_call_templates")
+    trace["prompt_sha256"] = "unknown"  # 多次调用不能用一个基础模板hash冒充实际prompt。
+    trace["generation_calls"] = generation_calls
+    from prompts.evidence import attach_evidence, resolve_source_author
+    trace = attach_evidence(trace, _gate['evidence_report'], note_type)
+    author = resolve_source_author(_transcript_text, author)
     formatted, filename = save_summarized_article(
         final, original_url=source_url, author=author,
         tags=save_tags, original_title=clean_title, note_type=note_type,
-        publish_time=publish_time, folder=folder, obsidian=obsidian
+        publish_time=publish_time, folder=folder, obsidian=obsidian, generation_context=trace
     )
+    if _gate.get('review_flags'):
+        from prompts.review_rubric import queue_for_review
+        queue_for_review(filename, note_type, _gate['review_flags'], source_url, evidence=_gate['evidence_report'])
     return (filename, final, False, None, note_type)
 
 
@@ -215,14 +237,14 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
     违规抛 ValueError("VERIFIER_FAILED: ...") 不落盘。
     """
     gate = verify_note_mechanical(content, note_type, source_url=url,
-                                 source_text=source_text)
+                                 source_text=source_text, source_author=author)
     if not gate["passed"]:
         from shared.gate_blockers import log_gate_block
         # 拦截事件持久化（gate_blockers 台账）：直连/apply 两条路共用本函数，
         # 在此记录即全覆盖；台账失败不影响抛错主流程。
         log_gate_block(source="series", note_type=note_type, url=url,
                        title=base_name, issues=gate["issues"],
-                       warnings=gate.get("warnings", []))
+                       warnings=gate.get("warnings", []), evidence=gate['evidence_report'])
         raise ValueError("VERIFIER_FAILED: " + "；".join(gate["issues"]))
     # 内容硬失败门禁（2026-09-18 与文章/重抓管线对齐，source_text 已透传）：
     # 结构缺失/锚点召回/照搬确定性内容缺陷 → 拦下不落盘。reland 维护场景源常在，
@@ -231,8 +253,10 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
         from shared.gate_blockers import log_gate_block
         log_gate_block(source="series", note_type=note_type, url=url,
                        title=base_name, issues=gate["content_blockers"],
-                       warnings=gate.get("warnings", []))
+                       warnings=gate.get("warnings", []), evidence=gate['evidence_report'])
         raise ValueError("VERIFIER_CONTENT_FAILED: " + "；".join(gate["content_blockers"]))
+    from prompts.evidence import resolve_source_author
+    author = resolve_source_author(source_text, author)
     formatted = format_note_with_prompt(
         content=content, author=author, url=url,
         tags=tags, add_metadata=True, publish_time=publish_time
@@ -269,6 +293,9 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
     except Exception as e:
         print(f"   ⚠️ 外部同步跳过（非致命）：{e}")
 
+    if gate.get('review_flags'):
+        from prompts.review_rubric import queue_for_review
+        queue_for_review(path, note_type, gate['review_flags'], url, evidence=gate['evidence_report'])
     return path
 
 
@@ -762,15 +789,18 @@ def _finalize_single(title, segments, url, input_data, visual_context: str = "")
     )
 
     if degraded:
+        from prompts.provenance import dispatch_fields
         # 与 articles 降级对齐：字幕原文落 raw 文件，外层/监控可 Read 后按模板总结
         raw_file = articles_main.save_raw_content_to_file(article_content, title=title)
+        with open(raw_file, encoding="utf-8") as f:
+            fields = dispatch_fields(title, f.read(), note_type,
+                                     "manual" if input_data.get("note_type") else "auto")
         return {
             "success": True,
             "need_continue_summary": True,
             "message": "✅ 已准备好字幕内容，等待执行模型（Agent）按笔记模板总结",
             "article_content": article_content,
-            "note_type": note_type,
-            "prompt": get_note_prompt(note_type, source_chars_of(article_content)) + QUALITY_GATE_SELFCHECK,
+            **fields,
             "original_url": url,
             "original_title": title,
             "author": author,

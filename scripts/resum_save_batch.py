@@ -86,9 +86,17 @@ def main() -> int:
                 source_text = _src_txt
             except Exception:
                 pass
+        from prompts.provenance import validate_dispatch
+        try:
+            validate_dispatch(it, source_text=source_text)
+        except ValueError as exc:
+            failed.append((i, str(exc), title))
+            continue
         gate = verify_note_mechanical(content, note_type, source_url=url,
-                                     source_chars=source_chars, source_text=source_text)
+                                     source_chars=source_chars, source_text=source_text, source_author=author)
         if not gate["passed"]:
+            from shared.gate_blockers import log_gate_block
+            log_gate_block('resum', note_type, url, title, gate['issues'], evidence=gate['evidence_report'])
             failed.append((i, "GATE:" + ";".join(gate["issues"]), title))
             continue
         # 内容硬失败门禁（2026-09-18 与 save_summary_only 对齐）：锚点召回/照搬/结构缺失
@@ -106,6 +114,8 @@ def main() -> int:
                 rel_dir = ""
 
         try:
+            from prompts.evidence import attach_evidence, resolve_source_author
+            author = resolve_source_author(source_text, author)
             _formed, _fname = save_summarized_article(
                 content,
                 original_url=url,
@@ -117,7 +127,11 @@ def main() -> int:
                 folder=rel_dir,
                 obsidian=True,
                 note_path=note_path,
+                generation_context=attach_evidence(it.get("generation_context"), gate['evidence_report'], note_type),
             )
+            if gate.get('review_flags'):
+                from prompts.review_rubric import queue_for_review
+                queue_for_review(_fname, note_type, gate['review_flags'], url, evidence=gate['evidence_report'])
         except Exception as e:
             failed.append((i, f"SAVE_FAILED:{e}", title))
             continue

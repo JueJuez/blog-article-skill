@@ -299,7 +299,7 @@ def _export_html_safe(md_path: str) -> None:
         print(f"   ⚠️ 分享版 HTML 导出失败（不影响笔记落盘）：{e}")
 
 
-def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "", topics: list = None, overwrite: bool = False, note_path: str = "", share_html: bool = False) -> tuple:
+def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "", topics: list = None, overwrite: bool = False, note_path: str = "", share_html: bool = False, generation_context: dict = None) -> tuple:
     """保存已总结的文章内容到所有可用目标。
 
     Args:
@@ -437,7 +437,7 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
         if original_url or content_key:
             dedup.mark_summarized(url=original_url, content=content_key, title=title,
                                   filename=filename, folder=os.path.dirname(filename),
-                                  note_type=note_type, source=_guess_source(original_url))
+                                  note_type=note_type, source=_guess_source(original_url), generation_context=generation_context)
         print(f"\n♻️ in-place 重做落盘完成（覆盖既有路径，不产生副本）")
         print(f"路径: {note_path}")
         if share_html:
@@ -468,7 +468,7 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
             dedup.mark_summarized(url=original_url, title=original_title,
                                   filename=filename, folder=folder,
                                   note_type=note_type,
-                                  source=_guess_source(original_url))
+                                  source=_guess_source(original_url), generation_context=generation_context)
         print(f"📝 [draft-only] 已写本地草稿（不落飞书）：{dp}")
         return formatted_note, dp
 
@@ -479,7 +479,7 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
     if original_url or content_key:
         dedup.mark_summarized(url=original_url, content=content_key, title=title,
                               filename=filename, folder=folder, note_type=note_type,
-                              source=_guess_source(original_url))
+                              source=_guess_source(original_url), generation_context=generation_context)
 
     # 总览索引维护（仅监控路径 folder 非空时）：落盘成功后把本篇插入账号容器总览，
     # 解决飞书按创建时间排、补历史数据后顺序乱的问题（用户 2026-08-25 决策）。
@@ -528,6 +528,7 @@ def summarize_content(content: str, author: str = "", url: str = "", tags: list 
     print(f"   📑 笔记类型: {note_type}")
 
     prompt = get_note_prompt(note_type, source_chars_of(content))
+    executed_prompt = prompt
 
     metadata = ""
     if tags:
@@ -559,6 +560,7 @@ def summarize_content(content: str, author: str = "", url: str = "", tags: list 
             if meta2 and meta2.get("content"):
                 summary = meta2["content"]
                 meta = meta2
+                executed_prompt = prompt + crit
 
     print("   ✅ AI总结完成")
     return {
@@ -567,6 +569,7 @@ def summarize_content(content: str, author: str = "", url: str = "", tags: list 
         "model": meta.get("model"),
         "source": meta.get("source"),
         "topics": topics,
+        "generation_prompt": executed_prompt,
     }
 
 
@@ -629,6 +632,7 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None,
             return (None, None, None, rec.get("title", ""), f"ALREADY_EXISTS:{rec.get('filename', '')}")
 
     # 确定笔记类型（供标签 + 保存 frontmatter 使用）
+    type_origin = "manual" if note_type else "auto"
     if not note_type:
         note_type = classify_note_type(original_title, article_content)
 
@@ -661,15 +665,32 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None,
     model = ai_result.get("model")
     print("   ✅ AI总结完成")
 
+    from prompts.provenance import generation_context
+    trace = (generation_context(original_title, article_content, note_type, type_origin,
+                                ai_result["generation_prompt"], "article_generation_template")
+             if ai_result.get("generation_prompt") else None)
     # 步骤3：保存
     print("\n💾 步骤3：自动保存到配置的目标位置")
     try:
+        from prompts.evidence import check_note_evidence, evidence_issues, evidence_review_flags, attach_evidence, resolve_source_author
+        evidence_report = check_note_evidence(summarized_content, article_content, source_author=author)
+        blockers = evidence_issues(evidence_report)
+        if blockers:
+            from shared.gate_blockers import log_gate_block
+            log_gate_block('article', note_type, original_url, original_title, blockers, evidence=evidence_report)
+            raise ValueError('VERIFIER_FAILED: ' + '；'.join(blockers))
+        author = resolve_source_author(article_content, author)
+        trace = attach_evidence(trace, evidence_report, note_type)
         formatted_note, filename = save_summarized_article(
             summarized_content, original_url, author, tags, original_title,
             meta={"usage": usage, "model": model}, note_type=note_type,
             publish_time=publish_time, folder=folder, obsidian=obsidian,
-            content_key=article_content, topics=ai_result.get("topics")
+            content_key=article_content, topics=ai_result.get("topics"), generation_context=trace
         )
+        reasons = evidence_review_flags(evidence_report)
+        if reasons:
+            from prompts.review_rubric import queue_for_review
+            queue_for_review(filename, note_type, reasons, original_url, evidence=evidence_report)
         print("\n✅ 文章总结与保存流程完成！")
         return summarized_content, formatted_note, filename, original_title, None
     except Exception as e:
@@ -742,6 +763,12 @@ def save_summary_only(input_data: dict) -> dict:
             return {'success': True, 'skipped': True,
                     'message': f"ALREADY_EXISTS:{rec.get('filename', '')}",
                     'filename': rec.get('filename', '')}
+    from prompts.provenance import validate_dispatch
+    try:
+        validate_dispatch(input_data, source_text=source_text,
+                          check_prompt='prompt' in input_data)
+    except ValueError as exc:
+        return {'success': False, 'message': str(exc)}
     # ── force 修订语义补全（2026-09-24）──
     # force **只绕 dedup 闸门**，不接管文件名冲突策略：OutputManager 照旧把新版改名成 `-1`，
     # 旧版留在库里、登记表却指向副本（历史坑，2026-09-15 修过一次，但仅修在显式传 overwrite 的
@@ -777,7 +804,7 @@ def save_summary_only(input_data: dict) -> dict:
     from shared.gate_blockers import log_gate_block
     _gate = verify_note_mechanical(summarized_content, input_data.get('note_type', ''),
                                    source_url=original_url, max_words=max_words,
-                                   source_chars=source_chars, source_text=source_text)
+                                   source_chars=source_chars, source_text=source_text, source_author=author)
     if not _gate["passed"]:
         print("⛔ 机械门禁拦截：" + "；".join(_gate["issues"]))
         # 拦截事件持久化（gate_blockers 台账）：队列路径此前无拦截记录，无法区分
@@ -785,9 +812,10 @@ def save_summary_only(input_data: dict) -> dict:
         log_gate_block(source="queue", note_type=input_data.get('note_type', ''),
                        url=original_url or "", title=original_title or "",
                        issues=_gate["issues"], warnings=_gate.get("warnings", []),
-                       compression_warnings=_gate.get("compression_warnings", []))
+                       compression_warnings=_gate.get("compression_warnings", []), evidence=_gate['evidence_report'])
         return {'success': False, 'message': 'VERIFIER_FAILED:' + '；'.join(_gate["issues"]),
                 'issues': _gate["issues"],
+                'evidence_report': _gate['evidence_report'],
                 'compression_warnings': _gate.get("compression_warnings", [])}
     # 内容硬失败门禁（2026-09-18 统一落盘）：锚点召回缺失/逐字照搬/结构缺失 = 确定性内容缺陷，
     # 与机械门禁同权拦盘，并交外层执行模型带反馈重试（retry 信号）。形态信号（A/C/D）只做软抽检，
@@ -799,13 +827,16 @@ def save_summary_only(input_data: dict) -> dict:
         log_gate_block(source="queue", note_type=input_data.get('note_type', ''),
                        url=original_url or "", title=original_title or "",
                        issues=_cb, warnings=_gate.get("warnings", []),
-                       compression_warnings=_gate.get("compression_warnings", []))
+                       compression_warnings=_gate.get("compression_warnings", []), evidence=_gate["evidence_report"])
         return {'success': False, 'message': 'VERIFIER_CONTENT_FAILED:' + '；'.join(_cb),
                 'issues': _cb, 'retry': True,
+                'evidence_report': _gate['evidence_report'],
                 'compression_warnings': _gate.get("compression_warnings", [])}
     # L8 修复（2026-09-03）：自带总结的保存路径 folder 为空时自动走统一路由器，
     # 与 skill_main 的 L7 手贴 URL 路径对齐——「落哪」由代码决定，不靠调用方记性。
     # 背景：批量总结曾有 78 篇因调用方漏传 folder 全部落进【待归类】。
+    from prompts.evidence import resolve_source_author, attach_evidence
+    author = resolve_source_author(source_text, author)
     folder, tags = autoroute_folder(folder, author, original_url, original_title, tags,
                                     category=input_data.get('category', ''))
     try:
@@ -818,6 +849,7 @@ def save_summary_only(input_data: dict) -> dict:
             overwrite=_overwrite,
             note_path=_note_path,
             share_html=bool(input_data.get('share_html', False)),
+            generation_context=attach_evidence(input_data.get("generation_context"), _gate['evidence_report'], input_data.get('note_type', '')),
         )
         # 无人值守降级：落盘命中参考值抽检信号 → 入 needs_review 队列（filename 已知）
         _review_flags = _gate.get("review_flags", [])
@@ -825,12 +857,12 @@ def save_summary_only(input_data: dict) -> dict:
             try:
                 from prompts.review_rubric import queue_for_review
                 queue_for_review(filename=filename, note_type=input_data.get('note_type', ''),
-                                 reasons=_review_flags, source_url=original_url)
+                                 reasons=_review_flags, source_url=original_url, evidence=_gate['evidence_report'])
             except Exception:
                 pass
         return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note,
                 'compression_warnings': _gate.get("compression_warnings", []),
-                'review_flags': _review_flags}
+                'review_flags': _review_flags, 'evidence_report': _gate['evidence_report']}
     except Exception as e:
         return {'success': False, 'message': f'保存失败: {str(e)}'}
 
@@ -892,12 +924,15 @@ def skill_main(input_data: dict) -> dict:
         elif second:
             article_content = second
             original_url = third
-            note_type = note_type or classify_note_type(original_title, article_content)
+            from prompts.provenance import dispatch_fields
+            with open(_LAST_RAW_FILEPATH, encoding="utf-8") as f:
+                dispatch_source = f.read()
+            fields = dispatch_fields(original_title, dispatch_source, note_type,
+                                     "manual" if note_type else "auto")
             return {
                 'success': True, 'need_continue_summary': True,
                 'message': '✅ 已抓取文章内容，等待执行模型（Agent）按笔记模板总结',
-                'article_content': article_content, 'note_type': note_type,
-                'prompt': get_note_prompt(note_type, source_chars_of(article_content)) + QUALITY_GATE_SELFCHECK, 'original_url': original_url,
+                'article_content': article_content, **fields, 'original_url': original_url,
                 'original_title': original_title, 'author': author, 'tags': tags,
                 'raw_file': _LAST_RAW_FILEPATH, 'folder': folder, 'obsidian': obsidian,
                 'publish_time': _LAST_PUBLISH_TIME or publish_time,

@@ -441,18 +441,22 @@ def _queue_pending_summary(it: dict, res: dict) -> None:
                 raw_text = f.read()
         except OSError:
             raw_text = ""
+    from prompts.provenance import dispatch_fields
     if note_type not in NOTE_TEMPLATES:
-        note_type = classify_note_type(entry_title, raw_text[:4000])
+        fields = dispatch_fields(entry_title, raw_text)
+    else:
+        # 已有类型不等于人工指定；来源不明的上游结果保留legacy。
+        origin = res.get("generation_context", {}).get("type_origin", "legacy")
+        fields = dispatch_fields(entry_title, raw_text, note_type, origin)
     entry = {
         "url": url,
         "title": entry_title,
         "author": res.get("author") or it.get("mp_name", ""),
-        "note_type": note_type,
+        **fields,
         "tags": res.get("tags") or [],
         "publish_time": it.get("publish_time", 0),
         "folder": res.get("folder") or _item_folder(it),
         "raw_file": res.get("raw_file", ""),
-        "prompt": get_note_prompt(note_type, source_chars_of(raw_text)) + QUALITY_GATE_SELFCHECK,
         "queued_at": int(time.time()),
     }
     pending.append(entry)

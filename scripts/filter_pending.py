@@ -1,21 +1,8 @@
-"""scripts/filter_pending.py — 待总结队列前置过滤器（三层去重第②层 · DECISION-20260825）。
+"""待总结队列过滤与派单刷新（现有入口）。
 
-派子 Agent 总结**之前**跑一次，机械清掉「已无需总结」的条目，避免已总结内容
-再消耗 AI 总结 token / 重复落飞书。写不写由代码决定，AI 只交总结。
-
-用法：
-    python scripts/filter_pending.py
-
-规则（纯代码判断）：
-- monitors/pending_summaries.json：URL 命中 dedup 索引（已总结过）→ 出队
-- notes/_scraped/scys/pending_summaries.json：summarized:true 或 URL 命中 dedup 索引 → 出队
-- **prompt 刷新（默认开，2026-10-06）**：长跑补齐进程启动时加载的模板可能落后于
-  仓库当前模板（实例：UP 补齐 16:56 启动，错过 18:46 质量纪律提交）。入队时预计算
-  的 prompt 在消费前按当前模板机械重算（`get_note_prompt(note_type, 源长)` +
-  `QUALITY_GATE_SELFCHECK`，源长取 raw_file / chars），保证老条目也用新版规范。
-  条目缺 note_type 或源长不可得 → 跳过保留原 prompt（不猜）。
-
-输出 JSON 摘要（kept/dropped/prompt_refreshed/剩余标题），编排方只对剩余条目派子 Agent。
+默认：清已总结项；仅对已知auto/manual且源可读的条目刷新派单。
+auto重算type，manual保留；legacy不改，类型建议差异进入报告。
+--dry-run：仅预览type/prompt，不运行去重、不写队列/登记表；包含已总结条目。
 """
 import json
 import os
@@ -53,39 +40,48 @@ def filter_scys(entries: list) -> tuple:
     return keep, dropped
 
 
+def _read_source(e):
+    path = e.get("raw_file") or e.get("output")
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except (OSError, UnicodeError):
+        return None
+
+
+def type_difference(e):
+    from prompts.classify import classify_note_type_with_evidence
+    source = _read_source(e)
+    if source is None:
+        return None
+    suggested = classify_note_type_with_evidence(e.get("title", ""), source)
+    if suggested["note_type"] == e.get("note_type"):
+        return None
+    return {"title": e.get("title", ""), "url": e.get("url", ""),
+            "type_origin": e.get("generation_context", {}).get("type_origin", "legacy"),
+            "old_type": e.get("note_type"), "suggested_type": suggested["note_type"],
+            "reason": suggested["reason"]}
+
+
 def refresh_prompt(e: dict) -> str:
-    """按当前模板重算单条 prompt；返回 'refreshed' / 'kept' / 'skipped'。
-
-    与三个入队写点（monitors/_queue_pending_summary、scys build_pending_entry、
-    fetch_up_range）同一口径：get_note_prompt(note_type, 源长) + QUALITY_GATE_SELFCHECK。
-    源长来源：monitors/UP 队列读 raw_file；scys 队列用入队时存的 chars。
-    """
-    note_type = e.get("note_type") or ""
-    if not note_type:
+    """仅刷新已知auto/manual；legacy保持原样，建议通过type_difference只读报告。"""
+    from prompts.provenance import dispatch_fields
+    origin = e.get("generation_context", {}).get("type_origin", "legacy")
+    if origin not in ("auto", "manual") or not e.get("note_type"):
         return "skipped"
-    from articles.prompt import get_note_prompt, source_chars_of
-    from prompts.templates import QUALITY_GATE_SELFCHECK
-    raw_file = e.get("raw_file") or ""
-    if raw_file:
-        if not os.path.exists(raw_file):
-            return "skipped"
-        with open(raw_file, encoding="utf-8") as f:
-            chars = source_chars_of(f.read())
-    else:
-        try:
-            chars = int(e.get("chars") or 0)
-        except (TypeError, ValueError):
-            chars = 0
-        if chars <= 0:
-            return "skipped"
-    new_prompt = get_note_prompt(note_type, chars) + QUALITY_GATE_SELFCHECK
-    if new_prompt != e.get("prompt"):
-        e["prompt"] = new_prompt
-        return "refreshed"
-    return "kept"
+    source = _read_source(e)
+    if not source:
+        return "skipped"
+    fields = dispatch_fields(e.get("title", ""), source,
+                             e["note_type"] if origin == "manual" else "", origin)
+    changed = any(e.get(k) != v for k, v in fields.items())
+    e.update(fields)
+    return "refreshed" if changed else "kept"
 
 
-def _run_queue(path: str, filt, refresh: bool = True) -> dict:
+def _run_queue(path: str, filt, refresh: bool = True, dry_run: bool = False) -> dict:
     if not os.path.exists(path):
         return {"kept": 0, "dropped": 0, "prompt_refreshed": 0, "prompt_skipped": 0,
                 "titles": []}
@@ -97,7 +93,9 @@ def _run_queue(path: str, filt, refresh: bool = True) -> dict:
     if not isinstance(entries, list):
         return {"kept": 0, "dropped": 0, "prompt_refreshed": 0, "prompt_skipped": 0,
                 "titles": []}
-    keep, dropped = filt(entries)
+    # 只读预览不调用可能迁移旧登记表的去重读取入口。
+    keep, dropped = (entries, []) if dry_run else filt(entries)
+    differences = [d for e in keep if (d := type_difference(e))]
     refreshed = skipped = 0
     if refresh:
         for e in keep:
@@ -106,18 +104,23 @@ def _run_queue(path: str, filt, refresh: bool = True) -> dict:
                 refreshed += 1
             elif r == "skipped":
                 skipped += 1
-    if dropped or refreshed:
+    if not dry_run and (dropped or refreshed):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(keep, f, ensure_ascii=False, indent=2)
     return {"kept": len(keep), "dropped": len(dropped),
             "prompt_refreshed": refreshed, "prompt_skipped": skipped,
+            "type_differences": differences, "dry_run": dry_run,
             "titles": [e.get("title", "") for e in keep]}
 
 
-def main() -> None:
+def main(argv=None) -> None:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dry-run", action="store_true", help="只读报告，不清队列、不刷新派单")
+    args = parser.parse_args(argv)
     result = {
-        "monitors": _run_queue(PENDING_PATH, filter_monitors),
-        "scys": _run_queue(SCYS_PENDING_PATH, filter_scys),
+        "monitors": _run_queue(PENDING_PATH, filter_monitors, dry_run=args.dry_run),
+        "scys": _run_queue(SCYS_PENDING_PATH, filter_scys, dry_run=args.dry_run),
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

@@ -103,7 +103,7 @@ def test_reading_routes_to_reading():
 
 def test_reading_book_title_heuristic():
     """书名号《》强信号 → reading（标题无「读书/书评」词也能识别，如《当下的力量》）。"""
-    assert classify_note_type("《当下的力量》——你是来享受生命的，而不是来演绎完美的。") == "reading"
+    assert classify_note_type("《当下的力量》——你是来享受生命的，而不是来演绎完美的。") == "general"  # 书名号不足以证明以书为主线
 
 
 def test_roundup_bang_keyword():
@@ -113,8 +113,7 @@ def test_roundup_bang_keyword():
 
 
 def test_interview_content_level_without_title_cue():
-    """内容级访谈识别：标题无「访谈/对话」词，但正文是主持人向特定嘉宾的人生探针 → interview。
-    回归 2026-07-21 实战：真实链接「95后女老板Judy」标题无 cue，靠内容级命中。"""
+    """标题无访谈证据，正文仅有二人称探针、没有回答方时保守回退。"""
     title = "95后女老板Judy的创业故事"
     content = (
         "你好像都是很知道自己想要什么\n"
@@ -122,7 +121,7 @@ def test_interview_content_level_without_title_cue():
         "你后来卖掉公司的时候\n"
         "你选择创业这条路我觉得很酷"
     )
-    assert classify_note_type(title, content) == "interview"
+    assert classify_note_type(title, content) == "general"  # 缺回答方，不能由二人称推定访谈
 
 
 def test_video_keyword_no_longer_forces_key_points():
@@ -178,12 +177,14 @@ def test_all_templates_require_evidence():
 # --------------------------------------------------------------------------
 
 def test_reading_has_controversy_section():
-    """READING_PROMPT 须含「争议与不同声音」段：作者回避点 / 不同声音 / 与已知冲突。"""
+    """争议评议保留材料内矛盾，不以未核验的外部事实强造反驳。"""
     p = NOTE_TEMPLATES["reading"]["prompt"]
     assert "争议与不同声音" in p
     assert "作者回避" in p
     assert "不同声音" in p
-    assert "与你的冲突" in p or "与已知事实" in p
+    assert "内部矛盾" in p
+    assert "外部事实未核验" in p
+    assert "不以模型常识编外部共识" in p
 
 
 # --------------------------------------------------------------------------
@@ -350,14 +351,14 @@ def test_tutorial_video_explicit():
 
 
 def test_interview_content_level_host_probe():
-    """内容级访谈：标题无 cue，但正文是主持人向嘉宾的人生探针（你创业/你休学）→ interview。"""
+    """二人称人生探针不足以证明有访谈双方，防止教学独白误判。"""
     title = "一个普通人的十年"
     content = (
         "你当时是怎么决定休学的\n"
         "你后来创业的时候\n"
         "你是怎么熬过那段日子的"
     )
-    assert classify_note_type(title, content) == "interview"
+    assert classify_note_type(title, content) == "general"  # 缺回答方，不能由二人称推定访谈
 
 
 # --------------------------------------------------------------------------

@@ -52,18 +52,22 @@ CONTENT = """**作者**：测试作者
 
 
 @pytest.fixture(autouse=True)
-def _tmp_vault(tmp_path, monkeypatch):
+def _tmp_vault(tmp_path, monkeypatch, _isolate_dedup):
     """把 vault 指向临时目录，并强制只写本地 Obsidian。"""
     vault = tmp_path / "vault"
     (vault / "【监控】" / "B站").mkdir(parents=True)
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
     monkeypatch.setenv("OBSIDIAN_WRITE", "1")
     monkeypatch.setenv("DISABLE_FEISHU_SYNC", "1")
-    for mod in ("articles.main", "articles.manager", "articles.obsidian", "articles.dedup"):
+    # dedup不能reload：它会清掉全局fixture设置的临时索引路径，重置为真实登记表。
+    for mod in ("articles.main", "articles.manager", "articles.obsidian"):
         try:
             importlib.reload(importlib.import_module(mod))
         except Exception:
             pass
+    from articles import dedup
+    assert os.path.commonpath([str(tmp_path), os.path.abspath(dedup._INDEX_FILE)]) == str(tmp_path), \
+        "登记表必须留在本用例临时目录，输出配置reload不能解除隔离"
     global VAULT
     VAULT = str(vault)
     yield vault

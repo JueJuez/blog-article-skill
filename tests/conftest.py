@@ -51,6 +51,14 @@ def _isolate_gate_blockers(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_review_records(monkeypatch, tmp_path):
+    """批次3会产生复核证据；全部测试的复核记录只能写临时目录。"""
+    from prompts import review_rubric
+    for name in ('REVIEW_QUEUE', 'REVIEW_LOG', 'ROOT_CAUSE_LEDGER'):
+        monkeypatch.setattr(review_rubric, name, str(tmp_path / (name.lower() + '.jsonl')))
+
+
+@pytest.fixture(autouse=True)
 def _strip_oversized_env():
     """守卫（2026-09-20）：清掉 WorkBuddy 桌面端注入的超长环境变量。
 

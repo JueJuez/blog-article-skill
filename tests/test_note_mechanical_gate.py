@@ -171,10 +171,11 @@ class TestWordLimitsConsistency:
     """
 
     @pytest.mark.parametrize("note_type", sorted(NOTE_WORD_LIMITS))
-    def test_templates_declare_reference_not_fixed_range(self, note_type):
+    def test_templates_do_not_prescribe_source_ratio(self, note_type):
         prompt = templates_mod.NOTE_TEMPLATES[note_type]["prompt"]
-        assert "参考值" in prompt and "源长" in prompt, \
-            f"{note_type} 应声明 source-aware 参考值（含『参考值』『源长』）"
+        assert "不按原始字符数判断信息覆盖" in prompt, \
+            f"{note_type} 应按有效内容和条件检查覆盖"
+        assert not re.search(r"源长\s*[×*]\s*\d+%", prompt), note_type
         assert not re.search(r"单篇正文\s*\d+～\d+\s*字", prompt), \
             f"{note_type} 不应声明固定字数硬区间（已改为参考值）"
 
@@ -198,7 +199,7 @@ class TestSelfcheckAndGatePrompt:
         assert "⑤ 推广与文风自检" in templates_mod.QUALITY_GATE_SELFCHECK
 
     def test_selfcheck_has_coverage_and_length_items(self):
-        # ③ 覆盖自检（内容完整优先）；④ 篇幅自检（只守下限）
+        # ③ 双向覆盖；④ 检查重复和遗漏，不再注入源长比例下限
         sc = templates_mod.QUALITY_GATE_SELFCHECK
         assert "③ 覆盖自检" in sc and "④ 篇幅自检" in sc
 
@@ -210,13 +211,13 @@ class TestSelfcheckAndGatePrompt:
 
 class TestCoverageFirstGeneration:
     """生成侧「内容完整优先」（DECISION-20260915 §7）：所有模板须注入覆盖铁律，
-    且**不得再出现诱导压缩的表述**；按源长注入具体篇幅目标。"""
+    且不得再出现诱导压缩/凑字的表述；源长仅用于声明输入范围。"""
 
     def test_all_templates_carry_coverage_rules(self):
         for k, v in templates_mod.NOTE_TEMPLATES.items():
             p = v["prompt"]
             assert "内容完整优先" in p, f"{k} 缺覆盖优先规范"
-            assert "禁止合并要点" in p, f"{k} 缺「禁止合并要点」"
+            assert "禁止合并后丢义" in p, f"{k} 必须保留不同要点含义，但允许逻辑重组"
             assert "禁止概括替代" in p, f"{k} 缺「禁止概括替代」"
 
     def test_no_compression_threat_left(self):
@@ -225,19 +226,18 @@ class TestCoverageFirstGeneration:
             assert "要求重压" not in v["prompt"], f"{k} 仍含压缩威胁句"
             assert "超参考带上沿" not in v["prompt"], f"{k} 仍含参考带上沿威胁"
 
-    def test_reference_band_raised_to_30_50(self):
+    def test_no_ratio_band_in_generation_prompt(self):
         for k, v in templates_mod.NOTE_TEMPLATES.items():
             p = v["prompt"]
-            assert "源长×25%" not in p, f"{k} 仍用旧 25% 下沿"
-            assert "源长×30%" in p, f"{k} 未声明新下沿 30%"
+            assert not re.search(r"源长\s*[×*]\s*\d+%", p), f"{k} 不能用比例带逼填或砍内容"
 
     def test_coverage_guide_injected_by_source_chars(self):
         short = templates_mod.get_note_prompt("structured")
-        assert "附：本篇篇幅目标" not in short      # 未给源长 → 不注入
+        assert "附：本篇输入范围" not in short      # 未给源长 → 不注入
         g = templates_mod.render_coverage_guide(20000)
-        assert "20000" in g and "6000～10000" in g
-        assert "上限不硬卡" in g and "覆盖优先于字数" in g
-        assert "源长的 60%" in g  # 防复述式膨胀的反向警戒
+        assert "20000" in g and "6000～10000" not in g
+        assert "不据此规定目标字数" in g and "覆盖优先于字数" in g
+        assert "60%" not in g  # 不以比例判断照搬或覆盖
         # 短源不给目标（避免误导），< 400 字返回空
         assert templates_mod.render_coverage_guide(300) == ""
 
@@ -457,7 +457,7 @@ class TestContentSignalGate:
         assert not any("疑遗漏核心事实" in f for f in r["review_flags"])
 
     def test_structure_missing_flags(self):
-        # structured 模板声明「分层速览」「正反例对照」「延伸思考」等必备模块；
+        # structured 硬必备「分层速览」；正反例和延伸思考按源支持出现。
         # 正文只是重复字 → 触发结构缺失
         r = self._v(_body(1500), note_type="structured")
         assert r["passed"] is True

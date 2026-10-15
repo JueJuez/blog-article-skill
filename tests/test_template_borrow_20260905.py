@@ -40,13 +40,13 @@ def test_reading_prompt_argument_relations():
     assert "反驳" in p
 
 
-def test_reading_prompt_triple_verification():
-    """核心论点拆解须引入三重验证筛选：跨域佐证 / 预测力 / 独特性。"""
+def test_reading_prompt_evidence_review():
+    """证据评议保留分析价值，不能把未核验的跨域共识强写进原文总结。"""
     p = _p("reading")
-    assert "三重验证" in p
-    assert "跨域" in p
-    assert "预测力" in p
-    assert "独特" in p
+    assert "证据评议" in p
+    assert "单例、推演还是多方佐证" in p
+    assert "不能为交叉验证补外部实验" in p
+    assert "不能因自己觉得常识就删除作者重要主张" in p
 
 
 def test_reading_prompt_boundary_and_misuse():

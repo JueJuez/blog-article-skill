@@ -41,17 +41,17 @@ RANDOM_SAMPLE_MAX = 3
 # 五维语义判定框架（维度键 → 说明）。逐维由父 LLM 判 pass / warn / fail。
 DIMENSIONS = {
     "A_synthesis": "合成度：是否按模板结构重组，而非「他说…他又说…」的转录缩写",
-    "B_completeness": "完整性：源的核心论点 / 框架 / 结论是否都在；压掉的是水货还是干货",
+    "B_completeness": "完整性：重要要点、步骤、条件、反例、数字口径和必要资源是否保留；允许重组，不以小节数或字数代判",
     "C_fluency": "通顺度：无破碎句 / 无 ASR 错字 / 术语首现即解释",
-    "D_fidelity": "忠实度：无编造 / 无加原文没有的例子 / 无改作者立场",
-    "E_compliance": "合规度：无 H1 / 无来源链接行 / 主题词在 / 类型结构对",
+    "D_fidelity": "忠实度：人物/说话者、因果、时序、数据对象/期间/假设属性和源访问范围正确；速览/表格/收束不升格；原话可定位，额外分析就近标推断",
+    "E_compliance": "合规度：无 H1 / 无来源链接行 / 主题词在；类型适配、固定结构服从源支持，不为缺模块编造",
 }
 
 # 判定 → 动作
 ACTION_BY_DECISION = {
     "pass": "落盘通过，无需动作",
     "fix_inline": "父 Agent 直接就地修（仅 C/D/E 小问题，如 ASR 错字），不重派",
-    "resummarize": "打回子 Agent，附具体指令（太长照搬→压到 X 字只留框架；漏点→补源第三点）",
+    "resummarize": "打回子 Agent，附具体片段与源证据（照搬→重组表达保留要点；漏点→补对应条件；越界→降低结论强度）",
     "needs_review": "标 needs_review 进人工队列，不阻塞主流程（源本身有问题 / 仍可疑）",
 }
 
@@ -139,7 +139,7 @@ def suggest_prompt_fix(threshold: int = PROMPT_FIX_THRESHOLD) -> list:
             if rc in ("prompt", "template", "agent") and n >= threshold]
 
 
-def queue_for_review(filename: str, note_type: str, reasons: list, source_url: str = "") -> str:
+def queue_for_review(filename: str, note_type: str, reasons: list, source_url: str = "", evidence: dict = None) -> str:
     """无人值守降级：把需人工/外接 AI 复核的条目写入 _review_queue.jsonl。"""
     rec = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -149,6 +149,8 @@ def queue_for_review(filename: str, note_type: str, reasons: list, source_url: s
         "reasons": list(reasons),
         "status": "needs_review",
     }
+    if evidence is not None:
+        rec['evidence'] = evidence
     try:
         os.makedirs(os.path.dirname(REVIEW_QUEUE), exist_ok=True)
         with open(REVIEW_QUEUE, "a", encoding="utf-8") as f:

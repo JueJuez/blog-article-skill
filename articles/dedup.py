@@ -215,6 +215,9 @@ def _with_link_defaults(rec: dict) -> dict:
     out = dict(rec)
     out.setdefault("feishu_link", "")
     out.setdefault("obsidian_link", "")
+    from prompts.provenance import legacy_context
+    if not out.get("generation_context"):
+        out["generation_context"] = legacy_context(out.get("note_type", ""))
     return out
 
 
@@ -254,7 +257,7 @@ def batch_is_summarized(urls, titles=None) -> set:
 
 def mark_summarized(url: str = "", content: str = "", title: str = "",
                     filename: str = "", folder: str = "", note_type: str = "",
-                    source: str = "") -> None:
+                    source: str = "", generation_context: dict = None) -> None:
     """记录一次成功总结（读-改-写全程锁内）。
 
     与 register 同一套 merge 语义（PLAN-20260908 阶段3.4）：已有记录保留
@@ -275,6 +278,7 @@ def mark_summarized(url: str = "", content: str = "", title: str = "",
             "folder": folder or old.get("folder", ""),
             "note_type": note_type or old.get("note_type", ""),
             "source": source or old.get("source", ""),
+            "generation_context": generation_context or {},
             "summarized_at": time.strftime("%Y-%m-%d"),
             "feishu_link": old.get("feishu_link", ""),
             "obsidian_link": old.get("obsidian_link", ""),
@@ -284,7 +288,7 @@ def mark_summarized(url: str = "", content: str = "", title: str = "",
 
 
 def register(url: str = "", title: str = "", folder: str = "",
-             note_type: str = "", source: str = "") -> dict:
+             note_type: str = "", source: str = "", generation_context: dict = None) -> dict:
     """落盘登记（1.2，PLAN-20260908）：统一写入口，扩展 schema §3.2 字段。
 
     url 与 title 至少给一个：有 url 走 url 键；无 url 用标题指纹键
@@ -304,6 +308,8 @@ def register(url: str = "", title: str = "", folder: str = "",
             "folder": folder or old.get("folder", ""),
             "note_type": note_type or old.get("note_type", ""),
             "source": source or old.get("source", ""),
+            "generation_context": generation_context or (
+                old.get("generation_context", {}) if not note_type or note_type == old.get("note_type") else {}),
             "summarized_at": time.strftime("%Y-%m-%d"),
             "feishu_link": old.get("feishu_link", ""),
             "obsidian_link": old.get("obsidian_link", ""),

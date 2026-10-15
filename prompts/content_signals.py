@@ -8,7 +8,7 @@
 
   ① anchors_recall     硬锚点召回 —— 源里的数字/术语/公司名/代码，笔记丢了多少
   ② form_signals       破碎形态     —— A 超长句 / C 逗号密度 / D 相邻段高相似
-  ③ structure_missing  结构缺失     —— 模板声明的「必备」模块有没有缺
+  ③ structure_missing  结构缺失     —— 显式 SECTION_CONTRACTS 硬必备模块有没有缺
   ④ verbatim_ratio     照搬重合     —— 笔记 20 字滑窗片段出现在源里的占比
 
 被 `prompts/verifier.py`（落盘门禁）与 `scripts/audit_gate_signals.py`（离线审计）共用，
@@ -123,6 +123,8 @@ def _latin_whitelist() -> set:
 
 
 def _numeric_anchors(text: str) -> set:
+    from .evidence import prose_lines_for_numbers
+    text = '\n'.join(line for _, line in prose_lines_for_numbers(text))
     out = set()
     for m in NUM_RE.finditer(text):
         digits = m.group(0)
@@ -247,13 +249,12 @@ def form_signals(note: str) -> dict:
 
 # ---------------------------------------------------------------- ③ 结构缺失
 
-_CONTAINER_HINT = ("模块", "骨架", "每篇", "结构", "章节", "范畴")
 # 模板模块名 → 笔记里的可能叫法（模板的文字是给人看的，笔记措辞会变）
 SECTION_ALIAS = {
     "分层速览": ["速览", "TL;DR", "30秒"],
     "正反例对照": ["正反例", "对照"],
     "延伸思考": ["延伸思考", "我的想法"],
-    "我的想法": ["延伸思考", "我的想法"],   # 模板行写作「延伸思考 + 我的想法（必备）」，解析会截到后半段
+    "我的想法": ["延伸思考", "我的想法"],   # 兼容历史模块名；当前硬必备以显式契约为准
     "问答精华": ["问答", "Q：", "话题"],
     "核心定义与痛点": ["核心定义", "痛点"],
     "分维度拆解": ["分维度", "拆解"],
@@ -268,31 +269,13 @@ SECTION_ALIAS = {
 
 
 def required_sections(note_type: str) -> list:
-    """从 `prompts/templates.py` 的模板文字里解析出『（…必备…）』声明的模块名。
+    """读取显式无条件结构；源相关模块由写作自检/语义审查核对。
 
-    模板把「必备」写在散文里，机器看不见；这里把它变成可判定的清单。
+    不能从prompt中的“必备”散文推导硬拦，否则源不支持的模块会驱动编造。
+    返回副本，避免调用方改变后续笔记契约；未知类型不施加结构假设。
     """
-    try:
-        from prompts.templates import NOTE_TEMPLATES
-    except Exception:
-        return []
-    entry = NOTE_TEMPLATES.get(note_type) or {}
-    text = entry.get("prompt", "") if isinstance(entry, dict) else str(entry)
-    out = []
-    for line in text.splitlines():
-        if "必备" not in line:
-            continue
-        m = re.search(r"([^\s（(]{2,24}?)\s*[（(]([^）)]*必备[^）)]*)[）)]", line)
-        if not m:
-            continue
-        name = re.sub(r"^#+\s*", "", m.group(1))
-        name = re.sub(r"^\S{0,3}[、.：:]\s*", "", name)
-        name = re.sub(r"^\d+\s*", "", name).strip(" *`：:-")
-        if not name or any(h in name for h in _CONTAINER_HINT):
-            continue
-        if name not in out:
-            out.append(name)
-    return out
+    from prompts.templates import SECTION_CONTRACTS
+    return list(SECTION_CONTRACTS.get(note_type, {}).get("required", ()))
 
 
 def structure_missing(note: str, note_type: str) -> dict:
@@ -360,7 +343,7 @@ def classify_content_flags(flags: list) -> dict:
 
 def content_flags(note: str, source: str = "", note_type: str = "",
                   min_anchors: int = MIN_ANCHORS,
-                  recall_threshold: float = RECALL_THRESHOLD) -> dict:
+                  recall_threshold: float = RECALL_THRESHOLD, source_author: str = "") -> dict:
     """四类内容判据汇总。返回 {flags[], details{}, applicable{}}。
 
     调用方（verifier）把 flags 非空视为「需父 Agent 抽检」，**不拦落盘**。
@@ -398,4 +381,9 @@ def content_flags(note: str, source: str = "", note_type: str = "",
     if s["missing"]:
         flags.append(f"结构缺失：缺必备模块 {'、'.join(s['missing'])}")
 
+    from .evidence import check_note_evidence
+    evidence = check_note_evidence(note, source, source_author=source_author)
+    details["evidence"] = evidence
+    flags.extend(f"证据待复核[{f['code']}] 第{f['note']['line_start']}行：{f['reason']}"
+                 for f in evidence["findings"] if f["decision"] == "review")
     return {"flags": flags, "details": details, "applicable": applicable}

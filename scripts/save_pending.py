@@ -44,9 +44,13 @@ def _load_entry(queue: str, key: str):
 
 
 def build_payload(queue: str, entry: dict, content: str, force: bool) -> dict:
+    from prompts.provenance import legacy_context, validate_dispatch
+    validate_dispatch(entry)
+    context = entry.get("generation_context") or legacy_context(entry.get("note_type", ""))
     if queue == "monitors":
         return {
             "summarized_content": content,
+            "generation_context": context,
             "original_url": entry.get("url", ""),
             "author": entry.get("author", ""),
             "tags": entry.get("tags", []) or [],
@@ -61,6 +65,7 @@ def build_payload(queue: str, entry: dict, content: str, force: bool) -> dict:
     project = entry.get("project", "") or "未分类"
     return {
         "summarized_content": content,
+        "generation_context": context,
         # scys 无 author 概念：用 project 兜底，路由以 folder 为准
         "original_url": entry.get("url", ""),
         "author": "生财有术",

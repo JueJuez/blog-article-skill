@@ -1,6 +1,7 @@
 # DECISION-20260915 门禁从「字数比例带」改为「内容判据」（内容完整优先）
 
 **状态**：已实施，审计与试点记录见 §七、§八；2026-09-18 后内容硬失败也拦落盘，现行契约见 [RULES](../../RULES.md) §4.6 与 `prompts/verifier.py`、`articles/main.py`。
+**后续修订（2026-10-14）**：[模板忠实契约](DECISION-20261014-template-fidelity.md) 将生成侧残留的源长比例提示移除，并改为显式硬必备/源依赖结构；本决定的300字兜底和失控保护保留。历史试点统计仍代表当时版本。
 **前序**：`DECISION-20260905-mechanical-verifier.md`（引入机械门禁）→ `DECISION-20260913-gate-source-aware-review.md`（字数改 source-aware 参考值 + 父 Agent 抽检 rubric）→ `DECISION-20260914`（commit `b28a45c` 修 `persist_summary.py` 透传 `source_chars`）
 
 ## 一、用户硬约束（不得违背）

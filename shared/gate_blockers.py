@@ -24,7 +24,7 @@ GATE_BLOCKERS_BASE = os.path.join(_PROJECT_ROOT, "monitors", "gate_blockers.json
 def log_gate_block(source: str, note_type: str, url: str, title: str,
                    issues: list, warnings: Optional[list] = None,
                    action: str = "blocked",
-                   compression_warnings: Optional[list] = None) -> Optional[str]:
+                   compression_warnings: Optional[list] = None, evidence: Optional[dict] = None) -> Optional[str]:
     """记录一次机械门禁拦截/放行事件，返回写入路径；失败返回 None。
 
     action="blocked"（默认，拦截）/ "bypassed_retry"（字数重试放行）。
@@ -41,6 +41,8 @@ def log_gate_block(source: str, note_type: str, url: str, title: str,
         "compression_warnings": list(compression_warnings or []),
         "action": action,
     }
+    if evidence is not None:
+        rec['evidence'] = evidence
     try:
         return append_rolling(GATE_BLOCKERS_BASE,
                               json.dumps(rec, ensure_ascii=False) + "\n")

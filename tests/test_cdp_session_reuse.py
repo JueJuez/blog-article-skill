@@ -28,6 +28,12 @@ from shared import cdp_session as cdp
 import profile_clone_fetch as pcf
 
 
+@pytest.fixture(autouse=True)
+def _isolate_daemon_path(monkeypatch):
+    """这些用例验证旧路径编排，不得启动真实daemon；控制面另有独立测试。"""
+    monkeypatch.setattr(cdp._skill, "_daemon_acquire", lambda *args, **kwargs: None)
+
+
 # ---------------------------------------------------------------------------
 # 通用 fake / 工具
 # ---------------------------------------------------------------------------
@@ -63,6 +69,7 @@ def _reused_session(endpoint: str = "ws://127.0.0.1:59222/devtools/browser/abc",
     s = cdp._skill.CdpSession.__new__(cdp._skill.CdpSession)
     s._headless = False
     s._use_cdp = True
+    s._use_daemon = False
     s._live = True
     s._own_browser = False
     s._ctx = None

@@ -8,6 +8,9 @@
 |---|---|---|
 | 默认本地 Obsidian | [Obsidian 默认](DECISION-20260904-obsidian-default.md) | RULES §3.0，`articles/manager.py` |
 | 内容完整与门禁 | [content-first](DECISION-20260915-content-first-gate.md) | RULES §4.6；后续内容拦截以 `prompts/verifier.py`、`articles/main.py` 为准 |
+| 源忠实与条件结构 | [模板忠实契约](DECISION-20261014-template-fidelity.md) | RULES §4.6；`SOURCE_FIDELITY_RULES` 与 `SECTION_CONTRACTS`；字数兜底与失控保护保留 |
+| 类型适配与版本来源 | [类型与追踪](DECISION-20261015-type-provenance.md) | `prompts/classify.py`、`prompts/provenance.py`；legacy只报差异，PIPELINES §4 |
+| 明确主张的证据门禁 | [笔记证据](DECISION-20261015-note-evidence.md) | `prompts/evidence.py`与[证据契约](../../references/note-evidence-contract.md)；确定缺陷不受force豁免 |
 | URL 去重与系列简化 | [系列去流程化](DECISION-20260908-series-deflow.md) | `articles/dedup.py` 与 PIPELINES §5 |
 | 迁移成功替换后清旧文 | [迁移门禁 v3](DECISION-20260908-regen-gate-v3.md) | PIPELINES §8 |
 | CDP 健康复用 | [健康复用](DECISION-20260910-cdp-health-reuse.md) | [CDP 手册](../../references/login-required-cdp-workflow.md)；实例内核在用户级技能 |

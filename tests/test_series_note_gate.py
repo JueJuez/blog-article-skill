@@ -140,10 +140,11 @@ class TestSummarizeAndSaveGateWiring:
     def _stub(self, monkeypatch):
         self.gate_kwargs = {}
         self._gate_result = {"passed": True, "issues": [], "content_blockers": [],
-                             "warnings": [], "review_flags": [], "compression_warnings": []}
+                             "warnings": [], "review_flags": [], "compression_warnings": [],
+                             "evidence_report": {'findings': [], 'semantic_status': 'not_reviewed'}}
 
         def _fake_gate(note, note_type="", source_url="", max_words=None,
-                       source_chars=None, source_text=""):
+                       source_chars=None, source_text="", source_author=""):
             self.gate_kwargs = dict(note_type=note_type, source_text=source_text,
                                      source_url=source_url)
             return self._gate_result
@@ -169,7 +170,8 @@ class TestSummarizeAndSaveGateWiring:
     def test_mechanical_fail_raises(self):
         self._gate_result = {"passed": False, "issues": ["H1 缺失"],
                              "content_blockers": [], "warnings": [],
-                             "review_flags": [], "compression_warnings": []}
+                             "review_flags": [], "compression_warnings": [],
+                             "evidence_report": {"findings": [], "semantic_status": "not_reviewed"}}
         with pytest.raises(ValueError) as ei:
             self._run()
         assert str(ei.value).startswith("VERIFIER_FAILED")
@@ -177,7 +179,8 @@ class TestSummarizeAndSaveGateWiring:
     def test_content_blocker_raises(self):
         self._gate_result = {"passed": True, "issues": [],
                              "content_blockers": ["结构缺失"], "warnings": [],
-                             "review_flags": [], "compression_warnings": []}
+                             "review_flags": [], "compression_warnings": [],
+                             "evidence_report": {"findings": [], "semantic_status": "not_reviewed"}}
         with pytest.raises(ValueError) as ei:
             self._run()
         assert str(ei.value).startswith("VERIFIER_CONTENT_FAILED")
@@ -185,6 +188,7 @@ class TestSummarizeAndSaveGateWiring:
     def test_force_bypasses_content_blocker(self):
         self._gate_result = {"passed": True, "issues": [],
                              "content_blockers": ["结构缺失"], "warnings": [],
-                             "review_flags": [], "compression_warnings": []}
+                             "review_flags": [], "compression_warnings": [],
+                             "evidence_report": {"findings": [], "semantic_status": "not_reviewed"}}
         fn, final, degraded, _, _ = self._run(force=True)
         assert fn == "f.md"

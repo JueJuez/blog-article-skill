@@ -7,7 +7,7 @@
 - 测：自测三问 `[!question]-` 折叠块，检索练习（本批新增）。
 - 用：`- [ ]` checkbox 行动项（本批新增）。
 - 讲：费曼式「讲出来」块（本批新增，金字塔顶层）。
-外加：结论先行（断言式小标题）作为一切要点的排版基线，全 9 个注册键覆盖。
+外加：结论先行且保留证据强度作为排版基线，全 9 个注册键覆盖（2026-10-14）。
 """
 
 import re
@@ -124,13 +124,14 @@ class TestCheckboxAction:
 
 
 class TestConclusionFirst:
-    """结论先行：小标题必须是断言式结论，全 9 个注册键覆盖（含 general 别名）。"""
+    """结论先行保留，但标题强度服从源证据，不能把预测写成确定因果。"""
 
     @pytest.mark.parametrize("note_type", _ALL_NOTE_TYPES)
-    def test_assertion_style_heading(self, note_type):
+    def test_heading_preserves_evidence_strength(self, note_type):
         p = _p(note_type)
         assert "结论先行" in p
-        assert "断言式" in p
+        assert "证据强度" in p
+        assert "断言式" not in p
 
 
 class TestReadingLearningOrder:
@@ -197,7 +198,7 @@ class TestNoRegression:
 
     def test_reading_anchors_survive(self):
         p = READING_PROMPT
-        for anchor in ["论点间关系", "三重验证", "常见误用", "金句摘录", "只带走三句话", "全书地图", "争议与不同声音"]:
+        for anchor in ["论点间关系", "证据评议", "常见误用", "金句摘录", "只带走三句话", "全书地图", "争议与不同声音"]:
             assert anchor in p
 
     def test_case_anchors_survive(self):

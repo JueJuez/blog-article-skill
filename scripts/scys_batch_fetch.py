@@ -64,14 +64,14 @@ def build_pending_entry(r: dict, project: str, list_item: dict) -> dict:
             raw_text = f.read()
     except OSError:
         pass
-    note_type = classify_note_type(r.get("title", ""), raw_text[:4000])
+    from prompts.provenance import dispatch_fields
+    fields = dispatch_fields(r.get("title", ""), raw_text)
     return {
         "topicId": str(r["topicId"]), "project": project, "title": r["title"],
         "url": r["url"], "chars": r["chars"],
         "output": r["output"],
         "external_docs": r["external_docs"], "related": r["related"],
-        "note_type": note_type,
-        "prompt": get_note_prompt(note_type, source_chars_of(raw_text)) + QUALITY_GATE_SELFCHECK,
+        **fields,
         "list_meta": {k: list_item.get(k) for k in
                       ("isDigested", "readingCount", "likeCount", "coinCount",
                        "commentCount", "favoriteCount", "gmtCreate", "aiSummary")},

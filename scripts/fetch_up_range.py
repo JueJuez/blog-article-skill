@@ -131,12 +131,13 @@ def enqueue_pending(url: str, title: str, author: str, publish_time: int,
         content = open(raw_file, encoding="utf-8").read() if raw_file else ""
     except Exception:
         content = ""
-    note_type = classify_note_type(title, content)
+    from prompts.provenance import dispatch_fields
+    fields = dispatch_fields(title, content)
     entry = {
         "url": url,
         "title": title,
         "author": author,
-        "note_type": note_type,
+        **fields,
         "tags": [author] if author else [],
         "publish_time": publish_time,
         "folder": resolve_folder({"author": author, "url": url, "title": title,
@@ -144,7 +145,6 @@ def enqueue_pending(url: str, title: str, author: str, publish_time: int,
         "series": series,
         "raw_file": raw_file,
         # 预计算 prompt（三队列统一口径：monitors/scys/UP）：子 Agent 直接按此总结，无需自调任何 CLI
-        "prompt": get_note_prompt(note_type, source_chars_of(content)) + QUALITY_GATE_SELFCHECK,
         "queued_at": int(time.time()),
     }
     pending.append(entry)

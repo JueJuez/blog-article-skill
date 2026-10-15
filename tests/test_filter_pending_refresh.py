@@ -13,6 +13,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from prompts.provenance import dispatch_fields
 from scripts.filter_pending import _run_queue, refresh_prompt  # noqa: E402
 
 
@@ -31,15 +32,15 @@ def _write_raw(tmp_path, text: str) -> str:
 class TestRefreshPrompt:
     def test_old_prompt_refreshed_with_discipline(self, tmp_path):
         raw = _write_raw(tmp_path, "正文" * 2000)  # 4000 字
-        e = {"note_type": "structured", "raw_file": raw, "prompt": "旧版 prompt"}
+        e = {"note_type": "structured", "raw_file": raw, "prompt": "旧版 prompt",
+             "generation_context": {"type_origin": "manual"}}
         assert refresh_prompt(e) == "refreshed"
         assert e["prompt"] == _expected_prompt("structured", 4000)
         assert "推广" in e["prompt"] and "chart" in e["prompt"]
 
     def test_current_prompt_kept(self, tmp_path):
         raw = _write_raw(tmp_path, "正文" * 2000)
-        e = {"note_type": "structured", "raw_file": raw,
-             "prompt": _expected_prompt("structured", 4000)}
+        e = {**dispatch_fields("", "正文" * 2000, "structured", "manual"), "raw_file": raw}
         assert refresh_prompt(e) == "kept"
 
     def test_missing_note_type_skipped(self):
@@ -55,8 +56,8 @@ class TestRefreshPrompt:
 
     def test_scys_style_chars_only(self):
         e = {"note_type": "case", "chars": 5000, "prompt": "旧"}
-        assert refresh_prompt(e) == "refreshed"
-        assert e["prompt"] == _expected_prompt("case", 5000)
+        assert refresh_prompt(e) == "skipped"  # 仅chars不能证明源版本或类型来源
+        assert e["prompt"] == "旧"
 
     def test_scys_no_chars_skipped(self):
         e = {"note_type": "case", "prompt": "旧"}
@@ -69,9 +70,9 @@ class TestRunQueueIntegration:
         qpath = tmp_path / "pending.json"
         entries = [
             {"url": "https://a", "note_type": "structured", "raw_file": raw,
-             "prompt": "旧版"},
-            {"url": "https://b", "note_type": "structured", "raw_file": raw,
-             "prompt": _expected_prompt("structured", 3000)},
+             "generation_context": {"type_origin": "manual"}, "prompt": "旧版"},
+            {"url": "https://b", "raw_file": raw,
+             **dispatch_fields("", "源文本" * 1000, "structured", "manual")},
         ]
         qpath.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
         stats = _run_queue(str(qpath), lambda es: (es, []))
@@ -84,8 +85,8 @@ class TestRunQueueIntegration:
     def test_no_changes_no_rewrite(self, tmp_path):
         raw = _write_raw(tmp_path, "源文本" * 1000)  # 3000 字
         qpath = tmp_path / "pending.json"
-        entries = [{"url": "https://a", "note_type": "structured",
-                    "raw_file": raw, "prompt": _expected_prompt("structured", 3000)}]
+        entries = [{"url": "https://a", "raw_file": raw,
+                    **dispatch_fields("", "源文本" * 1000, "structured", "manual")}]
         qpath.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
         mtime_before = os.path.getmtime(str(qpath))
         stats = _run_queue(str(qpath), lambda es: (es, []))

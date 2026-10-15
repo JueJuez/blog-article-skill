@@ -70,8 +70,10 @@ def test_series_episode_routes_to_monitor_series_container():
     assert m_save.call_args.kwargs["folder"] == SERIES_FOLDER
 
 
-def test_second_episode_reuses_container_via_transcript_queue():
+def test_second_episode_reuses_container_via_transcript_queue(tmp_path):
     """第二集 transcript 直喂（ASR 批量）：复用同容器 + 队列条目带系列路由与前缀。"""
+    raw = tmp_path / "raw.md"
+    raw.write_text("字幕正文", encoding="utf-8")
     it = {"url": EP_URL, "title": "爬虫第二集", "sub_name": AUTHOR,
           "author": AUTHOR, "publish_time": 456, "route": "video"}
     with mock.patch("videos.main.is_summarized", return_value=None), \
@@ -81,7 +83,7 @@ def test_second_episode_reuses_container_via_transcript_queue():
          mock.patch("videos.main._summarize_and_save",
                     return_value=("", "", True, "字幕正文", "key_points")) as m_save, \
          mock.patch("articles.main.save_raw_content_to_file",
-                    return_value="notes/x_raw.md"), \
+                    return_value=str(raw)), \
          mock.patch("shared.routing.load_account_registry", return_value=REGISTRY), \
          mock.patch("shared.routing.load_node_registry", return_value={}), \
          mock.patch("monitors.run._queue_pending_summary") as m_queue:

@@ -60,17 +60,24 @@ def main() -> int:
             hits.append("缺结构:" + ",".join(r["structure"]["missing"][:3]))
         if r["verbatim"] > CS.VERBATIM_THRESHOLD:
             hits.append(f"复述{r['verbatim']:.0%}")
+        scoped = r['evidence_report']['findings']
+        defects = {f['code'] for f in scoped if f['decision'] == 'block'}
+        reviews = {f['code'] for f in scoped if f['decision'] == 'review'}
+        if defects:
+            hits.append('证据缺陷:' + ','.join(sorted(defects)))
+        if reviews:
+            hits.append('证据待复核:' + ','.join(sorted(reviews)))
         mark = "  <== HIT " + " | ".join(hits) if hits else ""
         ev = (" | A超长句" + ("".join(" " + v for _, v in r["evidence"]))[:60]) if r["evidence"] else ""
         print(f"  [{i}] {r['title']} | {r['note_words']}字/{r['source_words']}源={r['ratio']}"
               f" | 锚点 {a.get('recall') if a['total']>=4 else 'n/a('+str(a['total'])+')'}"
               f"{mark}{ev}")
-    scored = [r for r in res if any([
+    scored = [r for r in res if score_of(r, CS.MIN_ANCHORS) > 0 or any([
         (r["anchors"]["recall"] is not None and r["anchors"]["total"] >= 4
          and r["anchors"]["recall"] < CS.RECALL_THRESHOLD),
         r["form"]["signals"], r["structure"]["missing"],
         r["verbatim"] > CS.VERBATIM_THRESHOLD])]
-    print(f"\n命中 {len(scored)}/{len(res)}（判据：锚点召回<{CS.RECALL_THRESHOLD:.0%} / 形态 / 结构 / 复述>{CS.VERBATIM_THRESHOLD:.0%}）")
+    print(f"\n命中 {len(scored)}/{len(res)}（判据：锚点召回<{CS.RECALL_THRESHOLD:.0%} / 形态 / 结构 / 复述>{CS.VERBATIM_THRESHOLD:.0%} / 证据缺陷或待复核；命中不等于确定错误）")
     return 0 if len(scored) == 0 else 3
 
 

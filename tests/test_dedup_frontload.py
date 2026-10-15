@@ -152,7 +152,7 @@ class TestFilterPending:
             ensure_ascii=False), encoding="utf-8")
         monkeypatch.setattr(fp, "PENDING_PATH", str(mp))
         monkeypatch.setattr(fp, "SCYS_PENDING_PATH", str(sp))
-        fp.main()
+        fp.main([])
         assert json.loads(mp.read_text(encoding="utf-8")) == [
             {"url": "https://x.com/1", "title": "a"}]
         assert json.loads(sp.read_text(encoding="utf-8")) == []
