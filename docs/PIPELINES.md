@@ -47,6 +47,14 @@
 
 **证据检查（2026-10-15，批次3）**：沿现有verifier/content_signals与只读审计入口加入明确原话定位、资源名称/入口绑定和常量复算检查。共同证据结构、适用语法与不判定边界见 [证据契约](../references/note-evidence-contract.md)。确定缺陷进issues，不受force豁免；疑点进入现有复核队列，不把机械检查当全文语义验收。
 
+批次4收尾复核U2时，数值及股票代码锚点发现媒体文件名标识噪声；沿共同数字正文范围过滤文件引用，不降低召回阈值，正文真实数字仍保留。见[收尾决策](decisions/DECISION-20261015-batch4-closeout.md)。
+
+**全文语义审核（批次4代码实施，真实效果另验）**：复用`verify_note`和保存前公共准入；开启`NOTE_QUALITY_GATE`时短源全文，长源分块加邻文并汇总，审核不完整阻止写入，force不豁免。关闭时不新增外部调用，状态保留未审。失败候选、源与报告进入现有复核队列及拦截台账；详见[全文审核决策](decisions/DECISION-20261015-fulltext-review.md)。
+
+会话独立审核可由`save_pending.py --review-file <报告.json>`随稿提交；存量重做读取稿件旁的`<稿.md>.review.json`（或批次条目的`review_file`）。报告必须绑定完整源、实际清理后的稿件正文及派单prompt，明确不同于作者的审者ID与全文字符范围。协议见[全文审核说明](../references/fulltext-review.md)，未知历史版本不得补造。
+
+已有draft-only/Landing两段出口同样受审核准入约束：新草稿元数据携带源/正文/审核版本和格式化文件hash；显式审核时旧草稿无版本、或草稿文件被改动，都保留草稿并停止Landing，不能绕过新门禁。
+
 ## 2.1 分享版 HTML 出口（2026-10-06）
 
 **适用场景**：想把一篇笔记发给别人看（浏览器打开即读，无需 Obsidian / 飞书）。产物是

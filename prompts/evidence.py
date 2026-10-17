@@ -77,6 +77,12 @@ def prose_lines_for_numbers(text):
         if re.match(r'^\s*(?:(?:python3?|node|npm|pip|uv|curl)\s+|--[A-Za-z][\w-]*(?:[= ]|$))', line):
             continue
         prose = re.sub(r'https?://\S+', '', line)
+        if re.fullmatch(r'\s*阅读\s*[\d.,]+\s*', prose):
+            continue
+        prose = re.sub(r'^\s*@.*?在小红书收获了[\d.,]+[万亿KkMm]?次赞与收藏[，,]?', '', prose)
+        # 抓取正文中的裸媒体/附件引用不是经营数字。只删文件token，保留同句事实。
+        prose = re.sub(r'[\w.-]+\.(?:mp4|mov|webm|mp3|wav|png|jpe?g|gif|zip|pdf|xlsx?|json|html?|md|txt)\b',
+                       '', prose, flags=re.I)
         prose = re.sub(r'^\s*\d+[.、)]\s*', '', prose)
         yield n, prose
 

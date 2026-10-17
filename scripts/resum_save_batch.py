@@ -116,6 +116,12 @@ def main() -> int:
         try:
             from prompts.evidence import attach_evidence, resolve_source_author
             author = resolve_source_author(source_text, author)
+            context = attach_evidence(it.get("generation_context"), gate['evidence_report'], note_type)
+            review_file = it.get('review_file') or (md + '.review.json')
+            if os.path.exists(review_file):
+                context['review_required'] = True
+                with open(review_file, encoding='utf-8') as f:
+                    context['review'] = json.load(f)
             _formed, _fname = save_summarized_article(
                 content,
                 original_url=url,
@@ -127,7 +133,8 @@ def main() -> int:
                 folder=rel_dir,
                 obsidian=True,
                 note_path=note_path,
-                generation_context=attach_evidence(it.get("generation_context"), gate['evidence_report'], note_type),
+                source_text=source_text,
+                generation_context=context,
             )
             if gate.get('review_flags'):
                 from prompts.review_rubric import queue_for_review

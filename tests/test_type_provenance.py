@@ -138,7 +138,9 @@ def test_video_records_actual_chunk_and_merge_prompts(monkeypatch):
     monkeypatch.setattr(vm, 'two_stage_summarize', lambda chunks, summarize, merge: merge([summarize('正文', 0, 1)]))
     calls = []
     vm._summarize_segments('正文', 'general', generation_calls=calls)
-    assert calls == [{'prompt_sha256': text_hash(p), 'input_sha256': text_hash(t)} for p, t in actual]
+    assert [{k: c[k] for k in ('prompt_sha256', 'input_sha256')} for c in calls] == [
+        {'prompt_sha256': text_hash(p), 'input_sha256': text_hash(t)} for p, t in actual]
+    assert all(c['elapsed_seconds'] >= 0 and c['usage'] == 'not_exposed' for c in calls)
     assert len(calls) == 2 and calls[0]['prompt_sha256'] != calls[1]['prompt_sha256']
 
 
@@ -152,7 +154,7 @@ def test_article_records_retry_prompt(monkeypatch):
     monkeypatch.setattr(am, 'build_gate_critique', lambda g: '\n具体修订要求')
     result = am.summarize_content('完整原文' * 50, note_type='general')
     assert result['generation_prompt'] == calls[-1]
-    assert calls[-1].endswith('具体修订要求') and len(calls) == 2
+    assert calls[-1].endswith('具体修订要求') and len(calls) == 3
 
 
 def test_direct_save_rejects_stale_source_before_output(monkeypatch):

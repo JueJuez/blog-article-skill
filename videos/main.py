@@ -16,6 +16,7 @@
 """
 
 import os
+import json
 import re
 from typing import Optional, List, Dict, Any
 
@@ -54,7 +55,7 @@ def _ai_summarize(prompt: str, content: str) -> Optional[str]:
     return meta.get("content") if meta else None
 
 
-def _summarize_segments(segments, note_type: str, title: str = "", visual_context: str = "", generation_calls: list = None) -> Optional[str]:
+def _summarize_segments(segments, note_type: str, title: str = "", visual_context: str = "", generation_calls: list = None, review_sink: dict = None) -> Optional[str]:
     """两段式总结：分块 → 逐块小结 → 二次合并（P2.2）。
 
     visual_context: P4 多模态理解的画面上下文；非空时拼接到首块，供 AI 参考。
@@ -82,10 +83,15 @@ def _summarize_segments(segments, note_type: str, title: str = "", visual_contex
 
     def generate(actual_prompt, actual_text):
         from prompts.provenance import text_hash
+        import time
+        started = time.monotonic()
+        result = _ai_summarize(actual_prompt, actual_text)
         if generation_calls is not None:
             generation_calls.append({"prompt_sha256": text_hash(actual_prompt),
-                                     "input_sha256": text_hash(actual_text)})
-        return _ai_summarize(actual_prompt, actual_text)
+                                     "input_sha256": text_hash(actual_text),
+                                     "elapsed_seconds": round(time.monotonic() - started, 3),
+                                     "usage": "not_exposed"})
+        return result
 
     def summarize_fn(text: str, i: int, total: int) -> Optional[str]:
         chunk_prompt = (prompt +
@@ -101,10 +107,18 @@ def _summarize_segments(segments, note_type: str, title: str = "", visual_contex
 
     final = two_stage_summarize(chunks, summarize_fn, merge_fn)
     if final and note_type:
-        # A：质量闸门（第二遍把关）——评分<阈值带反馈重试一次
-        gate_src = _sample_text(segments)[:6000]
-        gate = verify_note(final, gate_src, note_type)
-        if should_gate_retry(gate):
+        gate_src = (segments_to_text(segments) if isinstance(segments, list) and segments
+                    and isinstance(segments[0], dict) else str(segments))
+        for attempt in range(3):
+            from shared.note_classify import extract_and_strip_topics
+            gate_note, _ = extract_and_strip_topics(final)
+            gate = verify_note(gate_note, gate_src, note_type)
+            if review_sink is not None:
+                review_sink['review'] = gate
+                if gate:
+                    review_sink.setdefault('review_history', []).append(gate)
+            if not should_gate_retry(gate) or attempt == 2:
+                break
             crit = build_gate_critique(gate)
 
             def summarize_fn2(text, i, total):
@@ -114,8 +128,9 @@ def _summarize_segments(segments, note_type: str, title: str = "", visual_contex
                 return generate(prompt + crit, "\n\n---\n\n".join(partials))
 
             retry = two_stage_summarize(chunks, summarize_fn2, merge_fn2)
-            if retry:
-                final = retry
+            if not retry:
+                break
+            final = retry
     return final
 
 
@@ -131,8 +146,9 @@ def _summarize_and_save(segments, source_url: str, title: str, author: str,
         note_type = classify_note_type(title, sample)
 
     generation_calls = []
+    review_sink = {}
     final = _summarize_segments(segments, note_type, title, visual_context=visual_context,
-                                generation_calls=generation_calls)
+                                generation_calls=generation_calls, review_sink=review_sink)
     if final is None:
         content = (segments_to_text(segments)
                    if isinstance(segments, list) and segments and isinstance(segments[0], dict)
@@ -161,15 +177,21 @@ def _summarize_and_save(segments, source_url: str, title: str, author: str,
     clean_title = choose_node_title(title, "") or "视频总结"
     from prompts.provenance import generation_context
     trace = generation_context(title, _transcript_text, note_type, type_origin, "", "video_call_templates")
-    trace["prompt_sha256"] = "unknown"  # 多次调用不能用一个基础模板hash冒充实际prompt。
+    import json
+    from prompts.semantic_review import digest
+    trace["prompt_sha256"] = digest(json.dumps(generation_calls, sort_keys=True))
+    trace["prompt_scope"] = 'video_generation_calls_manifest'
     trace["generation_calls"] = generation_calls
+    trace.update(review_sink)
+    if trace.get('review'):
+        trace['review']['generation_prompt_sha256'] = trace['prompt_sha256']
     from prompts.evidence import attach_evidence, resolve_source_author
     trace = attach_evidence(trace, _gate['evidence_report'], note_type)
     author = resolve_source_author(_transcript_text, author)
     formatted, filename = save_summarized_article(
         final, original_url=source_url, author=author,
         tags=save_tags, original_title=clean_title, note_type=note_type,
-        publish_time=publish_time, folder=folder, obsidian=obsidian, generation_context=trace
+        publish_time=publish_time, folder=folder, obsidian=obsidian, generation_context=trace, source_text=_transcript_text
     )
     if _gate.get('review_flags'):
         from prompts.review_rubric import queue_for_review
@@ -255,6 +277,13 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
                        title=base_name, issues=gate["content_blockers"],
                        warnings=gate.get("warnings", []), evidence=gate['evidence_report'])
         raise ValueError("VERIFIER_CONTENT_FAILED: " + "；".join(gate["content_blockers"]))
+    from prompts.semantic_review import admit_candidate
+    series_trace = admit_candidate(content, source_text, note_type, url=url, title=base_name)
+    from prompts.review_rubric import log_review
+    review = series_trace['review']
+    log_review(base_name, note_type, ['series_semantic'], {},
+               'pass' if review.get('passed') else 'needs_review', 'series_save',
+               comment=json.dumps(review, ensure_ascii=False))
     from prompts.evidence import resolve_source_author
     author = resolve_source_author(source_text, author)
     formatted = format_note_with_prompt(

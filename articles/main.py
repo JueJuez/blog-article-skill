@@ -61,6 +61,20 @@ def land_drafts(obsidian: bool = False) -> int:
                 continue
             with open(draft_path, encoding="utf-8") as f:
                 content = f.read()
+            from prompts import templates
+            from prompts.semantic_review import admit_candidate, digest, retain_failure, VERSION
+            trace = meta.get('generation_context') or {}
+            prior = trace.get('review') or {}
+            if templates.QUALITY_GATE_ENABLED or trace.get('review_required') or prior.get('version') == VERSION:
+                if meta.get('formatted_sha256') != digest(content):
+                    report = {'status': 'needs_review', 'passed': False,
+                              'issues': ['草稿缺少已审版本绑定或格式化后文件已改变，需重新审核']}
+                    retain_failure(content, meta.get('source_text', ''), report,
+                                   meta.get('note_type', ''), meta.get('original_url', ''), meta.get('title', ''))
+                    raise ValueError('SEMANTIC_REVIEW_FAILED: 草稿版本失配')
+                admit_candidate(meta.get('semantic_body', ''), meta.get('source_text', ''),
+                                meta.get('note_type', ''), trace,
+                                meta.get('original_url', ''), meta.get('title', ''))
             mgr = OutputManager(obsidian=bool(obsidian or meta.get("obsidian", False)))
             mgr.save_all(content, meta["filename"], title=meta.get("title", ""))
             # 落盘成功 → 清理草稿（飞书可用时不会双写本地笔记，无需保留草稿）
@@ -299,7 +313,7 @@ def _export_html_safe(md_path: str) -> None:
         print(f"   ⚠️ 分享版 HTML 导出失败（不影响笔记落盘）：{e}")
 
 
-def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "", topics: list = None, overwrite: bool = False, note_path: str = "", share_html: bool = False, generation_context: dict = None) -> tuple:
+def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "", topics: list = None, overwrite: bool = False, note_path: str = "", share_html: bool = False, generation_context: dict = None, source_text: str = "") -> tuple:
     """保存已总结的文章内容到所有可用目标。
 
     Args:
@@ -363,6 +377,10 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
                     _seen.add(_t)
     except Exception as _e:
         print(f"  ⚠️ 语义标签自动生成失败（非致命，跳过）：{_e}")
+
+    from prompts.semantic_review import admit_candidate, digest
+    generation_context = admit_candidate(summarized_content, source_text, note_type,
+                                         generation_context, original_url, original_title)
 
     # 方案 A 收口：命名空间标签已编码的信息，移除冗余裸标签
     # （例：领域/类型等命名空间值若又作为裸标签出现则移除，避免同义双写；
@@ -462,6 +480,9 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
                 "filename": filename, "title": title, "original_url": original_url,
                 "folder": folder, "obsidian": obsidian, "author": author, "tags": tags,
                 "draft_path": dp,
+                "semantic_body": summarized_content, "source_text": source_text,
+                "note_type": note_type, "generation_context": generation_context,
+                "formatted_sha256": digest(formatted_note),
             }, f, ensure_ascii=False)
         # 仍标记 dedup，避免重复入队（落盘在 Landing 阶段，不改 dedup 语义）
         if original_url:
@@ -543,7 +564,19 @@ def summarize_content(content: str, author: str = "", url: str = "", tags: list 
     content_with_metadata = f"【文章元信息】\n{metadata}\n\n【文章正文】\n{content}" if metadata else content
 
     print("   🤖 正在调用AI模型进行结构化总结...")
-    meta = call_ai_summary_with_meta(prompt, content_with_metadata)
+    generation_calls = []
+    def generate(actual_prompt):
+        from prompts.semantic_review import digest
+        started = time.monotonic()
+        result = call_ai_summary_with_meta(actual_prompt, content_with_metadata)
+        generation_calls.append({'prompt_sha256': digest(actual_prompt),
+                                 'input_sha256': digest(content_with_metadata),
+                                 'elapsed_seconds': round(time.monotonic() - started, 3),
+                                 'usage': (result or {}).get('usage', 'not_exposed'),
+                                 'model': (result or {}).get('model', 'unknown'),
+                                 'provider': (result or {}).get('source', 'unknown')})
+        return result
+    meta = generate(prompt)
     if not meta or not meta.get("content"):
         return {"summary": None, "usage": None, "model": None, "source": None}
 
@@ -551,16 +584,25 @@ def summarize_content(content: str, author: str = "", url: str = "", tags: list 
     # 提取 LLM 生成的『核心主题词』区块（转为 #topic/ 标签，从正文移除，不让质量门禁误判）
     from shared.note_classify import extract_and_strip_topics
     summary, topics = extract_and_strip_topics(summary)
-    # A：质量闸门（第二遍把关）——评分<阈值带反馈重试一次
+    # 原始候选 + 最多两次内容修订；每次修订后重新审核完整原文。
+    gate = None
+    history = []
     if note_type:
-        gate = verify_note(summary, content[:6000], note_type)
-        if should_gate_retry(gate):
+        for attempt in range(3):
+            gate = verify_note(summary, content, note_type)
+            if gate:
+                from prompts.semantic_review import digest
+                gate['generation_prompt_sha256'] = digest(executed_prompt)
+                history.append(gate)
+            if not should_gate_retry(gate) or attempt == 2:
+                break
             crit = build_gate_critique(gate)
-            meta2 = call_ai_summary_with_meta(prompt + crit, content_with_metadata)
-            if meta2 and meta2.get("content"):
-                summary = meta2["content"]
-                meta = meta2
-                executed_prompt = prompt + crit
+            meta2 = generate(prompt + crit)
+            if not meta2 or not meta2.get('content'):
+                break
+            summary, topics = extract_and_strip_topics(meta2['content'])
+            meta = meta2
+            executed_prompt = prompt + crit
 
     print("   ✅ AI总结完成")
     return {
@@ -570,6 +612,9 @@ def summarize_content(content: str, author: str = "", url: str = "", tags: list 
         "source": meta.get("source"),
         "topics": topics,
         "generation_prompt": executed_prompt,
+        "semantic_review": gate,
+        "review_history": history,
+        "generation_calls": generation_calls,
     }
 
 
@@ -669,6 +714,10 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None,
     trace = (generation_context(original_title, article_content, note_type, type_origin,
                                 ai_result["generation_prompt"], "article_generation_template")
              if ai_result.get("generation_prompt") else None)
+    if trace is not None:
+        trace['review'] = ai_result.get('semantic_review') or {'status': 'not_performed', 'coverage': 'none'}
+        trace['review_history'] = ai_result.get('review_history', [])
+        trace['generation_calls'] = ai_result.get('generation_calls', [])
     # 步骤3：保存
     print("\n💾 步骤3：自动保存到配置的目标位置")
     try:
@@ -685,7 +734,7 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None,
             summarized_content, original_url, author, tags, original_title,
             meta={"usage": usage, "model": model}, note_type=note_type,
             publish_time=publish_time, folder=folder, obsidian=obsidian,
-            content_key=article_content, topics=ai_result.get("topics"), generation_context=trace
+            content_key=article_content, topics=ai_result.get("topics"), generation_context=trace, source_text=article_content
         )
         reasons = evidence_review_flags(evidence_report)
         if reasons:
@@ -849,6 +898,7 @@ def save_summary_only(input_data: dict) -> dict:
             overwrite=_overwrite,
             note_path=_note_path,
             share_html=bool(input_data.get('share_html', False)),
+            source_text=source_text,
             generation_context=attach_evidence(input_data.get("generation_context"), _gate['evidence_report'], input_data.get('note_type', '')),
         )
         # 无人值守降级：落盘命中参考值抽检信号 → 入 needs_review 队列（filename 已知）

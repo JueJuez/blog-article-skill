@@ -164,7 +164,9 @@ def _anchor_specs(source: str) -> list:
             specs.append(("公司", name, lambda note, n=name: n in note))
 
     try:
-        for code in sorted(set(nc.STOCK_CODE_RE.findall(source))):
+        from .evidence import prose_lines_for_numbers
+        code_prose = '\n'.join(line for _, line in prose_lines_for_numbers(source))
+        for code in sorted(set(nc.STOCK_CODE_RE.findall(code_prose))):
             specs.append(("代码", code, lambda note, c=code: c in note))
     except Exception:
         pass

@@ -85,7 +85,8 @@ def main() -> int:
     ap.add_argument("--queue", required=True, choices=sorted(QUEUE_PATHS))
     ap.add_argument("--key", required=True, help="monitors 传 url；scys 传 topicId")
     ap.add_argument("--file", required=True, help="子 Agent 写好的总结稿 md 路径")
-    ap.add_argument("--force", action="store_true", help="绕过 dedup 去重闸门（仅重试仍失败时用）")
+    ap.add_argument("--review-file", help="独立会话审者的全文审核JSON（可选，作者自检不可冒充）")
+    ap.add_argument("--force", action="store_true", help="修订已登记稿；不能绕过机械、证据和语义审核")
     args = ap.parse_args()
 
     from shared.env import load_env
@@ -98,11 +99,17 @@ def main() -> int:
     content = open(args.file, "r", encoding="utf-8").read()
 
     from articles.main import save_summary_only
-    res = save_summary_only(build_payload(args.queue, entry, content, args.force))
+    payload = build_payload(args.queue, entry, content, args.force)
+    if args.review_file:
+        payload['generation_context'] = dict(payload['generation_context'])
+        payload['generation_context']['review_required'] = True
+        with open(args.review_file, encoding='utf-8') as f:
+            payload['generation_context']['review'] = json.load(f)
+    res = save_summary_only(payload)
     print("RESULT: " + json.dumps(res, ensure_ascii=False, default=str))
     if res.get("success"):
         return 0
-    # 内容判据失败带 retry 标记 → 子 Agent 按 issues 重写后重交（≤2 次），再失败才 --force
+    # 按具体问题最多修订两次；语义审核失败不能用--force放行，保留待办。
     msg = str(res.get("message", ""))
     if msg.startswith("VERIFIER") and not args.force:
         return 2

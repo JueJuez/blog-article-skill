@@ -247,7 +247,7 @@ def test_quality_gate_prompt_exists():
 
 def test_parse_quality_gate_json():
     """parse_quality_gate 能从 JSON 块解析 score/issues/pass。"""
-    raw = '闲话\n{"score": 72, "pass": false, "issues": ["篡改观点", "标题级空话"]}\n结束'
+    raw = '{"score": 72, "pass": false, "issues": ["篡改观点", "标题级空话"]}'
     g = parse_quality_gate(raw)
     assert g["score"] == 72
     assert g["passed"] is False
@@ -255,11 +255,12 @@ def test_parse_quality_gate_json():
 
 
 def test_parse_quality_gate_fallback_regex():
-    """JSON 失败时，parse_quality_gate 用正则兜底取 score。"""
+    """损坏JSON不能靠正则高分通过（批次4取代旧容错放行）。"""
     raw = '评分 score: 90，整体不错，无大问题'
     g = parse_quality_gate(raw)
-    assert g["score"] == 90
-    assert g["passed"] is True
+    assert g["score"] == 0
+    assert g["passed"] is False
+    assert g['status'] == 'needs_review'
 
 
 def test_should_gate_retry_logic():

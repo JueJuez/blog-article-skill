@@ -1077,7 +1077,7 @@ def normalize_note_metadata(md: str) -> str:
 # ---------------------------------------------------------------------------
 # 开关：默认关闭（省一轮 AI 调用）；置 NOTE_QUALITY_GATE=1 可随时开启。
 QUALITY_GATE_ENABLED = os.environ.get("NOTE_QUALITY_GATE", "0") == "1"
-# 评分阈值：低于此分视为不达标，触发带反馈重试一次。
+# 评分阈值：内容失败最多修订两次；明确失败/P1不能被高分抵消。
 GATE_THRESHOLD = int(os.environ.get("NOTE_GATE_THRESHOLD", "85"))
 
 
@@ -1098,12 +1098,14 @@ QUALITY_GATE_PROMPT = """# 笔记质量审核员（第二遍把关）
 ## 输出格式（严格 JSON，不要任何解释之外的内容）
 {
   "score": <0-100 整数>,
-  "pass": <true/false，score>=85 为 true>,
+  "pass": <true/false，重大失真或未解决问题时必须false，高分不能抵消>,
   "issues": [
     "<问题1：指明违反哪条红线 + 具体位置/句子 + 该怎么改>",
     "..."
   ]
 }
+必须输出findings与claims数组（无问题则为空）。findings每项含severity(P1/P2)、note_excerpt、note_lines、source_excerpt、source_lines、reason、suggestion；行号使用所给片段的真实行号，字符范围用派单偏移定位。claims记录跨块待核的说话者、时序、单位/分母/期间、假设、因果与支持/遗漏关系及原句，不用泛泛小结替代证据。
+双向核对原文→笔记重要内容覆盖、笔记→原文核心判断支持；核对首屏/表格/收束强度、分析标签、ASR不明术语、附件/资源未读取边界。示例“可能80人变2人”不能写成实际结果；假设全球供给不能写成现实变化；正反表不能翻转作者态度；跨案例模具不能归给单案例。不得因没有外部查证而声称现实真实性已核实。
 若笔记已达标，issues 可为空数组，但 score 必须如实给（不许滥给高分）。"""
 
 QUALITY_GATE_SELFCHECK = (
@@ -1119,63 +1121,62 @@ QUALITY_GATE_SELFCHECK = (
 
 
 def parse_quality_gate(raw: str) -> dict:
-    """解析审核员输出为 {score, passed, issues}（容错：JSON 失败则正则兜底）。"""
-    if not raw:
-        return {"score": 0, "passed": False, "issues": ["审核输出为空"], "raw": raw}
-    text = raw.strip()
-    block = None
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if m:
-        block = m.group(0)
+    """严格解析；损坏JSON不能靠正则抽出高分获得通过。"""
+    bad = {"score": 0, "passed": False, "status": "needs_review",
+           "issues": ["审核输出为空或格式不合法"], "findings": [], "raw": raw}
+    if not isinstance(raw, str):
+        return bad
     try:
-        if block:
-            data = json.loads(block)
-            score = int(data.get("score", 0))
-            issues = [str(i) for i in (data.get("issues") or []) if str(i).strip()]
-            passed = bool(data.get("pass", score >= GATE_THRESHOLD))
-            return {"score": max(0, min(100, score)), "passed": passed, "issues": issues, "raw": raw}
-    except Exception:
-        pass
-    # 兜底正则
-    sm = re.search(r"score\"?\s*[:=]\s*(\d+)", text, re.IGNORECASE)
-    score = int(sm.group(1)) if sm else 0
-    issues = re.findall(r'["\'](.+?)["\']', text)
-    issues = [i for i in issues if len(i) > 4 and "score" not in i.lower()]
-    return {"score": max(0, min(100, score)), "passed": score >= GATE_THRESHOLD, "issues": issues, "raw": raw}
+        text = (raw or "").strip()
+        if text.startswith("```json") and text.endswith("```"):
+            text = text[7:-3].strip()
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            return bad
+        if data.get('coverage', 'full') != 'full' or data.get('status') in ('partial', 'unknown', 'needs_review'):
+            return bad
+        if data.get('reviewer_role') in ('author', 'self_check', 'unknown'):
+            return bad
+        score = data['score']
+        if type(score) is not int or not 0 <= score <= 100 or type(data['pass']) is not bool:
+            return bad
+        issues = data['issues']
+        findings = data.get('findings', [])
+        if not isinstance(issues, list) or not all(isinstance(i, str) for i in issues):
+            return bad
+        if not isinstance(findings, list) or not all(isinstance(f, dict) for f in findings):
+            return bad
+        claims = data.get('claims', [])
+        if not isinstance(claims, list):
+            return bad
+        severe = any(f.get('severity') == 'P1' for f in findings)
+        passed = data['pass'] and score >= GATE_THRESHOLD and not issues and not severe
+        return {"score": score, "passed": passed, "status": "passed" if passed else "failed",
+                "issues": issues, "findings": findings, "claims": claims, "raw": raw}
+    except (ValueError, TypeError, KeyError):
+        return bad
 
 
 def verify_note(note: str, source: str = "", note_type: str = "") -> "Optional[dict]":
-    """质量闸门：调 AI 审核笔记，返回 {score, passed, issues}；无 AI 返回 None。
-
-    设计：仅作「第二遍把关」，不重写笔记本身；调用方据 passed 决定是否带反馈重试。
-    无外部 AI Provider（降级路径）时返回 None，由调用方走自检闸门（QUALITY_GATE_SELFCHECK）。
-    """
+    """默认关闭；开启后完整送审，技术失败返回needs_review，不静默降级。"""
     if not QUALITY_GATE_ENABLED:
         return None
-    if not note or not note.strip():
-        return None
-    src = (source or "")[:6000]  # 控长度，审核只看代表性原文
-    content = f"【原文/字幕（节选）】\n{src}\n\n【AI 生成的笔记】\n{note}"
-    # 延迟导入避免循环依赖（articles.main 不在 templates 的导入链上）
-    try:
+    from prompts.semantic_review import review_fulltext
+    def caller(prompt, content, **kwargs):
         from articles.main import call_ai_summary_with_meta
-    except Exception:
-        return None
-    meta = call_ai_summary_with_meta(QUALITY_GATE_PROMPT, content, temperature=0.2)
-    if not meta or not meta.get("content"):
-        return None
-    return parse_quality_gate(meta["content"])
+        return call_ai_summary_with_meta(prompt, content, **kwargs)
+    return review_fulltext(note or '', source or '', note_type, QUALITY_GATE_PROMPT, caller, parse_quality_gate)
 
 
 def should_gate_retry(gate: "Optional[dict]") -> bool:
-    """是否需带反馈重试：闸门开启、未达标、且分数低于阈值。"""
+    """仅明确内容失败重生成；技术失败应保留候选并停止发布。"""
     if not QUALITY_GATE_ENABLED:
         return False
-    return bool(gate) and not gate.get("passed", True) and gate.get("score", 100) < GATE_THRESHOLD
+    return bool(gate) and not gate.get('passed', True) and gate.get('status') != 'needs_review'
 
 
 def build_gate_critique(gate: dict) -> str:
-    """把审核问题拼成可追加到 prompt 的反馈段（限前 6 条）。"""
+    """把全部具体审核问题追加到修订prompt，不静默遗漏后半问题。"""
     if not gate:
         return ""
     issues = gate.get("issues", []) or []
@@ -1183,5 +1184,5 @@ def build_gate_critique(gate: dict) -> str:
     if not issues:
         return (f"\n\n【质量闸门反馈·上一版 {score}/100】请整体再打磨，"
                 f"确保 6 条红线全过。")
-    lines = "\n".join(f"- {i}" for i in issues[:6])
+    lines = "\n".join(f"- {i}" for i in issues)
     return f"\n\n【质量闸门反馈·上一版 {score}/100】请逐条修订：\n{lines}"

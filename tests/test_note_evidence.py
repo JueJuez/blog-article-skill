@@ -179,6 +179,31 @@ def test_existing_numeric_anchor_gate_excludes_metadata_code_and_urls():
     assert _numeric_anchors(source) == {'623'}
 
 
+def test_media_file_ids_not_numeric_or_stock_anchors():
+    from prompts.content_signals import _numeric_anchors, _anchor_specs
+    source = ('营收5000元，参考飞书20260910-180529.mp4【在线播放】；样例成本623元。\n'
+              'a08858f610285862786562351e398a56_raw.mp4【在线播放】\n'
+              '20260801-0438-27.8402268.mp4\n')
+    assert _numeric_anchors(source) == {'5000', '623'}
+    assert not [s for s in _anchor_specs(source) if s[0] == '代码']
+
+
+def test_actual_business_numbers_and_stock_codes_survive_attachment_filter():
+    from prompts.content_signals import _numeric_anchors, _anchor_specs
+    source = ('附件：样例623.mp4；该阶段成本623元，总播放3000000次。\n'
+              '股票 600519，成本1000元；另附图20260910.png。')
+    assert {'623', '3000000', '600519', '1000'} <= _numeric_anchors(source)
+    assert any(s[0] == '代码' and s[1] == '600519' for s in _anchor_specs(source))
+
+
+def test_profile_share_boilerplate_is_not_business_numeric_evidence():
+    from prompts.content_signals import _numeric_anchors
+    source = ('@测试账号 在小红书收获了1056次赞与收藏，查看Ta主页 https://example.test/x\n'
+              '@另一个账号 在小红书收获了6.3万次赞与收藏，另本次营收5000元。\n'
+              '阅读 4948\n业务复盘：推广支出623元。')
+    assert _numeric_anchors(source) == {'5000', '623'}
+
+
 def test_clear_author_mismatch_blocks_without_confusing_book_author():
     assert 'author_mismatch' in codes(check('**作者**：平台甲\n正文', '**作者**：小林\n正文', source_author='小林'), 'block')
     assert 'author_mismatch' not in codes(check('**书作者**：作家乙\n正文', '**作者**：解说者甲\n正文', source_author='解说者甲'))
