@@ -18,6 +18,7 @@
 | 主题标签与目录字段 | [语义标签](DECISION-20260913-namespace-semantic-tags.md)、[脚本命名与 folder](DECISION-20260920-script-naming-and-folder-field.md) | `shared/note_classify.py`、`shared/routing.py` |
 | 重做的受控替换 | [受控替换](DECISION-20261018-controlled-replace.md) | `shared/controlled_replace.py`、`scripts/resum_save_batch.py`；PIPELINES §3.1 |
 | 批次5 评估收尾 | [批次5 收尾](DECISION-20261018-batch5-closeout.md) | 模板质量计划状态行与 §10.6；质量模块已解冻 |
+| 评估集标注方式 | [AI 标注](DECISION-20261018-ai-annotation.md) | A1 表单（AI 标注基线）；`scripts/score_eval_set.py`、评估目录 `ANNOTATION.md` |
 
 ## 历史关系与阅读方式
 

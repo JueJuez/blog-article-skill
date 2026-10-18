@@ -30,7 +30,7 @@
 | 归档开源项目到项目库 | `python tools/project_import/assets/main.py "<repo url>"` | — |
 | 把一篇已有笔记出分享版 HTML | `python scripts/export_note_html.py "<md路径>"` | 见「2.1 分享版 HTML 出口」；新笔记分享不用这条（落盘时带 `share_html`） |
 | **重做前先判「这篇到底该不该改」** | `python scripts/check_resum_necessity.py --queue notes/_meta/resummarize_queue.json`（见 §3.1） | 直接从全量队列开重做（会把好稿改坏，且无法回退） |
-| 建/重算固定评估集（改动的度量基线） | `python scripts/build_eval_set.py` → 人工填 `forms/` → `python scripts/score_eval_set.py --dir <同目录>`（见 §3.3） | 凭单次生成效果说「变好了」 |
+| 建/重算固定评估集（改动的度量基线） | `python scripts/build_eval_set.py` → 填 `forms/`（人工或固定口径 AI 标注） → `python scripts/score_eval_set.py --dir <同目录>`（见 §3.3） | 凭单次生成效果说「变好了」 |
 | **落盘后给笔记做独立语义复审**（不阻塞落盘、不占前台） | `python scripts/run_async_review.py --emit` → 子 Agent 审 → `--ingest`（见 §3.2） | 打开 `NOTE_QUALITY_GATE=1` 把审核卡在落盘前 |
 | 查「段落悬空指代」到底是不是问题 | `python scripts/scan_dangling_refs.py`（只读，见 §3.4） | 直接建改写轮／凭感觉改 prompt |
 
@@ -168,7 +168,7 @@ Obsidian Charts 插件与 HTML 导出器是它的两个消费者，互不另外�
 
 ```bash
 python scripts/build_eval_set.py                    # 30 篇：源长 5 桶 × 6，桶内按类型轮转，种子固定
-# 人工：读源 → 在 forms/Axx.md 的 MUST_KEEP 区写「丢了不行」的条目 → 回查笔记勾 [x]
+# 填 forms/Axx.md 的 MUST_KEEP 区（人工或固定口径 AI 标注）→ 笔记里有的勾 [x]
 python scripts/score_eval_set.py --dir notes/_meta/eval/20261018-knowledge-layer
 ```
 
@@ -176,8 +176,12 @@ python scripts/score_eval_set.py --dir notes/_meta/eval/20261018-knowledge-layer
 - 只对抽中样本跑既有四类判据（`shared.note_audit.audit_one`），回填 `note_sha256`/`source_sha256`。
 - **缺额不补抽**：某桶样本不足就如实少抽，不把缺额倒给富桶（会把 >20k 这种稀缺层抽干）。
 - **防覆盖护栏**：`build_eval_set.py` 重跑时检测到已填写的表单会拒绝覆盖（`--out` 换目录或
-  显式 `--force` 才重建）—— 抽样可复现 ≠ 人工填写可以重建，人工清单是数小时的人工资产。
-- 填完才谈「改之前 / 改之后」。当前状态：30 张表单**待人工填写**（30 对源/笔记路径与双 hash 已核验有效）。
+  显式 `--force` 才重建）—— 抽样可复现 ≠ 填写可以重建，人工/标注清单是资产。
+- **当前状态（2026-10-18）：30 篇已按固定口径由独立子 Agent 标注完毕（AI 标注基线）**：
+  整体保留率 **83.6%**（249/301），按桶 0-2k 89.2% / 2-5k 88.0% / 5-10k 86.7% / 10-20k **72.0%** /
+  >20k 82.2%，最低 A23 8%（严格口径下的粒度敏感篇目）。方法、边界与抽查记录见
+  `notes/_meta/eval/20261018-knowledge-layer/ANNOTATION.md`；评分明细 `score_report.md`。
+  改前基线就此可用：改动后**不要重建表单**，直接重跑判分即得同口径对照。
 
 ### 3.4 段落悬空指代扫描（T4，2026-10-18）
 

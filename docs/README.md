@@ -32,7 +32,7 @@
 | 文档 | 状态与用途 |
 |---|---|
 | [模板质量提升计划](plans/PLAN-20261014-template-quality.md) | §8.4为批次4收尾；§8.5~§8.10为批次5七组评估（17组诊断样本全部纳入同条件评估§8.9；完整讲书形态源§8.10）；**2026-10-18 按有限验证收尾**（§8.11：留出/人工/费用三项不再执行、缺口登记，见 DECISION-20261018-batch5-closeout），质量模块已解冻；§9/§10 系历史快照，勿据其续跑 |
-| [知识层计划](plans/PLAN-20261018-knowledge-layer.md) | 方向已定为「服务下游 agent」，按 §6 的 A/B 分组执行；**A 组进度表在 §6**（A1/T13/T7×2/T8/A7 已落地，A1 表单待人工填写；A4/A5/A6 已解冻待开发）。入口见 [PIPELINES §3.1–§3.4](PIPELINES.md) |
+| [知识层计划](plans/PLAN-20261018-knowledge-layer.md) | 方向已定为「服务下游 agent」，按 §6 的 A/B 分组执行；**A 组进度表在 §6**（A1 基线已就位：AI 标注 83.6%/30 篇；T13、T7×2、T8、A7 已落地；A4/A5/A6 已解冻待开发）。入口见 [PIPELINES §3.1–§3.4](PIPELINES.md) |
 | [并行监控计划](plans/PLAN-20260828-parallel-monitor.md) | 实现完成；2026-09-02 实跑证据见 [过程档案](parallel-monitor-runbook.md)。旧三源、飞书和 redrive 描述属当时方案 |
 | [迁移收尾计划](plans/PLAN-20260907-migration-finish.md) | 2026-09-07 快照；使用已冻结的迁移工具，不能直接当当前任务执行 |
 | [统一去重与系列计划](plans/PLAN-20260908-unified-dedup-series.md) | 架构实施记录；阶段 5 数量是 2026-09-09 快照，当前队列进度须现场核对 |

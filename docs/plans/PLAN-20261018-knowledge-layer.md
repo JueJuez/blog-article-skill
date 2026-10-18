@@ -290,7 +290,7 @@ vault/
 
 | 任务 | 状态 | 证据 / 落点 |
 |---|---|---|
-| **A1 · T3 评估集** | 🟡 代码与样本完成，**30 张表单待人工填写** | `notes/_meta/eval/20261018-knowledge-layer/`（30 篇＝5 桶×6，桶内类型轮转，种子固定；`report.md` 已给四类判据基线）；入口 `scripts/build_eval_set.py` / `scripts/score_eval_set.py`，零件 `shared.eval_set`。**未填 = 还没有保留率数字**，A4/A5 的收益所以暂时无法度量。2026-10-18 复核：30 对源/笔记路径与双 hash 全部有效；构建器已加防覆盖护栏（重跑时检测到已填表单会拒绝覆盖） |
+| **A1 · T3 评估集** | ✅ 完成（AI 标注基线） | `notes/_meta/eval/20261018-knowledge-layer/`：30 篇＝5 桶×6、种子固定、路径与双 hash 已核验。**标注由独立子 Agent 两阶段执行**（先源清单后勾选，301 条；见 [DECISION-20261018-ai-annotation](../decisions/DECISION-20261018-ai-annotation.md)），产物记为 **AI 标注基线**。结果：**整体保留率 83.6%**（249/301），按桶 0-2k 89.2% / 2-5k 88.0% / 5-10k 86.7% / **10-20k 72.0%** / >20k 82.2%；A23 极端 8%（严格口径粒度敏感，抽查成立）。方法/边界/抽查见目录 `ANNOTATION.md`，明细 `score_report.md`。构建器有防覆盖护栏 |
 | **A2 · T13 必要性判断** | ✅ 完成 | `scripts/check_resum_necessity.py`（判据零新增，零件 `shared.note_audit.necessity_of`）：全量 1396 条 → **建议重做 391 / 建议跳过 1005**，报告 `notes/_meta/eval/necessity_all_report.md`；`scripts/build_resum_batches.py --queue <necessity.json>` 已接线（只把 `redo` 做成子句） |
 | **A2 · T8 暂存 + 受控替换** | ✅ 完成（2026-10-18 解冻后即实现） | 判定零件 `shared.controlled_replace`（零新增判据 = T13 硬集合；平手/更差保留旧稿，force 无条件替换）；`resum_save_batch.py` 接线：候选稿先暂存 → A/B 比较 → 明确更优才覆盖；决策落 `notes/_meta/replace_decisions.jsonl` 台账并回写暂存 meta；决策文件 [DECISION-20261018-controlled-replace](../decisions/DECISION-20261018-controlled-replace.md) |
 | **A3 · T7 稿件不丢** | ✅ 四管线接入 | `shared/draft_stage.stage_blocked`（`save_summary_only` / `videos._summarize_and_save` / `videos._save_series_note` / `resum_save_batch`；重做管线四条有稿可留的失败路径均暂存、缺文件类无稿可暂存）；⚠️ 原 `videos/main.py` 调了一个从未导入的 `stage_blocked`（拦下即 NameError），已修为统一零件 + 回归测试 |
@@ -300,16 +300,18 @@ vault/
 | **A6 · T9 条件必备结构** | 🟡 待开发（2026-10-18 已解冻） | `SECTION_CONTRACTS` 拆 required / conditional |
 | **A7 · T4 悬空指代扫描** | ✅ 完成，**结论：不立项** | 全库 2333 篇 / 30905 段，block 首命中 283 处 = **0.92%**（<2% 阈值）；`scripts/scan_dangling_refs.py` + 报告 `notes/_meta/eval/dangling_scan.md` |
 
-**A 组复核（2026-10-18 会话）**：已完成项全量回归通过（首轮 1352 + 护栏测试 4 → **1356 passed**）；运行态抽查 —— 异步审核 `--stats` 正常（队列空）、判分脚本对 30 张未填表单正确报「已填 0 / 30」、必要性（1396→391/1005）与悬空扫描（0.92%）报告数字与表内一致。二轮（同日晚）：批次5 按有限验证收尾并解冻（§5），A2·T8 完成（`shared.controlled_replace` + 接线 + 测试）。
+**A 组复核（2026-10-18 会话）**：已完成项全量回归通过（首轮 1352 + 护栏测试 4 → **1356 passed**）；运行态抽查 —— 异步审核 `--stats` 正常（队列空）、判分脚本对 30 张未填表单正确报「已填 0 / 30」、必要性（1396→391/1005）与悬空扫描（0.92%）报告数字与表内一致。二轮（同日晚）：批次5 按有限验证收尾并解冻（§5），A2·T8 完成（`shared.controlled_replace` + 接线 + 测试）。三轮：A1 由 12 个独立子 Agent 两阶段标注完成（301 条；整体保留率 83.6%，抽查 A01/A23/A28 成立）。
 
-**A 组剩余**：① **A1 的最后一步只能人做**——读源、填 30 张「必留清单」（可分批，单桶 6 张即可出该桶基线），否则后续改动仍无基线；② T8 已完成，A4 / A5 / A6 已解冻待开发。
+**A 组剩余**：A4 / A5 / A6 已解冻待开发 —— A1 基线已就位（AI 标注基线 83.6%），改动即可做同口径对照。
 
 
 ### A 组 · 我们自身受益（按优先级）
 
 - **A1 · T3 · 固定评估集**【无】
-  按源长与类型分层抽 30 篇，人工标「源的核心事实与论点清单」作为基线。
+  按源长与类型分层抽 30 篇，标「源的核心事实与论点清单」作为基线。
   **排第一的理由**：不做这步，后续所有改动都是盲改（现 63% 语料连判据都没有），且它不碰冻结区。
+  （2026-10-18 执行注：用户决定不人工填表，改由独立子 Agent 两阶段标注，产物记为 AI 标注基线，
+  见 [DECISION-20261018-ai-annotation](../decisions/DECISION-20261018-ai-annotation.md)。）
 
 - **A2 · T13 → T8 · 重做保护**【无 → 硬】
   T13 重做前必要性判断：先跑 `shared.note_audit.audit_one` / `score_of` 判「现有笔记是否已达标」，达标则跳过（Brain：「也可以选择不改」）。复用现成代码，零新判据。
