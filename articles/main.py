@@ -863,6 +863,25 @@ def save_summary_only(input_data: dict) -> dict:
                 pass
     if not summarized_content:
         return {'success': False, 'message': '请提供总结好的内容'}
+    # ── A4 清单内化（T15/T6，PLAN-20261018 §6 A4 / §12.3 #11-a）──
+    # 长源（>10000 字）条目 prompt 会要求执行模型先列 `<!-- EXTRACT_CHECKLIST -->` 清单再成文；
+    # 这里把清单**剥离出正文**并逐条机械校验「原句能在源里命中」（命中不了丢弃），再对成文做
+    # 机械对账（数字/专名是否进正文）。全部是**报告项**：不计分、不拦盘、不触发重交；
+    # 未命中项随落盘 meta 存档 + 进异步审核队列观察（§12.3 #13）。
+    from prompts.extract_checklist import process as _process_checklist
+    from prompts.extract_checklist import review_reasons as _checklist_reasons
+    _cx = _process_checklist(
+        summarized_content, source_text, note_type=input_data.get('note_type', ''),
+        title=original_title,
+        source_path=input_data.get('raw_file') or input_data.get('raw_file_path') or '',
+        source_chars=source_chars)
+    summarized_content = _cx["note"]
+    _cx_extra = ({"checklist_report": _cx.get("report")} if _cx.get("has_block") else {})
+    if _cx.get("has_block"):
+        print(f"   🧾 提取清单：{_cx['report_line']}"
+              + (f"（存档 {os.path.basename(_cx['store_path'])}）" if _cx.get("store_path") else ""))
+        if _cx.get("error"):
+            print(f"   ⚠️ 清单处理降级（不影响落盘）：{_cx['error']}")
     # 机械去重闸门（DECISION-20260825）：URL 已总结过 → 不再写飞书，按成功出队；
     # force=True 为强制重写逃生舱。AI 只交总结，写不写由代码决定。
     _force = bool(input_data.get('force', False))
@@ -928,7 +947,8 @@ def save_summary_only(input_data: dict) -> dict:
             "save_summary_only", summarized_content, input_data, source_text,
             reason="mechanical_block", issues=_gate["issues"],
             warnings=_gate.get("warnings", []), evidence=_gate["evidence_report"],
-            extra={"compression_warnings": _gate.get("compression_warnings", [])})
+            extra={"compression_warnings": _gate.get("compression_warnings", []),
+                   **_cx_extra})
         return {'success': False, 'message': 'VERIFIER_FAILED:' + '；'.join(_gate["issues"]),
                 'issues': _gate["issues"],
                 'staged': _staged,
@@ -950,7 +970,8 @@ def save_summary_only(input_data: dict) -> dict:
             "save_summary_only", summarized_content, input_data, source_text,
             reason="content_block", issues=_cb, warnings=_gate.get("warnings", []),
             evidence=_gate["evidence_report"],
-            extra={"compression_warnings": _gate.get("compression_warnings", [])})
+            extra={"compression_warnings": _gate.get("compression_warnings", []),
+                   **_cx_extra})
         return {'success': False, 'message': 'VERIFIER_CONTENT_FAILED:' + '；'.join(_cb),
                 'issues': _cb, 'retry': True,
                 'staged': _staged,
@@ -965,6 +986,8 @@ def save_summary_only(input_data: dict) -> dict:
     folder, tags = autoroute_folder(folder, author, original_url, original_title, tags,
                                     category=input_data.get('category', ''))
     try:
+        # A4 清单对账的报告项并入抽检理由：未命中项进异步审核队列观察（§12.3 #13），不触发重交。
+        _review_reasons = list(_gate.get("review_flags") or []) + _checklist_reasons(_cx.get("report"))
         formatted_note, filename = save_summarized_article(
             summarized_content, original_url=original_url, author=author,
             tags=tags, original_title=original_title, publish_time=publish_time,
@@ -976,7 +999,7 @@ def save_summary_only(input_data: dict) -> dict:
             share_html=bool(input_data.get('share_html', False)),
             source_text=source_text,
             generation_context=attach_evidence(input_data.get("generation_context"), _gate['evidence_report'], input_data.get('note_type', '')),
-            review_reasons=_gate.get("review_flags") or [],
+            review_reasons=_review_reasons,
         )
         # 无人值守降级：落盘命中参考值抽检信号 → 入 needs_review 队列（filename 已知）
         _review_flags = _gate.get("review_flags", [])
@@ -989,6 +1012,7 @@ def save_summary_only(input_data: dict) -> dict:
                 pass
         return {'success': True, 'message': '文章总结已自动保存！', 'filename': filename, 'content': formatted_note,
                 'compression_warnings': _gate.get("compression_warnings", []),
+                'checklist_report': _cx.get("report") or {},
                 'review_flags': _review_flags, 'evidence_report': _gate['evidence_report']}
     except Exception as e:
         return {'success': False, 'message': f'保存失败: {str(e)}'}

@@ -55,6 +55,8 @@
 
 **全文语义审核（批次4代码实施，真实效果另验）**：复用`verify_note`和保存前公共准入；开启`NOTE_QUALITY_GATE`时短源全文，长源分块加邻文并汇总，审核不完整阻止写入，force不豁免。关闭时不新增外部调用，状态保留未审。失败候选、源与报告进入现有复核队列及拦截台账；详见[全文审核决策](decisions/DECISION-20261015-fulltext-review.md)。
 
+**提取清单内化（A4，2026-10-18，入口不变）**：`FORCE_AGENT_MODE=1` 下无外部 provider，提取只能由执行模型在**同一次派工**里做，故清单指令按源长条件拼进条目 prompt（`prompts/templates.py:get_note_prompt` → `prompts/extract_checklist.render_extraction_rules`）：源长 >10000 字要求「先列清单、再成文」（清单是自查表，不得当大纲）；<2000 字只给 T0「源撑不起」事前报告钩。落盘前由 `prompts.extract_checklist.process` 把清单块**剥离出正文**、逐条机械校验「原句能在源里命中」（命中不了丢弃）、再对成文做机械对账（数字/专名/专名类中文名），未命中并入异步审核理由。**全部是报告项**：不计分、不拦盘、不触发重交；清单按源 hash 存档于 `notes/_meta/extract_checklists/`。决策与 Loop 0 结果见 [A4 落点决策](decisions/DECISION-20261018-a4-agent-mode-landing.md) 与[知识层计划](plans/PLAN-20261018-knowledge-layer.md) §6 A4。**尚未接线**：`videos` 单集/系列路径（其 prompt 未传源长，故当前不注入，也不需剥离）。
+
 会话独立审核可由`save_pending.py --review-file <报告.json>`随稿提交；存量重做读取稿件旁的`<稿.md>.review.json`（或批次条目的`review_file`）。报告必须绑定完整源、实际清理后的稿件正文及派单prompt，明确不同于作者的审者ID与全文字符范围。协议见[全文审核说明](../references/fulltext-review.md)，未知历史版本不得补造。
 
 已有draft-only/Landing两段出口同样受审核准入约束：新草稿元数据携带源/正文/审核版本和格式化文件hash；显式审核时旧草稿无版本、或草稿文件被改动，都保留草稿并停止Landing，不能绕过新门禁。
@@ -195,6 +197,19 @@ python scripts/scan_dangling_refs.py                # 全库只读；--limit 200
 我的总结 0.82% / 生财有术 1.12%）→ **不成系统性问题，不建改写轮、不改 prompt**。
 零件 `shared.dangling_ref`；复扫随时可跑，判据是「命中率 <2% 即不立项」。
 
+### 3.5 Loop 0 提取覆盖率（A4 调参环，2026-10-18）
+
+```bash
+python scripts/loop0_extract_coverage.py --emit-prompts   # 写版本化提取指令 + 30 篇任务书
+# 派子 Agent 按 <eval-dir>/loop0_checklists/_INSTRUCTION.md 产出 A01..A30 的清单（只提取、不成文）
+python scripts/loop0_extract_coverage.py                 # 机械粗筛 → loop0_report.md + loop0_suspects.json
+```
+
+**改提取 prompt 就转这个环**（PLAN-20261018 §8 三层循环）：30 篇评估源的「标准答案」就是 A1 必留清单，
+把 T15 提取输出逐条对清单算覆盖率 —— 零成文成本。判据分两层：机械粗筛（bigram 覆盖率 ≥0.45 **或**
+与清单共享 ≥6 字连续片段）＋ **模型裁可疑项**（机械会假阴性：A1 条目是「陈述＋依据」打包句，清单是
+原子条目）。产出的 `extract_miss` 就是提取 prompt 的靶。只读生产数据；报告落在评估目录（`notes/`，不入库）。
+
 
 ## 4. 订阅监控管线
 
@@ -300,6 +315,7 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 | `shared.draft_stage.stage_blocked` | 被拦稿件暂存（三 hash + 元信息，**永不抛异常**） | `save_summary_only`、`videos._summarize_and_save`、`videos._save_series_note`、`resum_save_batch` |
 | `shared.controlled_replace` | 受控替换 A/B 判定（T13 硬集合，零新增判据；平手保留旧稿）+ 决策台账 | `scripts/resum_save_batch.py` |
 | `shared.async_review.maybe_enqueue` | 落盘后入异步审核队列（按 env 抽样，零 AI 成本） | `save_summarized_article` |
+| `prompts.extract_checklist` | A4 长源提取清单：按源长条件注入两阶段指令（>10000）／短源 T0 报告块（<2000）；剥离清单→机械校验（原句须命中源）→对账→按源 hash 存档，**全部报告项、永不抛异常** | `prompts.templates.get_note_prompt`（注入）、`save_summary_only`、`resum_save_batch` |
 | `shared.eval_set` | 评估集分层抽样 / 基线测量 / 人工表单判分 | `scripts/build_eval_set.py`、`scripts/score_eval_set.py` |
 | `shared.dangling_ref` | 段落悬空指代识别与统计 | `scripts/scan_dangling_refs.py` |
 
@@ -345,6 +361,7 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 | 落盘后做独立语义复审 | `scripts/run_async_review.py --emit/--ingest`、`shared.async_review.maybe_enqueue` | 见 §3.2；别用 `NOTE_QUALITY_GATE` 卡落盘 |
 | 建/判分固定评估集 | `scripts/build_eval_set.py` / `scripts/score_eval_set.py`、`shared.eval_set` | 见 §3.3；产物只在 `notes/_meta/eval/` |
 | 扫段落悬空指代 | `scripts/scan_dangling_refs.py`、`shared.dangling_ref` | 见 §3.4；报告项，不拦不改 |
+| 调提取 prompt（长源清单） | `scripts/loop0_extract_coverage.py` | 见 §3.5；零成文成本，机械粗筛＋模型裁可疑项 |
 
 ### 10.1 模块职能地图（找函数先定位模块）
 

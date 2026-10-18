@@ -10,7 +10,7 @@ import pytest
 
 from monitors import run as run_mod
 from prompts.classify import classify_note_type
-from prompts.templates import QUALITY_GATE_SELFCHECK, get_note_prompt
+from prompts.templates import QUALITY_GATE_SELFCHECK, get_note_prompt, source_chars_of
 
 import scys_batch_fetch as sbf
 
@@ -45,7 +45,10 @@ class TestMonitorsQueuePrompt:
         entry = json.load(open(queue_env, encoding="utf-8"))[0]
         assert entry["note_type"] == classify_note_type("7月19日哥飞的朋友们",
                                                         raw.read_text(encoding="utf-8")[:4000])
-        assert entry["prompt"] == get_note_prompt(entry["note_type"]) + QUALITY_GATE_SELFCHECK
+        # 2026-10-18 A4：条目 prompt 按源长注入附加块（短源 T0 / 长源清单），期望同口径带上源长
+        assert entry["prompt"] == get_note_prompt(
+            entry["note_type"], source_chars_of(raw.read_text(encoding="utf-8"))
+        ) + QUALITY_GATE_SELFCHECK
 
     def test_entry_prompt_present_even_without_raw_file(self, queue_env):
         res = {"need_continue_summary": True, "raw_file": ""}
@@ -78,7 +81,10 @@ class TestScysPendingEntry:
         assert e["list_meta"]["isDigested"] is True
         assert e["note_type"] == classify_note_type("十万粉复盘",
                                                     raw.read_text(encoding="utf-8")[:4000])
-        assert e["prompt"] == get_note_prompt(e["note_type"]) + QUALITY_GATE_SELFCHECK
+        # 2026-10-18 A4：同口径带源长（短源注入 T0 报告块）
+        assert e["prompt"] == get_note_prompt(
+            e["note_type"], source_chars_of(raw.read_text(encoding="utf-8"))
+        ) + QUALITY_GATE_SELFCHECK
 
     def test_missing_output_file_still_yields_prompt(self, tmp_path):
         r = {"topicId": 1, "url": "u", "title": "普通分享帖", "chars": 0,

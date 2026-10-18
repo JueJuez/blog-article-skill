@@ -145,6 +145,16 @@ def main() -> int:
         except ValueError as exc:
             failed.append((i, str(exc), title))
             continue
+        # A4 清单内化（T15/T6）：长源稿带 `<!-- EXTRACT_CHECKLIST -->` 块 → 剥出正文、机械校验每条
+        # 「原句能在源里命中」（命中不了丢弃）、对成文做机械对账。全部是报告项，不拦盘、不重交；
+        # 未命中项随暂存 meta 存档 + 进异步审核队列观察（PLAN-20261018 §12.3 #13）。
+        from prompts.extract_checklist import process as _process_checklist
+        from prompts.extract_checklist import review_reasons as _checklist_reasons
+        _cx = _process_checklist(content, source_text, note_type=note_type, title=title,
+                                 source_path=src, source_chars=source_chars)
+        content = _cx["note"]
+        if _cx.get("has_block"):
+            print(f"    🧾 提取清单：{_cx['report_line']}")
         gate = verify_note_mechanical(content, note_type, source_url=url,
                                      source_chars=source_chars, source_text=source_text, source_author=author)
         if not gate["passed"]:
@@ -163,6 +173,9 @@ def main() -> int:
         # ---- T8 受控替换：候选稿先暂存，再与旧稿比确定性缺陷，明确更优才覆盖 ----
         from shared import controlled_replace as CR
         staged = _stage_candidate(it, content, source_text, gate)
+        if _cx.get("has_block"):
+            _annotate_staged(staged, {"checklist_report": _cx.get("report"),
+                                      "checklist_store": _cx.get("store_path", "")})
         new_metrics = CR.metrics_from_gate(gate)
         try:
             from prompts.evidence import resolve_source_author
@@ -233,7 +246,7 @@ def main() -> int:
                 note_path=note_path,
                 source_text=source_text,
                 generation_context=context,
-                review_reasons=gate.get('review_flags') or [],
+                review_reasons=list(gate.get('review_flags') or []) + _checklist_reasons(_cx.get("report")),
             )
             if gate.get('review_flags'):
                 from prompts.review_rubric import queue_for_review

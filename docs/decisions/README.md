@@ -20,6 +20,7 @@
 | 批次5 评估收尾 | [批次5 收尾](DECISION-20261018-batch5-closeout.md) | 模板质量计划状态行与 §10.6；质量模块已解冻 |
 | 评估集标注方式 | [AI 标注](DECISION-20261018-ai-annotation.md) | A1 表单（AI 标注基线）；`scripts/score_eval_set.py`、评估目录 `ANNOTATION.md` |
 | 输出覆盖范围（散落信息点） | [覆盖口径](DECISION-20261018-info-coverage-scope.md) | SOURCE_FIDELITY / COVERAGE 的收紧方向；A4 提取清单与 A6 模板落点 |
+| A4 长源提取清单落点 | [A4 落点](DECISION-20261018-a4-agent-mode-landing.md) | `prompts/extract_checklist.py` + `get_note_prompt` 条件注入；清单内化（选 a）、持久化契约、报告项出口；Loop 0 见知识层计划 §8 |
 
 ## 历史关系与阅读方式
 
