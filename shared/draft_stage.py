@@ -152,6 +152,23 @@ def read_meta(draft_path: str) -> dict:
         return {}
 
 
+def annotate(meta_path: str, extra: dict) -> bool:
+    """给已落暂存的元信息补记后续决策（T8 受控替换结果 / 失败收尾原因）。
+
+    暂存发生在拦截点或替换前，而决策可能在其后（比如过了门禁又被 A/B 判定保留旧稿）。
+    补记保证「当时为什么留下这份稿」和稿件在一起。失败返回 False，**永不抛异常**。
+    """
+    try:
+        with open(meta_path, encoding="utf-8") as fh:
+            meta = json.load(fh)
+        meta.update(extra or {})
+        with open(meta_path, "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, ensure_ascii=False, indent=1)
+        return True
+    except Exception:
+        return False
+
+
 def purge(stage_dir: str, keep_days: int = 30) -> int:
     """清理超过 keep_days 天的暂存目录（只在显式调用时使用，不自动跑）。"""
     removed = 0

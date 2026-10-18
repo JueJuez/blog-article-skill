@@ -97,7 +97,7 @@ Brain 原话：三层「deliberately redundant」—— 简单问题在 `/notes`
 
 **第 2 步 结构化**
 - 把 `SECTION_CONTRACTS.required`（无条件）拆出 `conditional`（条件必备），条件由**机械信号**判定（对比数字组数、反例关键词、时间线密度）。
-- 解决「源不支持的模块驱动编造」。属模板改动 → 冻结区，先设计。
+- 解决「源不支持的模块驱动编造」。属模板改动（冻结已于 2026-10-18 解除，见 §5），可直接设计实施。
 
 **第 3 步 成文**
 - 短源（<5000）：one-shot 不动。
@@ -272,11 +272,12 @@ vault/
 ## 5. 与 PLAN-20261014 的依赖
 
 [PLAN-20261014-template-quality.md](PLAN-20261014-template-quality.md) 的批次 5 未完成（人工标注、留出、费用），其评估期间**质量模块（门禁/分类器/模板）冻结**。
+**2026-10-18 更新：冻结已解除** —— 批次5 按有限验证收尾（留出/人工/费用三项不再执行、缺口如实登记，见 [DECISION-20261018-batch5-closeout](../decisions/DECISION-20261018-batch5-closeout.md) 与模板质量计划 §8.11）；T8 / A4 / A5 / A6 即可开发。
 
 本计划任务分两类：
 
 - **不碰冻结区**（T0、T1、T2、T3、T4、T7）：纯增量、只读统计或跨项目契约，可与评估并行。
-- **碰冻结区**（T5、T6、T8、T9）：等 PLAN-20261014 评估收尾、解冻后执行。
+- **碰冻结区**（T5、T6、T8、T9）：等 PLAN-20261014 评估收尾、解冻后执行 —— **已于 2026-10-18 解冻**。
 - **架构类**（T10、T11、T13、T14）：不改判据本身，但动落盘路径 / 笔记内容结构 / 库结构，建议仍在解冻后做，避免与评估交织。
 
 ## 6. 任务清单
@@ -291,18 +292,17 @@ vault/
 |---|---|---|
 | **A1 · T3 评估集** | 🟡 代码与样本完成，**30 张表单待人工填写** | `notes/_meta/eval/20261018-knowledge-layer/`（30 篇＝5 桶×6，桶内类型轮转，种子固定；`report.md` 已给四类判据基线）；入口 `scripts/build_eval_set.py` / `scripts/score_eval_set.py`，零件 `shared.eval_set`。**未填 = 还没有保留率数字**，A4/A5 的收益所以暂时无法度量。2026-10-18 复核：30 对源/笔记路径与双 hash 全部有效；构建器已加防覆盖护栏（重跑时检测到已填表单会拒绝覆盖） |
 | **A2 · T13 必要性判断** | ✅ 完成 | `scripts/check_resum_necessity.py`（判据零新增，零件 `shared.note_audit.necessity_of`）：全量 1396 条 → **建议重做 391 / 建议跳过 1005**，报告 `notes/_meta/eval/necessity_all_report.md`；`scripts/build_resum_batches.py --queue <necessity.json>` 已接线（只把 `redo` 做成子句） |
-| **A2 · T8 暂存 + 受控替换** | ❌ 未做（碰冻结区） | 前置「留档」已就位：`shared.draft_stage`。缺的是「比对新旧 + 才替换」，等 PLAN-20261014 解冻 |
+| **A2 · T8 暂存 + 受控替换** | ✅ 完成（2026-10-18 解冻后即实现） | 判定零件 `shared.controlled_replace`（零新增判据 = T13 硬集合；平手/更差保留旧稿，force 无条件替换）；`resum_save_batch.py` 接线：候选稿先暂存 → A/B 比较 → 明确更优才覆盖；决策落 `notes/_meta/replace_decisions.jsonl` 台账并回写暂存 meta；决策文件 [DECISION-20261018-controlled-replace](../decisions/DECISION-20261018-controlled-replace.md) |
 | **A3 · T7 稿件不丢** | ✅ 四管线接入 | `shared/draft_stage.stage_blocked`（`save_summary_only` / `videos._summarize_and_save` / `videos._save_series_note` / `resum_save_batch`；重做管线四条有稿可留的失败路径均暂存、缺文件类无稿可暂存）；⚠️ 原 `videos/main.py` 调了一个从未导入的 `stage_blocked`（拦下即 NameError），已修为统一零件 + 回归测试 |
 | **A3 · T7 落盘后异步审核** | ✅ 完成 | `shared/async_review.py`（入队 + 三 hash + 源快照）+ `scripts/run_async_review.py`（`--emit` / `--ingest` / `--run` / `--stats`）；`save_summarized_article` 两个本地落盘点接线；回收时 hash 不符即 `stale` |
-| **A4 · T0 + T15 + T6** | ❌ 未做（碰冻结区） | 三者的收益都要先用 A1 度量，且改生成流程 |
-| **A5 · T5 论点级判据** | ❌ 未做（碰冻结区） | 同上 |
-| **A6 · T9 条件必备结构** | ❌ 未做（碰冻结区） | 同上 |
+| **A4 · T0 + T15 + T6** | 🟡 待开发（2026-10-18 已解冻） | 三者的收益都要先用 A1 度量，且改生成流程 |
+| **A5 · T5 论点级判据** | 🟡 待开发（2026-10-18 已解冻） | 先做报告项观察分布，有效再升级 |
+| **A6 · T9 条件必备结构** | 🟡 待开发（2026-10-18 已解冻） | `SECTION_CONTRACTS` 拆 required / conditional |
 | **A7 · T4 悬空指代扫描** | ✅ 完成，**结论：不立项** | 全库 2333 篇 / 30905 段，block 首命中 283 处 = **0.92%**（<2% 阈值）；`scripts/scan_dangling_refs.py` + 报告 `notes/_meta/eval/dangling_scan.md` |
 
-**A 组复核（2026-10-18 会话）**：已完成项全量回归通过（首轮 1352 + 本轮护栏测试 4 → **1356 passed**）；运行态抽查 —— 异步审核 `--stats` 正常（队列空）、判分脚本对 30 张未填表单正确报「已填 0 / 30」、必要性（1396→391/1005）与悬空扫描（0.92%）报告数字与表内一致。
+**A 组复核（2026-10-18 会话）**：已完成项全量回归通过（首轮 1352 + 护栏测试 4 → **1356 passed**）；运行态抽查 —— 异步审核 `--stats` 正常（队列空）、判分脚本对 30 张未填表单正确报「已填 0 / 30」、必要性（1396→391/1005）与悬空扫描（0.92%）报告数字与表内一致。二轮（同日晚）：批次5 按有限验证收尾并解冻（§5），A2·T8 完成（`shared.controlled_replace` + 接线 + 测试）。
 
-**A 组剩余两条路**：① **A1 的最后一步只能人做**——读源、填 30 张「必留清单」，否则后续改动仍无基线；
-② A2(T8)/A4/A5/A6 全部卡在 PLAN-20261014 批次5（人工标注 + 留出）未收尾，解冻后再动。
+**A 组剩余**：① **A1 的最后一步只能人做**——读源、填 30 张「必留清单」（可分批，单桶 6 张即可出该桶基线），否则后续改动仍无基线；② T8 已完成，A4 / A5 / A6 已解冻待开发。
 
 
 ### A 组 · 我们自身受益（按优先级）

@@ -21,6 +21,7 @@ format_note_with_prompt / verify_note_mechanical）：当初 `save_summarized_ar
 用法：
   python scripts/resum_save_batch.py <batch_NN.json> <out_dir> [--force]
   out_dir 下临时笔记命名约定：<batch_name>_<索引02d>.md（与子 Agent 产出一致）
+  --force：豁免内容门禁 + 跳过 A/B 比较无条件替换（逃生舱；机械门禁不豁免）
 
 **T7 稿件不丢（2026-10-18）**：重做是**最需要留档**的场景 —— 拦下不落盘就意味着这版重做稿
 直接蒸发，而旧稿还留在库里，「新的比旧的差」永远无从比较。故本脚本在四条**有稿可留**的
@@ -29,6 +30,13 @@ format_note_with_prompt / verify_note_mechanical）：当初 `save_summarized_ar
 再照原样记为失败。`MISSING_FILE`（子 Agent 从未产出）无稿可暂存，旧稿不受影响；
 `NOTE_PATH_EMPTY` 与派单校验失败两处属于批次条目/来源问题，早期中止、不入暂存（草稿仍在 out_dir）。
 暂存失败只告警，不改变返回码与判定。
+
+**T8 受控替换（2026-10-18）**：过门禁 ≠ 比旧稿更好 —— 原行为「过门禁即覆盖」会让一版
+修掉旧缺陷又引入新缺陷的稿子照样盖掉旧版。现在：候选稿先暂存 → 与旧稿按**同一套确定性
+缺陷**（T13 硬集合：锚点召回/照搬/结构缺失 + 证据确定性缺陷）A/B 比较 →
+**明确更少缺陷才替换**；相等/更差保留旧稿（Brain「也可以选择不改」，判定 `shared/controlled_replace`）。
+`--force` 无条件替换（逃生舱，兼作内容门禁豁免）。决策落 `notes/_meta/replace_decisions.jsonl`
+台账并回写暂存 meta；语义腿照旧走保存链路的 `admit_candidate`（带独立审核报告时强制通过）。
 """
 import json
 import os
@@ -53,6 +61,30 @@ def _stage_failure(it: dict, content: str, source_text: str, reason: str, issues
         prompt_sha256=ctx.get("prompt_sha256") or "unknown")
 
 
+def _stage_candidate(it: dict, content: str, source_text: str, gate: dict) -> dict:
+    """T8：候选稿在替换判定前先暂存（无暂存物就无从比较、也无从回退到旧版）。
+
+    静默（quiet）：每个条目的结果由调用方按决策打印，不再额外刷一行暂存提示。
+    """
+    from shared.draft_stage import stage_blocked
+
+    ctx = it.get("generation_context") or {}
+    return stage_blocked(
+        content, quiet=True, reason="redo_candidate", route="resum_save_batch",
+        issues=list(gate.get("issues") or []),
+        url=it.get("url", ""), title=it.get("title", ""), note_type=it.get("note_type", ""),
+        source_text=source_text or "", source_path=it.get("source_path", ""),
+        prompt_sha256=ctx.get("prompt_sha256") or "unknown")
+
+
+def _annotate_staged(staged: dict, extra: dict) -> None:
+    """T8：把替换决策/最终去处回写进暂存 meta；拿不到 meta 就静默跳过。"""
+    meta = (staged or {}).get("meta") or ""
+    if meta:
+        from shared.draft_stage import annotate
+        annotate(meta, extra)
+
+
 def main() -> int:
     args = sys.argv[1:]
     force = "--force" in args
@@ -70,7 +102,7 @@ def main() -> int:
     from articles.main import save_summarized_article
     from prompts.verifier import verify_note_mechanical, count_note_words
 
-    ok, failed, landed = 0, [], 0
+    ok, failed, landed, kept = 0, [], 0, []
     for i, it in enumerate(items):
         md = os.path.join(out_dir, f"{batch_name}_{i:02d}.md")
         title = it.get("title", "")
@@ -128,6 +160,50 @@ def main() -> int:
             failed.append((i, "CONTENT_GATE:" + ";".join(gate["content_blockers"]), title))
             continue
 
+        # ---- T8 受控替换：候选稿先暂存，再与旧稿比确定性缺陷，明确更优才覆盖 ----
+        from shared import controlled_replace as CR
+        staged = _stage_candidate(it, content, source_text, gate)
+        new_metrics = CR.metrics_from_gate(gate)
+        try:
+            from prompts.evidence import resolve_source_author
+            author = resolve_source_author(source_text, author)
+        except Exception:
+            pass
+        old_metrics, decision = None, None
+        if not landed_new:
+            try:
+                with open(note_path, encoding="utf-8") as f:
+                    old_text = f.read()
+            except (OSError, UnicodeError):
+                decision = {"replace": True, "reason": "old_unreadable",
+                            "old_defects": None, "new_defects": new_metrics["defect_count"]}
+            else:
+                old_metrics = CR.assess_text(old_text, source_text, note_type, source_author=author)
+                decision = CR.decide(old_metrics, new_metrics, force=force)
+        if decision is None:                        # 旧稿不存在（重做补落地）
+            decision = CR.decide(None, new_metrics, force=force)
+        _od = decision.get("old_defects")
+        _dec_note = "" if landed_new else (
+            f"{decision['reason']}，缺陷 {_od if _od is not None else '?'}→{decision['new_defects']}")
+
+        def _ledger(action: str) -> None:
+            CR.log_decision({
+                "batch": batch_name, "action": action, "reason": decision["reason"],
+                "title": title, "note_path": note_path, "note_type": note_type,
+                "old_defects": decision["old_defects"], "new_defects": decision["new_defects"],
+                "old_detail": ((old_metrics or {}).get("content_blockers", [])[:4]
+                               + (old_metrics or {}).get("evidence_blockers", [])[:4]),
+                "new_detail": (new_metrics["content_blockers"][:4] + new_metrics["evidence_blockers"][:4]),
+                "staged": (staged or {}).get("draft", ""),
+            })
+
+        if not decision["replace"]:
+            _ledger("keep")
+            _annotate_staged(staged, {"outcome": "kept_old", "replace_decision": decision})
+            kept.append((i, _dec_note, title))
+            print(f"  ↺ [{i}] 保留旧稿（{_dec_note}）| {title[:30]}")
+            continue
+
         _vault = os.getenv("OBSIDIAN_VAULT_PATH", "")
         rel_dir = ""
         if _vault:
@@ -137,8 +213,7 @@ def main() -> int:
                 rel_dir = ""
 
         try:
-            from prompts.evidence import attach_evidence, resolve_source_author
-            author = resolve_source_author(source_text, author)
+            from prompts.evidence import attach_evidence
             context = attach_evidence(it.get("generation_context"), gate['evidence_report'], note_type)
             review_file = it.get('review_file') or (md + '.review.json')
             if os.path.exists(review_file):
@@ -164,21 +239,32 @@ def main() -> int:
                 from prompts.review_rubric import queue_for_review
                 queue_for_review(_fname, note_type, gate['review_flags'], url, evidence=gate['evidence_report'])
         except Exception as e:
-            _stage_failure(it, content, source_text, "save_failed", [f"SAVE_FAILED:{e}"])
+            if (staged or {}).get("ok"):
+                _annotate_staged(staged, {"outcome": "save_failed", "issues": [f"SAVE_FAILED:{e}"]})
+            else:
+                _stage_failure(it, content, source_text, "save_failed", [f"SAVE_FAILED:{e}"])
+            _ledger("save_failed")
             failed.append((i, f"SAVE_FAILED:{e}", title))
             continue
 
+        _annotate_staged(staged, {"outcome": ("created" if landed_new else "replaced"),
+                                  "replace_decision": decision})
+        _ledger("create" if landed_new else "replace")
         ok += 1
         if landed_new:
             landed += 1
         if (i + 1) % 4 == 0 or i == len(items) - 1:
             _tag = " [NEW]" if landed_new else ""
-            print(f"  ✓ [{i}] {title[:28]} -> {os.path.basename(note_path)} ({len(_formed)}字){_tag}")
+            _dn = f"  [{_dec_note}]" if _dec_note else ""
+            print(f"  ✓ [{i}] {title[:28]} -> {os.path.basename(note_path)} ({len(_formed)}字){_tag}{_dn}")
 
-    print(f"\n{batch_name}: 覆盖落盘 {ok}/{len(items)} (其中新建落地 {landed}) | 失败 {len(failed)}")
+    print(f"\n{batch_name}: 覆盖落盘 {ok}/{len(items)}（新建落地 {landed}） | "
+          f"保留旧稿 {len(kept)} | 失败 {len(failed)}")
+    for i, why, t in kept:
+        print(f"  ↺ [{i}] 保留旧稿（{why}）| {t[:34]}")
     for i, why, t in failed:
         print(f"  ✗ [{i}] {why} | {t[:34]}")
-    return 0 if ok > 0 or len(items) == 0 else 3
+    return 0 if (ok + len(kept)) > 0 or len(items) == 0 else 3
 
 
 if __name__ == "__main__":

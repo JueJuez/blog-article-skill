@@ -16,6 +16,8 @@
 | CDP 健康复用 | [健康复用](DECISION-20260910-cdp-health-reuse.md) | [CDP 手册](../../references/login-required-cdp-workflow.md)；实例内核在用户级技能 |
 | 微信读书替代旧代理 | [直连源](DECISION-20260919-weread-direct-source.md) | [weread 手册](../../references/weread-direct-source.md)；后续登录恢复与配额契约在手册持续更新 |
 | 主题标签与目录字段 | [语义标签](DECISION-20260913-namespace-semantic-tags.md)、[脚本命名与 folder](DECISION-20260920-script-naming-and-folder-field.md) | `shared/note_classify.py`、`shared/routing.py` |
+| 重做的受控替换 | [受控替换](DECISION-20261018-controlled-replace.md) | `shared/controlled_replace.py`、`scripts/resum_save_batch.py`；PIPELINES §3.1 |
+| 批次5 评估收尾 | [批次5 收尾](DECISION-20261018-batch5-closeout.md) | 模板质量计划状态行与 §10.6；质量模块已解冻 |
 
 ## 历史关系与阅读方式
 
@@ -29,4 +31,4 @@
 
 批次4候选收尾、独立复审及数字噪声范围：[收尾决策](DECISION-20261015-batch4-closeout.md)。当前验收状态以开发计划§8.4为准。
 
-批次5首轮三组对照、候选留出与真实成本边界：[评估决策](DECISION-20261016-batch5-evaluation.md)，进度见开发计划§8.5。
+批次5首轮三组对照、候选留出与真实成本边界：[评估决策](DECISION-20261016-batch5-evaluation.md)，进度见开发计划§8.5；该评估的剩余项（严格留出/人工标注/费用）已按 [收尾决策](DECISION-20261018-batch5-closeout.md) 于 2026-10-18 关闭。

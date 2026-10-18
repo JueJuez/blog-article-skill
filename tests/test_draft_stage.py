@@ -76,3 +76,19 @@ def test_resum_stage_failure_helper_stages(tmp_path, monkeypatch):
     assert meta["route"] == "resum_save_batch"
     assert meta["prompt_sha256"] == "p"
     assert meta["issues"] == ["锚点召回不足"]
+
+
+def test_annotate_appends_decision_to_meta():
+    """T8：决策（保留旧稿/替换）要回写到暂存 meta，和稿件放在一起。"""
+    res = DS.stage_blocked("候选稿", reason="redo_candidate", route="t", title="标题B", quiet=True)
+    assert DS.annotate(res["meta"], {"outcome": "kept_old", "replace_decision": {"reason": "no_gain"}})
+    meta = DS.read_meta(res["draft"])
+    assert meta["reason"] == "redo_candidate", "原有字段不得被覆盖丢失"
+    assert meta["outcome"] == "kept_old"
+    assert meta["replace_decision"]["reason"] == "no_gain"
+
+
+def test_annotate_never_raises():
+    """补记失败只返回 False：决策回写是保险，不许影响主流程。"""
+    assert DS.annotate("", {"x": 1}) is False
+    assert DS.annotate("Z:/definitely/missing/meta.json", {"x": 1}) is False
