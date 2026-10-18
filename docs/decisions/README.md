@@ -20,7 +20,8 @@
 | 批次5 评估收尾 | [批次5 收尾](DECISION-20261018-batch5-closeout.md) | 模板质量计划状态行与 §10.6；质量模块已解冻 |
 | 评估集标注方式 | [AI 标注](DECISION-20261018-ai-annotation.md) | A1 表单（AI 标注基线）；`scripts/score_eval_set.py`、评估目录 `ANNOTATION.md` |
 | 输出覆盖范围（散落信息点） | [覆盖口径](DECISION-20261018-info-coverage-scope.md) | SOURCE_FIDELITY / COVERAGE 的收紧方向；A4 提取清单与 A6 模板落点 |
-| A4 长源提取清单落点 | [A4 落点](DECISION-20261018-a4-agent-mode-landing.md) | `prompts/extract_checklist.py` + `get_note_prompt` 条件注入；清单内化（选 a）、持久化契约、报告项出口；Loop 0 见知识层计划 §8 |
+| A4 长源提取清单落点 | [A4 落点](DECISION-20261018-a4-agent-mode-landing.md) | `prompts/extract_checklist.py` + `get_note_prompt` 条件注入；清单内化（选 a）、持久化契约、报告项出口；Loop 0/1 见知识层计划 §8 |
+| A5 论点级判据 / A6 条件必备结构 | [A5/A6 落点](DECISION-20261018-a5-a6-landing.md) | `prompts/claim_coverage.py`（报告项，**机械覆盖率禁当指标**）、`SECTION_CONTRACTS[*].conditional` + `content_signals` 五信号（硬拦，1298 篇实测误报 1 例）；模板侧散落信息点/推广口径 |
 
 ## 历史关系与阅读方式
 

@@ -210,6 +210,31 @@ python scripts/loop0_extract_coverage.py                 # 机械粗筛 → loop
 与清单共享 ≥6 字连续片段）＋ **模型裁可疑项**（机械会假阴性：A1 条目是「陈述＋依据」打包句，清单是
 原子条目）。产出的 `extract_miss` 就是提取 prompt 的靶。只读生产数据；报告落在评估目录（`notes/`，不入库）。
 
+### 3.6 对照轮：重新生成 → 同清单复核 → 判分（§12.3 #14）
+
+```bash
+python scripts/build_round.py build --subset long      # 或 all / lowretention；产物在 round_A4_smoke/
+#   派生成子 Agent（按 prompts/Axx.md 写 notes/Axx.md）→ 派独立复核子 Agent（按清单勾 forms/Axx.md）
+python scripts/build_round.py measure                  # 变长幅度 + 复核完成度
+python scripts/score_eval_set.py --dir <round-dir> --report <round-dir>/_score.md
+```
+
+**测生成端改动（A4/A6）不能用「对已填表单重跑判分」**——那量不出生成差异。正确流程是同一批源
+**重新生成**、用**同一份清单**在新目录重新勾选、再判分，并记录笔记变长幅度。本工具把这条流程固化，
+且**绝不碰原评估目录与 vault**（新笔记写 `<round-dir>/notes/`）。防覆盖判据按「**已勾选**」算复核劳动
+（轮次表单的条目是复制来的，不能用 `touched_forms` 判）。判分前先看 `measure` 报的**复核完成度**：
+一条都没勾的表单要么笔记为空、要么**还没复核**，后者会把 0% 当真实回归。
+
+### 3.7 A6 条件必备信号离线测量
+
+```bash
+python scripts/audit_conditional_signals.py --corpus all
+```
+
+T9 的源侧机械信号（反例/公式/章节/对比/数值密集）升级为硬拦前，先在存量语料上看分布与误报率。
+2026-10-18 实测 1298 篇：信号总触发 35 例（最高 `formula` 24 例）、**触发但缺该节仅 1 例**（疑别名过字面）
+→ 误报率极低，可作硬拦。判据实现与阈值在 `prompts/content_signals.py`（③之二）。
+
 
 ## 4. 订阅监控管线
 
@@ -316,6 +341,8 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 | `shared.controlled_replace` | 受控替换 A/B 判定（T13 硬集合，零新增判据；平手保留旧稿）+ 决策台账 | `scripts/resum_save_batch.py` |
 | `shared.async_review.maybe_enqueue` | 落盘后入异步审核队列（按 env 抽样，零 AI 成本） | `save_summarized_article` |
 | `prompts.extract_checklist` | A4 长源提取清单：按源长条件注入两阶段指令（>10000）／短源 T0 报告块（<2000）；剥离清单→机械校验（原句须命中源）→对账→按源 hash 存档，**全部报告项、永不抛异常** | `prompts.templates.get_note_prompt`（注入）、`save_summary_only`、`resum_save_batch` |
+| `prompts.claim_coverage` | A5 论点级判据（**报告项**）：源侧断言候选＋疑似无落点＋失真嫌疑（源外数字/方向反转）；机械覆盖率**禁当指标** | `scripts/run_async_review.py --emit`（注入派单） |
+| `prompts.content_signals.CONDITIONAL_SIGNALS` | A6 条件必备结构的源侧信号（反例/公式/章节/对比/数值密集） | `content_signals.structure_obligations` → 机械门禁硬拦 |
 | `shared.eval_set` | 评估集分层抽样 / 基线测量 / 人工表单判分 | `scripts/build_eval_set.py`、`scripts/score_eval_set.py` |
 | `shared.dangling_ref` | 段落悬空指代识别与统计 | `scripts/scan_dangling_refs.py` |
 
@@ -362,6 +389,8 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 | 建/判分固定评估集 | `scripts/build_eval_set.py` / `scripts/score_eval_set.py`、`shared.eval_set` | 见 §3.3；产物只在 `notes/_meta/eval/` |
 | 扫段落悬空指代 | `scripts/scan_dangling_refs.py`、`shared.dangling_ref` | 见 §3.4；报告项，不拦不改 |
 | 调提取 prompt（长源清单） | `scripts/loop0_extract_coverage.py` | 见 §3.5；零成文成本，机械粗筛＋模型裁可疑项 |
+| 测生成端改动（A4/A6） | `scripts/build_round.py` + `scripts/score_eval_set.py` | 见 §3.6；重新生成 → 同清单复核 → 判分 |
+| 给条件必备结构定阈值 | `scripts/audit_conditional_signals.py` | 见 §3.7；硬拦前先看误报率 |
 
 ### 10.1 模块职能地图（找函数先定位模块）
 

@@ -266,6 +266,7 @@ SECTION_ALIAS = {
     "核心论点拆解": ["核心论点", "论点"],
     "对比矩阵": ["对比矩阵", "矩阵"],
     "横向结论": ["横向结论", "结论"],
+    "结果与数据": ["结果与数据", "结果数据", "数据与结果"],
     "可复用结构模具": ["模具", "可复用结构"],
 }
 
@@ -295,6 +296,121 @@ def structure_missing(note: str, note_type: str) -> dict:
         if not any(k in note for k in keys):
             missing.append(name)
     return {"required": req, "missing": missing, "unmapped": unmapped}
+
+
+# ---------------------------------------------------------------- ③之二 条件必备结构（T9 / A6）
+#
+# 背景（PLAN-20261018 §6 A6 / §12.3 #6）：`required` 是**无条件**必备（现只有「分层速览」等少数），
+# `source_dependent` 是「源确有关键模块时仍须完整保留」的写作义务，但**没有机械判据**，靠模型自觉。
+# T9 补中间一档：`conditional` —— 由**源侧机械信号**判定「源里确实有这类内容」，此时该小节成为
+# 必备（防「源不支持的模块驱动编造」的反面：源支持却被省略）。
+#
+# 纪律：这一档是**硬拦**，所以阈值只能从严（宁可不触发，不可误伤）。每个信号都只认
+# 明确标记/可数结构，不认语感；上线前必须先在存量语料上离线测命中率与误报率（§8）。
+
+_COUNTEREXAMPLE_MARKERS = (
+    "反例", "例外", "恰恰相反", "与之相反", "正好相反", "误以为",
+    "常见误区", "常见错误", "踩坑", "雷区", "并不成立", "经不起推敲",
+)
+_FORMULA_MARKERS = ("公式", "算式")
+_CHAPTER_MARKERS = ("目录", "全书", "本书", "章节")   # 单章名由 `第N章` 计数判，不在这里重复
+_SENT_SPLIT_RE = re.compile(r"[。！？；!?\n]+")
+# 数字+单位：与 _UNITS 同口径（口径一致才谈得上「同一单位的两个数」）
+_NUM_UNIT_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(%|％|亿美元|美元|美金|万亿|亿|万元|万|千|百|元|倍)")
+
+
+def _units_of_sentence(sent: str) -> dict:
+    """句内「单位 → 该单位下的不同数值集合」。"""
+    by_unit = {}
+    for m in _NUM_UNIT_RE.finditer(sent):
+        num, unit = m.group(1), m.group(2)
+        if num in _JUNK_NUMS:
+            continue
+        by_unit.setdefault(unit, set()).add(num)
+    return by_unit
+
+
+def signal_counterexample(source: str) -> dict:
+    """反例/例外信号：明确的「反例/例外/误以为/踩坑」类标记 ≥2 处（或「反例」≥1 处）。"""
+    hits = [m for m in _COUNTEREXAMPLE_MARKERS if m in (source or "")]
+    strong = [m for m in ("反例",) if m in (source or "")]
+    return {"fired": len(hits) >= 2 or bool(strong), "hits": hits}
+
+
+def signal_formula(source: str) -> dict:
+    """公式信号：出现「公式/算式」≥2 次，或有 3 处以上等式号（防单次提及即触发）。"""
+    text = source or ""
+    markers = sum(text.count(m) for m in _FORMULA_MARKERS)
+    eqs = text.count("=") + text.count("＝")
+    return {"fired": markers >= 2 or eqs >= 3, "markers": markers, "eqs": eqs}
+
+
+def signal_chapters(source: str) -> dict:
+    """章节/全书信号：出现「第N章」≥2 处，或有「目录/全书/本书」标记。"""
+    text = source or ""
+    chaps = len(re.findall(r"第[一二三四五六七八九十百\d]{1,3}章", text))
+    marks = [m for m in _CHAPTER_MARKERS if m in text]
+    return {"fired": chaps >= 2 or bool(marks), "chapters": chaps, "marks": marks}
+
+
+def signal_comparison(source: str) -> dict:
+    """对比信号：≥2 个句子里各自出现「同一单位的 ≥2 个不同数值」（多对象同口径对比）。"""
+    groups = 0
+    for sent in _SENT_SPLIT_RE.split(source or ""):
+        if any(len(v) >= 2 for v in _units_of_sentence(sent).values()):
+            groups += 1
+    return {"fired": groups >= 2, "groups": groups}
+
+
+def signal_numeric_dense(source: str) -> dict:
+    """数值密集信号：源里「数字+单位」配对 ≥12 处（案例类讲结果/数据的下限）。"""
+    n = len(_NUM_UNIT_RE.findall(source or ""))
+    return {"fired": n >= 12, "pairs": n}
+
+
+CONDITIONAL_SIGNALS = {
+    "counterexample": signal_counterexample,
+    "formula": signal_formula,
+    "chapters": signal_chapters,
+    "comparison": signal_comparison,
+    "numeric_dense": signal_numeric_dense,
+}
+
+
+def conditional_sections(note_type: str, source: str) -> dict:
+    """按源侧信号算出本篇**应无条件具备**的条件小节：{小节名: 信号名}。
+
+    注意：只返回信号 firing 的小节；信号不触发时该小节仍可作为「源支持就写」的可选模块，
+    只是不再硬拦（这正是 T9 要的「防源不支持的模块驱动编造」的另一半）。
+    """
+    from prompts.templates import SECTION_CONTRACTS
+    spec = (SECTION_CONTRACTS.get(note_type) or {}).get("conditional") or {}
+    out = {}
+    for section, sig_name in spec.items():
+        fn = CONDITIONAL_SIGNALS.get(sig_name)
+        if fn and fn(source or "").get("fired"):
+            out[section] = sig_name
+    return out
+
+
+def structure_obligations(note: str, note_type: str, source: str = "") -> dict:
+    """无条件必备 + 信号触发的条件必备，一起判缺。
+
+    Returns: {required[], conditional{}, missing[], missing_conditional[], unmapped[]}
+    """
+    base = structure_missing(note, note_type)
+    fired = conditional_sections(note_type, source)
+    missing_cond, unmapped = [], list(base["unmapped"])
+    for section, sig in fired.items():
+        keys = SECTION_ALIAS.get(section)
+        if keys is None:
+            unmapped.append(section)
+            continue
+        if not any(k in note for k in keys):
+            missing_cond.append({"section": section, "signal": sig})
+    return {**base, "conditional": fired,
+            "missing_conditional": missing_cond, "unmapped": unmapped}
 
 
 # ---------------------------------------------------------------- ④ 照搬重合
@@ -378,10 +494,13 @@ def content_flags(note: str, source: str = "", note_type: str = "",
     if "D相邻段重复" in f["signals"]:
         flags.append(f"疑同义反复：相邻段落相似度 {f['adjacent_sim']} > {ADJACENT_SIM}")
 
-    s = structure_missing(body, note_type)
+    s = structure_obligations(body, note_type, source) if source else structure_missing(body, note_type)
     details["structure"] = s
     if s["missing"]:
         flags.append(f"结构缺失：缺必备模块 {'、'.join(s['missing'])}")
+    # T9 / A6：信号触发时该小节升为必备（源支持却被省略 = 确定性内容缺陷）
+    for mc in s.get("missing_conditional") or []:
+        flags.append(f"条件结构缺失：源含「{mc['signal']}」信号，但缺必备模块「{mc['section']}」")
 
     from .evidence import check_note_evidence
     evidence = check_note_evidence(note, source, source_author=source_author)

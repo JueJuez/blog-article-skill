@@ -70,7 +70,13 @@ COVERAGE_FIRST_RULES = """# 内容完整优先（服从来源忠实契约）
 - **判据**：逐项核对后读者能准确理解原文关键内容与边界，既无遗漏也无新增事实，而非自报覆盖百分比。
 
 ## 4. 唯一允许删的内容
-寒暄、自我介绍、口头语重复、与论点无关的铺垫。**承托论点的背景故事、案例细节、推导过程不属于水分，不得删。**
+寒暄、自我介绍、口头语重复、纯过渡句（"接下来我们说""废话不多说"）。
+
+**明确不算水分、不得删的**（2026-10-18 收紧，见 DECISION-20261018-info-coverage-scope）：
+- **承托论点的背景故事、案例细节、推导过程**；
+- **散落信息点**——不在主线、但可能有帮助的独立事实（持仓/个股点评/人物评价/时事/资源入口）。
+  哪怕只有一句话、与当前论点无关，也**照原意保留**（可放「补充信息」类小节或就近成句）。
+  删的边界是「重复说法 / 寒暄 / 自我介绍 / 口头语 / 纯过渡」，**不是「与论点无关」**。
 
 ## 5. 仍然禁止另外两种失败
 - **禁止压碎句式**：不得把 3 个以上概念塞进一个超长复句，单句不超过 140 字；术语首现附大白话解释。
@@ -670,6 +676,9 @@ THINKING_LENS = (
 # ---------------------------------------------------------------------------
 QUALITY_DISCIPLINE_RULES = """### 1. 商业推广识别与标注
 - 提炼任何观点前，先综合四类信号识别推广段落：**赞助披露**（"感谢赞助商""本期由 XX 呈现"）、**购买引导**（优惠码/链接/限时价格）、**优惠话术**（"我自用""回购 N 次""全网最低"）、**离题-回题转折**（突然离题讲某产品再绕回正题）。
+- **判定范围按上下文绑定**：
+  - **孤立**的纯推广/引流（与内容无关、单摆浮搁的一句"加我微信/看我的资料"）→ **删**，不写进笔记。
+  - 嵌在**流程 / SOP / 操作步骤**里的推广或引流（例：讲"如何做自媒体"的第 4 步是引流入口）→ **保留并就近标注【推广】**：它是步骤的一部分，删了流程就断了。
 - 判定为推广的段落：**就近标注【推广】**，其推销话术**不得当作作者观点或客观事实**写入结论、对比表、图表与金句区。
 - ⚠️ **"只删购买链接、保留推销论证"算违规**——判定为推广就必须整体标注，不是删个链接了事。
 - dissection（创作解剖）例外：推广打法本身是拆解素材，可以分析，但仍须标注且不把推销话术当事实证据。
@@ -904,16 +913,28 @@ NOTE_TEMPLATES = {
 
 # 无条件结构与源相关模块分开；硬拦只读required，不从散文“必备”反推。
 # source_dependent是写作/语义审核义务，缺席不代表源中一定没有或覆盖通过。
+# conditional（T9 / A6，2026-10-18）：**源侧机械信号触发时**该小节升为必备（硬拦），
+# 信号定义在同模块 CONDITIONAL_SIGNALS 的键名；只为「源确实支持、却是常被省略的模块」设，
+# 阈值从严、上线前须离线测误报率（见 prompts/content_signals.py ③之二）。
 SECTION_CONTRACTS = {
-    "structured": {"required": ("分层速览",), "source_dependent": ("核心公式", "正反例对照", "延伸思考")},
-    "general": {"required": ("分层速览",), "source_dependent": ("核心公式", "正反例对照", "延伸思考")},
-    "key_points": {"required": (), "source_dependent": ("金句摘录", "正反例对照", "可行动项")},
-    "case": {"required": (), "source_dependent": ("结果与数据", "正反例对照", "可复用经验")},
-    "opinion": {"required": (), "source_dependent": ("正反双方", "认知误区", "笔记者分析")},
-    "interview": {"required": (), "source_dependent": ("问答精华", "双方分歧", "金句摘录")},
-    "roundup": {"required": (), "source_dependent": ("对比矩阵", "横向结论", "使用建议")},
-    "reading": {"required": ("核心论点拆解",), "source_dependent": ("全书地图", "争议与不同声音", "金句摘录")},
-    "dissection": {"required": (), "source_dependent": ("可复用结构模具", "数据与证据", "禁区")},
+    "structured": {"required": ("分层速览",), "source_dependent": ("核心公式", "正反例对照", "延伸思考"),
+                   "conditional": {"正反例对照": "counterexample", "核心公式": "formula"}},
+    "general": {"required": ("分层速览",), "source_dependent": ("核心公式", "正反例对照", "延伸思考"),
+                "conditional": {"正反例对照": "counterexample", "核心公式": "formula"}},
+    "key_points": {"required": (), "source_dependent": ("金句摘录", "正反例对照", "可行动项"),
+                   "conditional": {"正反例对照": "counterexample"}},
+    "case": {"required": (), "source_dependent": ("结果与数据", "正反例对照", "可复用经验"),
+             "conditional": {"正反例对照": "counterexample", "结果与数据": "numeric_dense"}},
+    "opinion": {"required": (), "source_dependent": ("正反双方", "认知误区", "笔记者分析"),
+                "conditional": {}},
+    "interview": {"required": (), "source_dependent": ("问答精华", "双方分歧", "金句摘录"),
+                  "conditional": {}},
+    "roundup": {"required": (), "source_dependent": ("对比矩阵", "横向结论", "使用建议"),
+                "conditional": {"对比矩阵": "comparison", "横向结论": "comparison"}},
+    "reading": {"required": ("核心论点拆解",), "source_dependent": ("全书地图", "争议与不同声音", "金句摘录"),
+                "conditional": {"全书地图": "chapters"}},
+    "dissection": {"required": (), "source_dependent": ("可复用结构模具", "数据与证据", "禁区"),
+                   "conditional": {}},
 }
 
 

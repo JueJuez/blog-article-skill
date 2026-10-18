@@ -76,6 +76,20 @@ def _verify_fresh(rec: dict, note_text: str) -> "tuple[bool, str]":
     return digest(note_text) == rec.get("note_sha256"), "note_changed"
 
 
+def _claim_block(note: str, source: str) -> str:
+    """A5 论点级判据的机械前置（报告项）：把「该核哪些断言」变成具体条目交给审者裁定。
+
+    只做机械半（零模型成本）；**机械结果不是结论** —— 同义改写会误报成未命中，须由审者逐条裁定。
+    范围天然等于「评估集 + 15% 抽检」（只有入队的才走到这里，不另起队列）。
+    """
+    try:
+        from prompts import claim_coverage as CC
+        rep = CC.claim_coverage(note, source)
+        return CC.render_review_block(rep)
+    except Exception:                       # 观测零件绝不影响派单
+        return ""
+
+
 # ---------------------------------------------------------------- 派单（Agent 模式）
 
 DISPATCH_TMPL = """# 异步审核派单 · {id}
@@ -100,6 +114,7 @@ DISPATCH_TMPL = """# 异步审核派单 · {id}
 
 {gate_prompt}
 
+{claim_block}
 ## 待审笔记（全文）
 
 <<<NOTE
@@ -159,7 +174,7 @@ def cmd_emit(limit: int, records: list) -> int:
             id=rec.get("id"), note_path=note_path, note_type=rec.get("note_type") or "unknown",
             note_sha256=rec.get("note_sha256"), source_sha256=rec.get("source_sha256"),
             reasons="、".join(rec.get("reasons") or []) or "抽样", gate_prompt=_gate_prompt(),
-            note=note, source=source)
+            claim_block=_claim_block(note, source), note=note, source=source)
         path = os.path.join(IN_DIR, f"{rec.get('id')}.md")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(body)
