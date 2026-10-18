@@ -117,9 +117,11 @@ Obsidian Charts 插件与 HTML 导出器是它的两个消费者，互不另外�
   `notes/_meta/eval/necessity_all_report.md`）。**判定不等于执行，取舍仍由人定。**
 - `scripts/build_resum_batches.py --queue <necessity.json>`：只把 `redo` 那批做成子句，
   避免「为了改而改」。
-- `resum_save_batch.py` 五类失败（缺文件 / 缺主题词行 / 机械门禁 / 内容硬失败 / 落盘异常）都会
+- `resum_save_batch.py` 四条**有稿可留**的失败路径（缺主题词行 / 机械门禁 / 内容硬失败 / 落盘异常）都会
   `shared.draft_stage.stage_blocked` 留档到 `notes/_meta/staged_drafts/<日期>/`（含
   `note_sha256` / `source_sha256` / `prompt_sha256`），旧稿原样留库 → 才有「先比后换」。
+  `缺文件` 一类无稿可暂存（子 Agent 从未产出，旧稿不受影响）；`NOTE_PATH_EMPTY` / 派单校验失败
+  属批次条目问题，早期中止不入暂存。
 
 **未做（等 PLAN-20261014 评估解冻）**：T8「暂存 + 双验证 + 比对新旧 + 才替换」——
 `resum_save_batch.py` 目前仍是「过门禁即覆盖」，没有 A/B 比较。别在冻结期顺手改落盘路径。
@@ -166,7 +168,9 @@ python scripts/score_eval_set.py --dir notes/_meta/eval/20261018-knowledge-layer
 - 产物全在 `notes/_meta/eval/`（**不入库、不写 vault**），零件 `shared.eval_set`。
 - 只对抽中样本跑既有四类判据（`shared.note_audit.audit_one`），回填 `note_sha256`/`source_sha256`。
 - **缺额不补抽**：某桶样本不足就如实少抽，不把缺额倒给富桶（会把 >20k 这种稀缺层抽干）。
-- 填完才谈「改之前 / 改之后」。当前状态：30 张表单**待人工填写**。
+- **防覆盖护栏**：`build_eval_set.py` 重跑时检测到已填写的表单会拒绝覆盖（`--out` 换目录或
+  显式 `--force` 才重建）—— 抽样可复现 ≠ 人工填写可以重建，人工清单是数小时的人工资产。
+- 填完才谈「改之前 / 改之后」。当前状态：30 张表单**待人工填写**（30 对源/笔记路径与双 hash 已核验有效）。
 
 ### 3.4 段落悬空指代扫描（T4，2026-10-18）
 

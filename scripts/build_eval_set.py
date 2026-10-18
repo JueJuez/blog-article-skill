@@ -17,8 +17,9 @@
 填写后算保留率:
     python scripts/score_eval_set.py --dir <同一个 out 目录>
 
-注意：本脚本**不写 **vault、不改登记表、不改笔记；重跑会用同种子产出同一批样本，
-务必先把上一轮的 `forms/` 备份（或用 `--out` 另开目录）再重建。
+注意：本脚本**不写 **vault、不改登记表、不改笔记；重跑用同种子产出同一批样本。
+**已填写的表单受保护**：`forms/` 里检测到人工清单即拒绝覆盖（`--out` 另开目录，
+或确认丢弃人工清单后 `--force`）—— 抽样可复现 ≠ 人工填写可以重建。
 """
 from __future__ import annotations
 
@@ -59,6 +60,9 @@ README_TEXT = """# 固定评估集（T3）· 填写口径
     python scripts/score_eval_set.py --dir {out}
 
 目标保留率 {target:.0%}（`PLAN-20261014` §10.6）。统计维度：整体 / 按源长桶 / 按笔记类型。
+
+> 已填写的表单受保护：重建评估集（`build_eval_set.py`）时若检测到已填内容会拒绝覆盖，
+> 需 `--out` 换目录或显式 `--force`。
 """
 
 
@@ -118,12 +122,27 @@ def main() -> int:
     ap.add_argument("--corpus", default="all", choices=["all", "batch", "xiapeng"])
     ap.add_argument("--per-bucket", type=int, default=6, help="每源长桶抽几条（默认 6 → 5 桶 30 条）")
     ap.add_argument("--seed", type=int, default=20261018, help="抽样种子，固定值保证复现")
+    ap.add_argument("--force", action="store_true",
+                    help="检测到已填写的表单时仍重建（会清空人工清单；默认拒绝）")
     args = ap.parse_args()
 
     from shared.env import load_env
     load_env()
 
     from shared import eval_set as ES
+
+    # 防覆盖护栏（先于一切写入）：人工填写的必留清单是评估基线，重建不得静默清空。
+    forms = os.path.join(args.out, "forms")
+    touched = ES.touched_forms(forms)
+    if touched and not args.force:
+        print(f"[STOP] `{os.path.relpath(forms, BASE_DIR)}` 里已有 {len(touched)} 张被填写的表单，拒绝覆盖：")
+        for name in touched[:10]:
+            print(f"       - {name}")
+        if len(touched) > 10:
+            print(f"       …（共 {len(touched)} 张）")
+        print("       人工清单是评估基线，重建会清空它。二选一：")
+        print("       ① 换新目录重建：--out <新目录>；② 确认丢弃这些人工清单：--force")
+        return 1
 
     print(f"[1/4] 构建语料（{args.corpus}）并测量源/稿字数…")
     rows = _measure_all(args.corpus)
@@ -150,7 +169,6 @@ def main() -> int:
         return 1
 
     os.makedirs(args.out, exist_ok=True)
-    forms = os.path.join(args.out, "forms")
     os.makedirs(forms, exist_ok=True)
     for row in items:
         with open(os.path.join(forms, f"{row['eval_id']}.md"), "w", encoding="utf-8") as fh:

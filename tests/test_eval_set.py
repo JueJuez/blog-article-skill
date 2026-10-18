@@ -133,6 +133,36 @@ class TestFormRoundTrip:
         assert ES._MUST_BEGIN in form and ES._MUST_END in form
 
 
+class TestOverwriteGuard:
+    """重建评估集不得静默覆盖人工清单（`build_eval_set.py` 护栏；抽样可复现 ≠ 填写可重建）。"""
+
+    def _write_form(self, path, items):
+        path.write_text("# A01\n\n" + ES._MUST_BEGIN + "\n" + items + "\n"
+                        + ES._MUST_END + "\n", encoding="utf-8")
+
+    def test_fresh_template_not_touched(self, tmp_path):
+        d = tmp_path / "forms"
+        d.mkdir()
+        self._write_form(d / "A01.md", "- [ ] \n- [ ] \n- [ ] ")
+        assert ES.touched_forms(str(d)) == []
+
+    def test_partial_form_is_touched(self, tmp_path):
+        """只写了 1 条（未达统计门槛）也是人工劳动，必须保护。"""
+        d = tmp_path / "forms"
+        d.mkdir()
+        self._write_form(d / "A01.md", "- [ ] 只写了一条也算")
+        assert ES.touched_forms(str(d)) == ["A01.md"]
+
+    def test_checked_items_detected(self, tmp_path):
+        d = tmp_path / "forms"
+        d.mkdir()
+        self._write_form(d / "A02.md", "- [x] 保留\n- [ ] 丢掉")
+        assert ES.touched_forms(str(d)) == ["A02.md"]
+
+    def test_missing_dir_returns_empty(self, tmp_path):
+        assert ES.touched_forms(str(tmp_path / "nope")) == []
+
+
 class TestScoring:
     def _form(self, path, eid, items):
         body = "\n".join(f"- [{'x' if kept else ' '}] {t}" for t, kept in items)

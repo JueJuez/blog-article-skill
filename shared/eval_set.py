@@ -286,6 +286,31 @@ def parse_form(text: str) -> dict:
     }
 
 
+def touched_forms(form_dir: str) -> list:
+    """列出已被人工写过条目的表单文件名（模板里的空 `- [ ] ` 不算）。
+
+    判据与 `parse_form` 同一套（MUST_KEEP 区内、有非空文本的清单行）——
+    「会被判分脚本读走的内容」就是「重建时必须保护的内容」。哪怕只写了 1 条
+    （未达 `MIN_ITEMS_PER_FORM`、不进统计）也算 touched：那是人工劳动，不是模板。
+    用途：`scripts/build_eval_set.py` 重建前的防覆盖护栏 —— 人工清单是数小时的人工
+    资产，静默清空是数据事故，不能靠「同种子可复现」假定可以重建。
+    """
+    out = []
+    if not form_dir or not os.path.isdir(form_dir):
+        return out
+    for name in sorted(os.listdir(form_dir)):
+        if not name.endswith(".md"):
+            continue
+        try:
+            with open(os.path.join(form_dir, name), encoding="utf-8") as fh:
+                parsed = parse_form(fh.read())
+        except (OSError, UnicodeError):
+            continue
+        if parsed["total"] > 0:
+            out.append(name)
+    return out
+
+
 def score_forms(form_dir: str, rows_by_id: dict) -> dict:
     """遍历目录里的表单给分；返回 {items:[...], aggregate:{...}}。
 

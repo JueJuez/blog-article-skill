@@ -23,9 +23,11 @@ format_note_with_prompt / verify_note_mechanical）：当初 `save_summarized_ar
   out_dir 下临时笔记命名约定：<batch_name>_<索引02d>.md（与子 Agent 产出一致）
 
 **T7 稿件不丢（2026-10-18）**：重做是**最需要留档**的场景 —— 拦下不落盘就意味着这版重做稿
-直接蒸发，而旧稿还留在库里，「新的比旧的差」永远无从比较。故本脚本在五类失败
-（缺文件 / 缺主题词行 / 门禁 / 内容硬失败 / 落盘异常）都调 `shared.draft_stage.stage_blocked`
-留一份带 hash 的暂存（`notes/_meta/staged_drafts/<日期>/`），再照原样记为失败。
+直接蒸发，而旧稿还留在库里，「新的比旧的差」永远无从比较。故本脚本在四条**有稿可留**的
+失败路径（缺主题词行 / 机械门禁 / 内容硬失败 / 落盘异常）都调
+`shared.draft_stage.stage_blocked` 留一份带 hash 的暂存（`notes/_meta/staged_drafts/<日期>/`），
+再照原样记为失败。`MISSING_FILE`（子 Agent 从未产出）无稿可暂存，旧稿不受影响；
+`NOTE_PATH_EMPTY` 与派单校验失败两处属于批次条目/来源问题，早期中止、不入暂存（草稿仍在 out_dir）。
 暂存失败只告警，不改变返回码与判定。
 """
 import json
