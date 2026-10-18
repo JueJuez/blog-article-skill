@@ -69,6 +69,31 @@ def audit_one(item: dict, with_evidence: bool = False,
     return out
 
 
+def necessity_of(r: dict) -> dict:
+    """T13：这篇**值不值得重做**？（仅用既有判据，零新增口径）
+
+    来源：`docs/plans/PLAN-20261018-knowledge-layer.md` §6 A2 —— Brain 的 Update 阶段
+    明确写着「也可以选择不改」：能先判「现有稿是否已达标」，就不必为改而改，更不会把好稿改坏。
+
+    判据刻意**只取同一批 inhibitor 会拦的那一档**（`content_signals.classify_content_flags`
+    的 hard 集合 + 证据确定性缺陷）：这些正是「重做才能修」的确定性缺陷。
+    形态信号（超长句/逗号密度/相邻段重复）是**软抽检**，不构成重做理由 ——
+    否则会重跑掉一大批改不掉也无伤大雅的稿子。
+
+    Returns: {"decision": "keep"|"redo", "reasons": [...], "soft": [...]}
+    """
+    flags = list(r.get("flags") or [])
+    hard = CS.classify_content_flags(flags)["hard"]
+    soft = CS.classify_content_flags(flags)["soft"]
+    blockers = [f.get("code") for f in (r.get("evidence_blockers") or []) if f.get("code")]
+    reasons = list(hard) + [f"证据确定性缺陷[{c}]" for c in sorted(set(blockers))]
+    return {
+        "decision": "redo" if reasons else "keep",
+        "reasons": reasons,
+        "soft": soft,
+    }
+
+
 def score_of(r: dict, min_anchors: int) -> int:
     """命中打分（与 resum_audit_batch 的判定口径一致）：锚点 2 分 / 形态信号 1 分 /
     结构缺失每项 2 分 / 照搬超阈值 2 分。"""

@@ -34,6 +34,7 @@ from prompts.templates import (
 from prompts.classify import classify_note_type
 from prompts.verifier import verify_note_mechanical
 from shared.chunking import chunk_segments, chunk_text, two_stage_summarize, segments_to_text
+from shared.draft_stage import stage_blocked
 
 from . import fetch, asr, multimodal
 
@@ -167,8 +168,15 @@ def _summarize_and_save(segments, source_url: str, title: str, author: str,
     if not _gate["passed"]:
         from shared.gate_blockers import log_gate_block
         log_gate_block('video', note_type, source_url, title, _gate['issues'], evidence=_gate['evidence_report'])
+        stage_blocked(final, route="videos._summarize_and_save", reason="mechanical_block",
+                      issues=_gate["issues"], url=source_url, title=title, note_type=note_type,
+                      source_text=_transcript_text, evidence=_gate["evidence_report"])
         raise ValueError("VERIFIER_FAILED: " + "；".join(_gate["issues"]))
     if _gate.get("content_blockers") and not force:
+        stage_blocked(final, route="videos._summarize_and_save", reason="content_block",
+                      issues=_gate["content_blockers"], url=source_url, title=title,
+                      note_type=note_type, source_text=_transcript_text,
+                      evidence=_gate["evidence_report"])
         raise ValueError("VERIFIER_CONTENT_FAILED: " + "；".join(_gate["content_blockers"]))
 
     label = _NOTE_TYPE_TAG.get(note_type, "视频笔记")
@@ -191,7 +199,8 @@ def _summarize_and_save(segments, source_url: str, title: str, author: str,
     formatted, filename = save_summarized_article(
         final, original_url=source_url, author=author,
         tags=save_tags, original_title=clean_title, note_type=note_type,
-        publish_time=publish_time, folder=folder, obsidian=obsidian, generation_context=trace, source_text=_transcript_text
+        publish_time=publish_time, folder=folder, obsidian=obsidian, generation_context=trace, source_text=_transcript_text,
+        review_reasons=_gate.get("review_flags") or []
     )
     if _gate.get('review_flags'):
         from prompts.review_rubric import queue_for_review
@@ -267,6 +276,10 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
         log_gate_block(source="series", note_type=note_type, url=url,
                        title=base_name, issues=gate["issues"],
                        warnings=gate.get("warnings", []), evidence=gate['evidence_report'])
+        # T7 稿件不丢：视频/系列路径是抛错返回，稿更容易蒸发，落盘前先暂存 + 绑 hash。
+        stage_blocked(content, route="videos._save_series_note", reason="mechanical_block",
+                      issues=gate["issues"], url=url, title=base_name, note_type=note_type,
+                      source_text=source_text, evidence=gate["evidence_report"])
         raise ValueError("VERIFIER_FAILED: " + "；".join(gate["issues"]))
     # 内容硬失败门禁（2026-09-18 与文章/重抓管线对齐，source_text 已透传）：
     # 结构缺失/锚点召回/照搬确定性内容缺陷 → 拦下不落盘。reland 维护场景源常在，
@@ -276,6 +289,10 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
         log_gate_block(source="series", note_type=note_type, url=url,
                        title=base_name, issues=gate["content_blockers"],
                        warnings=gate.get("warnings", []), evidence=gate['evidence_report'])
+        stage_blocked(content, route="videos._save_series_note", reason="content_block",
+                      issues=gate["content_blockers"], url=url, title=base_name,
+                      note_type=note_type, source_text=source_text,
+                      evidence=gate["evidence_report"])
         raise ValueError("VERIFIER_CONTENT_FAILED: " + "；".join(gate["content_blockers"]))
     from prompts.semantic_review import admit_candidate
     series_trace = admit_candidate(content, source_text, note_type, url=url, title=base_name)

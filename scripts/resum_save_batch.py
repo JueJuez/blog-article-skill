@@ -21,6 +21,12 @@ format_note_with_prompt / verify_note_mechanical）：当初 `save_summarized_ar
 用法：
   python scripts/resum_save_batch.py <batch_NN.json> <out_dir> [--force]
   out_dir 下临时笔记命名约定：<batch_name>_<索引02d>.md（与子 Agent 产出一致）
+
+**T7 稿件不丢（2026-10-18）**：重做是**最需要留档**的场景 —— 拦下不落盘就意味着这版重做稿
+直接蒸发，而旧稿还留在库里，「新的比旧的差」永远无从比较。故本脚本在五类失败
+（缺文件 / 缺主题词行 / 门禁 / 内容硬失败 / 落盘异常）都调 `shared.draft_stage.stage_blocked`
+留一份带 hash 的暂存（`notes/_meta/staged_drafts/<日期>/`），再照原样记为失败。
+暂存失败只告警，不改变返回码与判定。
 """
 import json
 import os
@@ -31,6 +37,18 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 TOPIC_LINE_RE = re.compile(r"【核心主题词】\s*[:：]?\s*\S+")
+
+
+def _stage_failure(it: dict, content: str, source_text: str, reason: str, issues=None) -> None:
+    """T7：重做稿被拦时留档（含双 hash），旧稿仍留库里 → 才有「先比后换」的可能。"""
+    from shared.draft_stage import stage_blocked
+
+    ctx = it.get("generation_context") or {}
+    stage_blocked(
+        content, reason=reason, route="resum_save_batch", issues=issues or [],
+        url=it.get("url", ""), title=it.get("title", ""), note_type=it.get("note_type", ""),
+        source_text=source_text or "", source_path=it.get("source_path", ""),
+        prompt_sha256=ctx.get("prompt_sha256") or "unknown")
 
 
 def main() -> int:
@@ -60,6 +78,7 @@ def main() -> int:
         with open(md, encoding="utf-8") as f:
             content = f.read()
         if not TOPIC_LINE_RE.search(content):
+            _stage_failure(it, content, "", "missing_topic_line", ["MISSING_TOPIC_LINE"])
             failed.append((i, "MISSING_TOPIC_LINE", title))
             continue
 
@@ -97,11 +116,13 @@ def main() -> int:
         if not gate["passed"]:
             from shared.gate_blockers import log_gate_block
             log_gate_block('resum', note_type, url, title, gate['issues'], evidence=gate['evidence_report'])
+            _stage_failure(it, content, source_text, "mechanical_block", gate["issues"])
             failed.append((i, "GATE:" + ";".join(gate["issues"]), title))
             continue
         # 内容硬失败门禁（2026-09-18 与 save_summary_only 对齐）：锚点召回/照搬/结构缺失
         # 确定性内容缺陷，拦下不覆盖旧版好笔记；--force 为逃生舱。
         if gate.get("content_blockers") and not force:
+            _stage_failure(it, content, source_text, "content_block", gate["content_blockers"])
             failed.append((i, "CONTENT_GATE:" + ";".join(gate["content_blockers"]), title))
             continue
 
@@ -135,11 +156,13 @@ def main() -> int:
                 note_path=note_path,
                 source_text=source_text,
                 generation_context=context,
+                review_reasons=gate.get('review_flags') or [],
             )
             if gate.get('review_flags'):
                 from prompts.review_rubric import queue_for_review
                 queue_for_review(_fname, note_type, gate['review_flags'], url, evidence=gate['evidence_report'])
         except Exception as e:
+            _stage_failure(it, content, source_text, "save_failed", [f"SAVE_FAILED:{e}"])
             failed.append((i, f"SAVE_FAILED:{e}", title))
             continue
 

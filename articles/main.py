@@ -313,7 +313,7 @@ def _export_html_safe(md_path: str) -> None:
         print(f"   ⚠️ 分享版 HTML 导出失败（不影响笔记落盘）：{e}")
 
 
-def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "", topics: list = None, overwrite: bool = False, note_path: str = "", share_html: bool = False, generation_context: dict = None, source_text: str = "") -> tuple:
+def save_summarized_article(summarized_content: str, original_url: str = "", author: str = "", tags: list = None, original_title: str = "", meta: dict = None, note_type: str = "", publish_time: int = 0, folder: str = "", obsidian: bool = False, draft_only: bool = False, content_key: str = "", topics: list = None, overwrite: bool = False, note_path: str = "", share_html: bool = False, generation_context: dict = None, source_text: str = "", review_reasons: list = None) -> tuple:
     """保存已总结的文章内容到所有可用目标。
 
     Args:
@@ -341,6 +341,9 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
         share_html: 落盘成功后把本篇导出为自包含分享版 HTML（`articles/html_export.py`，
                     与笔记同目录同名）。触发约定：用户说「分享/出分享版/HTML 版」时由
                     执行模型传 True；默认 False 只落盘不导出。导出失败只告警，不拦落盘。
+        review_reasons: 机械门禁的 `review_flags`（可为空）。非空时**必入**异步审核队列，
+                    为空则按比例抽样入队（`NOTE_ASYNC_REVIEW` 控制）。只影响「落盘后是否再审」，
+                    不改变落盘结果。
     """
     tags = list(tags or [])
 
@@ -458,6 +461,9 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
                                   note_type=note_type, source=_guess_source(original_url), generation_context=generation_context)
         print(f"\n♻️ in-place 重做落盘完成（覆盖既有路径，不产生副本）")
         print(f"路径: {note_path}")
+        _enqueue_async_review(note_path, content=formatted_note, source_text=source_text,
+                              note_type=note_type, url=original_url, title=title,
+                              generation_context=generation_context, reasons=review_reasons)
         if share_html:
             _export_html_safe(note_path)
         return formatted_note, filename
@@ -494,6 +500,17 @@ def save_summarized_article(summarized_content: str, original_url: str = "", aut
         return formatted_note, dp
 
     manager.save_all(formatted_note, filename, title=title)
+
+    # T7 ②：落盘成功才入队（审核是观测，不参与「能不能落盘」）
+    if obsidian:
+        _vault = os.getenv("OBSIDIAN_VAULT_PATH", "")
+        if _vault:
+            _abs = os.path.join(_vault, filename)
+            if os.path.exists(_abs):
+                _enqueue_async_review(_abs, content=formatted_note, source_text=source_text,
+                                      note_type=note_type, url=original_url, title=title,
+                                      generation_context=generation_context,
+                                      reasons=review_reasons)
 
     # mark 收敛（PLAN-20260906 任务2）：登记只发生在本保存点，调用方不再各自 mark。
     # url 优先；粘贴原文（无 url）按 content_key 哈希登记；两者皆无则不登记。
@@ -730,13 +747,15 @@ def summarize_and_save(url_or_content: str, author: str = "", tags: list = None,
             raise ValueError('VERIFIER_FAILED: ' + '；'.join(blockers))
         author = resolve_source_author(article_content, author)
         trace = attach_evidence(trace, evidence_report, note_type)
+        reasons = evidence_review_flags(evidence_report)
         formatted_note, filename = save_summarized_article(
             summarized_content, original_url, author, tags, original_title,
             meta={"usage": usage, "model": model}, note_type=note_type,
             publish_time=publish_time, folder=folder, obsidian=obsidian,
-            content_key=article_content, topics=ai_result.get("topics"), generation_context=trace, source_text=article_content
+            content_key=article_content, topics=ai_result.get("topics"),
+            generation_context=trace, source_text=article_content,
+            review_reasons=reasons,
         )
-        reasons = evidence_review_flags(evidence_report)
         if reasons:
             from prompts.review_rubric import queue_for_review
             queue_for_review(filename, note_type, reasons, original_url, evidence=evidence_report)
@@ -770,6 +789,48 @@ def autoroute_folder(folder: str, author: str, original_url: str, original_title
         tags = list(tags or []) + [_author]
     print(f"   📁 folder 未传，自动路由到: {folder}")
     return folder, tags
+
+
+def _stage_blocked_draft(route: str, content: str, input_data: dict, source_text: str,
+                         reason: str, issues: list, warnings=None, evidence=None,
+                         extra: dict = None):
+    """T7 · 稿件不丢：被拦时先把候选稿连 hash 落暂存，再返回失败。
+
+    `PLAN-20261018-knowledge-layer` §3.3：现流程「门禁不过 → 不落盘 → 子 Agent 重写」
+    会**丢稿**；没有暂存物，后续「定向修订 / 先比后换」无从落地。
+    打印与保险丝都在 `shared.draft_stage.stage_blocked`（单一实现，勿再各写一份）。
+    """
+    from shared.draft_stage import stage_blocked
+
+    ctx = input_data.get("generation_context") or {}
+    return stage_blocked(
+        content, reason=reason, route=route, issues=issues, warnings=warnings or [],
+        url=input_data.get("original_url", ""), title=input_data.get("original_title", ""),
+        note_type=input_data.get("note_type", ""), source_text=source_text or "",
+        source_path=input_data.get("raw_file") or input_data.get("raw_file_path") or "",
+        prompt_sha256=ctx.get("prompt_sha256") or "unknown",
+        evidence=evidence, extra=extra)
+
+
+def _enqueue_async_review(note_abs_path: str, *, content: str, source_text: str,
+                          note_type: str, url: str, title: str,
+                          generation_context: dict = None, reasons=None) -> None:
+    """T7 ②：落盘成功后把这篇塞进异步审核队列（只写一行 JSONL，零 AI 成本）。
+
+    `PLAN-20261018-knowledge-layer` §6 A3：语义审核不再决定「能不能落盘」，
+    改为落盘之后再审、结论打回队列。开关/抽样/源快照全在 `shared.async_review`。
+    **失败一律吞掉**——审核是观测，不许反过来影响落盘。
+    """
+    try:
+        from shared.async_review import maybe_enqueue
+
+        ctx = generation_context or {}
+        maybe_enqueue(
+            note_abs_path, content=content, source_text=source_text or "",
+            note_type=note_type, url=url, title=title, reasons=reasons or [],
+            prompt_sha256=ctx.get("prompt_sha256") or "unknown")
+    except Exception:
+        pass
 
 
 def save_summary_only(input_data: dict) -> dict:
@@ -862,8 +923,16 @@ def save_summary_only(input_data: dict) -> dict:
                        url=original_url or "", title=original_title or "",
                        issues=_gate["issues"], warnings=_gate.get("warnings", []),
                        compression_warnings=_gate.get("compression_warnings", []), evidence=_gate['evidence_report'])
+        # T7：先留档再返回 —— 稿不丢，后续才能在其上定向修订而不是从头重写
+        _staged = _stage_blocked_draft(
+            "save_summary_only", summarized_content, input_data, source_text,
+            reason="mechanical_block", issues=_gate["issues"],
+            warnings=_gate.get("warnings", []), evidence=_gate["evidence_report"],
+            extra={"compression_warnings": _gate.get("compression_warnings", [])})
         return {'success': False, 'message': 'VERIFIER_FAILED:' + '；'.join(_gate["issues"]),
                 'issues': _gate["issues"],
+                'staged': _staged,
+                'note_sha256': _staged.get("note_sha256", ""),
                 'evidence_report': _gate['evidence_report'],
                 'compression_warnings': _gate.get("compression_warnings", [])}
     # 内容硬失败门禁（2026-09-18 统一落盘）：锚点召回缺失/逐字照搬/结构缺失 = 确定性内容缺陷，
@@ -877,8 +946,15 @@ def save_summary_only(input_data: dict) -> dict:
                        url=original_url or "", title=original_title or "",
                        issues=_cb, warnings=_gate.get("warnings", []),
                        compression_warnings=_gate.get("compression_warnings", []), evidence=_gate["evidence_report"])
+        _staged = _stage_blocked_draft(
+            "save_summary_only", summarized_content, input_data, source_text,
+            reason="content_block", issues=_cb, warnings=_gate.get("warnings", []),
+            evidence=_gate["evidence_report"],
+            extra={"compression_warnings": _gate.get("compression_warnings", [])})
         return {'success': False, 'message': 'VERIFIER_CONTENT_FAILED:' + '；'.join(_cb),
                 'issues': _cb, 'retry': True,
+                'staged': _staged,
+                'note_sha256': _staged.get("note_sha256", ""),
                 'evidence_report': _gate['evidence_report'],
                 'compression_warnings': _gate.get("compression_warnings", [])}
     # L8 修复（2026-09-03）：自带总结的保存路径 folder 为空时自动走统一路由器，
@@ -900,6 +976,7 @@ def save_summary_only(input_data: dict) -> dict:
             share_html=bool(input_data.get('share_html', False)),
             source_text=source_text,
             generation_context=attach_evidence(input_data.get("generation_context"), _gate['evidence_report'], input_data.get('note_type', '')),
+            review_reasons=_gate.get("review_flags") or [],
         )
         # 无人值守降级：落盘命中参考值抽检信号 → 入 needs_review 队列（filename 已知）
         _review_flags = _gate.get("review_flags", [])

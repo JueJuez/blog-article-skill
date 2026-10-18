@@ -9,6 +9,10 @@
 
 用法：python scripts/build_resum_batches.py
 产物：notes/_meta/resum_batches/batch_NN.json + notes/_reports/20260916_重跑批次清单.md
+
+**T13 接线（2026-10-18）**：默认仍读全量候选队列；传入 `--queue <check_resum_necessity.py
+的 necessity.json>` 则只把「建议重做」的那批做成子句 —— 已被判定为「可以选择不改」的稿子
+不再进重做批次，不给「把好稿改坏」的机会（`PLAN-20261018-knowledge-layer` §6 A2）。
 """
 import json
 import os
@@ -34,10 +38,22 @@ def distinctive_span(title: str) -> str:
 
 
 def main() -> int:
-    items = json.load(open(QUEUE, encoding="utf-8"))["items"]
-    os.makedirs(OUT_DIR, exist_ok=True)
-    for f in os.listdir(OUT_DIR):
-        os.remove(os.path.join(OUT_DIR, f))
+    import argparse
+
+    ap = argparse.ArgumentParser(description="阶段C 重跑批次生成（只读）")
+    ap.add_argument("--queue", default=QUEUE,
+                    help="重做候选队列；传 check_resum_necessity.py 产出的必要性子集可只重做该改的")
+    ap.add_argument("--out-dir", default=OUT_DIR)
+    ap.add_argument("--report", default=REPORT)
+    args = ap.parse_args()
+
+    queue_path, out_dir, report = args.queue, args.out_dir, args.report
+    items = json.load(open(queue_path, encoding="utf-8"))["items"]
+    os.makedirs(out_dir, exist_ok=True)
+    # ⚠️ 清空必须是**本次的 out_dir**，不能是模块常量 OUT_DIR：传 --out-dir 到别处时
+    # 用常量会把历史批次目录删掉（2026-10-18 实测踩到，被沙箱拦下才没出事）。
+    for f in os.listdir(out_dir):
+        os.remove(os.path.join(out_dir, f))
 
     ok, suspect = [], []
     for it in items:
@@ -72,12 +88,13 @@ def main() -> int:
         batches.append(suspect)   # 存疑单列一批，重跑前人工核对
 
     for i, b in enumerate(batches, 1):
-        p = os.path.join(OUT_DIR, f"batch_{i:02d}.json")
+        p = os.path.join(out_dir, f"batch_{i:02d}.json")
         json.dump(b, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
     # 报告
     L = ["# 阶段C 重跑批次清单", ""]
     A = L.append
+    A(f"- 队列源：`{queue_path}`（传必要性子集时只含「建议重做」条目，见 PIPELINES §3）")
     A(f"- 队列 {len(items)} 条：匹配可信 {len(ok)} / **存疑 {len(suspect)}**（源文本里找不到标题关键词，"
       "需人工核对 source_path，见最后一批）")
     A(f"- 批次数 {len(batches)}（长源 4 条/批 · 中源 8 条/批 · 短源 16 条/批 · 存疑 1 批）")
@@ -99,9 +116,13 @@ def main() -> int:
         for r in suspect:
             A(f'| {r["title"][:34]} | `{os.path.relpath(r["source_path"], ROOT)}` | '
               f'{"源内找不到标题关键词" if r["match"] == "suspect" else "标题无可提取关键词"} |')
-    open(REPORT, "w", encoding="utf-8").write("\n".join(L) + "\n")
+    if report:
+        os.makedirs(os.path.dirname(os.path.abspath(report)), exist_ok=True)
+        open(report, "w", encoding="utf-8").write("\n".join(L) + "\n")
     print(f"批次 {len(batches)}：可信 {len(ok)} / 存疑 {len(suspect)}")
-    print("报告 →", os.path.relpath(REPORT, ROOT))
+    print(f"队列源：{queue_path}")
+    if report:
+        print("报告 →", report)
     return 0
 
 

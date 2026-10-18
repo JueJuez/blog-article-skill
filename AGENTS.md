@@ -20,8 +20,9 @@
 | 补齐 UP 主历史视频 | PIPELINES §6；抓取须经 `scripts/run_with_env.py` 包装 |
 | 补齐 scys / 生财有术 | PIPELINES §7 + [scys SOP](references/scys-fetch-sop.md) §9；长任务走 launcher |
 | 补齐系列课 | PIPELINES §5；单集随普通队列，整季走 `backfill_series.py` |
-| 重做旧笔记 / 补丢失的源 | PIPELINES §3；重做用 `resum_save_batch.py` 原路径覆盖 |
+| 重做旧笔记 / 补丢失的源 | PIPELINES §3；重做用 `resum_save_batch.py` 原路径覆盖；重做前先 `check_resum_necessity.py` 判该不该改（§3.1） |
 | 分享 / HTML 版 | PIPELINES §2.1；按需生成，无此要求只落笔记 |
+| 落盘后复审 / 建评估集 / 查悬空指代 | PIPELINES §3.2–§3.4；异步审核 `run_async_review.py --emit/--ingest`，评估集 `build_eval_set.py` |
 | 评估 / 归档开源项目，从文章或视频提取项目 | [项目抽取技能](tools/project_import/SKILL.md)；不触发原文总结 |
 | 迁移体检 / 清异常笔记 | PIPELINES §8；先只读扫描，成功替换并核验后才清旧文 |
 

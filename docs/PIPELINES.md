@@ -29,6 +29,10 @@
 | 迁移期体检 / 清异常 | `python scripts/migrate_gate.py --vault <path> --scope=` + `--apply` | — |
 | 归档开源项目到项目库 | `python tools/project_import/assets/main.py "<repo url>"` | — |
 | 把一篇已有笔记出分享版 HTML | `python scripts/export_note_html.py "<md路径>"` | 见「2.1 分享版 HTML 出口」；新笔记分享不用这条（落盘时带 `share_html`） |
+| **重做前先判「这篇到底该不该改」** | `python scripts/check_resum_necessity.py --queue notes/_meta/resummarize_queue.json`（见 §3.1） | 直接从全量队列开重做（会把好稿改坏，且无法回退） |
+| 建/重算固定评估集（改动的度量基线） | `python scripts/build_eval_set.py` → 人工填 `forms/` → `python scripts/score_eval_set.py --dir <同目录>`（见 §3.3） | 凭单次生成效果说「变好了」 |
+| **落盘后给笔记做独立语义复审**（不阻塞落盘、不占前台） | `python scripts/run_async_review.py --emit` → 子 Agent 审 → `--ingest`（见 §3.2） | 打开 `NOTE_QUALITY_GATE=1` 把审核卡在落盘前 |
+| 查「段落悬空指代」到底是不是问题 | `python scripts/scan_dangling_refs.py`（只读，见 §3.4） | 直接建改写轮／凭感觉改 prompt |
 
 ## 2. 增量生产管线（抓新内容 → 落新笔记）
 
@@ -81,9 +85,10 @@ Obsidian Charts 插件与 HTML 导出器是它的两个消费者，互不另外�
 | 步 | 入口命令 | 说明 |
 |---|---|---|
 | 1 | `python scripts/build_resummarize_queue.py` | 从 `summary_registry.json` + vault 反查，挑出「笔记在库 + 源可定位」的条目 |
-| 2 | `python scripts/build_resum_batches.py` | 按源长切批（>10000→4 条/批，4000~10000→8，<4000→16）+ 逐条预计算 prompt |
+| 1.5 | `python scripts/check_resum_necessity.py --queue <上一步队列>` | **新增（T13）**：只判「该不该改」，产 `<queue>.necessity.json`；`keep` 的别再进重做批次（见 §3.1） |
+| 2 | `python scripts/build_resum_batches.py [--queue <necessity.json>]` | 按源长切批（>10000→4 条/批，4000~10000→8，<4000→16）+ 逐条预计算 prompt；传 `--queue` 只把「建议重做」的做成批 |
 | 3 | 派子 Agent（**必读** `notes/_meta/resum_batches/DISPATCH_PROMPT.md`） | 产出 `_tmp/resum_c/out/<batch>_<NN>.md`，原阶段并发观察不作为当前平台保证；并发量按本次配额与返回结果调整 |
-| 4 | `python scripts/resum_save_batch.py <batch.json> <out_dir> --force` | **唯一落盘入口**：校验主题词行 + 机械门禁 → 调生产函数 in-place 覆盖 `note_path` |
+| 4 | `python scripts/resum_save_batch.py <batch.json> <out_dir> --force` | **唯一落盘入口**：校验主题词行 + 机械门禁 → 调生产函数 in-place 覆盖 `note_path`；被拦的稿会暂存留档（见 §3.1） |
 | 5 | `python scripts/resum_audit_batch.py <batch.json>` | 抽检（只读），命中项填 `root_cause` |
 | 附 | `python scripts/archive_old_before_resum.py <batch.json>` | 重做前备份旧版 |
 
@@ -97,6 +102,83 @@ Obsidian Charts 插件与 HTML 导出器是它的两个消费者，互不另外�
 
 **⚠️ 与 `overwrite=True` 的区别**：`overwrite=True` 只覆盖**同名**文件，而文件名仍是推导出来的；
 标题与磁盘名错配时扑空 → 照样产 `-N` 副本。in-place 走 `note_path`，压根不推导文件名。
+
+### 3.1 重做保护：先判该不该改，再谈怎么换（T13 / T8，2026-10-18）
+
+**问题**：以前是「从登记表演算一批 → 无差别重做 → in-place 直接覆盖」。旧稿是好的也会被重写，
+重做稿更差就没有退路（Brain 的 Update 阶段有「**也可以选择不改**」，我们缺这一层）。
+
+**现状能力（已完成部分）**：
+
+- `scripts/check_resum_necessity.py --queue <队列>`：用**既有判据**判 `keep` / `redo`，零新增口径
+  （零件 `shared.note_audit.necessity_of`）。判据只取「生产本来就会拦」的那一档
+  （`content_signals` hard 集合 + 证据确定性缺陷），**形态信号不构成重做理由**。
+  2026-10-18 全量跑：1396 条候选 → 建议重做 **391** / 建议跳过 **1005**（报告
+  `notes/_meta/eval/necessity_all_report.md`）。**判定不等于执行，取舍仍由人定。**
+- `scripts/build_resum_batches.py --queue <necessity.json>`：只把 `redo` 那批做成子句，
+  避免「为了改而改」。
+- `resum_save_batch.py` 五类失败（缺文件 / 缺主题词行 / 机械门禁 / 内容硬失败 / 落盘异常）都会
+  `shared.draft_stage.stage_blocked` 留档到 `notes/_meta/staged_drafts/<日期>/`（含
+  `note_sha256` / `source_sha256` / `prompt_sha256`），旧稿原样留库 → 才有「先比后换」。
+
+**未做（等 PLAN-20261014 评估解冻）**：T8「暂存 + 双验证 + 比对新旧 + 才替换」——
+`resum_save_batch.py` 目前仍是「过门禁即覆盖」，没有 A/B 比较。别在冻结期顺手改落盘路径。
+
+### 3.2 落盘后异步审核（T7 ②，2026-10-18）
+
+**问题**：全套独立语义审核（`prompts/semantic_review.review_fulltext`：分块全文、独立会话审者、
+`coverage=full` 才认）**早就建好了，但只能卡在落盘前**，开关 `NOTE_QUALITY_GATE` 默认 `0`
+→ 不开就永远不审，开了就拖慢生产。
+
+**改法**：落盘（照常）→ 入队（一行 JSONL，零 AI 成本）→ 有空/有人时消费。
+
+| 步 | 入口 | 说明 |
+|---|---|---|
+| 入队 | 自动（`save_summarized_article` 两处本地落盘点） | 开关 `NOTE_ASYNC_REVIEW`：`0` 关 / `1` 触发式（默认：`review_flags` 非空**或**按 `NOTE_ASYNC_REVIEW_RATE`=0.15 抽样）/ `all` 全量 |
+| 看队列 | `python scripts/run_async_review.py --stats` | 状态分布 |
+| 派单 | `python scripts/run_async_review.py --emit --limit 5` | 出包到 `_tmp/async_review/in/<id>.md`（口径 = `QUALITY_GATE_PROMPT` 原文） |
+| 回收 | `python scripts/run_async_review.py --ingest` | 读 `_tmp/async_review/out/<id>.json`，按 `parse_quality_gate` 收口 |
+| 直调 | `python scripts/run_async_review.py --run --limit 5` | 有外部 provider（`FORCE_AGENT_MODE=0`）时走真 `review_fulltext` 全流程 |
+
+**硬约束（改前必读）**：
+
+- **hash 是命门**：回收时重算笔记 hash，对不上 → 标 `stale` 丢结论（后台审时稿可能已被重做/手改）。
+- **源快照**：入队时把当时的源文本快照到 `notes/_meta/async_reviews/sources/<id>.txt`
+  （只有被抽中的那部分）。`_raw_` 会被清理、重抓会覆盖，不留证就没法复核。
+- **判据只有一份**：回收走同一个 `parse_quality_gate`，不因「异步」放松（`coverage=full`、
+  P1 一票否决、`reviewer_role` 不得是 author/self_check）。
+- **不写 vault**：结论落在队列状态 + `notes/_meta/async_reviews/` + `notes/_reports/async_review_<日期>.md`。
+  笔记正文/frontmatter 一个字段都不加（下游 KB 按段落检索，塞非生产字段是污染）。
+- 队列与旧 `notes/_review_queue.jsonl` **是两回事**：后者是机械 `review_flags` 的无人值守降级，
+  历史上被假信号淹过（300+ 条后清空），不要混用。
+
+### 3.3 固定评估集（T3，2026-10-18）
+
+**为什么要**：唯一量化的保留度指标（硬锚点召回）在 1298 对语料里**只覆盖 37%**（其余 63% 源锚点
+数 < `MIN_ANCHORS`，判据不适用）。没有评估集，后续任何改动都只能「看起来更好」。
+
+```bash
+python scripts/build_eval_set.py                    # 30 篇：源长 5 桶 × 6，桶内按类型轮转，种子固定
+# 人工：读源 → 在 forms/Axx.md 的 MUST_KEEP 区写「丢了不行」的条目 → 回查笔记勾 [x]
+python scripts/score_eval_set.py --dir notes/_meta/eval/20261018-knowledge-layer
+```
+
+- 产物全在 `notes/_meta/eval/`（**不入库、不写 vault**），零件 `shared.eval_set`。
+- 只对抽中样本跑既有四类判据（`shared.note_audit.audit_one`），回填 `note_sha256`/`source_sha256`。
+- **缺额不补抽**：某桶样本不足就如实少抽，不把缺额倒给富桶（会把 >20k 这种稀缺层抽干）。
+- 填完才谈「改之前 / 改之后」。当前状态：30 张表单**待人工填写**。
+
+### 3.4 段落悬空指代扫描（T4，2026-10-18）
+
+```bash
+python scripts/scan_dangling_refs.py                # 全库只读；--limit 200 --sample 15 先看样本
+```
+
+下游按**段落**检索，段首「这个方法 / 如上 / 后者」会让孤立片段变成残缺事实 —— 所以先问「是不是问题」再
+决定要不要动 prompt。2026-10-18 全库（2333 篇 / 30905 段）：block 首命中 **283 处 = 0.92%**（监控 0.96% /
+我的总结 0.82% / 生财有术 1.12%）→ **不成系统性问题，不建改写轮、不改 prompt**。
+零件 `shared.dangling_ref`；复扫随时可跑，判据是「命中率 <2% 即不立项」。
+
 
 ## 4. 订阅监控管线
 
@@ -198,6 +280,11 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 | `shared.note_audit.audit_one` | 单篇笔记抽检（四类判据 + A超长句取证） | `resum_audit_batch`、`audit_gate_signals` |
 | `shared.cdp_session.SharedCdpSession` | 登录态抓取会话 | scys / 飞书 / YouTube |
 | `shared.cdp_session.extract_body` | 从已渲染页面抽正文（选择器优先级，唯一实现；2026-09-18 收敛 articles/fetch.py + scys_batch_fetch.py 两份副本） | `SharedCdpSession._extract_body`、`_extract_body_scys`、`ScysBatchFetcher._extract_body` |
+| `shared.note_audit.necessity_of` | 重做必要性判定（`keep` / `redo`，只用既有判据） | `scripts/check_resum_necessity.py` |
+| `shared.draft_stage.stage_blocked` | 被拦稿件暂存（三 hash + 元信息，**永不抛异常**） | `save_summary_only`、`videos._summarize_and_save`、`videos._save_series_note`、`resum_save_batch` |
+| `shared.async_review.maybe_enqueue` | 落盘后入异步审核队列（按 env 抽样，零 AI 成本） | `save_summarized_article` |
+| `shared.eval_set` | 评估集分层抽样 / 基线测量 / 人工表单判分 | `scripts/build_eval_set.py`、`scripts/score_eval_set.py` |
+| `shared.dangling_ref` | 段落悬空指代识别与统计 | `scripts/scan_dangling_refs.py` |
 
 ## 10. 能力索引：想做这件事时，先查有没有现成的
 
@@ -235,6 +322,11 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 | 监控去重状态 | `monitors.state.get_seen` / `mark_seen` | |
 | 滚动日志 | `shared.rolling_log.append_rolling` | |
 | 登记表全量重建 | `scripts/rebuild_registry.py` | vault 是唯一真源，登记表可重建 |
+| 判「旧笔记值不值得重做」 | `shared.note_audit.necessity_of` → `scripts/check_resum_necessity.py` | 见 §3.1；only-hard 判据，形态信号不算理由 |
+| 被拦的候选稿不要丢 | `shared.draft_stage.stage_blocked`（=`stage_rejected` + 打印） | 见 §3.1；**永不抛异常**，写不进只告警 |
+| 落盘后做独立语义复审 | `scripts/run_async_review.py --emit/--ingest`、`shared.async_review.maybe_enqueue` | 见 §3.2；别用 `NOTE_QUALITY_GATE` 卡落盘 |
+| 建/判分固定评估集 | `scripts/build_eval_set.py` / `scripts/score_eval_set.py`、`shared.eval_set` | 见 §3.3；产物只在 `notes/_meta/eval/` |
+| 扫段落悬空指代 | `scripts/scan_dangling_refs.py`、`shared.dangling_ref` | 见 §3.4；报告项，不拦不改 |
 
 ### 10.1 模块职能地图（找函数先定位模块）
 

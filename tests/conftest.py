@@ -59,6 +59,19 @@ def _isolate_review_records(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_async_review(monkeypatch, tmp_path):
+    """守卫（2026-10-18）：任何测试不得写真实异步审核队列/源快照。
+
+    背景：T7 ② 把「落盘后入队」接进了 `save_summarized_article`，而落盘相关测试有几十个；
+    不隔离的话每跑一次测试就往 `notes/_meta/async_review_queue.jsonl` 里灌一批假条目，
+    并且把源文本快照落到私人目录。与 `_isolate_review_records` 同一思路。
+    """
+    from shared import async_review
+    monkeypatch.setattr(async_review, "QUEUE", str(tmp_path / "async_review_queue.jsonl"))
+    monkeypatch.setattr(async_review, "RESULT_DIR", str(tmp_path / "async_reviews"))
+
+
+@pytest.fixture(autouse=True)
 def _strip_oversized_env():
     """守卫（2026-09-20）：清掉 WorkBuddy 桌面端注入的超长环境变量。
 
