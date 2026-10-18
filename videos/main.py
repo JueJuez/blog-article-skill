@@ -582,6 +582,13 @@ def _build_subagent_prompt(note_type: str, raw_path: str, md_path: str,
                            url: str, page: int, part: str, series_title: str) -> str:
     """生成派发子 Agent 用的完整指令（含模板规范）。
 
+    ⚠️ 当前**无任何调用点**（2026-10-18 核实：全仓 0 调用、0 测试引用；最后一次改动
+    2026-07-21）。系列课日常路径实际走 `summarize_series_episode` → `_finalize_single`，
+    其条目 prompt 由 `prompts.provenance.dispatch_fields` 生成。本函数保留作
+    A4 决策里「b：编排方前置独立提取子 Agent」升级路径的参考实现。
+    注意：它调 `get_note_prompt(note_type)` **不传源长**，故若被重新启用，不会带 A4 清单指令。
+    （历史事故：`docs/PIPELINES.md` §2 曾据本函数断言「videos 单集/系列路径未接线」，与实测不符。）
+
     关键改进：把 prompts/templates.py 的统一规范（含 UNIVERSAL_RULES 的案例背景 /
     连贯性 / markdown 排版要求）完整注入子 Agent prompt，避免之前手写简版漏掉规范
     导致总结不连贯、缺背景、格式弱。子 Agent 各自独立上下文，互不干扰。

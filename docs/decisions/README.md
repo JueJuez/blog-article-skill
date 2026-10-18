@@ -22,6 +22,7 @@
 | 输出覆盖范围（散落信息点） | [覆盖口径](DECISION-20261018-info-coverage-scope.md) | SOURCE_FIDELITY / COVERAGE 的收紧方向；A4 提取清单与 A6 模板落点 |
 | A4 长源提取清单落点 | [A4 落点](DECISION-20261018-a4-agent-mode-landing.md) | `prompts/extract_checklist.py` + `get_note_prompt` 条件注入；清单内化（选 a）、持久化契约、报告项出口；Loop 0/1 见知识层计划 §8 |
 | A5 论点级判据 / A6 条件必备结构 | [A5/A6 落点](DECISION-20261018-a5-a6-landing.md) | `prompts/claim_coverage.py`（报告项，**机械覆盖率禁当指标**）、`SECTION_CONTRACTS[*].conditional` + `content_signals` 五信号（硬拦，1298 篇实测误报 1 例）；模板侧散落信息点/推广口径 |
+| 视频侧 A4 接线与保留 | [A4 视频侧](DECISION-20261018-a4-video-side.md) | 视频侧**全路径均含 A4**（单篇/系列单集/监控 ASR 批量都汇到 `_finalize_single` → `dispatch_fields`）；12 源干净 A/B 增量未检出 → 保留现状；含**A4 正式轮归因修正**与「原『系列未接线』系据死代码写成」的更正 |
 
 ## 历史关系与阅读方式
 
@@ -37,4 +38,4 @@
 
 批次5首轮三组对照、候选留出与真实成本边界：[评估决策](DECISION-20261016-batch5-evaluation.md)，进度见开发计划§8.5；该评估的剩余项（严格留出/人工标注/费用）已按 [收尾决策](DECISION-20261018-batch5-closeout.md) 于 2026-10-18 关闭。
 
-A4/A6 正式对照轮（隔离手段、结果与三条口径边界）：[决策](DECISION-20261018-a4-a6-formal-rounds.md)，结果见 [PLAN-20261018 知识层](../plans/PLAN-20261018-knowledge-layer.md) §8。
+A4/A6 正式对照轮（隔离手段、结果与三条口径边界）：[决策](DECISION-20261018-a4-a6-formal-rounds.md)，结果见 [PLAN-20261018 知识层](../plans/PLAN-20261018-knowledge-layer.md) §8。⚠️ 该轮的 +15.2pp 系「当前模板 + 重新生成 vs 评估集历史旧稿」的对比（评估集长源桶 100% 是 B站视频），**不能归因为 A4 的净效应**；干净 A/B 结论见 [A4 视频侧决策](DECISION-20261018-a4-video-side.md)。
