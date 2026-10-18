@@ -23,6 +23,7 @@
 | A4 长源提取清单落点 | [A4 落点](DECISION-20261018-a4-agent-mode-landing.md) | `prompts/extract_checklist.py` + `get_note_prompt` 条件注入；清单内化（选 a）、持久化契约、报告项出口；Loop 0/1 见知识层计划 §8 |
 | A5 论点级判据 / A6 条件必备结构 | [A5/A6 落点](DECISION-20261018-a5-a6-landing.md) | `prompts/claim_coverage.py`（报告项，**机械覆盖率禁当指标**）、`SECTION_CONTRACTS[*].conditional` + `content_signals` 五信号（硬拦，1298 篇实测误报 1 例）；模板侧散落信息点/推广口径 |
 | 视频侧 A4 接线与保留 | [A4 视频侧](DECISION-20261018-a4-video-side.md) | 视频侧**全路径均含 A4**（单篇/系列单集/监控 ASR 批量都汇到 `_finalize_single` → `dispatch_fields`）；12 源干净 A/B 增量未检出 → 保留现状；含**A4 正式轮归因修正**与「原『系列未接线』系据死代码写成」的更正 |
+| 知识层 B 组结项 | [B 组结项](DECISION-20261019-b-group-closeout.md) | 知识层计划 §6「B 组结项说明」；B1 已由下游自行解决，B2/B3/B4/B5/B6 **全部不做**；库内无跨源整合层（L2） |
 
 ## 历史关系与阅读方式
 
