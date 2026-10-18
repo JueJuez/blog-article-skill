@@ -6,6 +6,8 @@ venv/
 .trae/skills/
 # ZCode：同类技能镜像（.zcode/skills/*/.env 含密钥），同理不提交
 .zcode/skills/
+# ZCode 会话计划属平台暂存，非项目交付物
+.zcode/plans/
 .env
 # .env 备份（含 cookie/密钥，绝不提交）
 .env.bak*
