@@ -49,6 +49,43 @@ _ITEM_RE = re.compile(r"^\s*[-*]\s+\[[ xX]\]\s*(?P<text>\S.*?)\s*$")
 # A6 低保留类型桶（§12.1 桶形注脚：opinion 63.2% / structured 71.7% 为最低保留）
 _LOW_RETENTION_TYPES = ("opinion", "structured")
 
+# A6 模板侧新增的两段散文（2026-10-18）。A4 正式轮要隔离「A4 流程」主效应，故生成时按 A4
+# 落地态（commit 4b26a3d：A4 已落地、A6 未落地）的措辞回退这两段 —— 两个生成端改动合进同一
+# 对照出「84.2%→X%」无法归因，是 §8 归因纪律明令禁止的。每项 = (A6 加入后的文本, A4 落地态文本)。
+_A6_PROSE = (
+    ('寒暄、自我介绍、口头语重复、纯过渡句（"接下来我们说""废话不多说"）。\n\n'
+     "**明确不算水分、不得删的**（2026-10-18 收紧，见 DECISION-20261018-info-coverage-scope）：\n"
+     "- **承托论点的背景故事、案例细节、推导过程**；\n"
+     "- **散落信息点**——不在主线、但可能有帮助的独立事实（持仓/个股点评/人物评价/时事/资源入口）。\n"
+     "  哪怕只有一句话、与当前论点无关，也**照原意保留**（可放「补充信息」类小节或就近成句）。\n"
+     "  删的边界是「重复说法 / 寒暄 / 自我介绍 / 口头语 / 纯过渡」，**不是「与论点无关」**。",
+     "寒暄、自我介绍、口头语重复、与论点无关的铺垫。**承托论点的背景故事、案例细节、"
+     "推导过程不属于水分，不得删。**"),
+    ("- **判定范围按上下文绑定**：\n"
+     '  - **孤立**的纯推广/引流（与内容无关、单摆浮搁的一句"加我微信/看我的资料"）→ **删**，不写进笔记。\n'
+     "  - 嵌在**流程 / SOP / 操作步骤**里的推广或引流（例：讲\"如何做自媒体\"的第 4 步是引流入口）→ "
+     "**保留并就近标注【推广】**：它是步骤的一部分，删了流程就断了。\n",
+     ""),
+)
+
+
+def apply_prompt_profile(prompt: str, profile: str) -> str:
+    """按 profile 回退/保留 A6 模板条款（`a4only` = 隔离 A4 主效应，见 `_A6_PROSE`）。
+
+    ⚠️ 定位不到 A6 段就**报错**而不是静默返回原文：静默会让这一轮混入 A6 条款、
+    破坏归因，且表面上「跑通了」。
+    """
+    if profile == "current":
+        return prompt
+    out = prompt
+    for a6, a4 in _A6_PROSE:
+        if a6 not in out:
+            raise SystemExit(f"[ERR] prompt-profile=a4only 定位不到 A6 段（模板已变）：{a6[:40]!r}")
+        out = out.replace(a6, a4)
+    if out == prompt:
+        raise SystemExit("[ERR] prompt-profile=a4only 未改动任何文本，profile 失效")
+    return out
+
 
 def _norm(s: str) -> str:
     return re.sub(r"\s", "", s or "")
@@ -127,7 +164,7 @@ def parse_items(form_text: str) -> list:
 
 def cmd_build(args) -> int:
     eval_dir, round_dir = args.eval_dir, args.round_dir
-    from shared.eval_set import load_rows
+    from shared.eval_set import load_rows, distortion_block
 
     rows_all = load_rows(os.path.join(eval_dir, "eval_set.json"))
     rows = subset_rows(list(rows_all.values()), args.subset)
@@ -164,7 +201,8 @@ def cmd_build(args) -> int:
                 "## 必留清单（清单不变；按新笔记逐条判「实质保留」→ `- [x]`）\n\n")
         body = "\n".join(f"- [ ] {t}" for t in items)
         with open(os.path.join(round_dir, "forms", f"{eid}.md"), "w", encoding="utf-8") as fh:
-            fh.write(head + _MUST_BEGIN + "\n" + body + "\n" + _MUST_END + "\n")
+            fh.write(head + _MUST_BEGIN + "\n" + body + "\n" + _MUST_END + "\n\n"
+                     + distortion_block() + "\n")
 
         source = ""
         try:
@@ -173,8 +211,9 @@ def cmd_build(args) -> int:
             pass
         prompt = get_note_prompt(r.get("note_type") or "structured", source_chars_of(source)) \
             + QUALITY_GATE_SELFCHECK
+        prompt = apply_prompt_profile(prompt, args.prompt_profile)
         with open(os.path.join(round_dir, "prompts", f"{eid}.md"), "w", encoding="utf-8") as fh:
-            fh.write(f"# {eid} 生产口径 prompt（勿改）\n\n" + prompt)
+            fh.write(f"# {eid} 生产口径 prompt（勿改；profile={args.prompt_profile}）\n\n" + prompt)
 
     json.dump({"items": rows}, open(os.path.join(round_dir, "eval_set.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)
@@ -183,27 +222,36 @@ def cmd_build(args) -> int:
         "# 轮次生成：写新笔记（A4/A6 对照专用）\n\n"
         "对每篇 `{eid}`：\n"
         "1. Read **源文件**（路径见 `forms/{eid}.md` 的「源」行）——只读源，不要读原笔记（防锚定）。\n"
-        "2. Read 生产口径 prompt：`prompts/{eid}.md`（`# {eid} 生产口径 prompt（勿改）` 之后的内容）。\n"
-        "3. 按该 prompt 写笔记正文，用 Write 写到：`notes/{eid}.md`。\n\n"
-        "**硬约束**：不读 vault 里的旧笔记；不写正文以外的东西；不改 prompt。\n"
+        "2. Read 生产口径 prompt：`prompts/{eid}.md`（第一行 `# …（勿改…）` **之后**的全部内容）。\n"
+        "3. 严格按该 prompt 写稿，用 Write 写到：`notes/{eid}.md`。\n\n"
+        "**清单块（源长 >10000 字才要求）**：prompt 若含「长源提取清单（两阶段）」一节，"
+        "就必须按它把 `<!-- EXTRACT_CHECKLIST -->` … `<!-- /EXTRACT_CHECKLIST -->` 清单块**原样写在正文最前面**"
+        "（系统会机械校验并剥离，不写等于这一步没做）；短源 prompt 若要求 `SOURCE_THIN` 块也照办。\n\n"
+        "**硬约束**：不读 vault 里的旧笔记；不读其他轮次目录；不改 prompt；只写 `notes/{eid}.md` 一个文件。\n"
         "完成后回一行：`{eid} ok <笔记字数>`。\n"
     )
     check_instr = (
-        "# 轮次复核：勾选（独立审者，不得看生成过程）\n\n"
+        "# 轮次复核：勾选 + 失真观察（独立审者，不得看生成过程）\n\n"
         "对每篇 `{eid}`：\n"
         "1. Read `forms/{eid}.md` 里的**源**（先只读源）与**本轮新笔记**（`notes/{eid}.md`）。\n"
-        "2. 对清单每一条判「**实质保留**」：全部关键要素（数字/口径/条件/方向强度）都在 → 改成 `- [x]`，\n"
+        "2. 对 `MUST_KEEP` 区清单每一条判「**实质保留**」：全部关键要素（数字/口径/条件/方向强度）都在 → 改成 `- [x]`，\n"
         "   否则留 `- [ ]`。允许同义改写；缺任一要素即不勾（与 A1 基线同口径）。\n"
-        "3. 用 Edit/Write 把 `forms/{eid}.md` 的清单区**原地更新**（只改勾选状态，不改条目文字）。\n\n"
+        "3. 再填 `DISTORTION` 区**失真观察**（只观察、不计入保留率）：逐项核笔记是否把源写成了**别的意思** ——\n"
+        "   命中就改 `- [x]` 并在冒号后写 ≤60 字证据（源位置/原话）；没有就不勾。四类：\n"
+        "   范围泛化（限定范围被写宽/写窄）／方向反转（该说 X 说成非 X，或强度被改）／\n"
+        "   案例替换（举例换成源里没有的）／源外数字（出现源里不存在的数字或口径）。\n"
+        "4. 用 Edit/Write 把 `forms/{eid}.md` **原地更新**（只改勾选状态与失真证据，不改清单条目文字）。\n\n"
         "**硬约束**：不要改清单文字；不要读旧笔记或上一轮结果（防锚定）；不要写别的文件。\n"
-        "完成后回一行：`{eid} checked。<勾选数>/<总条数>`。\n"
+        "完成后回一行：`{eid} checked。<勾选数>/<总条数>`；有失真另附 `distortion=<类别>`。\n"
     )
     with open(os.path.join(round_dir, "_WRITE_INSTRUCTION.md"), "w", encoding="utf-8") as fh:
         fh.write(write_instr)
     with open(os.path.join(round_dir, "_CHECK_INSTRUCTION.md"), "w", encoding="utf-8") as fh:
         fh.write(check_instr)
     with open(os.path.join(round_dir, "_TASKS.md"), "w", encoding="utf-8") as fh:
-        fh.write("| # | 源 | 生产 prompt | 新笔记 | 表单 |\n|---|---|---|---|---|\n")
+        fh.write(f"# 轮次台：subset=`{args.subset}` · prompt-profile=`{args.prompt_profile}` · "
+                 f"{len(rows)} 篇\n\n"
+                 "| # | 源 | 生产 prompt | 新笔记 | 表单 |\n|---|---|---|---|---|\n")
         for r in rows:
             eid = r["eval_id"]
             fh.write(f"| {eid} | `{r.get('source_path')}` | `prompts/{eid}.md` | "
@@ -299,6 +347,8 @@ def main() -> int:
     ap.add_argument("--eval-dir", default=DEFAULT_EVAL_DIR)
     ap.add_argument("--round-dir", default=DEFAULT_ROUND_DIR)
     ap.add_argument("--subset", default="long", choices=["all", "long", "lowretention"])
+    ap.add_argument("--prompt-profile", default="current", choices=["current", "a4only"],
+                    help="a4only=回退 A6 模板条款（隔离 A4 主效应，A4 正式轮用）；current=生产态")
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
     return {"build": cmd_build, "normalize": cmd_normalize,

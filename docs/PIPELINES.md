@@ -213,9 +213,11 @@ python scripts/loop0_extract_coverage.py                 # 机械粗筛 → loop
 ### 3.6 对照轮：重新生成 → 同清单复核 → 判分（§12.3 #14）
 
 ```bash
-python scripts/build_round.py build --subset long      # 或 all / lowretention；产物在 round_A4_smoke/
+python scripts/build_round.py build --subset all \
+    --prompt-profile a4only --round-dir <eval-dir>/round_A4_formal
 #   派生成子 Agent（按 prompts/Axx.md 写 notes/Axx.md）→ 派独立复核子 Agent（按清单勾 forms/Axx.md）
-python scripts/build_round.py measure                  # 变长幅度 + 复核完成度
+python scripts/build_round.py normalize --round-dir <round-dir>   # **必跑**：剥清单块
+python scripts/build_round.py measure --round-dir <round-dir>     # 变长幅度 + 复核完成度
 python scripts/score_eval_set.py --dir <round-dir> --report <round-dir>/_score.md
 ```
 
@@ -224,6 +226,17 @@ python scripts/score_eval_set.py --dir <round-dir> --report <round-dir>/_score.m
 且**绝不碰原评估目录与 vault**（新笔记写 `<round-dir>/notes/`）。防覆盖判据按「**已勾选**」算复核劳动
 （轮次表单的条目是复制来的，不能用 `touched_forms` 判）。判分前先看 `measure` 报的**复核完成度**：
 一条都没勾的表单要么笔记为空、要么**还没复核**，后者会把 0% 当真实回归。
+
+两个关键开关（2026-10-18 正式轮新增）：
+
+- **`normalize` 必跑**：轮次稿带 A4 清单块，不剥则复核者照抄清单 → 保留率虚高、对照失效。
+  原稿留 `.raw.md`；**复核子 Agent 只能读 `notes/Axx.md`，不得读 `.raw.md`**（派工提示词里要写明）。
+- **`--prompt-profile a4only`**：按 A4 落地态（commit `4b26a3d`）回退 A6 的两段模板条款，用来**隔离
+  A4 主效应**（§8 归因纪律：两个生成端改动不得合进同一对照）。定位不到 A6 段即报错，不静默通过。
+  跑 A6 自己的核对用默认 `current`。
+- 表单带 `<!-- DISTORTION -->` 区（§12.3 #15 失真伴随观察项）：**只观察、不计入保留率**，
+  四类＝范围泛化/方向反转/案例替换/源外数字；判分输出 `distortion_observed_forms` /
+  `distortion_forms_hit` / `distortion_counts`，口径见评估目录 `ANNOTATION.md` §七。
 
 ### 3.7 A6 条件必备信号离线测量
 

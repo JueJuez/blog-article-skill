@@ -36,3 +36,5 @@
 批次4候选收尾、独立复审及数字噪声范围：[收尾决策](DECISION-20261015-batch4-closeout.md)。当前验收状态以开发计划§8.4为准。
 
 批次5首轮三组对照、候选留出与真实成本边界：[评估决策](DECISION-20261016-batch5-evaluation.md)，进度见开发计划§8.5；该评估的剩余项（严格留出/人工标注/费用）已按 [收尾决策](DECISION-20261018-batch5-closeout.md) 于 2026-10-18 关闭。
+
+A4/A6 正式对照轮（隔离手段、结果与三条口径边界）：[决策](DECISION-20261018-a4-a6-formal-rounds.md)，结果见 [PLAN-20261018 知识层](../plans/PLAN-20261018-knowledge-layer.md) §8。

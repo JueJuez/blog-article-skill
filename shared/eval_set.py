@@ -46,8 +46,15 @@ MIN_ITEMS_PER_FORM = 3           # 少于该条数的表单视为未填，不参
 
 _MUST_BEGIN = "<!-- MUST_KEEP -->"
 _MUST_END = "<!-- /MUST_KEEP -->"
+_DIST_BEGIN = "<!-- DISTORTION -->"
+_DIST_END = "<!-- /DISTORTION -->"
 ITEM_RE = re.compile(r"^\s*[-*]\s+\[(?P<state>[ xX])\]\s*(?P<text>\S.*?)\s*$")
 _HINT_RE = re.compile(r"^\s*[-*]\s+(?P<text>\S.*?)\s*$")
+
+# 失真伴随观察项（`PLAN-20261018` §12.2-6 / §12.3 #15）：**只观察、不计入保留率**。
+# 依据 A1 归因——「写成了别的意思」（范围泛化 / 方向反转 / 案例替换）比精度损失更危险，
+# 而现指标只有保留率。类别与 A1 归因表的 D 类一致，另加 A5 机械侧的「源外数字」供交叉印证。
+DISTORTION_CATEGORIES = ("范围泛化", "方向反转", "案例替换", "源外数字")
 
 
 # ---------------------------------------------------------------- ① 测量
@@ -311,6 +318,43 @@ def touched_forms(form_dir: str) -> list:
     return out
 
 
+def distortion_block() -> str:
+    """轮次表单的**失真观察区**（§12.3 #15）。
+
+    ⚠️ 必须放在 `<!-- MUST_KEEP -->` 区**之外**：`parse_form` 只读 MUST_KEEP 区内，
+    放进区里会被当成必留清单条目、污染保留率。本区由 `parse_distortion` 单独解析。
+    """
+    lines = [
+        _DIST_BEGIN,
+        "",
+        "## 失真观察（独立审者填；**只观察，不计入保留率**）",
+        "",
+        "> 逐项核：笔记是否把源写成了**别的意思**（比精度损失更危险，§12.2-6）。",
+        "> 命中就把该项改成 `- [x]` 并在冒号后写 ≤60 字证据（源位置 / 原话）；没有就不勾。",
+        "",
+    ]
+    lines += [f"- [ ] {c}：" for c in DISTORTION_CATEGORIES]
+    lines += ["", _DIST_END]
+    return "\n".join(lines)
+
+
+def parse_distortion(text: str) -> list:
+    """解析失真观察区；返回命中（`- [x]`）的类别名列表。
+
+    区内、区外都没有该块时返回 `[]` —— 与「观察了、确认无失真」不可区分，
+    故报告只统计**命中数**并从总量上区分「填过该区的表单数」。
+    """
+    if _DIST_BEGIN not in text or _DIST_END not in text:
+        return []
+    body = text.split(_DIST_BEGIN, 1)[1].split(_DIST_END, 1)[0]
+    out = []
+    for line in body.splitlines():
+        m = ITEM_RE.match(line)
+        if m and m.group("state").lower() == "x":
+            out.append(m.group("text").split("：", 1)[0].strip())
+    return out
+
+
 def score_forms(form_dir: str, rows_by_id: dict) -> dict:
     """遍历目录里的表单给分；返回 {items:[...], aggregate:{...}}。
 
@@ -323,9 +367,11 @@ def score_forms(form_dir: str, rows_by_id: dict) -> dict:
         path = os.path.join(form_dir, name)
         try:
             with open(path, encoding="utf-8") as fh:
-                parsed = parse_form(fh.read())
+                raw = fh.read()
         except (OSError, UnicodeError):
             continue
+        parsed = parse_form(raw)
+        dist = parse_distortion(raw)
         eid = (rows_by_id.get(name[:-3]) or {}).get("eval_id") or name[:-3]
         meta = rows_by_id.get(name[:-3], {})
         rec = {
@@ -335,6 +381,8 @@ def score_forms(form_dir: str, rows_by_id: dict) -> dict:
             "source_words": meta.get("source_words"), "note_words": meta.get("note_words"),
             "anchor_recall": (meta.get("anchors") or {}).get("recall"),
             "missed_texts": [i["text"] for i in parsed["items"] if not i["kept"]],
+            "distortion": dist,
+            "distortion_observed": (_DIST_BEGIN in raw),
         }
         (per if parsed["filled"] else pending).append(rec)
 
@@ -351,6 +399,7 @@ def score_forms(form_dir: str, rows_by_id: dict) -> dict:
                 for k, v in sorted(d.items())}
 
     allr = [r["retention"] for r in per if r["retention"] is not None]
+    dist_counts = collections.Counter(c for r in per for c in r["distortion"])
     return {
         "items": per,
         "pending": pending,
@@ -366,6 +415,11 @@ def score_forms(form_dir: str, rows_by_id: dict) -> dict:
             "retention_target": RETENTION_TARGET,
             "by_bucket": _agg(by_bucket),
             "by_type": _agg(by_type),
+            # §12.3 #15：失真伴随观察项（只观察）。observed＝填过该区的篇数，用于区分
+            # 「确认无失真」与「整块没填」——前者才有观察价值。
+            "distortion_observed_forms": sum(1 for r in per if r["distortion_observed"]),
+            "distortion_forms_hit": sum(1 for r in per if r["distortion"]),
+            "distortion_counts": dict(dist_counts.most_common()),
         },
     }
 

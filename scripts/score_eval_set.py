@@ -71,6 +71,26 @@ def _report_md(res: dict, dir_path: str) -> str:
         for r in res["pending"]:
             P(f"| `{r['eval_id']}` | `{r['file']}` | {r['total']} |")
         P("")
+    P("## 五、失真伴随观察（§12.3 #15；只观察，不计入保留率）")
+    P("")
+    P(f"- 填过失真观察区的表单 **{agg['distortion_observed_forms']}** / {agg['filled_forms']}；"
+      f"命中失真 **{agg['distortion_forms_hit']}** 篇")
+    if agg["distortion_counts"]:
+        P(f"- 分类命中：{('；'.join(f'{k} {v} 篇' for k, v in agg['distortion_counts'].items()))}")
+    else:
+        P("- 分类命中：无")
+    hit = [r for r in res["items"] if r["distortion"]]
+    if hit:
+        P("")
+        P("| # | 桶 | 类型 | 命中类别 | 保留率 |")
+        P("|---|---|---|---|---|")
+        for r in hit:
+            P(f"| `{r['eval_id']}` | {r['bucket']} | `{r['note_type']}` | "
+              f"{'、'.join(r['distortion'])} | {r['retention']:.0%} |")
+    P("")
+    P("> 失真（写成别的意思：范围泛化 / 方向反转 / 案例替换 / 源外数字）比精度损失更危险，")
+    P("> 但与保留率是两个维度：**失真高不代表保留率高**，两者分别读。")
+    P("")
     P("> 锚点召回与清单保留率是两回事：前者机械可判但只覆盖约 37% 语料，")
     P("> 后者是清单判定（人工或固定口径 AI 标注，见目录内 `ANNOTATION.md`）：")
     P("> 两者不一致时**以必留清单为准**。")
@@ -117,6 +137,9 @@ def main() -> int:
     for r in sorted(res["items"], key=lambda r: (r["retention"] is None, r["retention"]))[:5]:
         print(f"  {r['eval_id']} [{r['bucket']}/{r['note_type']}] {r['retention']:.0%}"
               f"  丢 {len(r['missed_texts'])} 条")
+    print(f"\n失真观察：填过 {agg['distortion_observed_forms']} 篇，命中 "
+          f"{agg['distortion_forms_hit']} 篇"
+          + (f"（{agg['distortion_counts']}）" if agg["distortion_counts"] else ""))
 
     if args.json:
         json.dump(res, open(args.json, "w", encoding="utf-8"), ensure_ascii=False, indent=1)

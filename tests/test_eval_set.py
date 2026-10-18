@@ -212,3 +212,53 @@ class TestScoring:
         res = ES.score_forms(str(tmp_path / "nope"), {})
         assert res["aggregate"]["filled_forms"] == 0
         assert res["items"] == []
+
+
+class TestDistortionObservation:
+    """§12.3 #15 失真伴随观察项：只观察、不计入保留率；区块必须落在 MUST_KEEP 之外。
+
+    三个真实风险：① 失真行被 MUST_KEEP 判分器当清单条目（污染保留率）；
+    ② 失真区缺失与「确认无失真」被混为一谈；③ 命中不落进报告。
+    """
+
+    def _form(self, path, eid, items, distortion_checked=()):
+        body = "\n".join(f"- [{'x' if kept else ' '}] {t}" for t, kept in items)
+        dist = "\n".join(f"- [{'x' if c in distortion_checked else ' '}] {c}："
+                         for c in ES.DISTORTION_CATEGORIES)
+        path.write_text(
+            f"# {eid}\n\n" + ES._MUST_BEGIN + "\n" + body + "\n" + ES._MUST_END + "\n\n"
+            + ES._DIST_BEGIN + "\n" + dist + "\n" + ES._DIST_END + "\n", encoding="utf-8")
+
+    def test_distortion_block_not_counted_as_items(self, tmp_path):
+        d = tmp_path / "forms"
+        d.mkdir()
+        self._form(d / "A01.md", "A01", [("a", True), ("b", True), ("c", True)])
+        parsed = ES.parse_form((d / "A01.md").read_text(encoding="utf-8"))
+        # 清单只有 3 条；4 个失真类别不得被算进去
+        assert parsed["total"] == 3
+
+    def test_parse_distortion_hits(self, tmp_path):
+        d = tmp_path / "forms"
+        d.mkdir()
+        self._form(d / "A01.md", "A01", [("a", True), ("b", True), ("c", True)],
+                   distortion_checked=("范围泛化", "源外数字"))
+        assert ES.parse_distortion((d / "A01.md").read_text(encoding="utf-8")) == ["范围泛化", "源外数字"]
+
+    def test_absent_block_returns_empty(self):
+        assert ES.parse_distortion("# 没有区\n- [x] 范围泛化：x\n") == []
+
+    def test_score_reports_distortion(self, tmp_path):
+        d = tmp_path / "forms"
+        d.mkdir()
+        self._form(d / "A01.md", "A01", [("a", True), ("b", True), ("c", False)],
+                   distortion_checked=("方向反转",))
+        self._form(d / "A02.md", "A02", [("a", True), ("b", True), ("c", True)])
+        rows = {"A01": {"eval_id": "A01", "bucket": "0-2k", "note_type": "general"},
+                "A02": {"eval_id": "A02", "bucket": "0-2k", "note_type": "general"}}
+        agg = ES.score_forms(str(d), rows)["aggregate"]
+        assert agg["distortion_observed_forms"] == 2      # 两张都填了该区
+        assert agg["distortion_forms_hit"] == 1
+        assert agg["distortion_counts"] == {"方向反转": 1}
+        # 保留率不受失真区影响：A01 仍是 2/3
+        items = {r["eval_id"]: r for r in ES.score_forms(str(d), rows)["items"]}
+        assert items["A01"]["retention"] == pytest.approx(2 / 3, abs=1e-3)
