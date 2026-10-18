@@ -21,6 +21,7 @@ import json
 from datetime import datetime
 
 from prompts.extract_checklist import render_extraction_rules
+from prompts.section_budget import render_section_budget
 
 # ---------------------------------------------------------------------------
 # 内容完整优先（DECISION-20260915 §7 · 生成侧核心规范 · 单一真源）
@@ -974,7 +975,9 @@ def get_note_prompt(note_type: str = "structured", source_chars: int = 0) -> str
         source_chars: 源文本字数；> 0 时追加按源长算好的篇幅目标块（覆盖优先）；
             > `extract_checklist.EXTRACT_MIN_CHARS` 时再追加「先列清单、再成文」两阶段指令
             （A4 清单内化，PLAN-20261018 §6 A4 / §12.3 #11-a；主路径无外部 provider，
-            提取只能由执行模型在同一次派工里完成）。
+            提取只能由执行模型在同一次派工里完成）；
+            ≤ `section_budget.SHORT_SOURCE_MAX_CHARS` 时追加「短源篇幅取向」块，关停分析层
+            与元层小节（PLAN-20261019-short-source-trim；长源不受影响）。
 
     新增笔记类型：在 NOTE_TEMPLATES 中加一项即可，无需改其他代码。
     """
@@ -982,7 +985,8 @@ def get_note_prompt(note_type: str = "structured", source_chars: int = 0) -> str
     if not t:
         t = NOTE_TEMPLATES["structured"]
     return (t["prompt"] + render_coverage_guide(source_chars, note_type)
-            + render_extraction_rules(source_chars))
+            + render_extraction_rules(source_chars)
+            + render_section_budget(source_chars, note_type))
 
 
 def list_note_types():

@@ -248,6 +248,34 @@ T9 的源侧机械信号（反例/公式/章节/对比/数值密集）升级为�
 2026-10-18 实测 1298 篇：信号总触发 35 例（最高 `formula` 24 例）、**触发但缺该节仅 1 例**（疑别名过字面）
 → 误报率极低，可作硬拦。判据实现与阈值在 `prompts/content_signals.py`（③之二）。
 
+### 3.8 短源篇幅取向（去分析层与元层，2026-10-19）
+
+实现：`prompts/section_budget.py`（阈值常量、黑名单、块渲染与 `--check` 自报）。
+
+```bash
+python -m prompts.section_budget --check                      # 阈值 / 各类型关停清单 / 边界自检
+python scripts/build_round.py build --subset short            # 验收台（0-2k + 2-5k 共 12 篇）
+python scripts/build_round.py build --subset short --prompt-profile baseline   # A/B 对照臂
+```
+
+**机制**：源长 ≤ `section_budget.SHORT_SOURCE_MAX_CHARS`（5000）时，`get_note_prompt` 追加
+「短源篇幅取向」块，**关停分析层与元层**（延伸思考 / 自测三问 / 讲出来 / 笔记者分析 / 小结闭环，
+只列该笔记类型模板里**确实存在**的小节），只保留「重组 / 条件与前提 / 有信号反例 / 作者私房术语」；
+**长源一行不动**（实测长源新增 90% 是正当的源内容展开）。**不改 `SECTION_CONTRACTS`、不改门禁签名**
+（`分层速览` 是 `required`，短源按裁决**保留**它，故门禁无需感知源长）。
+
+**为什么不是「加一句写精简些」**：A4 正式轮已实测提示词修订**压不住变长**（压得住超长句）——
+本机制靠**关停具体小节**，有清单、可机械自报（`--check`）。
+
+**判据（三条同读，缺一不可）**：保留率不降 / 稿长÷源长 ≤1.5（现状 0-2k 2.95、2-5k 1.83）/
+事实密度（源内可溯数值÷千字）回升至 ≥ 旧稿（3.3 / 9.5）。口径与全部数字见
+[短源瘦身计划](plans/PLAN-20261019-short-source-trim.md) §1、§4。
+
+**接线覆盖**（实测调用点）：`articles/main.py`、`prompts/provenance.py`（条目 prompt 出口）、
+`scripts/backfill_series.py`、`build_refetch_resum_batches.py`、`consume_migrate_queue.py` 均传源长 → 生效；
+例外两处与 A4 相同——`videos/main.py` 的外部 provider 直调分支（`FORCE_AGENT_MODE=0`，默认关）
+与死代码函数 `_build_subagent_prompt`。
+
 
 ## 4. 订阅监控管线
 
@@ -356,6 +384,7 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 | `prompts.extract_checklist` | A4 长源提取清单：按源长条件注入两阶段指令（>10000）／短源 T0 报告块（<2000）；剥离清单→机械校验（原句须命中源）→对账→按源 hash 存档，**全部报告项、永不抛异常** | `prompts.templates.get_note_prompt`（注入）、`save_summary_only`、`resum_save_batch` |
 | `prompts.claim_coverage` | A5 论点级判据（**报告项**）：源侧断言候选＋疑似无落点＋失真嫌疑（源外数字/方向反转）；机械覆盖率**禁当指标** | `scripts/run_async_review.py --emit`（注入派单） |
 | `prompts.content_signals.CONDITIONAL_SIGNALS` | A6 条件必备结构的源侧信号（反例/公式/章节/对比/数值密集） | `content_signals.structure_obligations` → 机械门禁硬拦 |
+| `prompts/section_budget.py`（模块 `prompts.section_budget`） | 短源篇幅取向：源长 ≤5000 注入「关停分析层与元层」块（只做重组/条件/有信号反例/私房术语），**长源一行不动** | `prompts/templates.get_note_prompt`（注入）；A/B 用 `build_round.py --subset short --prompt-profile baseline` |
 | `shared.eval_set` | 评估集分层抽样 / 基线测量 / 人工表单判分 | `scripts/build_eval_set.py`、`scripts/score_eval_set.py` |
 | `shared.dangling_ref` | 段落悬空指代识别与统计 | `scripts/scan_dangling_refs.py` |
 

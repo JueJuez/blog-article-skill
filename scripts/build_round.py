@@ -70,13 +70,27 @@ _A6_PROSE = (
 
 
 def apply_prompt_profile(prompt: str, profile: str) -> str:
-    """按 profile 回退/保留 A6 模板条款（`a4only` = 隔离 A4 主效应，见 `_A6_PROSE`）。
+    """按 profile 回退模板条款：`a4only` 隔离 A4 主效应，`baseline` 剥离短源块。
 
-    ⚠️ 定位不到 A6 段就**报错**而不是静默返回原文：静默会让这一轮混入 A6 条款、
+    ⚠️ 定位不到目标段就**报错**而不是静默返回原文：静默会让这一轮混入被隔离的条款、
     破坏归因，且表面上「跑通了」。
+
+    - `current`：生产态，原文返回。
+    - `a4only`：回退 A6 模板条款（见 `_A6_PROSE`），A4 正式轮用。
+    - `baseline`：剥离「短源篇幅取向」块（`section_budget.BLOCK_MARKER` 起至末尾），
+      **只对短源轮有意义**——长源 prompt 本就不含该块，故找不到即报错。
+      用途：`PLAN-20261019-short-source-trim` §4 的 A/B 对照臂。
     """
     if profile == "current":
         return prompt
+    if profile == "baseline":
+        from prompts.section_budget import BLOCK_MARKER
+        i = prompt.find(BLOCK_MARKER)
+        if i < 0:
+            raise SystemExit(
+                "[ERR] prompt-profile=baseline 定位不到短源块（该篇源长 > 阈值或模板已变）。"
+                "baseline 只对 `--subset short` 有意义：它要求每篇都含短源块。")
+        return prompt[:i].rstrip()
     out = prompt
     for a6, a4 in _A6_PROSE:
         if a6 not in out:
@@ -96,6 +110,9 @@ def subset_rows(rows: list, subset: str) -> list:
         return list(rows)
     if subset == "long":
         return [r for r in rows if (r.get("source_words") or 0) > 10000]
+    if subset == "short":
+        # 短源桶（0-2k + 2-5k）——`PLAN-20261019-short-source-trim` 的验收子集
+        return [r for r in rows if 0 < (r.get("source_words") or 0) <= 5000]
     if subset == "lowretention":
         picked = [r for r in rows if r.get("note_type") in _LOW_RETENTION_TYPES]
         # 外加 2 篇短源对照（防副作用看得见）
@@ -346,9 +363,10 @@ def main() -> int:
     ap.add_argument("mode", choices=["build", "normalize", "measure"])
     ap.add_argument("--eval-dir", default=DEFAULT_EVAL_DIR)
     ap.add_argument("--round-dir", default=DEFAULT_ROUND_DIR)
-    ap.add_argument("--subset", default="long", choices=["all", "long", "lowretention"])
-    ap.add_argument("--prompt-profile", default="current", choices=["current", "a4only"],
-                    help="a4only=回退 A6 模板条款（隔离 A4 主效应，A4 正式轮用）；current=生产态")
+    ap.add_argument("--subset", default="long", choices=["all", "long", "short", "lowretention"])
+    ap.add_argument("--prompt-profile", default="current", choices=["current", "a4only", "baseline"],
+                    help="a4only=回退 A6 模板条款（隔离 A4 主效应）；baseline=剥离短源篇幅块"
+                         "（短源瘦身 A/B 的对照臂，只配 --subset short）；current=生产态")
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
     return {"build": cmd_build, "normalize": cmd_normalize,
