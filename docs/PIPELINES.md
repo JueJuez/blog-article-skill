@@ -271,6 +271,12 @@ python scripts/build_round.py build --subset short --prompt-profile baseline   #
 事实密度（源内可溯数值÷千字）回升至 ≥ 旧稿（3.3 / 9.5）。口径与全部数字见
 [短源瘦身计划](plans/PLAN-20261019-short-source-trim.md) §1、§4。
 
+**验收结果（2026-10-19 实跑，12 篇 A/B）**：对照臂 94.3% / 2.36·1.60 / 1.51·6.97，
+生产臂 **96.4% / 1.89·1.13 / 1.54·8.71**（保留率 / 稿长比 0-2k·2-5k / 密度 同序，密度用
+`measure_fact_density.py` 量）——保留率与 2-5k 长度线达标，0-2k 长度线与两桶密度线未达标。
+机制生效可机械核验（生产臂关停小节 0 篇违规、对照臂同类小节 8,721 字），但杠杆只覆盖「分析/元层」，
+**0-2k 的膨胀主体在 required 内容小节内部的铺开粒度**。结论、归因与待裁下一步见计划 §4.5–§4.6。
+
 **接线覆盖**（实测调用点）：`articles/main.py`、`prompts/provenance.py`（条目 prompt 出口）、
 `scripts/backfill_series.py`、`build_refetch_resum_batches.py`、`consume_migrate_queue.py` 均传源长 → 生效；
 例外两处与 A4 相同——`videos/main.py` 的外部 provider 直调分支（`FORCE_AGENT_MODE=0`，默认关）
@@ -385,6 +391,7 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 | `prompts.claim_coverage` | A5 论点级判据（**报告项**）：源侧断言候选＋疑似无落点＋失真嫌疑（源外数字/方向反转）；机械覆盖率**禁当指标** | `scripts/run_async_review.py --emit`（注入派单） |
 | `prompts.content_signals.CONDITIONAL_SIGNALS` | A6 条件必备结构的源侧信号（反例/公式/章节/对比/数值密集） | `content_signals.structure_obligations` → 机械门禁硬拦 |
 | `prompts/section_budget.py`（模块 `prompts.section_budget`） | 短源篇幅取向：源长 ≤5000 注入「关停分析层与元层」块（只做重组/条件/有信号反例/私房术语），**长源一行不动** | `prompts/templates.get_note_prompt`（注入）；A/B 用 `build_round.py --subset short --prompt-profile baseline` |
+| `scripts/measure_fact_density.py` | 事实密度量尺（对照轮判据 3）：正文数字串÷千字，去 `#` 标题行、源侧另去 `> 标题/时间` 元信息；`--against` 支持 A/B 两臂对打 | 人工验收（`PLAN-20261019` §4）；与 `build_round.py measure`（变长）配套 |
 | `shared.eval_set` | 评估集分层抽样 / 基线测量 / 人工表单判分 | `scripts/build_eval_set.py`、`scripts/score_eval_set.py` |
 | `shared.dangling_ref` | 段落悬空指代识别与统计 | `scripts/scan_dangling_refs.py` |
 
