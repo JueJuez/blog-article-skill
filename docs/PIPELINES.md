@@ -256,6 +256,7 @@ T9 的源侧机械信号（反例/公式/章节/对比/数值密集）升级为�
 python -m prompts.section_budget --check                      # 阈值 / 各类型关停清单 / 边界自检
 python scripts/build_round.py build --subset short            # 验收台（0-2k + 2-5k 共 12 篇）
 python scripts/build_round.py build --subset short --prompt-profile baseline   # A/B 对照臂
+python scripts/build_round.py build --subset short --prompt-profile noblocks   # +禁止并列铺开（§4.7 已跑）
 ```
 
 **机制**：源长 ≤ `section_budget.SHORT_SOURCE_MAX_CHARS`（5000）时，`get_note_prompt` 追加
@@ -390,7 +391,7 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 | `prompts.extract_checklist` | A4 长源提取清单：按源长条件注入两阶段指令（>10000）／短源 T0 报告块（<2000）；剥离清单→机械校验（原句须命中源）→对账→按源 hash 存档，**全部报告项、永不抛异常** | `prompts.templates.get_note_prompt`（注入）、`save_summary_only`、`resum_save_batch` |
 | `prompts.claim_coverage` | A5 论点级判据（**报告项**）：源侧断言候选＋疑似无落点＋失真嫌疑（源外数字/方向反转）；机械覆盖率**禁当指标** | `scripts/run_async_review.py --emit`（注入派单） |
 | `prompts.content_signals.CONDITIONAL_SIGNALS` | A6 条件必备结构的源侧信号（反例/公式/章节/对比/数值密集） | `content_signals.structure_obligations` → 机械门禁硬拦 |
-| `prompts/section_budget.py`（模块 `prompts.section_budget`） | 短源篇幅取向：源长 ≤5000 注入「关停分析层与元层」块（只做重组/条件/有信号反例/私房术语），**长源一行不动** | `prompts/templates.get_note_prompt`（注入）；A/B 用 `build_round.py --subset short --prompt-profile baseline` |
+| `prompts/section_budget.py`（模块 `prompts.section_budget`） | 短源篇幅取向：源长 ≤5000 注入「关停分析层与元层」块（只做重组/条件/有信号反例/私房术语），**长源一行不动**。可选「禁止并列铺开」条款＝`NOTE_SHORT_GRANULARITY=1`（**默认 0，生产不加**，仅 A/B 待验） | `prompts/templates.get_note_prompt`（注入）；A/B 用 `build_round.py --subset short --prompt-profile baseline|noblocks` |
 | `scripts/measure_fact_density.py` | 事实密度量尺（对照轮判据 3）：正文数字串÷千字，去 `#` 标题行、源侧另去 `> 标题/时间` 元信息；`--against` 支持 A/B 两臂对打 | 人工验收（`PLAN-20261019` §4）；与 `build_round.py measure`（变长）配套 |
 | `shared.eval_set` | 评估集分层抽样 / 基线测量 / 人工表单判分 | `scripts/build_eval_set.py`、`scripts/score_eval_set.py` |
 | `shared.dangling_ref` | 段落悬空指代识别与统计 | `scripts/scan_dangling_refs.py` |

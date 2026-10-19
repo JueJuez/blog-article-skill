@@ -12,6 +12,7 @@
 本改动靠**关停具体小节**（有清单、可机械自报）。
 """
 import argparse
+import os
 import re
 
 # 短源模式阈值（源文本去空白字数；口径 = prompts.templates.source_chars_of）。
@@ -20,6 +21,14 @@ SHORT_SOURCE_MAX_CHARS = 5000
 
 # 块头标记：`scripts/build_round.py --prompt-profile baseline` 靠它定位并剥离本块。
 BLOCK_MARKER = "附：短源篇幅取向（SHORT_SOURCE_BUDGET）"
+
+# 「内容粒度」子块的开关（默认关＝生产态不加）。
+# 背景：关停小节只治「层」，0-2k 的膨胀主体在 required 内容小节**内部**的并列铺开
+# （一条主张拆成 背景/因果/证据/结论 四块），见 `PLAN-20261019` §4.4-2。
+# 该条款是**待验假设**，不是已生效的生产规则：A/B 由 `build_round.py --prompt-profile noblocks`
+# 打开本环境变量，台子建完即固定进 prompt 文本，生成侧不受运行期 env 影响。
+GRANULARITY_ENV = "NOTE_SHORT_GRANULARITY"
+GRANULARITY_MARKER = "附：短源内容粒度（SHORT_SOURCE_GRANULARITY）"
 
 # (自报名, 模板关键词)。关键词用于判断该笔记类型的模板里**是否真有这一节**——
 # 只对确实存在的小节下禁令，避免对没有该节的类型说废话。
@@ -55,6 +64,36 @@ def blacklist_for(note_type: str = "structured") -> list:
     if not text:
         return [name for name, _ in _BLACKLIST]
     return [name for name, kw in _BLACKLIST if kw in text]
+
+
+def granularity_on() -> bool:
+    """内容粒度条款是否开启（`NOTE_SHORT_GRANULARITY=1`）。默认关＝生产态不加。"""
+    return os.environ.get(GRANULARITY_ENV, "0").strip() in ("1", "true", "True", "yes", "on")
+
+
+def render_granularity_block(note_type: str = "structured") -> str:
+    """「禁止并列铺开」条款。
+
+    ⚠️ 这是**待验假设**（`PLAN-20261019` §4.7 A/B）：禁止的是**分层**，不是信息——
+    条款里配了「必留四类」，就是为了让保留率能证伪它：若禁止后保留率掉，说明分层承载了内容，
+    该改成限量（每点 ≤2 层）而不是一刀切。
+    """
+    lines = [
+        "", "",
+        f"# {GRANULARITY_MARKER}",
+        "",
+        "短源的膨胀不在字数，在**层数**：把源里一个点拆成 背景 / 因果 / 证据 / 结论 四块并列写满。"
+        "本篇**不要**这样写。",
+        "",
+        "- **一条主张 = 一段**：先用一句话给主张，再跟一段依据（源里原话或直接转述）。"
+        "**不要**设「背景」「因果」「证据」「结论」「原则」「启示」这类并列子标题；"
+        "真要分层，在段内用一句话交代，不单独立小节。",
+        "- **必留四类一条都不能省**（禁止的是分层，不是信息）："
+        "① 源里的数字与口径 ② 适用条件 / 前提 ③ 反例 / 例外 / 否定 ④ 作者原话（金句）。",
+        "- 源没给背景就**不要补背景**；一句话讲得完的不铺成三段。",
+        "- 字数不设目标，覆盖优先。",
+    ]
+    return "\n".join(lines)
 
 
 def in_short_source_mode(source_chars) -> bool:
@@ -94,16 +133,19 @@ def render_section_budget(source_chars, note_type: str = "structured") -> str:
         "孤立纯推广照既有口径处理（删 / 或标【推广】），**不为引流单设小节**。",
         "禁止为凑字数展开复述、加过渡性铺陈或总结性收尾；字数不设目标，覆盖优先。",
     ]
+    if granularity_on():
+        lines += [render_granularity_block(note_type)]
     return "\n".join(lines)
 
 
 def describe(source_chars, note_type: str = "structured") -> str:
-    """一行自报：源长 → 是否短源模式 → 关停清单。`--check` 与排障用。"""
+    """一行自报：源长 → 是否短源模式 → 关停清单（＋内容粒度条款开关）。`--check` 与排障用。"""
     on = in_short_source_mode(source_chars)
     banned = blacklist_for(note_type) if on else []
     return (f"源长={source_chars or 0} 阈值={SHORT_SOURCE_MAX_CHARS} "
             f"短源模式={'是' if on else '否'} 类型={note_type} "
-            f"关停={('、'.join(banned) if banned else '（无）')}")
+            f"关停={('、'.join(banned) if banned else '（无）')} "
+            f"粒度条款={'开' if granularity_on() else '关'}")
 
 
 def main(argv=None) -> int:
@@ -120,6 +162,8 @@ def main(argv=None) -> int:
     from prompts.templates import NOTE_TEMPLATES
     print(f"SHORT_SOURCE_MAX_CHARS = {SHORT_SOURCE_MAX_CHARS}")
     print(f"BLOCK_MARKER = {BLOCK_MARKER!r}")
+    print(f"内容粒度条款：{GRANULARITY_ENV}={'1' if granularity_on() else '0'}"
+          f"（默认 0＝生产不启用；A/B 见 --prompt-profile noblocks）")
     print("\n边界自检：")
     for n, want in ((4999, True), (5000, True), (5001, False), (0, False), (None, False)):
         got = in_short_source_mode(n)

@@ -103,3 +103,40 @@ def test_subset_short_picks_source_words_within_threshold():
     ]
     got = {r["eval_id"] for r in BR.subset_rows(rows, "short")}
     assert got == {"S1", "S2", "S3"}
+
+
+# —— 内容粒度条款（PLAN-20261019 §4.7 的待验假设）——
+# 守四件事：默认**关**（生产不吃未验条款）、开时只在短源生效、条款自带「必留四类」
+# （这是它能被证伪的前提：禁止的是分层，不是信息）、baseline 剥离时要连它一起剥。
+
+def test_granularity_off_by_default(monkeypatch):
+    from prompts.templates import get_note_prompt
+    monkeypatch.delenv(SB.GRANULARITY_ENV, raising=False)
+    assert SB.granularity_on() is False
+    assert SB.GRANULARITY_MARKER not in get_note_prompt("general", 3000)
+
+
+def test_granularity_on_appends_clause_with_must_keep(monkeypatch):
+    from prompts.templates import get_note_prompt
+    monkeypatch.setenv(SB.GRANULARITY_ENV, "1")
+    prompt = get_note_prompt("general", 3000)
+    assert SB.GRANULARITY_MARKER in prompt
+    assert "必留四类" in prompt              # 禁令必须自带「不丢信息」的约束
+    assert "一条主张 = 一段" in prompt
+    assert SB.BLOCK_MARKER in prompt         # 追加，不是替换关停小节块
+
+
+def test_granularity_only_for_short_sources(monkeypatch):
+    from prompts.templates import get_note_prompt
+    monkeypatch.setenv(SB.GRANULARITY_ENV, "1")
+    assert SB.GRANULARITY_MARKER not in get_note_prompt("general", 5001)
+
+
+def test_baseline_strip_removes_granularity_too(monkeypatch):
+    """`baseline` 剥到短源块头即止——粒度条款在其后，必须一起剥（否则对照臂被污染）。"""
+    from prompts.templates import get_note_prompt
+    monkeypatch.setenv(SB.GRANULARITY_ENV, "1")
+    prompt = get_note_prompt("general", 3000)
+    stripped = BR.apply_prompt_profile(prompt, "baseline")
+    assert SB.BLOCK_MARKER not in stripped
+    assert SB.GRANULARITY_MARKER not in stripped

@@ -52,6 +52,20 @@ def test_a4only_raises_when_template_drifts():
         BR.apply_prompt_profile("这是一段不含 A6 条款的假 prompt", "a4only")
 
 
+def test_noblocks_identity_when_block_present_and_raises_when_absent(monkeypatch):
+    """`noblocks` 是恒等变换，但**必须校验条款真在 prompt 里**（否则这一轮等于白跑）。"""
+    from prompts.section_budget import GRANULARITY_ENV
+
+    monkeypatch.setenv(GRANULARITY_ENV, "1")
+    prompt = _prompt(3000)
+    assert BR.apply_prompt_profile(prompt, "noblocks") == prompt
+
+    monkeypatch.delenv(GRANULARITY_ENV, raising=False)
+    without = _prompt(3000)          # 关掉 env 后生产 prompt 不含该块
+    with pytest.raises(SystemExit):
+        BR.apply_prompt_profile(without, "noblocks")
+
+
 def test_subset_lowretention_is_opinion_structured_plus_short_control():
     rows = [
         {"eval_id": "X1", "note_type": "opinion", "source_words": 9000},

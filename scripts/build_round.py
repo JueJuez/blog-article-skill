@@ -80,8 +80,19 @@ def apply_prompt_profile(prompt: str, profile: str) -> str:
     - `baseline`：剥离「短源篇幅取向」块（`section_budget.BLOCK_MARKER` 起至末尾），
       **只对短源轮有意义**——长源 prompt 本就不含该块，故找不到即报错。
       用途：`PLAN-20261019-short-source-trim` §4 的 A/B 对照臂。
+    - `noblocks`：生产态 **＋**「禁止并列铺开」条款（`section_budget.GRANULARITY_ENV` 在
+      `cmd_build` 渲染 prompt 前打开）。本函数对它是**恒等变换**——条款已在渲染时进 prompt，
+      故这里只做**存在性校验**：找不到 `GRANULARITY_MARKER` 就报错，否则这一轮等于白跑。
+      用途：`PLAN-20261019` §4.7 的内容粒度 A/B。
     """
     if profile == "current":
+        return prompt
+    if profile == "noblocks":
+        from prompts.section_budget import GRANULARITY_MARKER
+        if GRANULARITY_MARKER not in prompt:
+            raise SystemExit(
+                "[ERR] prompt-profile=noblocks 的 prompt 里没有内容粒度条款"
+                "（env 未打开，或该篇源长超阈值）。noblocks 只对 `--subset short` 有意义。")
         return prompt
     if profile == "baseline":
         from prompts.section_budget import BLOCK_MARKER
@@ -199,6 +210,12 @@ def cmd_build(args) -> int:
             return 2
     for sub in ("forms", "notes", "prompts"):
         os.makedirs(os.path.join(round_dir, sub), exist_ok=True)
+
+    # `noblocks` 的条款由 `section_budget.render_*` 在**渲染时**读 env 决定 →
+    # 必须在循环前打开。台子建完条款已固定进 `prompts/*.md`，生成子 Agent 不受运行期 env 影响。
+    if args.prompt_profile == "noblocks":
+        from prompts.section_budget import GRANULARITY_ENV
+        os.environ[GRANULARITY_ENV] = "1"
 
     from prompts.templates import get_note_prompt, QUALITY_GATE_SELFCHECK, source_chars_of
 
@@ -364,9 +381,12 @@ def main() -> int:
     ap.add_argument("--eval-dir", default=DEFAULT_EVAL_DIR)
     ap.add_argument("--round-dir", default=DEFAULT_ROUND_DIR)
     ap.add_argument("--subset", default="long", choices=["all", "long", "short", "lowretention"])
-    ap.add_argument("--prompt-profile", default="current", choices=["current", "a4only", "baseline"],
+    ap.add_argument("--prompt-profile", default="current",
+                    choices=["current", "a4only", "baseline", "noblocks"],
                     help="a4only=回退 A6 模板条款（隔离 A4 主效应）；baseline=剥离短源篇幅块"
-                         "（短源瘦身 A/B 的对照臂，只配 --subset short）；current=生产态")
+                         "（短源瘦身 A/B 的对照臂，只配 --subset short）；"
+                         "noblocks=生产态 + 禁止并列铺开条款（内容粒度 A/B，只配 --subset short）；"
+                         "current=生产态")
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
     return {"build": cmd_build, "normalize": cmd_normalize,
