@@ -14,7 +14,7 @@
 | 用户意图 | 完整流程 |
 |---|---|
 | 总结文章链接、原文、视频或字幕 | PIPELINES §2；文章 `articles/run.py`，视频 `videos/run.py` |
-| 跑一次 / 跑监控 | PIPELINES §4；默认 B站 + scys，公众号单独 `--mode weread` |
+| 跑一次 / 跑监控 | PIPELINES §4；默认 B站 + scys，公众号单独 `--mode weread`。跑完若要验证接地：按 §3.9 跑 `audit_note_grounding.py --recent-hours 6` + 消费异步复审队列 |
 | 关注 / 订阅账号 | [监控说明](monitors/README.md)；B站走 `--subscribe` 查重，不手改名单 |
 | 公众号补全 / 补到指定日期 | PIPELINES §4；`--weread-backfill`，旧代理 `--backfill` 已停用 |
 | 补齐 UP 主历史视频 | PIPELINES §6；抓取须经 `scripts/run_with_env.py` 包装 |
@@ -22,7 +22,7 @@
 | 补齐系列课 | PIPELINES §5；单集随普通队列，整季走 `backfill_series.py` |
 | 重做旧笔记 / 补丢失的源 | PIPELINES §3；重做用 `resum_save_batch.py` 原路径覆盖；重做前先 `check_resum_necessity.py` 判该不该改（§3.1） |
 | 分享 / HTML 版 | PIPELINES §2.1；按需生成，无此要求只落笔记 |
-| 落盘后复审 / 建评估集 / 查悬空指代 / 跑对照轮 | PIPELINES §3.2–§3.7；异步审核 `run_async_review.py --emit/--ingest`，评估集 `build_eval_set.py`，提取调参环 `loop0_extract_coverage.py`，对照轮 `build_round.py`（**normalize 必跑**，见 §3.6） |
+| 落盘后复审 / 建评估集 / 查悬空指代 / 跑对照轮 / 查接地 | PIPELINES §3.2–§3.9；异步审核 `run_async_review.py --emit/--ingest`，评估集 `build_eval_set.py`，提取调参环 `loop0_extract_coverage.py`，对照轮 `build_round.py`（**normalize 必跑**，见 §3.6），接地审计 `audit_note_grounding.py`（§3.9） |
 | 评估 / 归档开源项目，从文章或视频提取项目 | [项目抽取技能](tools/project_import/SKILL.md)；不触发原文总结 |
 | 迁移体检 / 清异常笔记 | PIPELINES §8；先只读扫描，成功替换并核验后才清旧文 |
 

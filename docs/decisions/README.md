@@ -24,6 +24,7 @@
 | A5 论点级判据 / A6 条件必备结构 | [A5/A6 落点](DECISION-20261018-a5-a6-landing.md) | `prompts/claim_coverage.py`（报告项，**机械覆盖率禁当指标**）、`SECTION_CONTRACTS[*].conditional` + `content_signals` 五信号（硬拦，1298 篇实测误报 1 例）；模板侧散落信息点/推广口径 |
 | 视频侧 A4 接线与保留 | [A4 视频侧](DECISION-20261018-a4-video-side.md) | 视频侧**全路径均含 A4**（单篇/系列单集/监控 ASR 批量都汇到 `_finalize_single` → `dispatch_fields`）；12 源干净 A/B 增量未检出 → 保留现状；含**A4 正式轮归因修正**与「原『系列未接线』系据死代码写成」的更正 |
 | 知识层 B 组结项 | [B 组结项](DECISION-20261019-b-group-closeout.md) | 知识层计划 §6「B 组结项说明」；B1 已由下游自行解决，B2/B3/B4/B5/B6 **全部不做**；库内无跨源整合层（L2） |
+| 接地审计（payload/分析层数字/表格归属） | [接地审计](DECISION-20261019-grounding-audits.md) | `prompts/content_signals.strip_source_payload`（P0，门禁输入清洗）；`shared/note_grounding.py` + `scripts/audit_note_grounding.py`（P1，只读）；`QUALITY_GATE_PROMPT` 8/9 条与 `build_round` 复核说明（P2）；**不加生成 prompt 补丁**，下一批按有限验证协议记账 |
 
 ## 历史关系与阅读方式
 

@@ -33,6 +33,7 @@
 | 建/重算固定评估集（改动的度量基线） | `python scripts/build_eval_set.py` → 填 `forms/`（人工或固定口径 AI 标注） → `python scripts/score_eval_set.py --dir <同目录>`（见 §3.3） | 凭单次生成效果说「变好了」 |
 | **落盘后给笔记做独立语义复审**（不阻塞落盘、不占前台） | `python scripts/run_async_review.py --emit` → 子 Agent 审 → `--ingest`（见 §3.2） | 打开 `NOTE_QUALITY_GATE=1` 把审核卡在落盘前 |
 | 查「段落悬空指代」到底是不是问题 | `python scripts/scan_dangling_refs.py`（只读，见 §3.4） | 直接建改写轮／凭感觉改 prompt |
+| **查分析层数字是否可溯源、表格数字是否挂错讲者** | `python scripts/audit_note_grounding.py --dir <round-dir>`（只读，见 §3.9） | 把它当落盘门禁（它只报告，不拦盘） |
 
 ## 2. 增量生产管线（抓新内容 → 落新笔记）
 
@@ -300,6 +301,44 @@ python scripts/build_round.py build --subset short --prompt-profile noblocks   #
 `scripts/backfill_series.py`、`build_refetch_resum_batches.py`、`consume_migrate_queue.py` 均传源长 → 生效；
 例外两处与 A4 相同——`videos/main.py` 的外部 provider 直调分支（`FORCE_AGENT_MODE=0`，默认关）
 与死代码函数 `_build_subagent_prompt`。
+
+### 3.9 接地审计：源 payload 清洗 + 两类只读检查（2026-10-19）
+
+留出轮 5 篇暴露出三类「机械检查看不到」的问题（证据与复跑见
+`notes/_meta/eval/20261019-holdout-5/ROOT_CAUSE_REGRESSIONS.md`）：
+
+1. **源 payload 抬高锚点分母**（P0，已修）：scys 源里嵌入 Coze JSON，图片尺寸 / logid / note_id
+   被当成内容锚点，一篇 15/15 的稿被 58% 召回误拦。`prompts/content_signals.py:strip_source_payload`
+   在构造锚点前剥掉「带 payload 字段的行」与超长单行 JSON，**不盲删所有 JSON**（教程里的配置示例是正文）。
+   2026-10-19 全量 1298 篇对比：仅 5 个源受影响、锚点总数 9150→9136（−0.15%）、**1 篇新通过、0 篇新失败**。
+2. **分析层数字不可溯源**（P1，只读）：`笔记者分析 / 延伸思考 / 自测 / 讲出来` 里的中文数字（「三年」）
+   不进锚点集合；`shared.note_grounding.analysis_number_flags` 扫这些小节，源里找不到且未标估算/推断即报。
+3. **表格数字挂错讲者**（P1，只读）：多人源的「结果与数据」表把 A 的量化结果填进 B 行；
+   证据契约明说不识别多说话者归属。`table_attribution_flags` 只对「首列在源里有独立 `名字：` 小节」的行
+   做 4-gram 归属检查，≥3 个讲者段落命中的视为通用词跳过。
+
+入口（报告项，不拦盘、不改稿）：
+
+```bash
+python scripts/audit_note_grounding.py --dir notes/_meta/eval/<round-dir> \
+  --report <round-dir>/_grounding_audit.md --json <round-dir>/_grounding_audit.json
+python scripts/audit_note_grounding.py --note <稿.md> --source <源.md>   # 单篇
+python scripts/audit_note_grounding.py --manifest <list.json>            # 生产批次：[{"id","note","source"}]
+python scripts/audit_note_grounding.py --recent-hours 6                  # 跑完监控后扫最近落盘的库内笔记
+```
+
+**P2 复核清单**（零生产风险）：`build_round.py` 的 `_CHECK_INSTRUCTION.md` 与
+`QUALITY_GATE_PROMPT` 各加两条观察项——**机制链完整性**（资金/流程/因果是否有一句完整文字链路，
+不只端点、不只图）与**数字归属**（表格数字是否挂在源里对应讲者名下，挂错按 P1）。
+`QUALITY_GATE_PROMPT` 变更会改变 prompt hash，旧的显式审核报告需重出（默认 `NOTE_QUALITY_GATE=0` 不受影响）。
+
+> 边界：P1 两项都是**报告项**，误报由人工判；不要把它们直接改成落盘硬拦。P0 只改锚点构造的输入清洗，
+> 不改阈值（`MIN_ANCHORS` / `RECALL_THRESHOLD` 未动）。
+
+**下一批真实生产的有限验证协议**（2026-10-19 定）：对本批稿件跑 P1 + 消费异步复审队列 →
+只对确认问题做定向修订 → 复审 → 在 `notes/_meta/grounding/ledger.jsonl` 记「真错/误报/修订次数/人工分钟」，
+再按成本决定是否自动接线或加 prompt 补丁。完整步骤、账本字段与门槛见
+[`notes/_meta/eval/20261019-holdout-5/NEXT_PRODUCTION_PROTOCOL.md`](../notes/_meta/eval/20261019-holdout-5/NEXT_PRODUCTION_PROTOCOL.md)。
 
 
 ## 4. 订阅监控管线

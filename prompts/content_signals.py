@@ -67,6 +67,35 @@ def strip_source(raw: str) -> str:
     return FRONT_HEADER_RE.sub("", raw, count=1).strip()
 
 
+# 抓取注入的 API/SDK payload（scys 的 Coze 响应、图片元数据、笔记 ID）不是正文事实。
+# 2026-10-19 实测：H05 源里嵌了整段 Coze JSON，锚点因此多出 1440/1920/3370、logid、
+# note_id、execute_id；一篇 15/15 的稿被 58% 召回误拦（过滤后 82%）。
+_PAYLOAD_MARK = re.compile(
+    r'"(?:logid|execute_id|note_id|xsec_token|image_list|debug_url|interact_info|'
+    r'user_id|model_type|cover|avatar|nickname)"\s*:')
+_URL_RE = re.compile(r"https?://\S+")
+_MD_IMG_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+
+
+def strip_source_payload(text: str) -> str:
+    """剥离抓取注入的 JSON/媒体元数据，保留正文与代码示例。
+
+    只删「有 payload 特征」的行（Coze 响应字段、超长单行 JSON），不盲删所有 JSON——
+    教程里的配置示例可能是正文内容。也**不**按「12 位以上数字」删正文：真实金额
+    可能写成 4793700000000（无千分位），误删会制造新的漏锚点。
+    """
+    out = []
+    for line in (text or "").splitlines():
+        if _PAYLOAD_MARK.search(line):
+            continue
+        if len(line) > 2000 and ('{"' in line or '\\"' in line):
+            continue
+        line = _URL_RE.sub(" ", line)
+        line = _MD_IMG_RE.sub(" ", line)
+        out.append(line)
+    return "\n".join(out)
+
+
 def strip_note(note: str) -> str:
     """去掉系统权威追加的标签行与来源链接行，只留模型正文。"""
     body = TAGLINE_RE.sub("", note, count=1)
@@ -147,8 +176,13 @@ def _numeric_anchors(text: str) -> set:
 
 
 def _anchor_specs(source: str) -> list:
-    """构造锚点检查项 [(kind, display, matcher)]，matcher(note) -> 笔记是否保留。"""
+    """构造锚点检查项 [(kind, display, matcher)]，matcher(note) -> 笔记是否保留。
+
+    ⚠️ 先在**去掉抓取 payload** 的源上构造（2026-10-19 P0）：JSON 里的图片尺寸/ID
+    不是内容事实，留在分母里会把好稿误判成漏内容。
+    """
     from shared import note_classify as nc
+    source = strip_source_payload(source)
     specs = []
 
     for d in sorted(_numeric_anchors(source)):

@@ -15,6 +15,7 @@
 | 转写依赖与恢复 | [ASR 手册](../references/asr-bilibili-sandbox.md) |
 | 模板与质量契约 | `prompts/templates.py`、`prompts/verifier.py`、`prompts/content_signals.py`；执行规则 RULES §4.6 |
 | 路由、去重、最终输出 | `shared/routing.py`、`articles/dedup.py`、`articles/manager.py`；管线入口见 PIPELINES |
+| 接地审计（分析层数字 / 表格归属） | `shared/note_grounding.py`、`scripts/audit_note_grounding.py`；入口与边界见 PIPELINES §3.9，理由见 [接地审计决策](decisions/DECISION-20261019-grounding-audits.md) |
 | 测试纪律与术语 | [testing_rules](../references/testing_rules.md)、[glossary](../references/glossary.md) |
 | 决策、理由与取代关系 | [决策索引](decisions/README.md) |
 | 项目抽取归档 | [项目抽取技能](../tools/project_import/SKILL.md) 与 [用法](../tools/project_import/README.md) |
