@@ -226,6 +226,7 @@ OPENAI_API_KEY=sk-xxxx
 | `NOTE_GATE_THRESHOLD` | `85` | 最低分数；明确失败或P1不能被高分抵消 |
 | `NOTE_ASYNC_REVIEW` | `1` | 落盘后异步复审入队：`1`触发式（review_flags 非空或抽样）/ `all` 全量 / `0` 关闭；只写队列，不调 AI |
 | `NOTE_ASYNC_REVIEW_RATE` | `0.15` | 触发式的抽样比例；消费端 `scripts/run_async_review.py` 才花钱 |
+| `NOTE_SHORT_GRANULARITY` | `0` | `1` 时短源块再加「禁止并列铺开」条款。**仅对照轮实验用，已否决**（`PLAN-20261019` §4.7：0-2k 能压到 1.49，但会挤掉必留的条件/原则）；生产保持 `0` |
 
 - 开启后内容失败最多修订两次，每次重审；缺源、partial、无模型、超时或解析失败停止写入并保留候选/待办，force不豁免。
 - 关闭时`verify_note()`返回None，记录未审；`QUALITY_GATE_SELFCHECK`作者自检和现有抽检继续，但不认证独立全文通过。

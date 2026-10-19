@@ -231,9 +231,13 @@ python scripts/score_eval_set.py --dir <round-dir> --report <round-dir>/_score.m
 
 - **`normalize` 必跑**：轮次稿带 A4 清单块，不剥则复核者照抄清单 → 保留率虚高、对照失效。
   原稿留 `.raw.md`；**复核子 Agent 只能读 `notes/Axx.md`，不得读 `.raw.md`**（派工提示词里要写明）。
-- **`--prompt-profile a4only`**：按 A4 落地态（commit `4b26a3d`）回退 A6 的两段模板条款，用来**隔离
-  A4 主效应**（§8 归因纪律：两个生成端改动不得合进同一对照）。定位不到 A6 段即报错，不静默通过。
-  跑 A6 自己的核对用默认 `current`。
+- **`--prompt-profile`**（`apply_prompt_profile`）：一圈只改一个变量，定位不到目标段即报错、不静默通过。
+  | 值 | 含义 | 用途 |
+  |---|---|---|
+  | `current` | 生产态，原样 | 测生产态 / 新块本身（如 `round_layer_admit`） |
+  | `a4only` | 按 A4 落地态（commit `4b26a3d`）回退 A6 两段模板条款 | 隔离 A4 主效应（§8 归因纪律） |
+  | `baseline` | 剥掉整个「短源篇幅取向」块（块头起至末尾） | 短源 A/B 的**对照臂**，只配 `--subset short` |
+  | `noblocks` | 生产态 + 「禁止并列铺开」条款（渲染前置 `NOTE_SHORT_GRANULARITY=1`） | §4.7 禁铺实验；**已否决**，仅留档复跑 |
 - 表单带 `<!-- DISTORTION -->` 区（§12.3 #15 失真伴随观察项）：**只观察、不计入保留率**，
   四类＝范围泛化/方向反转/案例替换/源外数字；判分输出 `distortion_observed_forms` /
   `distortion_forms_hit` / `distortion_counts`，口径见评估目录 `ANNOTATION.md` §七。
@@ -275,11 +279,15 @@ python scripts/build_round.py build --subset short --prompt-profile noblocks   #
 （required 小节 + 必留四类），按比例量会逼着砍内容——实测代价见计划 §4.7。口径与全部数字见
 [短源瘦身计划](plans/PLAN-20261019-short-source-trim.md) §1、§4.9。
 
-**验收结果（2026-10-19 实跑，12 篇 A/B）**：对照臂 94.3% / 2.36·1.60 / 1.51·6.97，
+> ⚠️ **这些是「验收尺」，不是门禁**：在对照轮跑完后由人量，**不喂生成端、不写进 prompt、不做落盘拦截**。
+> 门禁侧仍只认 RULES §3 的 `<300` 与 `>max(8000, 源长×3)` 两档——把上面任何一条做成生成端上限
+> 就等于复活「字数上限压制」（RULES 明令禁止，见 `DECISION-20260915-content-first-gate`）。
+
+**验收结果（2026-10-19 实跑，12 篇 A/B，按修订前的旧线判）**：对照臂 94.3% / 2.36·1.60 / 1.51·6.97，
 生产臂 **96.4% / 1.89·1.13 / 1.54·8.71**（保留率 / 稿长比 0-2k·2-5k / 密度 同序，密度用
-`measure_fact_density.py` 量）——保留率与 2-5k 长度线达标，0-2k 长度线与两桶密度线未达标。
-机制生效可机械核验（生产臂关停小节 0 篇违规、对照臂同类小节 8,721 字），但杠杆只覆盖「分析/元层」，
-**0-2k 的膨胀主体在 required 内容小节内部的铺开粒度**。
+`measure_fact_density.py` 量）——保留率与 2-5k 长度线达标；0-2k 长度线（1.89 对 1.5）与两桶密度线
+按**旧线**未达标，其中 0-2k 的线已在下面定案里撤销。机制生效可机械核验（生产臂关停小节 0 篇违规、
+对照臂同类小节 8,721 字），但杠杆只覆盖「分析/元层」，**0-2k 的膨胀主体在 required 内容小节内部的铺开粒度**。
 
 **定案（同日，`PLAN-20261019` §4.8–§4.9）**：**不禁分层**，改「按凭据准入」——短源块里给了
 「层 → 必须先能在源里指认」的对照表（背景/因果/证据/结论/原则-启示），并写明
@@ -401,7 +409,7 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 | `prompts.extract_checklist` | A4 长源提取清单：按源长条件注入两阶段指令（>10000）／短源 T0 报告块（<2000）；剥离清单→机械校验（原句须命中源）→对账→按源 hash 存档，**全部报告项、永不抛异常** | `prompts.templates.get_note_prompt`（注入）、`save_summary_only`、`resum_save_batch` |
 | `prompts.claim_coverage` | A5 论点级判据（**报告项**）：源侧断言候选＋疑似无落点＋失真嫌疑（源外数字/方向反转）；机械覆盖率**禁当指标** | `scripts/run_async_review.py --emit`（注入派单） |
 | `prompts.content_signals.CONDITIONAL_SIGNALS` | A6 条件必备结构的源侧信号（反例/公式/章节/对比/数值密集） | `content_signals.structure_obligations` → 机械门禁硬拦 |
-| `prompts/section_budget.py`（模块 `prompts.section_budget`） | 短源篇幅取向：源长 ≤5000 注入「关停分析层与元层」块（只做重组/条件/有信号反例/私房术语），**长源一行不动**。可选「禁止并列铺开」条款＝`NOTE_SHORT_GRANULARITY=1`（**默认 0，生产不加**，仅 A/B 待验） | `prompts/templates.get_note_prompt`（注入）；A/B 用 `build_round.py --subset short --prompt-profile baseline|noblocks` |
+| `prompts/section_budget.py`（模块 `prompts.section_budget`） | 短源篇幅取向：源长 ≤5000 注入「关停分析层与元层」块 + **层的准入凭据表**（背景/因果/证据/结论/原则-启示 各要源内凭据；必留四类优先），**长源一行不动**。`NOTE_SHORT_GRANULARITY=1` 另开「禁止并列铺开」条款（**已否决**，默认 0，仅留档） | `prompts/templates.get_note_prompt`（注入）；A/B 用 `build_round.py --subset short --prompt-profile baseline|noblocks` |
 | `scripts/measure_fact_density.py` | 事实密度量尺（对照轮判据 3）：正文数字串÷千字，去 `#` 标题行、源侧另去 `> 标题/时间` 元信息；`--against` 支持 A/B 两臂对打 | 人工验收（`PLAN-20261019` §4）；与 `build_round.py measure`（变长）配套 |
 | `shared.eval_set` | 评估集分层抽样 / 基线测量 / 人工表单判分 | `scripts/build_eval_set.py`、`scripts/score_eval_set.py` |
 | `shared.dangling_ref` | 段落悬空指代识别与统计 | `scripts/scan_dangling_refs.py` |
