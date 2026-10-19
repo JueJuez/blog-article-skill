@@ -49,6 +49,32 @@ def test_render_block_content_for_short_source():
         assert mode in block
 
 
+def test_layering_is_admission_based_not_banned():
+    """2026-10-19 定案（PLAN-20261019 §4.8）：**不禁分层**，按「源里有没有」准入。
+
+    这条守的是方向：块里必须给的是**凭据表**，不是「一律不许铺」的禁令。
+    """
+    block = SB.render_section_budget(3000, "general")
+    assert "分层看凭据" in block
+    for layer in ("背景", "因果", "证据", "结论", "原则 / 启示"):
+        assert f"| {layer}" in block, f"凭据表缺「{layer}」这一行"
+    assert "空层" in block                    # 判据是「有没有东西」，不是「几层」
+    assert "一律不许" not in block and "不要分小节" not in block
+
+
+def test_must_keep_four_outranks_shortening():
+    """A04 实测教训：禁令与必留项冲突时模型会牺牲必留 → 块里必须写明优先级。"""
+    block = SB.render_section_budget(3000, "general")
+    assert "必留四类" in block
+    assert "优先级高于" in block
+    assert "宁可多一层" in block
+
+
+def test_admission_rules_are_short_source_only():
+    assert "分层看凭据" in SB.render_section_budget(4999, "general")
+    assert SB.render_section_budget(5001, "general") == ""
+
+
 def test_blacklist_only_names_sections_that_exist_in_that_template():
     """黑名单里的每一节，关键词必须能在该类型模板里找到——否则是对空气下禁令。"""
     from prompts.templates import NOTE_TEMPLATES
