@@ -25,6 +25,7 @@
 | 视频侧 A4 接线与保留 | [A4 视频侧](DECISION-20261018-a4-video-side.md) | 视频侧**全路径均含 A4**（单篇/系列单集/监控 ASR 批量都汇到 `_finalize_single` → `dispatch_fields`）；12 源干净 A/B 增量未检出 → 保留现状；含**A4 正式轮归因修正**与「原『系列未接线』系据死代码写成」的更正 |
 | 知识层 B 组结项 | [B 组结项](DECISION-20261019-b-group-closeout.md) | 知识层计划 §6「B 组结项说明」；B1 已由下游自行解决，B2/B3/B4/B5/B6 **全部不做**；库内无跨源整合层（L2） |
 | 接地审计（payload/分析层数字/表格归属） | [接地审计](DECISION-20261019-grounding-audits.md) | `prompts/content_signals.strip_source_payload`（P0，门禁输入清洗）；`shared/note_grounding.py` + `scripts/audit_note_grounding.py`（P1，只读）；`QUALITY_GATE_PROMPT` 8/9 条与 `build_round` 复核说明（P2）；**不加生成 prompt 补丁**，下一批按有限验证协议记账 |
+| 外部仓库借鉴（open-notebook / open-webui） | [外部基准调研](DECISION-20261024-external-repo-benchmarks.md) | **全部不立项**；三项留档参考（播客出口 / 检索层参数 / insight 独立 embedding）待触发，细节与上游参数存 [references/external-repo-benchmarks](../../references/external-repo-benchmarks.md) |
 
 ## 历史关系与阅读方式
 
