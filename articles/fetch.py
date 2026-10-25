@@ -48,6 +48,12 @@ def is_scys_url(url: str) -> bool:
     return isinstance(url, str) and url.startswith("https://scys.com/")
 
 
+def is_feishu_doc_url(url: str) -> bool:
+    """飞书 wiki/docx 文档链接判定；真源在 shared.feishu_ext（2026-10-25 收敛）。"""
+    from shared.feishu_ext import is_feishu_doc_url as _is
+    return _is(url)
+
+
 def is_wechat_article_url(url: str) -> bool:
     """微信公众号文章（mp.weixin.qq.com/s/...）直连常被微信反爬墙/频控空页拦截。
 
@@ -278,6 +284,32 @@ def _extract_body_scys(page) -> str:
     """从已渲染 scys 页面抽取正文。唯一实现在 shared.cdp_session.extract_body（2026-09-18 收敛）。"""
     from shared.cdp_session import extract_body
     return extract_body(page)
+
+
+def _feishu_cdp_fetch(url: str) -> tuple[str, str, int]:
+    """飞书 wiki/docx 文档：复用 scys 会话单例 + collect_full_text 增量滚动抓全文。
+
+    飞书是 JS 渲染 SPA，普通 HTTP 下载拿不到正文；且正文按视口虚拟化渲染，
+    必须走 bear 容器增量滚动（唯一实现在 shared.feishu_ext.collect_full_text，
+    2026-10-25 收敛，scys 批量外链同源）。发布时间取不到，返回 0。
+    """
+    from shared.feishu_ext import collect_full_text
+    last_err = None
+    for _attempt in range(2):  # 与 _scys_cdp_fetch 同款：浏览器崩溃重置会话重试1次
+        page = None
+        try:
+            sess = _get_scys_session()
+            page = sess.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            page.wait_for_timeout(5_000)
+            title, body = collect_full_text(page)
+            return (title, body, 0)
+        except Exception as e:
+            last_err = e
+            _close_scys_session()
+            if _attempt == 0:
+                continue
+    raise RuntimeError(f"飞书文档 CDP 抓取失败: {last_err}")
 
 
 def _scys_cdp_fetch(url: str, out_path=None, **kwargs) -> dict:
@@ -602,6 +634,16 @@ def fetch_web_content(url: str, cdp_on_fail: bool = True):
     # 微信公众号文章：直连常撞墙，先试直连，失败按 cdp_on_fail 处理（见 _fetch_wechat_article）
     if is_wechat_article_url(url):
         return _fetch_wechat_article(url, cdp_on_fail=cdp_on_fail)
+
+    # 飞书 wiki/docx：JS 渲染 SPA，直连拿不到正文且正文虚拟化渲染，
+    # 必须走 bear 容器增量滚动（shared.feishu_ext.collect_full_text，2026-10-25 收敛）
+    if is_feishu_doc_url(url):
+        print("🔐 检测到飞书文档链接 → 走 CDP 登录态 + bear 容器增量滚动抓取")
+        title, body, _pt = _feishu_cdp_fetch(url)
+        if len(body.strip()) < 100:
+            print("❌ 飞书文档抓取正文过短，视为失败")
+            return None
+        return (title, body, _pt)
 
     html, response = _download(url)
     if not html:

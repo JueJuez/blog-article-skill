@@ -310,6 +310,9 @@ python scripts/build_round.py build --subset short --prompt-profile noblocks   #
 1. **源 payload 抬高锚点分母**（P0，已修）：scys 源里嵌入 Coze JSON，图片尺寸 / logid / note_id
    被当成内容锚点，一篇 15/15 的稿被 58% 召回误拦。`prompts/content_signals.py:strip_source_payload`
    在构造锚点前剥掉「带 payload 字段的行」与超长单行 JSON，**不盲删所有 JSON**（教程里的配置示例是正文）。
+   2026-10-25 补第二类：页面 chrome「评论区输入框占位符 `0 / 1200 发布`」被拆行抓进正文，
+   纯数字 1200 进锚点分母，一批 4 篇同被误拦——现已剥「数字/数字/发布」紧邻序列（回归测试
+   `test_comment_box_chrome_stripped_but_real_number_kept`）。
    2026-10-19 全量 1298 篇对比：仅 5 个源受影响、锚点总数 9150→9136（−0.15%）、**1 篇新通过、0 篇新失败**。
 2. **分析层数字不可溯源**（P1，只读）：`笔记者分析 / 延伸思考 / 自测 / 讲出来` 里的中文数字（「三年」）
    不进锚点集合；`shared.note_grounding.analysis_number_flags` 扫这些小节，源里找不到且未标估算/推断即报。
@@ -417,9 +420,7 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 
 **入口**：`python scripts/launch_scys_backfill.py`（DETACHED 长任务，数小时）；按领域单跑
 `python scripts/scys_batch_fetch.py --project <领域>`。落盘另有 `scripts/land_scys_by_key.py`（按 topicId 稳定键）。
-**零件**：`scripts/scys_batch_fetch.py: ScysBatchFetcher.fetch_article`、`shared/cdp_session.py`、
-`scripts/feishu_ext_refetch.py` + `scripts/refetch_feishu_ext_batch.py`（飞书外链全文重抓 / 批量版，
-`.bear-web-x-container` 增量滚动；⚠️ URL 取 `<a href>` 或 `_ext` 文件头完整版，正文显示文本带 `...` 会 404）。
+**零件**：`scripts/scys_batch_fetch.py: ScysBatchFetcher.fetch_article`、`shared/cdp_session.py`、`shared/feishu_ext.py`（**飞书懒加载全文单点实现（2026-10-25）**：`collect_full_text` 增量滚动 bear 容器逐视口收集；`scys_batch_fetch._fetch_external` 已接入（修复旧 window.scrollTo 只抓到目录+开头的截断 bug，一批 32 条实测）；`articles/fetch.py` 单篇飞书链接分流同源；存量重抓 `scripts/feishu_ext_refetch.py` + `scripts/refetch_feishu_ext_batch.py`（飞书外链全文重抓 / 批量版；⚠️ URL 取 `<a href>` 或 `_ext` 文件头完整版，正文显示文本带 `...` 会 404）。
 
 ## 8. 迁移门禁管线
 
@@ -484,7 +485,7 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 | 飞书总览索引 | `shared.feishu_overview.ensure_overview` / `add_entry` / `rebuild` | |
 | 带登录态抓页面（CDP） | `shared.cdp_session.SharedCdpSession` | 委托用户级 SKILL |
 | 从渲染页抽取正文 | `shared.cdp_session.extract_body(page)` | 2026-09-18 收敛：此前 3 份逐字相同实现（`articles.fetch._extract_body_scys` / `scys_batch_fetch.ScysBatchFetcher._extract_body` / `SharedCdpSession._extract_body`），现统一为模块级单点，改规则只改一处 |
-| 飞书外链全文（懒加载） | `scripts/feishu_ext_refetch.py: collect_full_text` | `.bear-web-x-container` 增量滚动 |
+| 飞书外链全文（懒加载） | `shared/feishu_ext.py: collect_full_text`（单点实现，2026-10-25 自 feishu_ext_refetch 下沉） | bear 容器增量滚动；消费方：scys 批量外链 / feishu_ext_refetch 存量重抓 / articles 单篇飞书分流 |
 | B站 cookie 健康 / 刷新 | `monitors.bilibili.refresh_cookie_if_dead`、`videos.set_cookie.set_bilibili_cookie` | **克隆死即重克隆闭环（2026-09-24）**：CDP 活会话提取拿不到有效 cookie（克隆会话已被服务端作废）→ 立即 `shared.cdp_session.force_refresh_clone()` 强制全量重克隆默认 profile 取活会话、重试一次。用户拍板：克隆死就立即触发，不加任何守卫（自动监控轮次亦然） |
 | 监控去重状态 | `monitors.state.get_seen` / `mark_seen` | |
 | 滚动日志 | `shared.rolling_log.append_rolling` | |

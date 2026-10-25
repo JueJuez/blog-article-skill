@@ -16,62 +16,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from shared.feishu_ext import collect_full_text, STEP_PX, SETTLE_MS, MAX_STEPS  # noqa: E402,F401
 from login_cdp_fetch import discover_chrome_devtools  # noqa: E402
-
-STEP_PX = 900
-SETTLE_MS = 550
-MAX_STEPS = 600
-
-
-def collect_full_text(page) -> tuple[str, str]:
-    """增量滚动收集整页文本；返回 (title, 合并正文)。
-
-    飞书 wiki/docx 的滚动容器是 div.bear-web-x-container（不是 window），
-    逐段滚动该容器，收集每视口 innerText 快照，按「首见顺序」去重合并。
-    """
-    title = page.title()
-    lines: list[str] = []
-    seen: set[str] = set()
-
-    def snapshot() -> None:
-        text = page.evaluate(
-            """() => {
-                const c = document.querySelector('.bear-web-x-container');
-                return (c || document.body).innerText;
-            }"""
-        ) or ""
-        for ln in text.splitlines():
-            s = ln.strip()
-            if len(s) >= 2 and s not in seen:
-                seen.add(s)
-                lines.append(s)
-
-    stable_rounds = 0
-    last_height = -1
-    y = 0
-    for _ in range(MAX_STEPS):
-        page.evaluate(
-            """(y) => {
-                const c = document.querySelector('.bear-web-x-container');
-                if (c) c.scrollTop = y; else window.scrollTo(0, y);
-            }""",
-            y,
-        )
-        page.wait_for_timeout(SETTLE_MS)
-        snapshot()
-        height = page.evaluate(
-            "() => { const c = document.querySelector('.bear-web-x-container');"
-            " return c ? c.scrollHeight : document.body.scrollHeight; }"
-        )
-        if height == last_height and y >= height:
-            stable_rounds += 1
-            if stable_rounds >= 2:
-                break
-        else:
-            stable_rounds = 0
-        last_height = height
-        y = min(y + STEP_PX, height) if y < height else height
-    return title, "\n".join(lines)
 
 
 def main(argv: list[str]) -> int:
