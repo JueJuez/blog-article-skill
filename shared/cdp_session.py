@@ -140,6 +140,17 @@ def extract_body(page) -> str:
 class SharedCdpSession(_skill.CdpSession):
     """项目业务层薄子类：实例机制（健康复用/自愈/锁/D6 关灯）继承内核，此处只放抓取方法。"""
 
+    def keepalive(self) -> None:
+        """daemon 模式下通知 daemon 刷新 last_access（保活，不杀 Chrome）；非 daemon 静默 no-op。
+
+        背景：daemon reaper 按 CDP_IDLE_TIMEOUT（默认 300s）回收「没人用」的 Chrome，
+        而 last_access 只在 ACQUIRE/RELEASE 刷新。长任务（scys 批量抓取）篇间 15~40s、
+        批间 3~8 分钟的静默会被误判空闲杀掉 Chrome（2026-10-24 scys 四领域整段跳过根因）。
+        复用内核 RELEASE 语义：只刷新 last_access，与 close() 的通知同一协议。
+        """
+        if getattr(self, "_use_daemon", False) and getattr(self, "_clone_dir", None):
+            _skill._daemon_release(self._clone_dir)
+
     def get_title(self, url: str, wait_min: int = 6000, wait_max: int = 14000) -> str:
         """每篇等待 wait_min~wait_max 毫秒的随机区间（默认 6~14s），
         打破机械节拍，比固定 8s 更不易被识别为脚本，且仍属人的阅读节奏。"""

@@ -325,6 +325,31 @@ def registry_filter(items: list[dict]) -> tuple[list[dict], list[dict]]:
         return items, []
 
 
+def _touch(sess) -> None:
+    """给 CDP daemon 刷一次 last_access（长任务保活；非 daemon 模式静默 no-op）。
+
+    背景：daemon 的 reaper 按 CDP_IDLE_TIMEOUT（默认 300s）判断「没人用」就杀 Chrome，
+    而 last_access 只在 ACQUIRE/RELEASE 刷新。本脚本篇间等 15~40s、每批还歇 3~8 分钟，
+    不主动打招呼就会被误杀（2026-10-24 scys 四领域整段跳过的根因）。
+    """
+    fn = getattr(sess, "keepalive", None)
+    if callable(fn):
+        try:
+            fn()
+        except Exception:
+            pass
+
+
+def _sleep_with_touch(sess, seconds: float) -> None:
+    """分段 sleep 并逐段给 daemon 心跳——覆盖 3~8 分钟的批量休息（远超 300s idle）。"""
+    left = max(0.0, float(seconds))
+    while left > 0:
+        step = min(30.0, left)
+        time.sleep(step)
+        left -= step
+        _touch(sess)
+
+
 class ScysBatchFetcher:
     def cross_tag_filter(self, todo: list[dict]) -> tuple[list[dict], list[dict]]:
         """跨标签去重（2026-09-10）：同一篇横跨多个标签时，先抓到的标签认领，其余跳过。
@@ -717,6 +742,7 @@ class ScysBatchFetcher:
                 for it in todo:
                     tid = str(it["topicId"])
                     print(f"  [{fetched + 1}/{len(todo)}] {it['showTitle'][:50]}")
+                    _touch(sess)  # daemon 保活：每篇前刷一次 last_access
                     try:
                         r = self.fetch_article(page, tid)
                     except Exception as e:
@@ -737,7 +763,7 @@ class ScysBatchFetcher:
                     if fetched >= batch_at:
                         rest = random.uniform(*BATCH_REST)
                         print(f"  [rest] 已抓 {fetched} 篇，休息 {rest:.0f}s（模拟人类）")
-                        time.sleep(rest)
+                        _sleep_with_touch(sess, rest)
                         batch_at = fetched + random.randint(*BATCH_SIZE_RANGE)
                     else:
                         gap = random.uniform(*ARTICLE_GAP)
