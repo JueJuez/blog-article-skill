@@ -38,6 +38,11 @@ VAULT = os.getenv("OBSIDIAN_VAULT_PATH") or r"D:\Code\Obsidian\obsidian-path\AI 
 
 RAW_NAME_RE = re.compile(r"^_raw_(?P<key>.+?)-\d{8}-\d{6}\.md$")
 BV_RE = re.compile(r"(BV[0-9A-Za-z]{8,})")
+SCYS_URL_RE = re.compile(r"xq_topic/(\d+)")
+SCYS_RAW_DIR = os.path.join(ROOT, "notes", "_scraped", "scys")
+# raw 文件名 key 的截断上限（真源：articles/main.py:save_raw_content_to_file，标题净化后 [:30]）。
+# 审计侧按全标题匹配会漏掉所有长标题条目（2026-10-25 实测 --recent-hours 假绿），故保留此常量做前缀回退。
+RAW_KEY_MAXLEN = 30
 
 
 # ---------------------------------------------------------------- 语料构建
@@ -70,6 +75,36 @@ def _slice_raw_map() -> dict:
     return out
 
 
+def resolve_source(v: dict, raw_idx: dict, bv_map: dict) -> str:
+    """registry 条目 → 源文件路径（解析失败返回 ""，调用方跳过该条）。
+
+    解析优先级：① slices 的 bvid 映射（本批权威）→ ② scys topicId 确定性回查
+    （notes/_scraped/scys/<id>.md）→ ③ raw 全名 → ④ raw 截断前缀（30 字符上限，
+    articles/main.py:save_raw_content_to_file）→ ⑤ difflib 0.9 模糊兜底。
+    """
+    src = ""
+    m = BV_RE.search(v.get("source_url", "") or "")
+    if m and bv_map.get(m.group(1).upper()):
+        src = bv_map[m.group(1).upper()]
+    if not src or not os.path.exists(src):
+        sm = SCYS_URL_RE.search(v.get("source_url", "") or "")
+        if sm:
+            cand = os.path.join(SCYS_RAW_DIR, sm.group(1) + ".md")
+            if os.path.exists(cand):
+                src = cand
+    if not src or not os.path.exists(src):
+        key = CS.sanitize_title(v.get("title") or "")
+        src = raw_idx.get(key, "")
+        if not src:
+            src = raw_idx.get(key[:RAW_KEY_MAXLEN], "")
+        if not src:
+            close = difflib.get_close_matches(key, list(raw_idx), n=1, cutoff=0.9)
+            src = raw_idx[close[0]] if close else ""
+    if not src or not os.path.exists(src):
+        return ""
+    return src
+
+
 def build_corpus(which: str = "all") -> list:
     data = json.load(open(REGISTRY, encoding="utf-8"))
     raw_idx = _raw_index()
@@ -91,17 +126,8 @@ def build_corpus(which: str = "all") -> list:
             continue
         if which == "xiapeng" and not is_xiapeng:
             continue
-        src = ""
-        m = BV_RE.search(v.get("source_url", ""))
-        if m and bv_map.get(m.group(1).upper()):
-            src = bv_map[m.group(1).upper()]
-        if not src or not os.path.exists(src):
-            key = CS.sanitize_title(v.get("title") or "")
-            src = raw_idx.get(key, "")
-            if not src:
-                close = difflib.get_close_matches(key, list(raw_idx), n=1, cutoff=0.9)
-                src = raw_idx[close[0]] if close else ""
-        if not src or not os.path.exists(src):
+        src = resolve_source(v, raw_idx, bv_map)
+        if not src:
             continue
         out.append({
             "note_path": note_path, "source_path": src, "folder": folder,

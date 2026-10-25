@@ -330,6 +330,13 @@ python scripts/audit_note_grounding.py --manifest <list.json>            # 生�
 python scripts/audit_note_grounding.py --recent-hours 6                  # 跑完监控后扫最近落盘的库内笔记
 ```
 
+**源解析四级收口（2026-10-25 修盲区）**：`--recent-hours` 曾对两类条目**静默漏扫**（配不上源就跳过、
+输出空表假绿）——① B站长标题：raw 文件名 key 截 30 字符（`articles/main.py:save_raw_content_to_file`），
+全标题匹配不上；② scys 源：`notes/_scraped/scys/` 不在 `_raw_` 索引里。现由
+`audit_gate_signals.resolve_source` 统一解析：slices bvid 映射 → scys topicId 确定性回查
+（source_url 含 `xq_topic/<id>` → `<id>.md`）→ raw 全名 → raw 截断前缀 `key[:RAW_KEY_MAXLEN]` →
+difflib 0.9 兜底。回归 `tests/test_audit_source_resolution.py`；修复后语料覆盖 1316→1678（+362）。
+
 **P2 复核清单**（零生产风险）：`build_round.py` 的 `_CHECK_INSTRUCTION.md` 与
 `QUALITY_GATE_PROMPT` 各加两条观察项——**机制链完整性**（资金/流程/因果是否有一句完整文字链路，
 不只端点、不只图）与**数字归属**（表格数字是否挂在源里对应讲者名下，挂错按 P1）。
