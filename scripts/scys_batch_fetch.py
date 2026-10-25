@@ -37,6 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 让 shared 包可导入
 from login_cdp_fetch import discover_chrome_devtools, write_output
+from shared.feishu_ext import collect_full_text  # 飞书 bear 容器增量滚动（2026-10-25 永久修复）
 from shared.cdp_session import SharedCdpSession, extract_body
 from prompts.classify import classify_note_type
 from prompts.templates import QUALITY_GATE_SELFCHECK, get_note_prompt, source_chars_of
@@ -572,31 +573,18 @@ class ScysBatchFetcher:
         return internal, external
 
     def _fetch_external(self, page, url: str) -> dict:
-        """外部知识库（飞书 wiki/docx 等）：渐进滚动多轮触发分块懒加载后再取文本。
+        """外部知识库（飞书 wiki/docx 等）：增量滚动 bear 容器逐视口收集全文。
 
-        飞书 wiki 正文按滚动位置分块注入 DOM，直接滚到底会漏中间块，
-        故从顶到底步进滚动两轮（每 900px 等 500ms 让块渲染），滚到底后
-        高度若再增长则继续滚，直到高度稳定。
+        ⚠️ 历史教训（2026-10-25 永久修复）：旧实现用 window.scrollTo 滚两轮取一次
+        innerText——飞书 wiki/docx 的滚动容器是 div.bear-web-x-container 且正文按
+        视口虚拟化渲染，滚 window 根本不动文档，只抓到目录+开头（实测一批 32 条
+        全部截断）。现统一复用 feishu_ext_refetch.collect_full_text：容器滚动 +
+        逐视口快照按行去重合并；无 bear 容器的页面自动回退 window 滚动（同样
+        逐快照收集，不劣于旧实现）。
         """
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         page.wait_for_timeout(5000)
-        for _round in range(2):
-            page.evaluate("() => window.scrollTo(0, 0)")
-            page.wait_for_timeout(2000)
-            y, h = 0, page.evaluate("() => document.body.scrollHeight")
-            while y < h:
-                y += 900
-                page.evaluate(f"() => window.scrollTo(0, {y})")
-                page.wait_for_timeout(500)
-                h2 = page.evaluate("() => document.body.scrollHeight")
-                if h2 > h:
-                    h = h2  # 懒加载使页面变长，继续滚
-            page.wait_for_timeout(2500)
-        # 兜底：若滚回顶部后高度又增长，再多滚一轮
-        page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(2500)
-        title = page.title()
-        body = page.evaluate("() => document.body.innerText")
+        title, body = collect_full_text(page)
         return {"url": url, "title": title, "body": body}
 
     def fetch_article(self, page, topic_id, *, depth: int = 0, allow_internal: bool = True) -> dict:

@@ -75,6 +75,9 @@ _PAYLOAD_MARK = re.compile(
     r'user_id|model_type|cover|avatar|nickname)"\s*:')
 _URL_RE = re.compile(r"https?://\S+")
 _MD_IMG_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+# scys 页面 chrome：评论区输入框占位符「0 / 1200 发布」被拆成多行抓进正文（2026-10-25 实测
+# 4 篇源同现，纯数字 1200 因此进锚点分母误拦好稿）。只删「数字/数字/发布」紧邻序列，不删正文数字。
+_COMMENT_BOX_RE = re.compile(r"^\d+\n/\n\d+\n发布$", re.M)
 
 
 def strip_source_payload(text: str) -> str:
@@ -84,6 +87,7 @@ def strip_source_payload(text: str) -> str:
     教程里的配置示例可能是正文内容。也**不**按「12 位以上数字」删正文：真实金额
     可能写成 4793700000000（无千分位），误删会制造新的漏锚点。
     """
+    text = _COMMENT_BOX_RE.sub("", text)
     out = []
     for line in (text or "").splitlines():
         if _PAYLOAD_MARK.search(line):

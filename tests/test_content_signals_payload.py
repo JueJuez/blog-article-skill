@@ -45,3 +45,12 @@ def test_code_example_json_is_not_stripped_blindly():
 def test_url_removed_but_surrounding_text_kept():
     out = CS.strip_source_payload("看这个 https://a.test/x 页面，讲 SEO。")
     assert "https://" not in out and "SEO" in out
+
+
+def test_comment_box_chrome_stripped_but_real_number_kept():
+    # scys 评论框占位符「0 / 1200 发布」被拆行抓进正文（2026-10-25 批量实拦 4 篇），
+    # 紧邻序列整体剥离；正文里独立出现的 1200（如「月入 1200 元」）必须保留。
+    chrome = "等629人点赞\n77人投了108个锚点\n\n\n\n\n0\n/\n1200\n发布\n全部评论"
+    out = CS.strip_source_payload(chrome)
+    assert "1200" not in out
+    assert CS.strip_source_payload("副业月入1200元，稳定半年。") .count("1200") == 1
