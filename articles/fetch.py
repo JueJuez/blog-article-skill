@@ -49,7 +49,11 @@ def is_scys_url(url: str) -> bool:
 
 
 def is_feishu_doc_url(url: str) -> bool:
-    """飞书 wiki/docx 文档链接判定；真源在 shared.feishu_ext（2026-10-25 收敛）。"""
+    """飞书正文型链接判定（wiki / docx / 妙记 minutes / 短链 s）；真源在 shared.feishu_ext。
+
+    2026-10-26 起 `minutes` 也命中：此前妙记不匹配 → 分流落空退化成 HTTP 下载，
+    而飞书是 SPA，HTTP 只拿到空壳 → 表现为「抓不到正文」。
+    """
     from shared.feishu_ext import is_feishu_doc_url as _is
     return _is(url)
 
@@ -636,9 +640,9 @@ def fetch_web_content(url: str, cdp_on_fail: bool = True):
         return _fetch_wechat_article(url, cdp_on_fail=cdp_on_fail)
 
     # 飞书 wiki/docx：JS 渲染 SPA，直连拿不到正文且正文虚拟化渲染，
-    # 必须走 bear 容器增量滚动（shared.feishu_ext.collect_full_text，2026-10-25 收敛）
+    # 必须走共享零件的容器增量滚动（shared.feishu_ext.collect_full_text）
     if is_feishu_doc_url(url):
-        print("🔐 检测到飞书文档链接 → 走 CDP 登录态 + bear 容器增量滚动抓取")
+        print("🔐 检测到飞书正文链接 → 走 CDP 登录态 + 容器增量滚动抓取")
         title, body, _pt = _feishu_cdp_fetch(url)
         if len(body.strip()) < 100:
             print("❌ 飞书文档抓取正文过短，视为失败")

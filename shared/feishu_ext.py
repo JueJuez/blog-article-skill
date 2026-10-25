@@ -15,31 +15,57 @@ STEP_PX = 900
 SETTLE_MS = 550
 MAX_STEPS = 600
 
+# 滚动容器按优先级探测（第一个命中的即为飞书各类文档的正文承载容器）。
+# 2026-10-26 修正：飞书妙记(minutes)的转写列表既不在 `.bear-web-x-container`、
+# 也不是 window 滚动，而是 React 虚拟列表 `.rc-virtual-list-holder`（overflow:hidden）。
+# 旧实现缺这一档 → 滚 window 无效，只拿到首屏几段（实测 1h27m 的会议仅 1093 字）。
+_CONTAINER_JS = """() => {
+    for (const sel of ['.bear-web-x-container', '.rc-virtual-list-holder']) {
+        const el = document.querySelector(sel);
+        if (el) return sel;
+    }
+    return null;
+}"""
+
 
 def is_feishu_doc_url(url: str) -> bool:
-    """判定是否飞书 wiki/docx 文档链接（不含飞书首页/表单等非文档页）。"""
+    """判定是否飞书「正文型」链接：wiki / docx / doc / 妙记 minutes / 短链 s。
+
+    不含飞书首页、表单等非文档页。
+    2026-10-26 补 `minutes`：妙记（会议录制+服务端转写）此前不匹配 →
+    `articles/fetch.py` 的分流判定落空，退化成普通 HTTP 下载；而飞书是 SPA，
+    HTTP 只能拿到空壳 HTML → 表现为「抓不到正文 / 疑似死源」。
+    补上后妙记与 wiki/docx 一样走 CDP + `collect_full_text`。
+    """
     import re
+    # 末尾要求有 token：`/minutes/` 这类空路径是列表页不是文档。
     return bool(re.search(
-        r"https?://[^\s)\]]*(?:feishu\.cn|larksuite\.com)/(?:wiki|docx|doc|s)/", url or ""))
+        r"https?://[^\s)\]]*(?:feishu\.cn|larksuite\.com)"
+        r"/(?:wiki|docx|doc|minutes|s)/[^\s/?]+",
+        url or ""))
 
 
 def collect_full_text(page) -> tuple[str, str]:
     """增量滚动收集整页文本；返回 (title, 合并正文)。
 
     飞书 wiki/docx 的滚动容器是 div.bear-web-x-container（不是 window），
+    飞书妙记(minutes) 的转写列表是 div.rc-virtual-list-holder（overflow:hidden），
+    两者均按视口虚拟化渲染（视口外内容卸载）。先按 `_CONTAINER_JS` 优先级定位容器，
     逐段滚动该容器，收集每视口 innerText 快照，按「首见顺序」去重合并；
-    无 bear 容器的页面自动回退 window 滚动（同样逐快照收集）。
+    无容器命中的页面回退 window 滚动（同样逐快照收集）。
     """
     title = page.title()
+    sel = page.evaluate(_CONTAINER_JS)
     lines: list[str] = []
     seen: set[str] = set()
 
     def snapshot() -> None:
         text = page.evaluate(
-            """() => {
-                const c = document.querySelector('.bear-web-x-container');
+            """(sel) => {
+                const c = sel ? document.querySelector(sel) : null;
                 return (c || document.body).innerText;
-            }"""
+            }""",
+            sel,
         ) or ""
         for ln in text.splitlines():
             s = ln.strip()
@@ -52,17 +78,20 @@ def collect_full_text(page) -> tuple[str, str]:
     y = 0
     for _ in range(MAX_STEPS):
         page.evaluate(
-            """(y) => {
-                const c = document.querySelector('.bear-web-x-container');
+            """([y, sel]) => {
+                const c = sel ? document.querySelector(sel) : null;
                 if (c) c.scrollTop = y; else window.scrollTo(0, y);
             }""",
-            y,
+            [y, sel],
         )
         page.wait_for_timeout(SETTLE_MS)
         snapshot()
         height = page.evaluate(
-            "() => { const c = document.querySelector('.bear-web-x-container');"
-            " return c ? c.scrollHeight : document.body.scrollHeight; }"
+            """(sel) => {
+                const c = sel ? document.querySelector(sel) : null;
+                return c ? c.scrollHeight : document.body.scrollHeight;
+            }""",
+            sel,
         )
         if height == last_height and y >= height:
             stable_rounds += 1

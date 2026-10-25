@@ -427,7 +427,13 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 
 **入口**：`python scripts/launch_scys_backfill.py`（DETACHED 长任务，数小时）；按领域单跑
 `python scripts/scys_batch_fetch.py --project <领域>`。落盘另有 `scripts/land_scys_by_key.py`（按 topicId 稳定键）。
-**零件**：`scripts/scys_batch_fetch.py: ScysBatchFetcher.fetch_article`、`shared/cdp_session.py`、`shared/feishu_ext.py`（**飞书懒加载全文单点实现（2026-10-25）**：`collect_full_text` 增量滚动 bear 容器逐视口收集；`scys_batch_fetch._fetch_external` 已接入（修复旧 window.scrollTo 只抓到目录+开头的截断 bug，一批 32 条实测）；`articles/fetch.py` 单篇飞书链接分流同源；存量重抓 `scripts/feishu_ext_refetch.py` + `scripts/refetch_feishu_ext_batch.py`（飞书外链全文重抓 / 批量版；⚠️ URL 取 `<a href>` 或 `_ext` 文件头完整版，正文显示文本带 `...` 会 404）。
+**零件**：`scripts/scys_batch_fetch.py: ScysBatchFetcher.fetch_article`、`shared/cdp_session.py`、`shared/feishu_ext.py`（**飞书懒加载全文单点实现（2026-10-25）**：`collect_full_text` 按容器优先级增量滚动逐视口收集，优先级 `[.bear-web-x-container`（wiki/docx）, `.rc-virtual-list-holder`（**妙记 minutes 转写列表**，2026-10-26 补）]；缺后一档会退化成滚 window，而妙记根本不滚 window → 只抓到首屏（实测 1h27m 会议仅 1093 字，补后 19623 字）。
+- 🔴 **走 CDP 的前提是 URL 判定命中**：`is_feishu_doc_url`（唯一判定，现含 `wiki|docx|doc|minutes|s` 且要求 token）不命中时链接会掉进普通 HTTP 下载，而飞书是 SPA，HTTP 只拿到空壳 HTML → 顶层报「抓取过短」，**易被误判成死源**（2026-10-26 补 minutes 同理）。
+- `scys_batch_fetch._fetch_external` 已接入（修复旧 window.scrollTo 只抓目录+开头的截断 bug，一批 32 条实测）；scys 侧外链识别按 `EXTERNAL_DOC_HOSTS`（host 级），`/minutes/` 自动跟进。
+- `articles/fetch.py` 单篇飞书链接分流同源。
+- 存量重抓 `scripts/feishu_ext_refetch.py` + `scripts/refetch_feishu_ext_batch.py`（飞书外链全文重抓 / 批量版；⚠️ URL 取 `<a href>` 或 `_ext` 文件头完整版，正文显示文本带 `...` 会 404）。
+- ⚠️ **该脚本成功门槛只有 ≥300 字** —— 抓一半也会打绿勾（妙记 bug 因此藏了一年）。已加行数哨兵 `THIN_LINES=30`（healthy 文件最少 69 行、中位 182 行，而 bug 态仅 4 行），低于则在结尾汇总告警；**不阻断生产，靠它把同类问题暴露出来**。
+- 🔴 真死源（飞书返回「页面不存在」且 URL 与原帖 `<a href>` 一致、三变体均 404）**直接放弃，不要反复重试**；区分方法与判据见 [决策记录](../docs/decisions/) 与 `memory/2026-10-26.md`。
 
 ## 8. 迁移门禁管线
 
@@ -492,7 +498,8 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 | 飞书总览索引 | `shared.feishu_overview.ensure_overview` / `add_entry` / `rebuild` | |
 | 带登录态抓页面（CDP） | `shared.cdp_session.SharedCdpSession` | 委托用户级 SKILL |
 | 从渲染页抽取正文 | `shared.cdp_session.extract_body(page)` | 2026-09-18 收敛：此前 3 份逐字相同实现（`articles.fetch._extract_body_scys` / `scys_batch_fetch.ScysBatchFetcher._extract_body` / `SharedCdpSession._extract_body`），现统一为模块级单点，改规则只改一处 |
-| 飞书外链全文（懒加载） | `shared/feishu_ext.py: collect_full_text`（单点实现，2026-10-25 自 feishu_ext_refetch 下沉） | bear 容器增量滚动；消费方：scys 批量外链 / feishu_ext_refetch 存量重抓 / articles 单篇飞书分流 |
+| 飞书外链全文（懒加载） | `shared/feishu_ext.py: collect_full_text`（单点实现，2026-10-25 自 feishu_ext_refetch 下沉） | 按 `[.bear-web-x-container`（wiki/docx）, `.rc-virtual-list-holder`（**妙记 minutes 转写列表**，2026-10-26 补）] 优先级滚容器；消费方：scys 批量外链 / feishu_ext_refetch 存量重抓 / articles 单篇飞书分流 |
+| 飞书正文型链接判定（→ 是否走 CDP） | `shared.feishu_ext.is_feishu_doc_url` | **唯一判定，必须与 CDP 分流同源**：`wiki\|docx\|doc\|minutes\|s` 且要求 token。不命中 → 掉进普通 HTTP 下载 → 飞书 SPA 只返回空壳 → 被误报成「源死了」（2026-10-26 补 minutes） |
 | B站 cookie 健康 / 刷新 | `monitors.bilibili.refresh_cookie_if_dead`、`videos.set_cookie.set_bilibili_cookie` | **克隆死即重克隆闭环（2026-09-24）**：CDP 活会话提取拿不到有效 cookie（克隆会话已被服务端作废）→ 立即 `shared.cdp_session.force_refresh_clone()` 强制全量重克隆默认 profile 取活会话、重试一次。用户拍板：克隆死就立即触发，不加任何守卫（自动监控轮次亦然） |
 | 监控去重状态 | `monitors.state.get_seen` / `mark_seen` | |
 | 滚动日志 | `shared.rolling_log.append_rolling` | |

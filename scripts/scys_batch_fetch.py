@@ -573,14 +573,15 @@ class ScysBatchFetcher:
         return internal, external
 
     def _fetch_external(self, page, url: str) -> dict:
-        """外部知识库（飞书 wiki/docx 等）：增量滚动 bear 容器逐视口收集全文。
+        """外部知识库（飞书 wiki/docx/妙记 等）：增量滚动正文容器逐视口收集全文。
 
         ⚠️ 历史教训（2026-10-25 永久修复）：旧实现用 window.scrollTo 滚两轮取一次
-        innerText——飞书 wiki/docx 的滚动容器是 div.bear-web-x-container 且正文按
-        视口虚拟化渲染，滚 window 根本不动文档，只抓到目录+开头（实测一批 32 条
-        全部截断）。现统一复用 feishu_ext_refetch.collect_full_text：容器滚动 +
-        逐视口快照按行去重合并；无 bear 容器的页面自动回退 window 滚动（同样
-        逐快照收集，不劣于旧实现）。
+        innerText——飞书正文不看 window：wiki/docx 在 div.bear-web-x-container，
+        妙记 minutes 的转写列表在 div.rc-virtual-list-holder，且都按视口虚拟化渲染，
+        滚 window 根本不动文档，只抓到目录+开头（实测一批 32 条全部截断）。
+        现统一复用 shared.feishu_ext.collect_full_text：按容器优先级滚动 +
+        逐视口快照按行去重合并（2026-10-26 补 rc-virtual-list-holder 一档）；
+        无容器命中的页面回退 window 滚动（同样逐快照收集，不劣于旧实现）。
         """
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         page.wait_for_timeout(5000)
