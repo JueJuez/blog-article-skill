@@ -566,6 +566,14 @@ def summarize_content(content: str, author: str = "", url: str = "", tags: list 
     print(f"   📑 笔记类型: {note_type}")
 
     prompt = get_note_prompt(note_type, source_chars_of(content))
+    # D2：源里有没有图、读没读 —— 只在不干净时追加一行；纯文本源 prompt 一个字节都不变
+    try:
+        from shared.image_inventory import dispatch_hint, load_for_url
+        _img_hint = dispatch_hint(load_for_url(url or ""))
+        if _img_hint:
+            prompt = prompt + "\n\n" + _img_hint
+    except Exception:
+        pass
     executed_prompt = prompt
 
     metadata = ""
@@ -825,10 +833,21 @@ def _enqueue_async_review(note_abs_path: str, *, content: str, source_text: str,
         from shared.async_review import maybe_enqueue
 
         ctx = generation_context or {}
+        extra = None
+        try:
+            from shared.image_inventory import load_for_url, summary_line
+            inv = load_for_url(url or "")
+            if inv:
+                # 只作审核元数据：**不塞进 reasons**（reasons 非空会触发入队，等于放大抽样率）
+                extra = {"image_state": inv.get("state", ""), "image_total": inv.get("total", 0),
+                         "image_content_total": inv.get("content_total", 0),
+                         "image_read": inv.get("read", 0), "image_summary": summary_line(inv)}
+        except Exception:
+            extra = None
         maybe_enqueue(
             note_abs_path, content=content, source_text=source_text or "",
             note_type=note_type, url=url, title=title, reasons=reasons or [],
-            prompt_sha256=ctx.get("prompt_sha256") or "unknown")
+            prompt_sha256=ctx.get("prompt_sha256") or "unknown", extra=extra)
     except Exception:
         pass
 

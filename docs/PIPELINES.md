@@ -381,6 +381,38 @@ difflib 0.9 兜底。回归 `tests/test_audit_source_resolution.py`；修复后�
 [`notes/_meta/eval/20261019-holdout-5/NEXT_PRODUCTION_PROTOCOL.md`](../notes/_meta/eval/20261019-holdout-5/NEXT_PRODUCTION_PROTOCOL.md)。
 
 
+### 3.10 图片缺口台账（D2，2026-10-26）
+
+**问题**：抓取只抽文本，`<img>` 全丢，连「源里有几张图」都没记录 —— XMind / 鱼骨图 / 数据截图
+里的知识静默消失，稿子却毫无破绽。抽样 4000 篇源文件，图片链接命中 **0**：不是"识别不了"，是"不知道有没有"。
+
+**做法**（`shared/image_inventory.py`，报告项）：
+
+```bash
+# 抓取时自动记账（无需手动跑）；查台账 / 回填识图结果用代码 API：
+python -c "from shared import image_inventory as I; print(I.summary_line(I.load_for_url('<url>')))"
+```
+
+| 状态 | 判据 |
+|---|---|
+| `unknown_no_html` | 取不到 HTML（CDP/字幕通道）—— **不许报「无图」** |
+| `no_images` | HTML 解析完确实 0 张 `img` |
+| `decorative_only` | 全是图标/logo/小图（启发式，仍计入 `total`） |
+| `images_not_read` / `partial_read` / `read` | 有内容图，按 `reads` 算读了几张 |
+
+**四条硬约束**（都有测试）：
+1. `alt` 有字**不算**已读；`images[].read` 由 `reads` 反推（单一真源）。
+2. 图链接缺失算缺口，不算干净。
+3. 台账只落 `notes/_meta/image_inventory/<url 前16位>.json`，**不写笔记正文/frontmatter**。
+4. 不下载、不 OCR、不批量请求；识图由调用方按需做，结果用 `mark_read()` 回填（方法/范围/失败原因）。
+
+**接线**：抓取五条通道记账（普通 HTTP / 微信直连有 HTML；微信 CDP / scys / 飞书 记 `unknown_no_html`）；
+`articles/main.py:summarize_content` 只在**有缺口**时往 prompt 追加一行提示（纯文本源字节不变）；
+`_enqueue_async_review` 放 `extra`。🔴 **图片状态不许进 `reasons`**——`reasons` 非空会触发入队，等于把 15% 抽样放大成 100%。
+
+**现状边界**：主源 scys 走 CDP 文本通道，仍然数不出图（要取 DOM 才能数）；"重要图"靠人挑，不做批量识图。
+小样本实测见 `notes/_meta/eval/20261026-image-gaps/REPORT.md`（2 张流程图恢复结构、1 项误读被独立核对抓出）。
+
 ## 4. 订阅监控管线
 
 **入口**：`python monitors/run.py --mode auto --apply`（每日，仅 B站+scys）/
@@ -489,6 +521,7 @@ dry-run 默认，--apply 迁移并回写 summary_registry）。
 | `shared.draft_stage.stage_blocked` | 被拦稿件暂存（三 hash + 元信息，**永不抛异常**） | `save_summary_only`、`videos._summarize_and_save`、`videos._save_series_note`、`resum_save_batch` |
 | `shared.controlled_replace` | 受控替换 A/B 判定（T13 硬集合，零新增判据；平手保留旧稿）+ 决策台账 | `scripts/resum_save_batch.py` |
 | `shared.async_review.maybe_enqueue` | 落盘后入异步审核队列（按 env 抽样，零 AI 成本） | `save_summarized_article` |
+| `shared.image_inventory` | D2 图片缺口台账：抓取时记 `有图/已读/取不到图片信息`，派单加一行提示，审核元数据带 `image_state`；**报告项、不下载不识图、永不抛异常** | `articles/fetch.py`（记账）、`articles/main.py`（派单提示 + `_enqueue_async_review` extra） |
 | `prompts.extract_checklist` | A4 长源提取清单：按源长条件注入两阶段指令（>10000）／短源 T0 报告块（<2000）；剥离清单→机械校验（原句须命中源）→对账→按源 hash 存档，**全部报告项、永不抛异常** | `prompts.templates.get_note_prompt`（注入）、`save_summary_only`、`resum_save_batch` |
 | `prompts.claim_coverage` | A5 论点级判据（**报告项**）：源侧断言候选＋疑似无落点＋失真嫌疑（源外数字/方向反转）；机械覆盖率**禁当指标** | `scripts/run_async_review.py --emit`（注入派单） |
 | `prompts.content_signals.CONDITIONAL_SIGNALS` | A6 条件必备结构的源侧信号（反例/公式/章节/对比/数值密集） | `content_signals.structure_obligations` → 机械门禁硬拦 |

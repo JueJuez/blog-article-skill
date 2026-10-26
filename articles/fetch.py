@@ -112,6 +112,7 @@ def _fetch_wechat_article(url: str, cdp_on_fail: bool = True):
         if content and not _looks_like_wall(content) and len(content.strip()) >= 100:
             title = _extract_title(soup, url) or _trafilatura_title(html) or "未命名文章"
             publish_time = _extract_publish_time(soup, html)
+            _record_images(url, html=html, kind="wechat_direct")
             return (title, content, publish_time)
 
     # 2) 直连失败（反爬墙/频控空页）
@@ -127,6 +128,7 @@ def _fetch_wechat_article(url: str, cdp_on_fail: bool = True):
             if len(body.strip()) < 100:
                 print("❌ 微信 CDP 抓取正文过短，视为失败")
                 return None
+            _record_images(url, html="", kind="wechat_cdp_text_only")
             return (result["title"], body, 0)
         except Exception as e:
             print(f"❌ 微信 CDP 抓取失败: {e}")
@@ -598,6 +600,15 @@ def _scys_publish_time_from_body(body: str) -> int:
 # 对外主函数
 # ---------------------------------------------------------------------------
 
+def _record_images(url: str, *, html: str = "", kind: str = "http") -> None:
+    """抓取时就地记图片台账（D2）。**观测零件，失败一律吞掉**——绝不影响抓取结果。"""
+    try:
+        from shared.image_inventory import record
+        record(url, html=html, kind=kind)
+    except Exception:
+        pass
+
+
 def fetch_web_content(url: str, cdp_on_fail: bool = True):
     """获取网页内容（增强版）。
 
@@ -633,6 +644,7 @@ def fetch_web_content(url: str, cdp_on_fail: bool = True):
         if len(body.strip()) < 100:
             print("❌ scys 抓取正文过短，视为失败")
             return None
+        _record_images(url, html="", kind="scys_cdp_text_only")
         return (result["title"], body, _scys_publish_time_from_body(body))
 
     # 微信公众号文章：直连常撞墙，先试直连，失败按 cdp_on_fail 处理（见 _fetch_wechat_article）
@@ -647,6 +659,7 @@ def fetch_web_content(url: str, cdp_on_fail: bool = True):
         if len(body.strip()) < 100:
             print("❌ 飞书文档抓取正文过短，视为失败")
             return None
+        _record_images(url, html="", kind="feishu_cdp_text_only")
         return (title, body, _pt)
 
     html, response = _download(url)
@@ -681,6 +694,7 @@ def fetch_web_content(url: str, cdp_on_fail: bool = True):
 
     # 发布时间：从页面 meta/JSON-LD 提取（散文单篇据此命名文件名）
     publish_time = _extract_publish_time(soup, html)
+    _record_images(url, html=html, kind="http")
 
     return (title, content, publish_time)
 
