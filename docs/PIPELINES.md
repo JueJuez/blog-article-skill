@@ -31,7 +31,7 @@
 | 把一篇已有笔记出分享版 HTML | `python scripts/export_note_html.py "<md路径>"` | 见「2.1 分享版 HTML 出口」；新笔记分享不用这条（落盘时带 `share_html`） |
 | **重做前先判「这篇到底该不该改」** | `python scripts/check_resum_necessity.py --queue notes/_meta/resummarize_queue.json`（见 §3.1） | 直接从全量队列开重做（会把好稿改坏，且无法回退） |
 | 建/重算固定评估集（改动的度量基线） | `python scripts/build_eval_set.py` → 填 `forms/`（人工或固定口径 AI 标注） → `python scripts/score_eval_set.py --dir <同目录>`（见 §3.3） | 凭单次生成效果说「变好了」 |
-| **落盘后给笔记做独立语义复审**（不阻塞落盘、不占前台） | `python scripts/run_async_review.py --emit` → 子 Agent 审 → `--ingest`（见 §3.2） | 打开 `NOTE_QUALITY_GATE=1` 把审核卡在落盘前 |
+| **落盘后给笔记做独立语义复审**（不阻塞落盘、不占前台） | `python scripts/run_async_review.py --plan` → `--emit --batch <id>` → 子 Agent 审 → `--ingest --batch <id>` → `--verdict` 入账（见 §3.2 / §3.2.1） | 打开 `NOTE_QUALITY_GATE=1` 把审核卡在落盘前 |
 | 查「段落悬空指代」到底是不是问题 | `python scripts/scan_dangling_refs.py`（只读，见 §3.4） | 直接建改写轮／凭感觉改 prompt |
 | **查分析层数字是否可溯源、表格数字是否挂错讲者** | `python scripts/audit_note_grounding.py --dir <round-dir>`（只读，见 §3.9） | 把它当落盘门禁（它只报告，不拦盘） |
 
@@ -147,9 +147,13 @@ Obsidian Charts 插件与 HTML 导出器是它的两个消费者，互不另外�
 | 步 | 入口 | 说明 |
 |---|---|---|
 | 入队 | 自动（`save_summarized_article` 两处本地落盘点） | 开关 `NOTE_ASYNC_REVIEW`：`0` 关 / `1` 触发式（默认：`review_flags` 非空**或**按 `NOTE_ASYNC_REVIEW_RATE`=0.15 抽样）/ `all` 全量 |
-| 看队列 | `python scripts/run_async_review.py --stats` | 状态分布 |
-| 派单 | `python scripts/run_async_review.py --emit --limit 5` | 出包到 `_tmp/async_review/in/<id>.md`（口径 = `QUALITY_GATE_PROMPT` 原文） |
-| 回收 | `python scripts/run_async_review.py --ingest` | 读 `_tmp/async_review/out/<id>.json`，按 `parse_quality_gate` 收口 |
+| 看队列 | `python scripts/run_async_review.py --stats` | 状态分布（`--batch <id>` 附带该批进度） |
+| 选单 | `python scripts/run_async_review.py --plan --rounds 5` | 有界批次：风险 3 + 随机 1 + 预留重审 1（**只读队列，不清积压**） |
+| 派单 | `python scripts/run_async_review.py --emit --batch <id>` | 按选单出包到 `_tmp/async_review/in/<id>.md` + `HANDOFF-<id>.md`（口径 = `QUALITY_GATE_PROMPT` 原文） |
+| 回收 | `python scripts/run_async_review.py --ingest --batch <id>` | 读 `_tmp/async_review/out/<id>.json`，按 `parse_quality_gate` 收口 → 批次报告 |
+| 重解析 | `python scripts/run_async_review.py --ingest --retry-errors` | 回包已在但判 error 的**只重解析**，不产生新审稿轮次 |
+| 裁定 | `python scripts/run_async_review.py --verdict true_error / false_positive / unconfirmed --batch <id> --id <rec>` | 写既有 `notes/_meta/grounding/ledger.jsonl`，不另起质量分 |
+| 重出报告 | `python scripts/run_async_review.py --report-only --batch <id>` | 补完裁定后刷新报告，不动队列 |
 | 直调 | `python scripts/run_async_review.py --run --limit 5` | 有外部 provider（`FORCE_AGENT_MODE=0`）时走真 `review_fulltext` 全流程 |
 
 **硬约束（改前必读）**：
@@ -163,6 +167,32 @@ Obsidian Charts 插件与 HTML 导出器是它的两个消费者，互不另外�
   笔记正文/frontmatter 一个字段都不加（下游 KB 按段落检索，塞非生产字段是污染）。
 - 队列与旧 `notes/_review_queue.jsonl` **是两回事**：后者是机械 `review_flags` 的无人值守降级，
   历史上被假信号淹过（300+ 条后清空），不要混用。
+
+### 3.2.1 有界批次与最小统计（S1，2026-10-26）
+
+**为什么**：3.2 的 `--emit --limit 5` 只是「按文件顺序取前 5 条」——而队列里 48/119 条是同源的
+`author_unverified` 系统性噪音，会把这 5 个名额吃满，真正带具体行号的疑点永远轮不到；
+同时「发了包」和「审过了」在账面上分不开（D4），也说不清真错/误报（D5）。
+
+**执行链**：`--plan` → `--emit --batch` → 子 Agent（独立会话）→ `--ingest --batch` → 报告 → `--verdict` 入账。
+
+| 机制 | 口径 |
+|---|---|
+| 预算 | 默认 `--rounds 5` = 风险 3 + 随机 1 + **预留重审 1**；`--random-slots` 不足时如实记 `shortfall` |
+| 选单排序 | 非系统性噪音优先 → 带「第 N 行」具体定位优先 → 旧账（`ts` 早）先审 → id 稳定兜底 |
+| 去重 | 同一稿只派一次（`duplicate_note:<id>`）；同类风险 `--per-tag-cap 2`（`tag_cap:<tag>`） |
+| 未选中 | 每条都写原因：`over_budget` / `tag_cap` / `duplicate_note` / `note_missing` / `source_missing` / `valid_conclusion_exists` |
+| 不重复花钱 | `shared.async_review.VALID_CONCLUSIONS`＝`passed`/`failed`：同稿同 hash 已有有效结论就不再派单；`update()` 默认**不把有效结论回退**成 error/stale/skipped（`force=True` 才允许） |
+| 回包不合格 | 状态 `error` 而非通过；原因码由 `_classify_reject` 给出：`coverage_partial` / `status_partial` / `reviewer_self_check` / `invalid_json` / `empty_output` / `bad_score` …（**判定仍由 `parse_quality_gate` 做，原因码只记账**） |
+| 未回收 | 保持 `pending`，可续跑；**未审 ≠ 通过** |
+| 统计 | 处理量（选中/发包/有效回收/未回收/error/stale/skipped/未选中/全库 pending）、问题（机械疑点/独立 findings/真错/误报/未确认）、修订、消耗（轮次/预估调用/token=unknown/耗时/人工分钟） |
+| 误报率分母 | **只算已裁定 = 真错 + 误报**；未确认不进分母，也不算真错；无样本时写「尚无已裁定」而非 0% |
+
+产物（都在 gitignore 内）：批次账本 `notes/_meta/async_review_batches/<batch_id>.json`
+（含选中/未选中理由、预算、发包、回收、统计）、报告 `notes/_reports/async_review_<batch_id>.md`。
+
+**边界**：发包 ≠ 已审；报告生成成功 ≠ 质量通过；风险优先样本**不能估算全库错误率**。
+选单/派单/回收只动队列与 `_tmp`，**不写 vault**（笔记正文与 frontmatter 一个字段都不加）。
 
 ### 3.3 固定评估集（T3，2026-10-18）
 

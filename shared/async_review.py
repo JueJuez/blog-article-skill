@@ -46,6 +46,9 @@ DEFAULT_RATE = 0.15
 
 STATUSES = ("pending", "passed", "failed", "stale", "skipped", "error")
 _OPEN_STATUSES = ("pending",)
+# 「有效结论」：只有这两个状态代表真的审过并给出了判定。
+# 同一稿同一版本已有有效结论时，消费端不再派单、不覆盖（S1 不重复花钱 / 不覆盖结论）。
+VALID_CONCLUSIONS = ("passed", "failed")
 
 
 def digest(text: str) -> str:
@@ -207,8 +210,14 @@ def pending(limit: int = 0, queue: str = "") -> list:
     return rows[:limit] if limit else rows
 
 
-def update(rec_id: str, *, status: str, result: dict = None, queue: str = "") -> bool:
-    """按 id 改一条记录的状态（原子重写：同目录临时文件 + os.replace）。"""
+def update(rec_id: str, *, status: str, result: dict = None, queue: str = "",
+           force: bool = False) -> bool:
+    """按 id 改一条记录的状态（原子重写：同目录临时文件 + os.replace）。
+
+    **有效结论不回退**：已经是 `passed`/`failed` 的记录，默认不允许改成
+    `error`/`stale`/`skipped`（返回 False），避免重跑/过期检查把真审过的结论冲掉。
+    确需覆盖（例如人工纠错）显式传 `force=True`。
+    """
     if status not in STATUSES:
         raise ValueError(f"未知状态: {status}")
     queue = queue or QUEUE
@@ -216,6 +225,9 @@ def update(rec_id: str, *, status: str, result: dict = None, queue: str = "") ->
     hit = False
     for rec in rows:
         if rec.get("id") == rec_id:
+            if (rec.get("status") in VALID_CONCLUSIONS and status not in VALID_CONCLUSIONS
+                    and not force):
+                return False
             rec["status"] = status
             rec["reviewed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
             if result is not None:

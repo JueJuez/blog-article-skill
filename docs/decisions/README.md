@@ -27,6 +27,12 @@
 | 接地审计（payload/分析层数字/表格归属） | [接地审计](DECISION-20261019-grounding-audits.md) | `prompts/content_signals.strip_source_payload`（P0，门禁输入清洗）；`shared/note_grounding.py` + `scripts/audit_note_grounding.py`（P1，只读）；`QUALITY_GATE_PROMPT` 8/9 条与 `build_round` 复核说明（P2）；**不加生成 prompt 补丁**，下一批按有限验证协议记账 |
 | 外部仓库借鉴（open-notebook / open-webui） | [外部基准调研](DECISION-20261024-external-repo-benchmarks.md) | **全部不立项**；三项留档参考（播客出口 / 检索层参数 / insight 独立 embedding）待触发，细节与上游参数存 [references/external-repo-benchmarks](../../references/external-repo-benchmarks.md) |
 
+## 已确认的方向与实施状态
+
+| 主题 | 决策记录 | 实施状态真源 |
+|---|---|---|
+| 个人项目低成本质量改进 | [阶段顺序与边界](DECISION-20261026-low-cost-quality.md) | [开发计划](../plans/PLAN-20261026-low-cost-quality.md) §2 与 §3.4：D4/D5 → D1/D3 → D2；**S1（D4/D5）已实施并跑完首批真实批次**，S2/S3 未开始；现有门禁与默认开关仍未改 |
+
 ## 历史关系与阅读方式
 
 - [2026-09-11 重试放行](DECISION-20260911-gate-retry-bypass.md) 已废止；不等同于当前显式 force 修订，现行边界看 RULES §4.6。
