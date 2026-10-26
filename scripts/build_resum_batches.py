@@ -30,6 +30,20 @@ REPORT = os.path.join(ROOT, "notes", "_reports", "20260916_重跑批次清单.md
 VAULT = os.getenv("OBSIDIAN_VAULT_PATH") or r"D:\Code\Obsidian\obsidian-path\AI 总结笔记"
 
 
+def meta_suspect(note_text: str, url: str) -> str:
+    """元数据可疑判定：旧稿有真实来源链接，条目却没带 url。
+
+    2026-10-26 实测踩到：手搓队列条目漏 `url`，落盘时链接被写成「【无来源链接】」，
+    作者也按错的 author 覆盖 —— **T8 只比内容缺陷，看不出元数据退化**，于是"更差的稿"被判 improved。
+    这类条目必须和 `match=suspect` 一样单列，人工核对后再跑。
+    """
+    if url:
+        return ""
+    if "**来源链接**：[原文链接](" in (note_text or ""):
+        return "old_has_url_new_has_none"
+    return ""
+
+
 def distinctive_span(title: str) -> str:
     """标题里最长的 CJK 连续段（>=6 字才可信，返回空串表示无法校验）。"""
     spans = re.findall(r"[\u4e00-\u9fff]{4,}", title or "")
@@ -62,6 +76,14 @@ def main() -> int:
         hit = bool(span) and span in src
         row = dict(it)
         row["match"] = "ok" if (span and hit) else ("unchecked" if not span else "suspect")
+        try:
+            old_note = open(row.get("note_path") or "", encoding="utf-8").read()
+        except OSError:
+            old_note = ""
+        meta_why = meta_suspect(old_note, row.get("url") or "")
+        if meta_why:
+            row["match"] = "suspect"
+            row["meta_check"] = meta_why
         (ok if row["match"] == "ok" else suspect).append(row)
 
     # 源长加权分批

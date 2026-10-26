@@ -103,6 +103,8 @@ Obsidian Charts 插件与 HTML 导出器是它的两个消费者，互不另外�
 导致生产侧改标签规则时重做出的笔记会漂移。现已下沉为单一实现 + 回归测试
 （`tests/test_inplace_resum_pipeline.py`）钉死。
 
+**⚠️ 不要手搓队列条目**：落盘会用条目里的 `url` / `author` 写信息块。手工造条目漏 `url` → 链接变「【无来源链接】」，author 猜错 → 覆盖正确作者；而 T8 只比**内容**缺陷，看不出元数据退化（2026-10-26 实测把一份更差的稿判成 improved，已回滚）。`build_resum_batches` 现有元数据闸：旧稿有真实链接、条目没 `url` → 与 `match=suspect` 同级单列待人工核对。正规做法只用 `build_resummarize_queue` 产出的队列。
+
 **⚠️ 与 `overwrite=True` 的区别**：`overwrite=True` 只覆盖**同名**文件，而文件名仍是推导出来的；
 标题与磁盘名错配时扑空 → 照样产 `-N` 副本。in-place 走 `note_path`，压根不推导文件名。
 

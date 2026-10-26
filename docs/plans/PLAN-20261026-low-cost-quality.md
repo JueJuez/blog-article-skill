@@ -108,6 +108,34 @@ token/usage `unknown（not_exposed）`、人工分钟 `unknown`。
 **结论（不夸大）**：D4 从“不会发生”变成“有人编排就会发生，且能说清账”，但默认开关仍未改；
 D5 有了批次级最小统计，逐篇语义覆盖率仍未解决。首批是风险优先 + 1 条随机，**不能外推全库错误率**。
 
+### 3.5 S1 遗留实测：修订 → 回审（2026-10-26，第五轮）
+
+**做了什么**：取 `6a779e7f`（1 条已确认真错：ASR 断句 160.796 补精度且与 14.1% 不闭合），
+走完整重做链：`archive_old_before_resum` 备份 → `build_resum_batches`（单条批）→ 子 Agent 重写
+→ `resum_save_batch`（受控替换）→ 重新入队 → `--plan/--emit/--ingest` 独立复审 → `--verdict` 入账。
+
+**机制层面是通的**（每一步都留下了产物）：
+备份 `notes/_archive/resum_old/batch_01/`、批次 `notes/_meta/resum_batches_s1verify/batch_01.json`、
+决策 `notes/_meta/replace_decisions.20261026.jsonl`、复审批次 `arv-20261026-230413`、报告
+`notes/_reports/async_review_arv-20261026-230413.md`。
+
+**但这一次的结论不可采纳，原因是我自己的输入错了**：为了只跑 1 条，我手搓了单条重做队列，
+漏了 `url`、author 按文件夹猜成「小猪仔步履不停」（真实是「价投小猪仔」）。后果：
+- 新稿把真实来源链接写成「【无来源链接】」、作者也写错；
+- 旧稿的 `author_mismatch` 其实是**我的批次元数据**与旧稿冲突造成的，不是旧稿缺陷；
+- T8 只比内容缺陷 → 把这份元数据更差的稿判成 `improved` 并替换。
+
+**已处理**：从备份回滚（sha 校验一致）；台账补 `action=revert / reason=bad_queue_metadata`；
+并给 `build_resum_batches` 加了元数据闸（旧稿有真实链接、条目没 `url` → 与 `match=suspect`
+同级单列，`tests/test_resum_batch_meta_guard.py` 4 条）。用同一条错误队列复跑，现在输出「可信 0 / 存疑 1」。
+
+**仍然成立的两件事**：
+1. 草案确实修掉了那条 P1（复审 0 P1 / 87 分 fail，其余 2 条 P2 回源核对均为源侧表述，判误报）；
+2. 首轮 5 次审稿轮次至此用尽（4 + 1），**下一批要继续修订必须另开批次**，不扩预算。
+
+**教训（比结论更重要）**：不要手搓重做队列——`url` / `author` 会被落盘直接采用；
+正规入口 `build_resummarize_queue` 会从登记表带 `source_url` 与文件夹推导的 author。
+
 ## 4. S2：D1/D3 小范围覆盖验证
 
 ### 4.1 试验范围与实现

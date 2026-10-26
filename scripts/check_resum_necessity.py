@@ -165,7 +165,10 @@ def main() -> int:
     print(f"候选 {len(rows)} 条 → 建议重做 {redo} / 建议跳过 {keep}"
           + (f" / 无法判定 {other}" if other else ""))
     for r in sorted(rows, key=lambda x: -x.get("_n_issues", 0))[:5]:
-        print(f"  [redo] {r['title'][:40]} — {'；'.join(x[:44] for x in r['necessity']['reasons'][:2])}")
+        # 标签必须跟着判定走：keep 的条目打成 [redo] 会让人误以为该改（2026-10-26 修）
+        tag = r["necessity"]["decision"]
+        why = "；".join(x[:44] for x in r["necessity"]["reasons"][:2]) or "无确定性缺陷"
+        print(f"  [{tag}] {r['title'][:40]} — {why}")
 
     base = args.queue or ""
     if args.out_json:
