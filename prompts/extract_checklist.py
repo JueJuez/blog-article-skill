@@ -119,24 +119,73 @@ def thin_rules_text() -> str:
     )
 
 
+# 薄清单只列这几类：漏了就失真，且不至于把正文写成条目流水账
+MID_CATEGORIES = ("判断", "步骤", "条件", "数字", "专名")
+THIN_CHECKLIST_ENV = "NOTE_THIN_CHECKLIST"
+
+
+def thin_checklist_enabled() -> bool:
+    """实验开关 `NOTE_THIN_CHECKLIST`（默认关；只影响 2k–10k 这一档）。"""
+    raw = (os.environ.get(THIN_CHECKLIST_ENV) or "0").strip().lower()
+    return raw in ("1", "on", "true", "yes")
+
+
+def mid_thin_rules_text() -> str:
+    """S2 中短源薄清单（PLAN-20261026 §4）：2k–10k 档的**受控试验块**，默认不注入。
+
+    与长源清单的区别只在「要列多少、列什么」：长源清单要 10～40 条覆盖整篇，
+    薄清单只要 6～15 条、只列「漏了会改变结论或条件」的点 —— 中短源的失败模式是
+    「丢一条判断/一个例外」，不是「整块没进笔记」，清单太长反而会把正文写成流水账。
+    剥离、原句机检、对账全部复用长源那套（同一对 `BEGIN/END` 标记）。
+    """
+    cats = "、".join(f"`{c}`" for c in MID_CATEGORIES)
+    return (
+        f"# 附：中短源薄清单（两阶段 · 本篇源长 {THIN_MAX_CHARS}–{EXTRACT_MIN_CHARS} 字）\n\n"
+        "本篇源不算长，但一次成文仍可能丢掉关键判断与条件。**先列薄清单，再成文**，同一次输出完成。\n\n"
+        "## 阶段一 · 列薄清单（放在正文最前面）\n"
+        f"在 `{BEGIN}` 与 `{END}` 之间逐条列出**漏了会改变结论或条件**的东西，只列 6～15 条：\n\n"
+        "```\n- [类别] 一句话陈述 ‖ 源里对应的原句片段\n```\n\n"
+        f"- 类别只用这几个：{cats}。\n"
+        "  - `判断`（作者的观点/结论，**含方向与强度**）、`步骤`（可照着做的操作顺序，别只留结论）、"
+        "`条件`（成立前提、例外、失效条件，以及作者自己说的「我没验」「这里估不准」）、"
+        "`数字`（金额/百分比/年份**及口径**）、`专名`（公司/产品/人名/工具）。\n"
+        "- ⚠️ **不要写成大纲**：不列「第几节讲什么」，不按原文顺序抄句子，只列漏了就算失真的点；"
+        "凑不满 6 条就少列，宁可短。\n"
+        "- ⚠️ 超过 15 条通常说明在复述全文，回头砍掉次要的。\n"
+        "- `‖` 后面必须是**从源里原样拷贝**的片段（不改写、不补字、不合并两处）；"
+        "命中不了源的条目会被机械丢弃。\n\n"
+        "## 阶段二 · 成文（清单之后）\n"
+        "- 正文按本篇模板类型正常组织，**不要按清单顺序写**，也不要把清单当大纲扩写。\n"
+        "- 逐条核对落点：判断带方向强度、步骤不缺环节、条件/例外不丢、数字带口径。\n"
+        "- ⚠️ **落点 ≠ 逐条照搬**：该合并的合并、该按模板重组的重组；"
+        "**禁止为「每条都有落点」把多条塞进一句、或把正文写成条目流水账** —— "
+        "单句仍不超过 140 字、段落仍要自包含。\n"
+        "- 正文里**不许出现**上面的清单标记或清单本身（系统会剥离并单独存档）。\n"
+    )
+
+
 def render_extraction_rules(source_chars: int) -> str:
     """按源长分档返回要拼进条目 prompt 的附加块（空串＝不注入）。
 
     - 源长 > `EXTRACT_MIN_CHARS`：T15/T6 长源提取清单（含 T0 的 SOURCE_THIN 行）；
     - 0 < 源长 < `THIN_MAX_CHARS`：T0 短源事前判断（报告项）；
-    - 其余（2k~10k）：不注入 —— 该档现状已够（§2.1 2-5k 仅 5.4% 低召回），不为改动而改动。
+    - `THIN_MAX_CHARS` ≤ 源长 ≤ `EXTRACT_MIN_CHARS`（2k–10k）：默认**不注入**；
+      仅当实验开关 `NOTE_THIN_CHECKLIST=1` 时注入薄清单（S2 受控试验，PLAN-20261026 §4）。
     """
     if source_chars and source_chars > EXTRACT_MIN_CHARS:
         return "\n\n" + rules_text()
     if source_chars and source_chars < THIN_MAX_CHARS:
         return "\n\n" + thin_rules_text()
+    if source_chars and THIN_MAX_CHARS <= source_chars <= EXTRACT_MIN_CHARS:
+        if thin_checklist_enabled():
+            return "\n\n" + mid_thin_rules_text()
     return ""
 
 
 def rules_hash() -> str:
-    """清单块版本号（prompt 变更需可追踪，与 provenance 同口径的文本 hash）。两个分档都算在内。"""
+    """清单块版本号（prompt 变更需可追踪，与 provenance 同口径的文本 hash）。三个分档都算在内。"""
     import hashlib
-    blob = rules_text() + "\n---\n" + thin_rules_text()
+    blob = rules_text() + "\n---\n" + thin_rules_text() + "\n---\n" + mid_thin_rules_text()
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 

@@ -274,3 +274,60 @@ class TestSaveSummaryOnlyWiring:
         assert res.get("checklist_report", {}).get("hit") == 2
         # 存档落盘（§12.3 #12）
         assert list((self.tmp / "cx").glob("*.json"))
+
+
+# ---------------------------------------------------------------- S2 中短源薄清单开关（PLAN-20261026 §4）
+
+def test_mid_thin_switch_off_by_default(monkeypatch):
+    """默认关：2k–10k 生产行为一个字节都不许变（这是 A/B 的对照臂）。"""
+    monkeypatch.delenv("NOTE_THIN_CHECKLIST", raising=False)
+    assert EX.render_extraction_rules(5000) == ""
+
+
+def test_mid_thin_switch_on_injects_thin_block(monkeypatch):
+    monkeypatch.setenv("NOTE_THIN_CHECKLIST", "1")
+    text = EX.render_extraction_rules(5000)
+    assert EX.BEGIN in text and EX.END in text
+    assert "薄清单" in text
+    assert "6～15" in text, "必须写明条数上限，否则会退化成大纲"
+    assert "不要写成大纲" in text
+    assert "‖" in text
+
+
+def test_mid_thin_switch_does_not_change_other_bands(monkeypatch):
+    monkeypatch.setenv("NOTE_THIN_CHECKLIST", "1")
+    assert "源量事前判断" in EX.render_extraction_rules(1000)      # <2k 仍是 T0 块
+    assert "长源提取清单" in EX.render_extraction_rules(12000)     # >10k 仍是长源清单
+    assert "薄清单" in EX.render_extraction_rules(2000)            # 边界含在内
+    assert "薄清单" in EX.render_extraction_rules(10000)
+    assert EX.render_extraction_rules(0) == ""                     # 源长未知不注入
+
+    monkeypatch.setenv("NOTE_THIN_CHECKLIST", "0")
+    assert EX.render_extraction_rules(5000) == ""
+
+
+def test_mid_thin_block_keeps_prompt_hash_tracked():
+    """薄清单块也进 rules_hash 的输入：改它的文案必须换 prompt hash，否则口径无法追溯。"""
+    assert EX.mid_thin_rules_text()[:40] in EX.rules_text() + EX.mid_thin_rules_text()
+    h1 = EX.rules_hash()
+    orig = EX.mid_thin_rules_text
+    try:
+        EX.mid_thin_rules_text = lambda: orig() + "\n- 额外一条"
+        assert EX.rules_hash() != h1
+    finally:
+        EX.mid_thin_rules_text = orig
+
+
+def test_mid_thin_block_stripped_and_unverifiable_item_dropped():
+    """薄清单沿用同一套剥离/校验：正文不被污染，原句不可核的条目直接丢。"""
+    src = "苹果今年营收 120 亿美元，我长期看好这个赛道。"
+    note = ("正文一段：营收 120 亿美元。\n\n" + EX.BEGIN + "\n"
+            "- [数字] 营收 120 亿美元 ‖ 苹果今年营收 120 亿美元\n"
+            "- [数字] 营收 999 亿 ‖ 源里没有这句\n" + EX.END + "\n")
+    out = EX.process(note, src, persist=False)
+    assert out["has_block"] is True
+    assert EX.BEGIN not in out["note"] and EX.END not in out["note"]
+    assert out["note"].strip().startswith("正文一段")
+    assert len(out["items"]) == 1, "不可核条目必须被丢弃，不能蒙混进清单"
+    assert len(out["dropped"]) == 1
+    assert out["report"]["total"] == 1 and out["report"]["hit"] == 1
