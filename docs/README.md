@@ -18,6 +18,7 @@
 | 接地审计（分析层数字 / 表格归属） | `shared/note_grounding.py`、`scripts/audit_note_grounding.py`；入口与边界见 PIPELINES §3.9，理由见 [接地审计决策](decisions/DECISION-20261019-grounding-audits.md) |
 | 测试纪律与术语 | [testing_rules](../references/testing_rules.md)、[glossary](../references/glossary.md) |
 | 决策、理由与取代关系 | [决策索引](decisions/README.md) |
+| 已知缺陷与优化方向（未排期，增量生产） | [KNOWN_DEFECTS](KNOWN_DEFECTS.md) |
 | 外部仓库调研参考（open-notebook / open-webui，未立项） | [external-repo-benchmarks](../references/external-repo-benchmarks.md)；决策见 [DECISION-20261024](decisions/DECISION-20261024-external-repo-benchmarks.md) |
 | 项目抽取归档 | [项目抽取技能](../tools/project_import/SKILL.md) 与 [用法](../tools/project_import/README.md) |
 
