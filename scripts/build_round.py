@@ -68,6 +68,25 @@ _A6_PROSE = (
      ""),
 )
 
+# PLAN-20261026 §6.4 按用途选图表：试验臂 vizpurpose 的最小改动（每对 = 生产原文 → 试验文本）。
+# 只动「必须用表格」（2 处措辞）与 chart 确定性触发句；Mermaid 按需条款不动。
+_VIZ_EDITS = (
+    # ① 粗体「必须用表格」（通用排版规范 ×2 处共用此句芯）
+    ("对比 / 参数 / 层级 / 盘点类内容**必须用表格**。",
+     "对比 / 参数 / 层级 / 盘点类内容**按表达用途选形式**：多对象、多维度、"
+     "需要逐项对照时用表格；短清单、单一维度、两三行能说清时直接用文字——"
+     "不凑列、不猜缺失单元格。"),
+    # ② 非粗体措辞（精读模板）
+    ("对比 / 参数 / 公式类必须用表格。",
+     "对比 / 参数 / 公式类**按表达用途选形式**：需要逐项对照时用表格，"
+     "两三行能说清时用文字，不凑列、不猜缺失单元格。"),
+    # ③ chart 确定性触发句（公共 QUALITY_DISCIPLINE_RULES §4）
+    ("- 原文存在 **≥3 组可对比的数字**（增长对比/价格对比/占比/趋势序列）时，产出 1 个 `chart` 代码块",
+     "- 当**同口径**数字的趋势 / 差距 / 构成用图比表格更易读时（增长对比/价格对比/占比/趋势序列，"
+     "常见为 ≥3 组可对比数字）产出 `chart` 代码块；组数够但口径不一、不可比或表格已足够时**不画**"
+     "——数字组数只是候选信号，不是触发器。产出时格式如下"),
+)
+
 
 def apply_prompt_profile(prompt: str, profile: str) -> str:
     """按 profile 回退模板条款：`a4only` 隔离 A4 主效应，`baseline` 剥离短源块。
@@ -84,9 +103,22 @@ def apply_prompt_profile(prompt: str, profile: str) -> str:
       `cmd_build` 渲染 prompt 前打开）。本函数对它是**恒等变换**——条款已在渲染时进 prompt，
       故这里只做**存在性校验**：找不到 `GRANULARITY_MARKER` 就报错，否则这一轮等于白跑。
       用途：`PLAN-20261019` §4.7 的内容粒度 A/B。
+    - `vizpurpose`：生产态 **＋**「按表达用途选图表形式」（`_VIZ_EDITS`）——把「必须用表格」
+      和 chart「≥3 组→产出」的确定性触发改为按用途判断（PLAN-20261026 §6.4）。
+      Mermaid 条款本就是按需，不在改动范围。逐字节 diff 只差目标块。
     """
     if profile == "current":
         return prompt
+    if profile == "vizpurpose":
+        # 条款分属不同模板（「公式类」只在 key_points、chart 句在公共规则），
+        # 单个 prompt 只含部分条款 → 逐对替换，全不命中才报错；
+        # 「每对条款至少存在于一个生产模板」由 test_vizpurpose_targets_present_in_production_templates 守住。
+        out = prompt
+        for old, new in _VIZ_EDITS:
+            out = out.replace(old, new)
+        if out == prompt:
+            raise SystemExit("[ERR] prompt-profile=vizpurpose 未命中任何图表条款（模板已变），profile 失效")
+        return out
     if profile == "noblocks":
         from prompts.section_budget import GRANULARITY_MARKER
         if GRANULARITY_MARKER not in prompt:
@@ -385,10 +417,11 @@ def main() -> int:
     ap.add_argument("--round-dir", default=DEFAULT_ROUND_DIR)
     ap.add_argument("--subset", default="long", choices=["all", "long", "short", "lowretention"])
     ap.add_argument("--prompt-profile", default="current",
-                    choices=["current", "a4only", "baseline", "noblocks"],
+                    choices=["current", "a4only", "baseline", "noblocks", "vizpurpose"],
                     help="a4only=回退 A6 模板条款（隔离 A4 主效应）；baseline=剥离短源篇幅块"
                          "（短源瘦身 A/B 的对照臂，只配 --subset short）；"
                          "noblocks=生产态 + 禁止并列铺开条款（内容粒度 A/B，只配 --subset short）；"
+                         "vizpurpose=生产态 + 按表达用途选图表条款（PLAN-20261026 §6 图表 A/B）；"
                          "current=生产态")
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()

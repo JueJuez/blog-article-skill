@@ -76,3 +76,59 @@ def test_subset_lowretention_is_opinion_structured_plus_short_control():
     ]
     got = {r["eval_id"] for r in BR.subset_rows(rows, "lowretention")}
     assert got == {"X1", "X2", "X3", "X4"}
+
+
+# ---- vizpurpose（PLAN-20261026 §6 按用途选图表 A/B 臂）----
+
+def _all_production_prompts() -> dict:
+    """渲染全部笔记类型的生产 prompt（vizpurpose 的目标条款散在多个模板里）。"""
+    from prompts.templates import QUALITY_GATE_SELFCHECK, get_note_prompt, list_note_types
+    return {t["key"]: get_note_prompt(t["key"], 15000) + QUALITY_GATE_SELFCHECK
+            for t in list_note_types()}
+
+
+def test_vizpurpose_targets_present_in_production_templates():
+    """每对 vizpurpose 改动都必须至少在一个生产模板里定位到（模板改了没同步 → 在此暴露）。"""
+    prompts = _all_production_prompts()
+    joined = "\n".join(prompts.values())
+    for old, _new in BR._VIZ_EDITS:
+        assert old in joined, f"vizpurpose 目标条款不在任何生产模板里（模板已变）：{old[:40]!r}"
+
+
+def test_vizpurpose_only_diffs_target_blocks():
+    """A/B 纪律：试验臂 == 生产 prompt 对目标条款的精确替换，其余逐字节不变。"""
+    prompts = _all_production_prompts()
+    changed_any = False
+    for _key, prompt in prompts.items():
+        out = BR.apply_prompt_profile(prompt, "vizpurpose")
+        expected = prompt
+        hits = 0
+        for old, new in BR._VIZ_EDITS:
+            n = expected.count(old)
+            hits += n
+            expected = expected.replace(old, new)
+        if hits:
+            changed_any = True
+            # 同一条款在一篇 prompt 内重复出现也必须全部替换（不留半新半旧）
+            for old, _new in BR._VIZ_EDITS:
+                assert old not in out
+        assert out == expected, "vizpurpose 改动了目标条款之外的内容"
+    assert changed_any, "vizpurpose 未改动任何文本，profile 失效"
+
+
+def test_vizpurpose_removes_mandatory_clauses_keeps_mermaid():
+    """「必须用表格」与 chart 确定性触发被替换；Mermaid 按需条款保持原样。"""
+    prompts = _all_production_prompts()
+    for _key, prompt in prompts.items():
+        out = BR.apply_prompt_profile(prompt, "vizpurpose")
+        assert "必须用表格" not in out
+        assert "≥3 组可对比的数字**（增长对比/价格对比/占比/趋势序列）时，产出" not in out
+        assert "按表达用途选形式" in out or out == prompt
+        # Mermaid 条款不动
+        if "禁止为线性罗列强画图" in prompt:
+            assert "禁止为线性罗列强画图" in out
+
+
+def test_vizpurpose_raises_when_template_drifts():
+    with pytest.raises(SystemExit):
+        BR.apply_prompt_profile("这是一段不含图表条款的假 prompt", "vizpurpose")
