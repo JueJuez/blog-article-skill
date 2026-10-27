@@ -30,38 +30,38 @@ from shared.subtitle_clean import preprocess_segments, preprocess_text
 
 
 # --------------------------------------------------------------------------
-# 思维模型透镜（有序 LIST · 按需触发）
+# S5：分析边界（额外延伸关闭）取代思维模型透镜
 # --------------------------------------------------------------------------
 
-def test_thinking_lens_in_universal_rules():
-    """UNIVERSAL_RULES 须含「思维模型」有序 LIST（第一性原理等），且按序+按需。"""
+def test_thinking_lens_removed_from_universal_rules():
+    """UNIVERSAL_RULES 不再含思维模型透镜；改为分析边界。"""
     u = UNIVERSAL_RULES
-    assert "思维模型" in u
-    assert "第一性原理" in u
-    assert "二阶思维" in u
-    assert "按顺序" in u
-    assert "按需" in u
+    assert "思维模型" not in u
+    assert "分析边界" in u
+    assert "不做延伸分析" in u
 
 
-def test_thinking_lens_in_structured():
-    """structured 内联等价规则也须含思维模型透镜（它与轻模板拼接 UNIVERSAL 不同路径）。"""
+def test_thinking_lens_removed_from_structured():
+    """structured 内联路径同样关闭思维模型透镜。"""
     p = NOTE_TEMPLATES["structured"]["prompt"]
-    assert "思维模型" in p
-    assert "第一性原理" in p
+    assert "思维模型" not in p
+    assert "分析边界" in p
 
 
-def test_all_templates_have_thinking_lens():
-    """全部模板（含三类新模板）覆盖思维模型透镜（structured 内联 + 轻模板拼 UNIVERSAL_RULES）。"""
+def test_all_templates_close_extension():
+    """全部模板均含分析边界（关闭语 + 源内保护）。"""
     for t in NOTE_TEMPLATES:
-        assert "思维模型" in NOTE_TEMPLATES[t]["prompt"], t
+        p = NOTE_TEMPLATES[t]["prompt"]
+        assert "不做延伸分析" in p, t
+        assert "源内已有的分析" in p, t
 
 
 def test_three_new_templates_registered():
-    """访谈/盘点/读书三类模板已注册进 NOTE_TEMPLATES，且各自含思维模型透镜与专属结构。"""
+    """访谈/盘点/读书三类模板已注册进 NOTE_TEMPLATES，且各自含分析边界与专属结构。"""
     for k in ("interview", "roundup", "reading"):
         assert k in NOTE_TEMPLATES, k
         assert NOTE_TEMPLATES[k]["prompt"]
-        assert "思维模型" in NOTE_TEMPLATES[k]["prompt"], k
+        assert "不做延伸分析" in NOTE_TEMPLATES[k]["prompt"], k
     assert "问答" in NOTE_TEMPLATES["interview"]["prompt"]
     assert "对比矩阵" in NOTE_TEMPLATES["roundup"]["prompt"]
     assert "全书地图" in NOTE_TEMPLATES["reading"]["prompt"]
@@ -150,40 +150,33 @@ def test_series_overview_has_learning_path():
 
 
 # --------------------------------------------------------------------------
-# C：思维模型透镜「强制证据」（每条适用模型须给 洞察+原文证据句）
+# C：延伸关闭后的证据契约（阅读争议仍要求源内证据句）
 # --------------------------------------------------------------------------
 
 def test_thinking_lens_requires_evidence():
-    """THINKING_LENS 须含「强制证据」红线：每条适用模型须给 洞察+原文证据句，
-    且禁止只写「用了X模型」这类空话。"""
+    """THINKING_LENS 已移除；「强制证据」红线随之退出 UNIVERSAL_RULES。"""
     u = UNIVERSAL_RULES
-    assert "强制证据" in u
-    assert "原文证据句" in u
-    assert "用了" in u and "空话" in u
+    assert "强制证据" not in u
+    assert "洞察 + 原文证据句" not in u
 
 
-def test_all_templates_require_evidence():
-    """全部模板的「延伸思考 / 思维模型透镜」须要求「洞察 + 原文证据句（「」括起）」。
-    （7 模板均内嵌 THINKING_LENS / UNIVERSAL_RULES §九，该要求对所有模板成立。）
-    """
+def test_no_template_requires_insight_production():
+    """没有任何模板再要求产出「洞察（不同视角）」。"""
     for t in NOTE_TEMPLATES:
         p = NOTE_TEMPLATES[t]["prompt"]
-        assert "原文证据句" in p, t
-        assert "洞察" in p, t
+        assert "洞察（不同视角）" not in p, t
 
 
 # --------------------------------------------------------------------------
-# E：读书模板「争议与不同声音」维度
+# E：读书模板「材料内争议与缺口」（S5 改名并关闭外部声音）
 # --------------------------------------------------------------------------
 
 def test_reading_has_controversy_section():
-    """争议评议保留材料内矛盾，不以未核验的外部事实强造反驳。"""
+    """争议评议保留材料内矛盾；外部书评/学界声音关闭。"""
     p = NOTE_TEMPLATES["reading"]["prompt"]
-    assert "争议与不同声音" in p
+    assert "材料内争议与缺口" in p
     assert "作者回避" in p
-    assert "不同声音" in p
     assert "内部矛盾" in p
-    assert "外部事实未核验" in p
     assert "不以模型常识编外部共识" in p
 
 

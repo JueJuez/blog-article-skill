@@ -92,9 +92,15 @@ def clone_is_fresh() -> bool:
     except Exception:
         return False
     md = None
-    try:
-        md = date.fromisoformat(raw)
-    except Exception:
+    # Python 3.11+ 的 fromisoformat 会把纯数字串（如 10 位 epoch 秒）当紧凑 ISO 日期
+    # 解析（"1793030400" → 1793-03-04）而不报错，旧 timestamp 兼容分支因此失效；
+    # 纯数字一律走 fromtimestamp（2026-10-27 全量回归发现，修复 test_timestamp_marker）。
+    if not raw.isdigit():
+        try:
+            md = date.fromisoformat(raw)
+        except Exception:
+            md = None
+    if md is None:
         try:
             md = date.fromtimestamp(float(raw))
         except Exception:

@@ -124,9 +124,9 @@ def test_opinion_prompt_evidence_strength():
 # --------------------------------------------------------------------------
 
 def test_guard_reading_core_sections_intact():
-    """reading 原有骨架（全书地图 / 核心论点拆解 / 争议与不同声音 / 金句）仍在。"""
+    """reading 原有骨架（全书地图 / 核心论点拆解 / 材料内争议与缺口 / 金句）仍在（S5 改名争议小节）。"""
     p = _p("reading")
-    for marker in ("全书地图", "核心论点拆解", "争议与不同声音", "金句摘录"):
+    for marker in ("全书地图", "核心论点拆解", "材料内争议与缺口", "金句摘录"):
         assert marker in p, marker
 
 

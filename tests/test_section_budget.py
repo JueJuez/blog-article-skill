@@ -40,9 +40,10 @@ def test_render_block_content_for_short_source():
     block = SB.render_section_budget(3000, "structured")
     assert SB.BLOCK_MARKER in block
     assert "3000" in block
-    # 黑名单小节确实被点名
-    assert "延伸思考" in block and "自测三问" in block and "讲出来" in block
-    assert "笔记者分析" in block and "小结闭环" in block
+    # 黑名单小节确实被点名（S5 后 structured 只剩「小结闭环」——延伸/自测/费曼/笔记者分析已关闭）
+    assert "小结闭环" in block
+    for gone in ("延伸思考", "自测三问", "讲出来", "笔记者分析"):
+        assert gone not in block
     # 保留项与被允许的扩展方式也在块里（防止模型顺着「去水分」删多了）
     assert "分层速览" in block
     for mode in ("重组", "条件与前提", "反例", "私房术语"):

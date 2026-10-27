@@ -45,8 +45,8 @@ _TEMPLATE_NAMES = {
 
 
 def _fixed_structure_section(prompt: str) -> str:
-    """截取「# 固定结构」到其后的「# 提炼规范」段，排除尾部拼接的通用规范。"""
-    start = prompt.index("# 固定结构")
+    """截取「# 模块与组织」到其后的「# 提炼规范」段，排除尾部拼接的通用规范。"""
+    start = prompt.index("# 模块与组织")
     end = prompt.index("提炼规范", start)  # KEY_POINTS 尾段为「排版 & 提炼规范」，不带「# 」前缀
     return prompt[start:end]
 
@@ -63,10 +63,10 @@ class TestTemplateNumbering:
         numbers = _top_level_numbers(_fixed_structure_section(prompt))
         assert numbers == list(range(1, len(numbers) + 1))
 
-    def test_reading_final_item_is_eleven(self):
-        """READING 学习包（2026-09-05）后共 11 条：9 自测三问 / 10 讲出来 / 11 总结收束仍为末条。"""
+    def test_reading_final_item_is_eight(self):
+        """S5 后 reading 共 8 条：行动启发(7) / 8 总结收束仍为末条。"""
         section = _fixed_structure_section(READING_PROMPT)
-        assert "11. **总结收束**" in section
+        assert "8. **总结收束**" in section
 
     def test_tail_splice_untouched(self):
         """编号修复不得影响尾部 UNIVERSAL_RULES 拼接契约（test_templates.py 同款锚点）。"""
@@ -90,9 +90,9 @@ class TestQualityGateSelfcheckDedup:
         assert hits == [], f"gate 自检与 §八 重复的短语：{hits}"
 
     def test_keeps_unique_items(self):
-        """非重叠专项必须保留：思维模型深挖（原④）+ 模板固定结构（原⑤）。"""
-        assert "思维模型" in QUALITY_GATE_SELFCHECK
-        assert "固定结构" in QUALITY_GATE_SELFCHECK
+        """非重叠专项必须保留：无源延伸检查（原①更新）+ 模板模块准入（原②更新）。"""
+        assert "延伸" in QUALITY_GATE_SELFCHECK
+        assert "模块按源准入" in QUALITY_GATE_SELFCHECK
 
     def test_remains_suffix_composable(self):
         """gate 自检仍以换行开头，保持「get_note_prompt(...) + QUALITY_GATE_SELFCHECK」可拼接。"""

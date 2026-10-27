@@ -9,7 +9,7 @@
 3. roundup 选购建议（目的：帮读者做选择）→ 以原文真实建议为准。
 4. reading 主题块（目的：学作者核心思想）→ 块数由主线复杂度决定。
 5. 思维模型自检（目的：确认深挖真发生，而非向读者展示审计过程）→
-   核验在写作时完成，无可靠洞察可省略分析，不输出逐模型日志；质量自检口径同步对齐（2026-10-14）。
+   已于 S5（2026-10-27）连同透镜整体关闭，分析边界接管；质量自检口径同步对齐。
 """
 
 import pytest  # noqa: F401  # 与同目录测试文件保持一致的测试栈声明
@@ -21,7 +21,7 @@ from prompts.templates import (
     QUALITY_GATE_SELFCHECK,
     READING_PROMPT,
     ROUNDUP_PROMPT,
-    THINKING_SELFCHECK,
+    UNIVERSAL_RULES,
 )
 
 
@@ -39,9 +39,10 @@ class TestOpinionArgumentEscape:
 class TestOpinionSingleSidedEscape:
     """目的：忠于原意 + 让读者自判——单面立场文不硬造对立面。"""
 
-    def test_inferred_opposition_is_labeled(self):
-        assert "额外反驳可另放笔记者分析区并逐条标推断" in OPINION_PROMPT
-        assert "（笔记者推断）" in OPINION_PROMPT
+    def test_inferred_opposition_is_closed(self):
+        """S5 契约：额外反驳不再有「笔记者分析」逃生门，直接不写。"""
+        assert "额外反驳可另放笔记者分析区并逐条标推断" not in OPINION_PROMPT
+        assert "不另造反方" in OPINION_PROMPT
 
     def test_no_fabricated_opposition(self):
         assert "只有一面就保留原面" in OPINION_PROMPT
@@ -66,33 +67,25 @@ class TestReadingThemeBlockEscape:
         assert "不为凑块拆分" in READING_PROMPT
 
 
-class TestThinkingSelfcheckReaderCost:
-    """目的：确认「按需深挖」真发生，而非向读者展示审计过程。
+class TestAnalysisBoundaryClosed:
+    """S5 契约（2026-10-27）：思维模型自检连同透镜整体关闭，分析边界接管。
 
-    检查在写作时完成，可靠洞察按需写，不能靠强制日志诱导凑数。
+    延伸不再「按需写」，而是默认不写；源内已有的分析照常保留并归属作者。
     """
 
-    def test_verification_happens_at_writing_time(self):
-        assert "写作时检查" in THINKING_SELFCHECK
+    def test_thinking_selfcheck_removed(self):
+        assert "思维模型自检" not in CONTENT_SUMMARY_PROMPT
 
-    def test_no_insight_can_omit_entire_analysis(self):
-        assert "无可靠洞察时整块省略" in THINKING_SELFCHECK
-        assert "不强写" in THINKING_SELFCHECK
-        assert "就近推断标签" in THINKING_SELFCHECK
-
-    def test_old_verbose_wording_removed(self):
-        assert "逐条列出 6 个模型" not in THINKING_SELFCHECK
-        assert "不逐条列明" not in THINKING_SELFCHECK
-
-    def test_propagates_to_all_templates(self):
-        assert THINKING_SELFCHECK in CONTENT_SUMMARY_PROMPT
+    def test_analysis_boundary_propagates_to_all_templates(self):
         for name in ("key_points", "opinion", "reading"):
-            assert THINKING_SELFCHECK in NOTE_TEMPLATES[name]["prompt"]
+            assert "不做延伸分析" in NOTE_TEMPLATES[name]["prompt"]
+        assert "不做延伸分析" in UNIVERSAL_RULES
+        assert "不做延伸分析" in CONTENT_SUMMARY_PROMPT
 
 
 class TestGateSelfcheckAligned:
-    """自检核查分析标签，不要求把检查日志当作内容。"""
+    """自检核查无源延伸，不要求把检查日志当作内容。"""
 
     def test_selfcheck_does_not_force_model_log(self):
-        assert "不写无效模型日志" in QUALITY_GATE_SELFCHECK
+        assert "不新增无源延伸" in QUALITY_GATE_SELFCHECK
         assert "逐条说明不适用" not in QUALITY_GATE_SELFCHECK

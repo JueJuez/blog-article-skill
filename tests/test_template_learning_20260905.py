@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""学习体验包回归测试（2026-09-05）。
+"""学习体验包回归测试（2026-09-05；2026-10-27 S5 更新）。
 
 学习金字塔映射（被动 → 主动，只取定性排序，不取缺科学依据的百分比）：
 - 读：正文基线（既有）。
 - 看：Mermaid 结构图 + Obsidian callout 高亮（本批新增，零 API 依赖）。
-- 测：自测三问 `[!question]-` 折叠块，检索练习（本批新增）。
-- 用：`- [ ]` checkbox 行动项（本批新增）。
-- 讲：费曼式「讲出来」块（本批新增，金字塔顶层）。
+- 用：`- [ ]` checkbox 行动项（本批新增，S5 起仅源内明确建议）。
+- 测 / 讲（自测三问、费曼「讲出来」）：**已于 S5 关闭**——属模型自增的附加学习栏目，
+  不再出现在生产 prompt；见 PLAN-20261026-low-cost-quality §9.7。
 外加：结论先行且保留证据强度作为排版基线，全 9 个注册键覆盖（2026-10-14）。
 """
 
@@ -45,7 +45,7 @@ def _p(note_type: str) -> str:
 
 
 def _fixed_structure_section(prompt: str) -> str:
-    start = prompt.index("# 固定结构")
+    start = prompt.index("# 模块与组织")
     end = prompt.index("提炼规范", start)
     return prompt[start:end]
 
@@ -74,7 +74,7 @@ class TestStructuredDiagram:
     @pytest.mark.parametrize("prompt_name", ["structured", "general"])
     def test_diagram_rule(self, prompt_name):
         p = _p(prompt_name)
-        assert "十八、结构图" in p
+        assert "十五、结构图" in p
         assert "```mermaid" in p
         assert "学习理解" in p
         assert "滥用" in p
@@ -94,25 +94,23 @@ class TestCallout:
         assert "[!warning]" in _p(prompt_name)
 
 
-class TestSelfQuiz:
-    """学习金字塔「测」层：自测三问折叠块（检索练习）。"""
+class TestSelfQuizClosed:
+    """S5 关闭：自测三问不再出现在任何生产 prompt。"""
 
-    @pytest.mark.parametrize("prompt_name", ["structured", "reading", "case"])
-    def test_self_quiz_folded_callout(self, prompt_name):
-        p = _p(prompt_name)
-        assert "自测三问" in p
-        assert "[!question]-" in p
+    @pytest.mark.parametrize("note_type", _ALL_NOTE_TYPES)
+    def test_self_quiz_removed(self, note_type):
+        p = _p(note_type)
+        assert "自测三问" not in p
+        assert "[!question]-" not in p
 
 
-class TestFeynman:
-    """学习金字塔顶层「讲」：费曼式讲出来块。"""
+class TestFeynmanClosed:
+    """S5 关闭：费曼「讲出来」块不再出现在任何生产 prompt。"""
 
-    @pytest.mark.parametrize("prompt_name", ["structured", "reading", "case"])
-    def test_feynman_block(self, prompt_name):
-        p = _p(prompt_name)
-        assert "费曼" in p
-        assert "讲给" in p
-        assert "类比" in p
+    @pytest.mark.parametrize("note_type", _ALL_NOTE_TYPES)
+    def test_feynman_removed(self, note_type):
+        p = _p(note_type)
+        assert "费曼" not in p
 
 
 class TestCheckboxAction:
@@ -135,28 +133,11 @@ class TestConclusionFirst:
 
 
 class TestReadingLearningOrder:
-    """reading 固定结构语义顺序：思考(8) → 测(9) → 讲(10) → 收束(11)。"""
+    """reading 模块语义顺序（S5 后共 8 条）：行动启发(7，仅源内) → 收束(8) 仍为末条。"""
 
-    def test_quiz_is_item_nine(self):
+    def test_summary_is_item_eight(self):
         section = _fixed_structure_section(READING_PROMPT)
-        assert "9. **自测三问" in section
-
-    def test_feynman_is_item_ten(self):
-        section = _fixed_structure_section(READING_PROMPT)
-        assert "10. **讲出来" in section
-
-    def test_summary_is_item_eleven(self):
-        section = _fixed_structure_section(READING_PROMPT)
-        assert "11. **总结收束**" in section
-
-    def test_quiz_feynman_have_escape_hatch(self):
-        """按需块必须带「不凑数」逃生阀（与去水分红线一致）。"""
-        section = _fixed_structure_section(READING_PROMPT)
-        lines = section.split("\n")
-        quiz_line = [l for l in lines if l.startswith("9. ")][0]
-        feynman_line = [l for l in lines if l.startswith("10. ")][0]
-        assert "不凑数" in quiz_line
-        assert "不凑数" in feynman_line
+        assert "8. **总结收束**" in section
 
     def test_numbering_strictly_increasing(self):
         section = _fixed_structure_section(READING_PROMPT)
@@ -165,15 +146,11 @@ class TestReadingLearningOrder:
 
 
 class TestCaseLearningOrder:
-    """case 固定结构语义顺序：延伸思考(8) → 测(9) → 讲(10)。"""
+    """case 模块（S5 后共 7 条）：可复用经验(7，源内依据) 为末条，无延伸/自测/费曼。"""
 
-    def test_quiz_is_item_nine(self):
+    def test_reusable_experience_is_last(self):
         section = _fixed_structure_section(CASE_PROMPT)
-        assert "9. **自测三问" in section
-
-    def test_feynman_is_item_ten(self):
-        section = _fixed_structure_section(CASE_PROMPT)
-        assert "10. **讲出来" in section
+        assert "7. **可复用经验（源内依据）**" in section
 
     def test_numbering_strictly_increasing(self):
         section = _fixed_structure_section(CASE_PROMPT)
@@ -181,16 +158,15 @@ class TestCaseLearningOrder:
         assert numbers == list(range(1, len(numbers) + 1))
 
 
-class TestStructuredLearningAppendix:
-    """structured 走拼装路径：自测三问 / 费曼以 十六 / 十七 追加，且在思维模型自检之后。"""
+class TestStructuredLearningAppendixClosed:
+    """structured 拼装路径（S5 后）：自测三问 / 费曼 / 思维模型节全部退出。"""
 
     def test_quiz_then_feynman_order(self):
-        assert "# 十六、自测三问" in CONTENT_SUMMARY_PROMPT
-        assert "# 十七、讲出来" in CONTENT_SUMMARY_PROMPT
-        assert CONTENT_SUMMARY_PROMPT.index("# 十六、") < CONTENT_SUMMARY_PROMPT.index("# 十七、")
+        assert "# 十六、自测三问" not in CONTENT_SUMMARY_PROMPT
+        assert "# 十七、讲出来" not in CONTENT_SUMMARY_PROMPT
 
-    def test_quiz_after_selfcheck(self):
-        assert CONTENT_SUMMARY_PROMPT.index("# 十五、思维模型自检") < CONTENT_SUMMARY_PROMPT.index("# 十六、自测三问")
+    def test_analysis_boundary_is_section_fourteen(self):
+        assert "# 十四、分析边界" in CONTENT_SUMMARY_PROMPT
 
 
 class TestNoRegression:
@@ -198,7 +174,7 @@ class TestNoRegression:
 
     def test_reading_anchors_survive(self):
         p = READING_PROMPT
-        for anchor in ["论点间关系", "证据评议", "常见误用", "金句摘录", "只带走三句话", "全书地图", "争议与不同声音"]:
+        for anchor in ["论点间关系", "证据评议", "常见误用", "金句摘录", "只带走三句话", "全书地图", "材料内争议与缺口"]:
             assert anchor in p
 
     def test_case_anchors_survive(self):

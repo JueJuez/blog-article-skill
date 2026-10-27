@@ -90,10 +90,10 @@ def test_dissection_prompt_credibility_annotation():
 
 
 def test_dissection_prompt_reflection_zone():
-    """须有「延伸思考 + 我的想法」留白区（全线统一）。"""
+    """S5 契约：延伸思考/我的想法留白区已关闭，不再出现在生产 prompt。"""
     p = NOTE_TEMPLATES["dissection"]["prompt"]
-    assert "延伸思考" in p
-    assert "我的想法" in p
+    assert "延伸思考" not in p
+    assert "我的想法" not in p
 
 
 # --------------------------------------------------------------------------

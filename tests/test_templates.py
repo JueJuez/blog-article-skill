@@ -76,18 +76,18 @@ def test_pos_neg_examples_present():
         assert ("正反例" in p) or ("正例" in p) or ("正反双方" in p), t
 
 
-def test_reflection_writein_zone():
-    """structured / key_points / case 须有「延伸思考 + 我的想法留白」。"""
+def test_reflection_writein_zone_closed():
+    """S5 契约：structured / key_points / case 不再含「延伸思考 + 我的想法」留白。"""
     for t in ("structured", "key_points", "case"):
         p = NOTE_TEMPLATES[t]["prompt"]
-        assert "延伸思考" in p, t
-        assert "我的想法" in p, t
+        assert "延伸思考" not in p, t
+        assert "我的想法" not in p, t
 
 
-def test_opinion_stance_decision_zone():
-    """opinion 须有「正反双方 + 我的立场」决策位。"""
+def test_opinion_stance_decision_zone_closed():
+    """S5 契约：opinion 不再有「我的立场」决策位（不代写使用者判断）。"""
     p = NOTE_TEMPLATES["opinion"]["prompt"]
-    assert "我的立场" in p
+    assert "我的立场" not in p
 
 
 def test_credibility_annotation():
