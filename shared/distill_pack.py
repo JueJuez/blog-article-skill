@@ -194,9 +194,13 @@ def save_pack(pack: dict, store_dir: str = "") -> str:
 
 
 def load_pack(url_or_key: str, store_dir: str = "") -> "dict | None":
-    """按 URL（自动转 url_key）或裸 key 加载；不存在返回 None。"""
+    """按 URL（自动转 url_key）或裸 key 加载；不存在返回 None。
+
+    URL 判定用 `://` 而非 `http` 前缀——评估隔离目录用 `eval://s8/D1` 这类
+    伪协议时曾读不回自己存的 pack（2026-10-27 S8 首轮实抓）。
+    """
     from shared.image_inventory import url_key
-    name = url_key(url_or_key) if url_or_key.startswith("http") else url_or_key
+    name = url_key(url_or_key) if "://" in (url_or_key or "") else url_or_key
     path = os.path.join(store_dir or PACKS_DIR, f"{name}.json")
     if not os.path.exists(path):
         return None

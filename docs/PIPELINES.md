@@ -66,6 +66,8 @@
 
 **独立提炼候选（S7，2026-10-27，未接生产派单）**：`prompts/distill.py`（提炼契约：主线地图/信息条目/关系说明三类产物、原话与摘意区分、自包含任务 + JSON 输出，`DISTILL_MARKER` 隔离断言保证不拼接进九类写作模板）+ `shared/distill_pack.py`（pack 装壳/机械校验/落盘）。校验是**报告项**：同版 hash 对账（provenance 同口径，失配即 ok=False）、行号 sanity（越界/空行）、关系引用不悬空、枚举合法、`stance=quote` 原话机检（去空白口径同 extract_checklist）——**字段齐全 ≠ 语义完整**，语义核对属 S8 独立复核。落盘 `notes/_meta/distill_packs/<url_key>.json`（与材料索引/图片台账同款 key；同版重写幂等，失败可续跑；`store_dir` 可指定评估目录隔离试验）。真实验证：scys B 页源（19.7k 字）提炼 36 条目/15 关系/5 quote 一次通过校验，行号抽查 3/3 正确，pack 落 `notes/_meta/eval/20261027-distill/packs/`（本机证据，换机须重验）。测试 `tests/test_distill_pack.py` 16 条。
 
+**提炼配对评价（S8 首轮，2026-10-27，仍未接生产）**：5 对冻结源（长文章多案例/数字密集/多对象地图/长视频 ASR/短源负样本，`notes/_meta/eval/20261027-distill-round/MANIFEST.json`，本机证据）两臂对照——cur=生产单轮；distill=提炼子 Agent → pack 校验 → 写作（同 prompt 主体逐字节 + 材料包块）。盲评（每臂一人互不见）：distill P1 遗漏 0 vs cur 6、确定性失真 0 vs cur 3、取材 15/15 vs cur 13+2 无法回答 → **达保留门槛，适用范围=长源（约 ≥10k）复杂论证/多案例**；短源不适用（无增益、pack 相对成本高）；数值密集表格源为 distill 弱项（P2 丢失增多）。S9 接线限长源派单链、沿现役入口，未启动。顺手修 `distill_pack.load_pack`/`source_material._path` 伪协议（`eval://`）读不回 bug + 2 条回归测试（36 passed）。裁决与实录见计划 §9.11-S8 与评估目录 VERDICT.md。
+
 会话独立审核可由`save_pending.py --review-file <报告.json>`随稿提交；存量重做读取稿件旁的`<稿.md>.review.json`（或批次条目的`review_file`）。报告必须绑定完整源、实际清理后的稿件正文及派单prompt，明确不同于作者的审者ID与全文字符范围。协议见[全文审核说明](../references/fulltext-review.md)，未知历史版本不得补造。
 
 已有draft-only/Landing两段出口同样受审核准入约束：新草稿元数据携带源/正文/审核版本和格式化文件hash；显式审核时旧草稿无版本、或草稿文件被改动，都保留草稿并停止Landing，不能绕过新门禁。

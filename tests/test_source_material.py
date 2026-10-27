@@ -203,3 +203,12 @@ def test_record_video_material_tolerates_bad_segments(tmp_path, monkeypatch):
     loaded = SM.load_index("https://example.com/v2")
     assert loaded is not None
     assert loaded["coverage"]["timestamps"] in ("absent", "present")
+
+
+def test_load_index_accepts_pseudo_scheme_url(tmp_path, monkeypatch):
+    """eval:// 伪协议同 hash key 读取（与 distill_pack 同步修复）。"""
+    monkeypatch.setattr(SM, "MATERIALS_DIR", str(tmp_path))
+    idx = SM.build_index(_ARTICLE, kind="article", url="eval://s8/D1")
+    SM.save_index(idx)
+    loaded = SM.load_index("eval://s8/D1")
+    assert loaded is not None and loaded["url_key"] == idx["url_key"]

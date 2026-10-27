@@ -196,7 +196,9 @@ def verify(index: dict, source_text: str) -> bool:
 
 def _path(key_or_url: str, store_dir: str = "") -> str:
     from shared.image_inventory import url_key
-    name = url_key(key_or_url) if key_or_url.startswith("http") else key_or_url
+    # URL 判定用 `://` 而非 `http` 前缀（eval:// 等伪协议同 hash key；
+    # 与 distill_pack.load_pack 同步修复，2026-10-27 S8 首轮实抓）
+    name = url_key(key_or_url) if "://" in (key_or_url or "") else key_or_url
     return os.path.join(store_dir or MATERIALS_DIR, f"{name}.json")
 
 

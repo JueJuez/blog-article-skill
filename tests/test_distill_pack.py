@@ -223,3 +223,14 @@ def test_distill_prompt_does_not_leak_into_note_templates():
     for t, v in NOTE_TEMPLATES.items():
         assert DT.DISTILL_MARKER not in v["prompt"], t
     assert DT.DISTILL_MARKER in dp
+
+
+def test_load_pack_accepts_pseudo_scheme_url(tmp_path):
+    """eval:// 等伪协议 URL 须能读回自己存的 pack（S8 首轮实抓的 bug）。"""
+    pack = _pack(url="eval://s8/D1")
+    pack["url_key"] = DP.url_key_of("eval://s8/D1", _SOURCE)  # 夹具同步 key
+    p = DP.save_pack(pack, store_dir=str(tmp_path))
+    loaded = DP.load_pack("eval://s8/D1", store_dir=str(tmp_path))
+    assert loaded is not None
+    assert loaded["source_sha256"] == pack["source_sha256"]
+    assert DP.validate_pack(loaded, _SOURCE)["ok"] is True
