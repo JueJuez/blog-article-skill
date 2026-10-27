@@ -393,7 +393,7 @@ S1 的 22 条是审核发现项，其中仅 8 条已裁定（真错 5、误报 3
 
 ### 8.4 S8 完成后的当前接手入口（2026-10-27 晚，S9 阶段）
 
-> **状态注记（2026-10-27 21:00 补）**：本节第 1–3 条已实现（`shared/distill_dispatch.py` +
+> **状态注记（2026-10-27 晚，S9 接线后补）**：本节第 1–3 条已实现（`shared/distill_dispatch.py` +
 > `scripts/distill_prepare.py` + `filter_pending.distill_prepare`，默认关），落点与证据见
 > §9.11-S9。**仍未跑的只剩第 4 条的真实批次抽样**（当时 monitors/scys 队列为空）。
 > 接手直接从 §9.11-S9 第 8 条开始，不必重做接线。
