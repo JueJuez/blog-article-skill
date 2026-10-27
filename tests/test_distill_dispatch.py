@@ -60,6 +60,34 @@ def _numeric_source(chars: int = 12000) -> str:
     return "\n".join(out)
 
 
+# 口语论述填充（无数字），用于把「每行数字」稀释到密度阈值以下——对应 S9-B 型源：
+# 整场是大段论述，数字散布其中，密度算下来不高，但不同数字串的绝对量很大。
+_TALK = ("这一段是口语论述用来稀释数字密度本身不含任何读数只是把前因后果和相关背景交代清楚"
+         "便于读者理解上下文不计入任何统计口径也不会被当成数据另外还要注意这段不是表格也不是清单")
+
+
+def _numeric_heavy_source(chars: int = 15000) -> str:
+    """低密度但数字串绝对量大的长源（S9 真实抽样 B 型：直播复盘串讲大量不同价位）。"""
+    out, n, k = [], 0, 0
+    while n < chars:
+        k += 1
+        line = f"第{k:03d}个观察点在{k * 7 + 100}元附近。{_TALK}\n"
+        out.append(line)
+        n += len("".join(line.split()))
+    return "".join(out)
+
+
+def _numeric_pool_source(chars: int = 13000) -> str:
+    """数字出现频繁但只有固定一小批不同数字的长源（放行侧：数字量可控，提炼不会塌一半）。"""
+    out, n, k = [], 0, 0
+    while n < chars:
+        k += 1
+        line = f"第{(k % 27) + 1}个观察点在{(k % 27) * 3 + 20}元左右。{_TALK}\n"
+        out.append(line)
+        n += len("".join(line.split()))
+    return "".join(out)
+
+
 class TestRoute:
     def test_short_source_stays_single(self):
         d = DD.route_for_source("短源。\n" * 50)
@@ -75,6 +103,24 @@ class TestRoute:
         d = DD.route_for_source(_numeric_source())
         assert d["route"] == "single"
         assert "numeric" in d["reason"]
+
+    def test_long_numeric_heavy_stays_single(self):
+        """S9 新增闸：密度不高但不同数字串绝对量大（B 型直播复盘）→ 回单轮。"""
+        d = DD.route_for_source(_numeric_heavy_source())
+        assert d["route"] == "single"
+        assert d["reason"] == "numeric_heavy"
+        assert d["signals"]["digit_density"] < DD.DENSE_DIGIT_DENSITY  # 密度闸拦不住它
+        assert d["signals"]["unique_numbers"] >= DD.NUMERIC_HEAVY_UNIQUE_NUMS
+
+    def test_small_number_pool_still_routes_distill(self):
+        """放行侧不误伤：数字常见但只有一小批不同数字 → 仍走两阶段。"""
+        d = DD.route_for_source(_numeric_pool_source())
+        assert d["route"] == "distill"
+        assert d["signals"]["unique_numbers"] < DD.NUMERIC_HEAVY_UNIQUE_NUMS
+
+    def test_numeric_heavy_threshold_sits_in_calibrated_gap(self):
+        """阈值校准回归：S8 五源 + S9 A/B 实测，放行侧最大 95（D3）、拦截侧最小 191（B）。"""
+        assert 95 < DD.NUMERIC_HEAVY_UNIQUE_NUMS <= 191
 
     def test_boundary_exactly_at_threshold_routes_distill(self):
         # 恰好 10000 去空白字符（≥ 判长源）
@@ -97,7 +143,7 @@ class TestRoute:
 
 # ---------------------------------------------------------------- 材料包块
 
-def _mk_pack(source: str) -> dict:
+def _mk_pack(source: str, prompt_hash_tag: str = "") -> dict:
     parsed = {
         "mainline": {"question": "怎么入行", "progression": ["先学", "再练"],
                      "conclusions": ["可行"]},
@@ -106,7 +152,8 @@ def _mk_pack(source: str) -> dict:
         "relations": [],
     }
     return DP.build_pack(title="测试", url="eval://s9/T1", source_text=source,
-                         distill_prompt_sha256=DT.prompt_hash("测试", source),
+                         distill_prompt_sha256=prompt_hash_tag
+                         or DT.prompt_hash("测试", source),
                          parsed=parsed)
 
 
@@ -265,6 +312,35 @@ class TestPrepare:
         assert rec["route"] == "distill"
         assert rec["source_sha256"] == text_hash(src)
         assert rec["write_prompt_sha256"]
+
+    def test_contract_upgrade_replaces_old_block(self, tmp_path):
+        """幂等不能只看源 hash：契约升级后旧版包块必须能被换掉（2026-10-27 实抓）。
+
+        只比 `source_sha256` 时，队列里已装配 v1 包块的条目会永远停在旧契约上，
+        等于把旧契约的已知缺陷钉死在生产批次里。
+        """
+        src = _long_source()
+        entry = {"url": "eval://s9/T1", "title": "测试", "prompt": "BASE PROMPT\n",
+                 "raw_file": ""}
+        old = _mk_pack(src, prompt_hash_tag="OLD_CONTRACT")   # 旧契约版本号
+        entry["prompt"] = DD.assemble_write_prompt(entry["prompt"], old)
+        DP.save_pack(_mk_pack(src), str(tmp_path))            # 当前契约的 pack
+        rep = DD.prepare_entry(entry, store_dir=str(tmp_path), source_text=src)
+        assert rep["status"] == "prepared", rep.get("status")
+        body, blk = DD.split_write_prompt(entry["prompt"])
+        assert blk is not None
+        assert DD.block_json_field(blk, "distill_prompt_sha256") == DT.prompt_hash("测试", src)
+        assert DD.block_is_current(blk, src, title="测试") == (True, "ok")
+
+    def test_contract_upgrade_without_new_pack_strips_block(self, tmp_path):
+        """契约升级但没有新版 pack：剥掉旧块回单轮，绝不拿旧契约产物硬套。"""
+        src = _long_source()
+        old = _mk_pack(src, prompt_hash_tag="OLD_CONTRACT")
+        entry = {"url": "eval://s9/upgrade2", "title": "升版本", "raw_file": "",
+                 "prompt": DD.assemble_write_prompt("BASE\n", old)}
+        rep = DD.prepare_entry(entry, store_dir=str(tmp_path), source_text=src)
+        assert rep["status"] == "stale_stripped"
+        assert entry["prompt"].strip() == "BASE"
 
     def test_stale_block_stripped_when_source_changed(self, tmp_path):
         """换源后旧包块不得当「已完成」：剥掉回单轮，provenance 同步。"""

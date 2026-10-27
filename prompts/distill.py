@@ -21,15 +21,22 @@ from __future__ import annotations
 
 from prompts.provenance import text_hash
 
-DISTILL_MARKER = "<!-- DISTILL_CONTRACT v1 -->"
+DISTILL_MARKER = "<!-- DISTILL_CONTRACT v2 -->"
 
 # 与 shared/distill_pack.py 的枚举保持一致（单一真源在这里，pack 侧 import）
 ITEM_TYPES = ("viewpoint", "case", "step", "number", "resource", "condition", "counterexample")
 STANCE_KINDS = ("quote", "paraphrase")
 RELATION_KINDS = ("supports", "depends", "limits", "contradicts")
 
-# 提炼 prompt 版本号：改下面任何契约文案即视为换版本（distill_prompt_sha256 会变）
-CONTRACT_VERSION = 1
+# 提炼 prompt 版本号：改下面任何契约文案即视为换版本（distill_prompt_sha256 会变，
+# 旧 pack 自动失效不被消费——版本绑定见 `shared/distill_dispatch.load_valid_pack_for_source`）
+#
+# v2（2026-10-27，S9 真实抽样后）：针对「数字固化」失真补三条硬边界——
+#   ① 数字逐行成条（不同口径不许合并）；② 不确定读数保留原写法、不许补精度或二选一；
+#   ③ 引用前重新确认行号（长源末段易漂，S9-B 回包 end 多算 5 行被机械校验拦下的教训）。
+#   ④ >40k 字源分块提炼：源文本按行前缀真实行号下发（`NNN| 文本`），拼回来仍是同一份源，
+#      `source_lines` 直接报全局行号，不需要模型做算术还原。CONTRACT_VERSION = 2
+CONTRACT_VERSION = 2
 
 _SCHEMA_EXAMPLE = """```json
 {
@@ -44,7 +51,13 @@ _SCHEMA_EXAMPLE = """```json
      "source_lines": [12, 12]},
     {"id": "i2", "type": "number", "stance": "paraphrase",
      "content": "8000 元/月，2019 年首单报价（口径与期间随条目保留）",
-     "source_lines": [15, 16]}
+     "source_lines": [15, 16]},
+    {"id": "i3", "type": "number", "stance": "paraphrase",
+     "content": "12000 元/月，2021 年报价（期间不同 → 另起一条，不与 i2 合并）",
+     "source_lines": [18, 18]},
+    {"id": "i4", "type": "number", "stance": "quote",
+     "content": "利率从4.67上涨到了4.7 一 三（源此处疑似读数断字，读数存疑，不得写成 4.713%）",
+     "source_lines": [43, 43]}
   ],
   "relations": [
     {"from": "i2", "to": "i1", "kind": "supports", "note": "证据支持观点"}
@@ -73,7 +86,9 @@ def rules_text() -> str:
 
 - **不做延伸分析**：不新增你自己的洞察、反方论证、类比、迁移建议、行动项或评价。你的产出里只应有源里讲过的东西。
 - **原话与摘意区分**：`stance` 只取 `quote`（逐字原话，`content` 必须与源完全一致，不得改写）或 `paraphrase`（摘意/转述）。拿不准就写 paraphrase。
-- **来源位置**：每条 `source_lines` 给 1-based 行号范围 `[起, 止]`（按你收到的源文本逐行计）。指向空行或编造行号都会被机械校验标出。
+- **来源位置**：每条 `source_lines` 给 1-based 行号范围 `[起, 止]`，取值就是**源文本每行开头标注的那个数字**（照抄即可，不要另行编号）。**先定位到该句所在行再写行号**，不要凭印象估算；长源靠末尾的段落尤其容易数错，**止行不得超过你收到的最后一行行号**。指向空行或越界的行号都会被机械校验拦下。
+- **数字逐行成条**：同一句里出现多个不同口径的读数（不同期间 / 对象 / 单位 / 基准，如「目标价由 12 元上调到 15 元」），每个口径单独一条 `number` 条目，`content` 里带上口径要素（单位、期间、归属、基准）。不许把多个口径并成一条，也不许替作者挑一个写。
+- **不确定读数不许补精度**：源里的断字、听不清、同一指标两说并存的读数（如 ASR 把 4.713 读成「4.7 一 三」、同一指标一会儿说 11 个点一会儿说 4.78），`content` **照抄源的原写法**并标「读数存疑」/「两说并存」——**不得换算、拼合或补写成精确值**（不许把「4.7 一 三」写成 4.713%），也不得替作者二选一。看不见、听不清的就留空并在 `notes` 说明。
 - **忠实属性**：说话者归属、时间、数字口径/单位/期间、亲历/转述/预测/假设、结论强度，随条目保留，不在关系里偷偷升格。
 - **覆盖优先于整洁**：重要观点、论证/因果过程、案例、步骤、数字口径、资源、条件、反例都该有条目；重复表达可合并，但每处独有事实不随合并消失。
 - 源没讲清、你读不到的部分：明确留空并在 `notes` 里说明，**不凭常识补齐**。
@@ -92,16 +107,38 @@ def rules_text() -> str:
 """
 
 
-def render_distill_prompt(title: str, source_text: str, material_hint: str = "") -> str:
-    """渲染自包含提炼任务。material_hint：S6 材料索引的一句话提示（可空）。"""
-    lines = text_hash  # noqa: F841  （保持 import 一致性）
+def numbered_source(source_text: str, start_line: int = 1) -> str:
+    """给源每行加 `NNN| ` 行号前缀（`start_line` = 1-based 起始行，默认 1）。
+
+    作用：提炼者看到的数字就是**全局行号**，回包写 `source_lines` 无需换算；
+    这也是 >40k 源分块提炼后能拼回同一坐标的前提（分块只是切 `start_line` 区间）。
+    """
+    lines = (source_text or "").split("\n")
+    width = len(str(start_line + len(lines)))
+    return "\n".join(f"{start_line + i:{width}d}| {ln}" for i, ln in enumerate(lines))
+
+
+def render_distill_prompt(title: str, source_text: str, material_hint: str = "",
+                          chunk_label: str = "", start_line: int = 1) -> str:
+    """渲染自包含提炼任务。material_hint：S6 材料索引的一句话提示（可空）。
+
+    `chunk_label`：非整篇时写明「第 k/N 块（源第 a–b 行）」，让提炼者知道自己看的是节选，
+    因此**不要替全篇下结论**——只提炼本块范围内的信息（§9.3.5：分段不许切断指代与条件）。
+    `start_line`：分块时该片段在整篇里的起始行（默认 1）。借此下发全局行号，
+    分块提炼后无需换算即可拼回同一坐标。
+    """
+    lines = (source_text or "").split("\n")
+    scope = f"（本任务是整篇，共 {start_line - 1 + len(lines)} 行）"
+    if chunk_label:
+        scope = f"（本任务处理{chunk_label}）"
     parts = [
         f"源标题：{title or '（未提供）'}",
         "",
-        "下面是完整源文本，行号从 1 起逐行计（你引用 source_lines 时按这个计）：",
+        f"下面是源文本{scope}，每行开头的数字就是**该行在整篇源里的行号**——"
+        "你引用 `source_lines` 时直接照抄这个数字，不要自己重新编号或估算：",
         "",
         "<<<SOURCE_BEGIN>>>",
-        source_text or "",
+        numbered_source(source_text or "", start_line),
         "<<<SOURCE_END>>>",
         "",
     ]
@@ -109,6 +146,13 @@ def render_distill_prompt(title: str, source_text: str, material_hint: str = "")
         parts += [f"材料索引提示：{material_hint}", ""]
     parts += [rules_text()]
     return "\n".join(parts)
+
+
+def chunk_prompt_hash(title: str, source_text: str, chunk_label: str = "",
+                      start_line: int = 1) -> str:
+    """分块块的 prompt 版本 hash（分块提炼时每块各记一个）。"""
+    return text_hash(render_distill_prompt(title, source_text, chunk_label=chunk_label,
+                                           start_line=start_line))
 
 
 def prompt_hash(title: str, source_text: str, material_hint: str = "") -> str:

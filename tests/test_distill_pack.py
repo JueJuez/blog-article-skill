@@ -208,12 +208,35 @@ def test_material_key_honest_when_absent():
 def test_distill_prompt_is_self_contained():
     """自包含任务：完整源文本 + 三类产物定义 + 边界条款。"""
     p = DT.render_distill_prompt("代运营复盘", _SOURCE)
-    assert _SOURCE in p
+    # 契约 v2 起源文本逐行带 `NNN| ` 全局行号前缀下发（分块提炼拼回同一坐标的前提）
+    assert DT.numbered_source(_SOURCE) in p
+    assert "1| " in p and f"{len(_SOURCE.splitlines())}| " in p  # 首尾行号对得上
     assert "主线" in p and "条目" in p and "关系" in p
     assert "先按原文提炼" in p
     assert "JSON" in p
     assert "原话" in p and "摘意" in p  # 原话/摘意区分
     assert "行号" in p
+
+
+def test_contract_v2_number_rules_present():
+    """契约 v2（S9 抽样后）：数字逐行成条 / 不确定读数不补精度 / 先定位再写行号。
+
+    三条都针对实测出来的「数字固化」与行号漂移失真，缺一条等于把已知失真放回链路。
+    """
+    p = DT.render_distill_prompt("t", _SOURCE)
+    assert "数字逐行成条" in p
+    assert "不确定读数不许补精度" in p
+    assert "读数存疑" in p          # 存疑标法落到 content 里
+    assert "不得换算" in p           # 不许把「4.7 一 三」拼成 4.713%
+    assert "先定位到该句所在行再写行号" in p
+    assert DT.CONTRACT_VERSION == 2
+
+
+def test_contract_is_explicitly_versioned():
+    """契约文案必须是「改了就换版本的」：MARKER 与 CONTRACT_VERSION 同步，hash 稳定可复算。"""
+    assert str(DT.CONTRACT_VERSION) in DT.DISTILL_MARKER
+    assert DT.prompt_hash("t", _SOURCE) == DT.prompt_hash("t", _SOURCE)
+    assert DT.prompt_hash("t", _SOURCE) != DT.prompt_hash("别的标题", _SOURCE)
 
 
 def test_distill_prompt_does_not_leak_into_note_templates():

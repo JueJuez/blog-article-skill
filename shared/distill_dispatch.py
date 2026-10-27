@@ -6,8 +6,11 @@ PLAN-20261026-low-cost-quality §8.4（S9 入口）/ §9.11-S9（协议）。**�
 
 职责边界（协议四条，与 §8.4 第 1–4 条一一对应）：
 1. **路由从严**：只对长源（`source_chars_of` ≥ `LONG_SOURCE_MIN_CHARS`）且非数字密集
-   （`digit_density` < `DENSE_DIGIT_DENSITY`）的源走两阶段；其余一律 `single`。
-   误判方向必须落在「保守回单轮」——S8 已证短源无增益、数值密集表格式源有 P2 丢失。
+   （`digit_density` < `DENSE_DIGIT_DENSITY`）且非高数字量（源内不同数字串
+   < `NUMERIC_HEAVY_UNIQUE_NUMS`）的源走两阶段；其余一律 `single`。
+   误判方向必须落在「保守回单轮」——S8 已证短源无增益、数值密集源 P2 丢失多，
+   S9 真实抽样又补了一类：**密度不高但数字串绝对量很大**的直播复盘（美债 B 篇密度
+   仅 0.0373，却有 191 个不同数字串）同样命中该弱项。
 2. **装配不改主体**：`assemble_write_prompt` = 生产 prompt 主体（逐字节）+ 材料包块；
    包块标记与文案与 S8 distill 臂逐字节同款，`DISTILL_MARKER`（提炼契约）不进写作 prompt。
 3. **版本绑定**：源 hash 或提炼契约（prompt）hash 失配、pack 机械校验不通过 → 不消费，
@@ -26,14 +29,28 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from prompts.distill import prompt_hash  # noqa: E402
 from prompts.templates import source_chars_of  # noqa: E402
 from shared import distill_pack as DP  # noqa: E402
+from shared.source_metrics import unique_number_count  # noqa: E402
 
 MATERIAL_PACK_BEGIN = "<<<DISTILL_MATERIAL_PACK>>>"
 MATERIAL_PACK_END = "<<<END_DISTILL_MATERIAL_PACK>>>"
 
-# 路由阈值（S8 五源校准：D2 数字密度 0.174，其余四源 ≤0.027 → 0.08 取中间偏保守）
+# 路由阈值
 LONG_SOURCE_MIN_CHARS = 10000
 SHORT_SOURCE_MAX_CHARS = 5000
+# ① 密度闸（S8 五源校准：D2 密度 0.174，其余四源 ≤0.027 → 0.08 取中间偏保守）
 DENSE_DIGIT_DENSITY = 0.08
+# ② 绝对量闸（S9 真实抽样后新增，2026-10-27）：密度按全文均摊，长直播稿的大段口语论述会
+#    稀释密度——美债 B 篇密度仅 0.0373 却含 191 个不同数字串，仍复现了「数值密集」弱项。
+#    两个已知点的空隙：放行侧最大 95（S8-D3），拦截侧最小 191（S9-B）→ 取 130（偏保守侧，
+#    全库 120 与 150 两档实测结果相同，该区间无样本）。口径 = `shared.source_metrics`
+#    （去标题行与 `> 标题/时间` 元信息块后的不同数字串个数）。
+NUMERIC_HEAVY_UNIQUE_NUMS = 130
+
+# ④ 超长源分块阈值（S9 抽样 §5.1：B 篇 52.8k 字产出 105.6KB pack / 79,496 字符写作 prompt，
+#    「单次任务能承载多大」没有边界结论 → >40k 字先分块提炼，再谈接线）。
+CHUNK_MAX_CHARS = 40000
+# 相邻块重叠行数：给跨段指代/条件留上下文（§9.3.5：分段不许切断指代、条件和跨段关系）。
+CHUNK_OVERLAP_LINES = 40
 
 PACK_BLOCK_HEADER = (
     "以下是**同版源**的独立提炼材料包（先行提炼步骤的产物），供取材与对账使用：\n"
@@ -69,13 +86,18 @@ def route_for_source(source_text: str) -> dict:
     text = source_text or ""
     chars = source_chars_of(text)
     density = (len(_DIGIT_RE.findall(text)) / chars) if chars else 0.0
-    signals = {"chars": int(chars), "digit_density": round(density, 4)}
+    uniq = unique_number_count(text)
+    signals = {"chars": int(chars), "digit_density": round(density, 4),
+               "unique_numbers": int(uniq)}
     if chars < LONG_SOURCE_MIN_CHARS:
         reason = "short_source" if chars < SHORT_SOURCE_MAX_CHARS else "below_long_threshold"
         return {"route": "single", "reason": reason, "signals": signals}
     if density >= DENSE_DIGIT_DENSITY:
         # S8 弱项：数值密集表格源 P2 丢失增多 → 保持单轮，不做条目粒度改造前不放开
         return {"route": "single", "reason": "numeric_dense", "signals": signals}
+    if uniq >= NUMERIC_HEAVY_UNIQUE_NUMS:
+        # S9 补录的同一弱项另一张脸：密度低但数字串绝对量大（直播复盘/行情串讲）
+        return {"route": "single", "reason": "numeric_heavy", "signals": signals}
     return {"route": "distill", "reason": "long_source", "signals": signals}
 
 
@@ -102,8 +124,8 @@ def split_write_prompt(prompt: str) -> tuple:
     return text[:i].rstrip("\n"), text[i:j + len(MATERIAL_PACK_END)]
 
 
-def block_source_sha(block: str) -> str:
-    """取已装配包块里的 `source_sha256`（读不到返回空串——按陈旧处理）。"""
+def block_json_field(block: str, field: str) -> str:
+    """取已装配包块里的某个顶层字段（读不到返回空串——按陈旧处理）。"""
     if not block:
         return ""
     i = block.find("```json")
@@ -111,9 +133,31 @@ def block_source_sha(block: str) -> str:
     if i < 0 or j <= i:
         return ""
     try:
-        return (json.loads(block[i + len("```json"):j].strip()).get("source_sha256") or "")
+        return str(json.loads(block[i + len("```json"):j].strip()).get(field) or "")
     except Exception:
         return ""
+
+
+def block_source_sha(block: str) -> str:
+    """取已装配包块里的 `source_sha256`（读不到返回空串——按陈旧处理）。"""
+    return block_json_field(block, "source_sha256")
+
+
+def block_is_current(block: str, source_text: str, title: str = "") -> tuple:
+    """已装配的包块是否还算「当前」——**源与契约两版都要对得上**。
+
+    第二轮轮的教训（2026-10-27）：只比 `source_sha256` 时，提炼契约升级（v1→v2）
+    后旧包块会被当成「已装配」长期不换，等于把旧契约的已知缺陷钉在队列里。
+    返回 (bool, reason)：reason ∈ {"ok", "source_sha256_mismatch", "contract_upgraded"}。
+    """
+    if not block:
+        return False, "source_sha256_mismatch"
+    if block_source_sha(block) != _text_hash(source_text or ""):
+        return False, "source_sha256_mismatch"
+    if block_json_field(block, "distill_prompt_sha256") != prompt_hash(title or "",
+                                                                       source_text or ""):
+        return False, "contract_upgraded"
+    return True, "ok"
 
 
 # ------------------------------------------------------------------ 版本绑定
@@ -153,6 +197,60 @@ def log_dispatch(record: dict, log_path: str = "") -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def plan_chunks(source_text: str, max_chars: int = CHUNK_MAX_CHARS,
+                overlap_lines: int = CHUNK_OVERLAP_LINES) -> list:
+    """把长源切成带重叠的**行区间**（1-based 闭区间），返回 chunk 描述列表。
+
+    - 整篇字数 ≤ `max_chars` → 单块覆盖全文（与旧行为一致，只是带上 chunk 元信息）；
+    - 超过则顺序累计到 `max_chars` 切一刀，下一块回退 `overlap_lines` 行作为上下文重叠；
+    -  invariants：首块 start=1、末块 end=总行数、相邻块 `next.start <= cur.end + 1`
+      （不留空洞，重叠只会过量不会漏行）。
+    """
+    lines = (source_text or "").split("\n")
+    total_lines = len(lines)
+    if total_lines == 0 or not (source_text or "").strip():
+        return []
+    weights = [len("".join(ln.split())) for ln in lines]
+    if sum(weights) <= max_chars:
+        return [{"index": 1, "total": 1, "start_line": 1, "end_line": total_lines,
+                 "chars": sum(weights)}]
+    spans, start, acc = [], 1, 0
+    for i, w in enumerate(weights, 1):
+        acc += w
+        if acc >= max_chars and i < total_lines:
+            spans.append((start, i))
+            # 回退 overlap 行给下一块做上下文，但必须严格前进（否则单行超长会卡死）
+            start = max(start + 1, i + 1 - overlap_lines)
+            acc = sum(weights[start - 1:i]) if start <= i else 0
+    spans.append((start, total_lines))
+    total = len(spans)
+    return [{"index": k, "total": total, "start_line": a, "end_line": b,
+             "chars": sum(weights[a - 1:b])} for k, (a, b) in enumerate(spans, 1)]
+
+
+def chunk_source_text(source_text: str, start_line: int, end_line: int) -> str:
+    """取该块的行片段（1-based 闭区间）。"""
+    lines = (source_text or "").split("\n")
+    return "\n".join(lines[max(0, start_line - 1):max(0, end_line)])
+
+
+def render_chunk_prompt(title: str, source_text: str, chunk: dict) -> str:
+    """按 chunk 区间渲染提炼任务：只给**该块的源片段**，但行号仍是整篇里的全局行号。"""
+    from prompts.distill import render_distill_prompt
+    if not chunk or int(chunk.get("total", 1) or 1) <= 1:
+        return render_distill_prompt(title, source_text)
+    frag = chunk_source_text(source_text, int(chunk["start_line"]), int(chunk["end_line"]))
+    label = (f"第 {chunk['index']}/{chunk['total']} 块"
+             f"（源第 {chunk['start_line']}–{chunk['end_line']} 行）")
+    return render_distill_prompt(title, frag, chunk_label=label,
+                                 start_line=int(chunk["start_line"]))
+
+
+def chunk_filename(url_key: str, chunk: dict) -> str:
+    return f"{url_key}_distill.txt" if chunk.get("total", 1) == 1 else (
+        f"{url_key}_c{chunk['index']}of{chunk['total']}_distill.txt")
+
+
 def _read_source(entry: dict) -> "str | None":
     path = entry.get("raw_file") or entry.get("output")
     if not path:
@@ -170,7 +268,9 @@ def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
                   source_text: "str | None" = None, dry_run: bool = False) -> dict:
     """给单条队列条目装配材料包块；不适用时抛 `PrepareIneligible`（队列条目不变）。
 
-    幂等：已装配过（prompt 里已有包块）直接返回 `already_prepared`，不二次拼接。
+    幂等：已装配**且仍是当前版本**（源 hash 与提炼契约 hash 都对得上）→ `already_prepared`，
+    不二次拼接；契约升级后旧包块会被判 `contract_upgraded` 并换新（只比源 hash 会把旧契约
+    的已知缺陷钉在队列里，2026-10-27 实抓）。
     """
     url = entry.get("url", "") or ""
     title = entry.get("title", "") or ""
@@ -192,15 +292,18 @@ def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
 
     prompt = entry.get("prompt", "") or ""
     base_prompt, block = split_write_prompt(prompt)
+    block_reason = ""
     if block is not None:
-        if block_source_sha(block) == _text_hash(src):
+        current, why = block_is_current(block, src, title=title)
+        if current:
             log_dispatch({**base_record, "status": "already_prepared",
                           "source_sha256": _text_hash(src),
                           "write_prompt_sha256": _text_hash(prompt)}, log_path)
             return {"status": "already_prepared", "route": "distill", "entry": entry,
                     "decision": decision}
-        # 已装配的包块属于旧源（换源/改稿）→ 不能当有效交接，按未装配处理
+        # 已装配的包块属于旧源（换源/改稿）或旧提炼契约（升级）→ 不能当有效交接
         prompt = base_prompt
+        block_reason = why
 
     pack, reason = load_valid_pack_for_source(url, src, title=title, store_dir=store_dir)
     if pack is None:
@@ -215,8 +318,8 @@ def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
                     gc.pop(k, None)
                 entry["generation_context"] = gc
             log_dispatch({**base_record, "status": "stale_stripped",
-                          "fallback_reason": reason, "source_sha256": _text_hash(src)},
-                         log_path)
+                          "fallback_reason": reason, "source_sha256": _text_hash(src),
+                          "block_stale_reason": block_reason}, log_path)
             return {"status": "stale_stripped", "route": "distill", "entry": entry,
                     "decision": decision, "reason": reason}
         exc = PrepareIneligible(reason, decision)
@@ -278,6 +381,7 @@ def plan_queue(queue_path: str, store_dir: str = "") -> dict:
         row = {"url": url, "title": e.get("title", ""), "route": d["route"],
                "reason": d["reason"], "signals": d["signals"], "note_type": e.get("note_type", "")}
         if d["route"] == "distill":
+            row["chunks"] = len(plan_chunks(src))  # >40k 的源会分块提炼
             pack, why = load_valid_pack_for_source(url, src, title=e.get("title", ""),
                                                   store_dir=store_dir)
             row["pack"] = why
@@ -293,10 +397,9 @@ def plan_queue(queue_path: str, store_dir: str = "") -> dict:
 def emit_distill_tasks(queue_path: str, out_dir: str, store_dir: str = "") -> dict:
     """为「该走两阶段但还没有有效 pack」的条目写自包含提炼任务文件 + manifest。
 
-    任务文件由 `prompts.distill.render_distill_prompt` 渲染（隔离旧稿与会话历史）；
-    manifest 记 url/url_key/title/source_sha256/distill_prompt_sha256/文件路径。
+    manifest 记 url/url_key/title/source_sha256/文件路径；>40k 的源按 `plan_chunks`
+    切成多块，每块一份任务文件（`chunk` 字段记行区间与序号）。
     """
-    from prompts.distill import render_distill_prompt
     entries = json.load(open(queue_path, encoding="utf-8"))
     os.makedirs(out_dir, exist_ok=True)
     tasks, skipped = [], []
@@ -312,17 +415,18 @@ def emit_distill_tasks(queue_path: str, out_dir: str, store_dir: str = "") -> di
         if pack is not None:
             skipped.append({"url": url, "reason": "pack_reused"})
             continue
-        key = DP.url_key_of(url, src)
-        name = f"{key}_distill.txt"
-        path = os.path.join(out_dir, name)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(render_distill_prompt(title, src))
-        tasks.append({"url": url, "url_key": key, "title": title,
-                      "source_path": e.get("raw_file") or e.get("output") or "",
-                      "source_sha256": _text_hash(src),
-                      "distill_prompt_sha256": prompt_hash(title, src),
-                      "source_chars": d["signals"]["chars"],
-                      "task_file": name})
+        chunks = plan_chunks(src or "")
+        for chunk in chunks:
+            name = chunk_filename(key, chunk)
+            path = os.path.join(out_dir, name)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(render_chunk_prompt(title, src, chunk))
+            tasks.append({"url": url, "url_key": key, "title": title,
+                          "source_path": e.get("raw_file") or e.get("output") or "",
+                          "source_sha256": _text_hash(src),
+                          "distill_prompt_sha256": _text_hash(render_chunk_prompt(title, src, chunk)),
+                          "source_chars": d["signals"]["chars"],
+                          "task_file": name, "chunk": chunk})
     manifest = {"queue": queue_path, "store_dir": store_dir, "tasks": tasks,
                 "skipped": skipped}
     with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as f:
@@ -339,44 +443,99 @@ def _strip_fences(text: str) -> str:
     return t.strip()
 
 
-def ingest_distill_results(in_dir: str, store_dir: str = "") -> dict:
-    """回收提炼回包（`<url_key>.json`）→ build/validate → 通过才落盘。
+def _task_stem(task: dict) -> str:
+    """任务文件 → 回包 stem（`<key>_distill.txt` → `<key>`；`<key>_c2of3_distill.txt` → `<key>_c2of3`）。"""
+    name = task.get("task_file") or f"{task.get('url_key') or ''}_distill.txt"
+    return name[:-len("_distill.txt")] if name.endswith("_distill.txt") else name.rsplit(".", 1)[0]
 
-    校验不通过**不落盘**（该篇后续降级单轮），issues 进报告供编排方修正重跑。
+
+def ingest_distill_results(in_dir: str, store_dir: str = "") -> dict:
+    """回收提炼回包 → build/validate → 通过才落盘。
+
+    - 单块源：回包 `<url_key>.json`（沿用旧约定）；
+    - >40k 超长源：回包 `<url_key>_c<k>of<N>.json` 每块一份，**全部到齐且各自通过
+      机械校验才合并落一个整篇 pack**；缺一块或任一块不过 → 整篇不落盘
+      （保守方向：半份 pack 会让写作端误以为已全覆盖，等于把遗漏藏起来）。
+      校验不通过的细节进 `failed`，供编排方修正重跑。
     """
     manifest_path = os.path.join(in_dir, "manifest.json")
     manifest = json.load(open(manifest_path, encoding="utf-8"))
-    saved, failed, missing = [], [], []
+
+    # 按 url_key 归组（同一篇的所有块）
+    groups: dict = {}
+    order: list = []
     for t in manifest.get("tasks") or []:
         key = t.get("url_key") or ""
-        path = os.path.join(in_dir, f"{key}.json")
-        if not os.path.exists(path):
-            missing.append({"url": t.get("url"), "url_key": key})
-            continue
+        if key not in groups:
+            groups[key] = {"tasks": [], "source_path": t.get("source_path") or "",
+                           "source_sha256": t.get("source_sha256") or "",
+                           "title": t.get("title", ""), "url": t.get("url", "")}
+            order.append(key)
+        groups[key]["tasks"].append(t)
+
+    saved, failed, missing = [], [], []
+    for key in order:
+        grp = groups[key]
+        tasks = grp["tasks"]
         try:
-            parsed = json.loads(_strip_fences(open(path, encoding="utf-8").read()))
-        except Exception as exc:
-            failed.append({"url": t.get("url"), "url_key": key, "issues": [f"JSON 解析失败: {exc}"]})
-            continue
-        try:
-            src = open(t.get("source_path") or "", encoding="utf-8").read()
+            src = open(grp["source_path"], encoding="utf-8").read()
         except (OSError, UnicodeError):
-            failed.append({"url": t.get("url"), "url_key": key, "issues": ["源不可读，版本绑定失败"]})
+            failed.append({"url": grp["url"], "url_key": key, "issues": ["源不可读，版本绑定失败"]})
             continue
-        if _text_hash(src) != (t.get("source_sha256") or ""):
-            failed.append({"url": t.get("url"), "url_key": key,
+        if _text_hash(src) != grp["source_sha256"]:
+            failed.append({"url": grp["url"], "url_key": key,
                            "issues": ["源 hash 与派单时不一致（换源/改稿），拒绝消费"]})
             continue
-        pack = DP.build_pack(title=t.get("title", ""), url=t.get("url", ""), source_text=src,
-                             distill_prompt_sha256=t.get("distill_prompt_sha256", ""),
-                             parsed=parsed)
+
+        parts, block_issues = [], []
+        for t in sorted(tasks, key=lambda x: int((x.get("chunk") or {}).get("index") or 0)):
+            path = os.path.join(in_dir, _task_stem(t) + ".json")
+            if not os.path.exists(path):
+                missing.append({"url": grp["url"], "url_key": key,
+                                "task_file": t.get("task_file")})
+                block_issues.append(f"缺 {t.get('task_file')} 的回包")
+                continue
+            try:
+                parsed = json.loads(_strip_fences(open(path, encoding="utf-8").read()))
+            except Exception as exc:
+                block_issues.append(f"{t.get('task_file')}: JSON 解析失败: {exc}")
+                continue
+            # 每块先单独过一遍机械校验：只在合并后校验会丢掉「坏在第几块」的位置信息
+            probe = DP.build_pack(title=grp["title"], url=grp["url"], source_text=src,
+                                  distill_prompt_sha256=t.get("distill_prompt_sha256", ""),
+                                  parsed=parsed)
+            rep = DP.validate_pack(probe, src)
+            if not rep["ok"]:
+                idx = (t.get("chunk") or {}).get("index", 1)
+                block_issues += [f"块 {idx}: {m}" for m in rep["issues"][:3]]
+                continue
+            parts.append({"chunk": t.get("chunk") or {"index": 1, "total": 1},
+                          "parsed": parsed, "prompt_sha256": t.get("distill_prompt_sha256", "")})
+
+        if block_issues:
+            failed.append({"url": grp["url"], "url_key": key, "issues": block_issues})
+            continue
+        if len(parts) != len(tasks):
+            failed.append({"url": grp["url"], "url_key": key,
+                           "issues": [f"回包块数不足（{len(parts)}/{len(tasks)}），整篇不落盘"]})
+            continue
+
+        if len(parts) == 1:
+            pack = DP.build_pack(title=grp["title"], url=grp["url"], source_text=src,
+                                 distill_prompt_sha256=prompt_hash(grp["title"], src),
+                                 parsed=parts[0]["parsed"])
+        else:
+            pack = DP.merge_chunk_packs(title=grp["title"], url=grp["url"], source_text=src,
+                                        distill_prompt_sha256=prompt_hash(grp["title"], src),
+                                        parts=parts)
         report = DP.validate_pack(pack, src)
         if not report["ok"]:
-            failed.append({"url": t.get("url"), "url_key": key, "issues": report["issues"]})
+            failed.append({"url": grp["url"], "url_key": key, "issues": report["issues"]})
             continue
         path_saved = DP.save_pack(pack, store_dir)
-        saved.append({"url": t.get("url"), "url_key": key, "pack": path_saved,
-                      "items": len(pack["items"]), "relations": len(pack["relations"])})
+        saved.append({"url": grp["url"], "url_key": key, "pack": path_saved,
+                      "items": len(pack["items"]), "relations": len(pack["relations"]),
+                      "chunks": len(parts)})
     return {"saved": saved, "failed": failed, "missing": missing}
 
 

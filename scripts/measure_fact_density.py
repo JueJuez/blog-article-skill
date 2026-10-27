@@ -22,7 +22,6 @@
 import argparse
 import json
 import os
-import re
 import statistics
 import sys
 
@@ -32,14 +31,9 @@ if ROOT not in sys.path:
 
 from prompts.verifier import count_note_words  # noqa: E402
 from shared.eval_set import load_rows  # noqa: E402
-
-NUM = re.compile(r"\d+(?:\.\d+)?")
-
-CALIBER = ("口径：正文阿拉伯数字串（跳过 `#` 标题行；源侧另跳过 `> 标题/时间/原始文章内容` 元信息块）÷ 千字；"
-           "数值按串比对，忽略 % 与单位；分母 = count_note_words")
-
-# 抓取管线注入的元信息块：数字是集数 / 发布日期 / 时间戳，不属于源内容。
-_META = re.compile(r"^>\s*(标题|时间|原始文章内容|来源|链接|URL|作者|发布)")
+from shared.source_metrics import NUM, content_lines as _content_lines  # noqa: E402
+# `source_numbers` 直接复用单一真源，不在此重实现（保持本模块对外 API 不变）
+from shared.source_metrics import source_numbers  # noqa: E402
 
 
 def _read(path):
@@ -49,19 +43,8 @@ def _read(path):
         return ""
 
 
-def _content_lines(text):
-    for ln in text.splitlines():
-        s = ln.strip()
-        if not s or s.startswith("#"):
-            continue
-        if _META.match(s):
-            continue
-        yield s
-
-
-def source_numbers(source_text):
-    """源内容里可被笔记复用的数值集合（去标题行与元信息块）。"""
-    return set(NUM.findall("\n".join(_content_lines(source_text))))
+CALIBER = ("口径：正文阿拉伯数字串（跳过 `#` 标题行；源侧另跳过 `> 标题/时间/原始文章内容` 元信息块）÷ 千字；"
+           "数值按串比对，忽略 % 与单位；分母 = count_note_words")
 
 
 def density(note_text, source_text):

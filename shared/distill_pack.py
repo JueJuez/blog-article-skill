@@ -182,6 +182,105 @@ def validate_pack(pack: dict, source_text: str) -> dict:
     return {"ok": not issues, "issues": issues}
 
 
+def merge_chunk_packs(*, title: str, url: str, source_text: str,
+                      distill_prompt_sha256: str, parts: list,
+                      notes: str = "") -> dict:
+    """把同一篇源的分块提炼回包合并成**一个整篇 pack**（>40k 超长源，S9 第 8 条③）。
+
+    `parts`: [{"chunk": {"index","total","start_line","end_line"}, "parsed": {...}}]，按块序给。
+
+    合并口径（如实，不臆造）：
+    - 条目 id 加块前缀（`i1` → `c2_i1`）避免跨块撞号；**`source_lines` 不动**——提炼者收到的是
+      `prompts.distill.numbered_source` 带全局行号前缀的文本，报的就是全局行号。
+    - `relations` 的 from/to 同步加块前缀；**跨块关系提炼者看不到，不臆造**，缺失事实写进 notes。
+    - 相邻块重叠区会产生重复条目：按去空白 `content` 去重，保留块序靠前那条，去重数记 notes。
+    - `mainline` 按块顺序拼接（question 取首块，progression/conclusions 逐块追加），
+      并在 notes 注明「主线为分块拼接」——这与整篇提炼得到的主线不等价，如实标注。
+    - `distill_prompt_sha256` 记**整篇**契约 hash（`prompts.distill.prompt_hash`），
+      各块自身 hash 另记 `chunk_prompt_sha256s`，供版本绑定逐块对账。
+    """
+    from prompts.provenance import text_hash
+    parts = [p for p in (parts or []) if isinstance(p, dict)]
+    order = sorted(parts, key=lambda p: int((p.get("chunk") or {}).get("index") or 0))
+
+    question, prog, concl, notes_out = "", [], [], []
+    items, relations, seen = [], [], set()
+    chunk_meta, dup_count = [], 0
+    for p in order:
+        chunk = p.get("chunk") or {}
+        parsed = p.get("parsed") or {}
+        tag = f"c{int(chunk.get('index') or 0)}"
+        ml = parsed.get("mainline") or {}
+        if not question and ml.get("question"):
+            question = str(ml.get("question") or "")
+        prog += [str(x) for x in (ml.get("progression") or [])]
+        concl += [str(x) for x in (ml.get("conclusions") or [])]
+
+        local_ids = set()
+        n_before = len(items)
+        for it in (parsed.get("items") or []):
+            cid = str(it.get("id") or "")
+            new_id = f"{tag}_{cid}" if cid else ""
+            key = _norm(str(it.get("content") or ""))
+            if key and key in seen:
+                dup_count += 1
+                continue
+            if key:
+                seen.add(key)
+            local_ids.add(cid)
+            items.append({
+                "id": new_id,
+                "type": str(it.get("type") or ""),
+                "stance": str(it.get("stance") or ""),
+                "content": str(it.get("content") or ""),
+                "source_lines": list(it.get("source_lines") or []),
+            })
+        for r in (parsed.get("relations") or []):
+            f = str(r.get("from") or "")
+            t = str(r.get("to") or "")
+            # 指向被去重掉的条目时保留会变悬空引用 → 丢弃并计数
+            if f not in local_ids or t not in local_ids:
+                continue
+            relations.append({"from": f"{tag}_{f}", "to": f"{tag}_{t}",
+                              "kind": str(r.get("kind") or ""), "note": str(r.get("note") or "")})
+        chunk_meta.append({"index": int(chunk.get("index") or 0),
+                           "start_line": chunk.get("start_line"), "end_line": chunk.get("end_line"),
+                           "items": len(items) - n_before})
+
+    if len(order) > 1:
+        notes_out.append(f"分块提炼：{len(order)} 块合并（主线为逐块拼接，与整篇提炼不等价）")
+        notes_out.append("跨块关系未生成：提炼者一次只见一块，不做跨块臆测")
+    if dup_count:
+        notes_out.append(f"重叠区去重 {dup_count} 条重复条目（保留块序靠前那条）")
+    if notes:
+        notes_out.append(notes)
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "distill_pack",
+        "recorded_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "url": url or "",
+        "url_key": url_key_of(url, source_text),
+        "title": title or "",
+        "source_sha256": text_hash(source_text or ""),
+        "distill_prompt_sha256": distill_prompt_sha256 or "unknown",
+        "chunk_prompt_sha256s": [str(p.get("prompt_sha256") or "") for p in order],
+        "chunks": chunk_meta,
+        "material_key": "",
+        "material_available": False,
+        "mainline": {"question": question, "progression": prog, "conclusions": concl},
+        "items": items,
+        "relations": relations,
+        "coverage": {
+            "source_lines_total": len((source_text or "").split("\n")),
+            "item_count": len(items),
+            "relation_count": len(relations),
+            "chunk_count": len(chunk_meta),
+        },
+        "notes": "；".join(notes_out),
+    }
+
+
 def save_pack(pack: dict, store_dir: str = "") -> str:
     """落盘（同版幂等：同 url_key 直接覆盖）。返回文件路径。"""
     d = store_dir or PACKS_DIR
