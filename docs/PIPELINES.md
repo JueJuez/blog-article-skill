@@ -62,6 +62,8 @@
 
 **输出契约统一（S5，2026-10-27 实施）**：生产 prompt **关闭额外延伸**——思维模型透镜与「笔记者分析」区、延伸思考留白、自测三问、费曼「讲出来」、类比迁移、无源行动项、认知误区与「我的立场」退出九类模板；**源内已有的分析、反驳、类比、方法、练习和迁移内容照常保留并归属作者**，不按栏目关键词整段删除（PLAN-20261026 §9.7，入口与命令不变）。九类「固定结构（顺序不可颠倒）」改为「模块与组织（按源准入；顺序可受约束重组）」，开篇系统契约（作者行/禁H1/标签行/主题词区块）不动；`SECTION_CONTRACTS` 同步去掉已关闭小节（structured/general 去「延伸思考」，opinion 去「认知误区/笔记者分析」）；`QUALITY_GATE_PROMPT` 以「无源延伸」维度取代「思维模型落地」，`QUALITY_GATE_SELFCHECK` 与 `prompts/review_rubric.py` D/E 维度同步。`SECTION_ALIAS` 与 `shared/note_grounding.py` 分析层正则保留（旧库笔记兼容）；S4 vizpurpose profile 的替换目标句未动。测试 `tests/test_s5_output_contract.py`（40 条）+ 更新后的模板/学习包/门禁自检回归。
 
+**材料层索引（S6 首轮，2026-10-27，抓取行为不变）**：`shared/source_material.py` 对**已落盘源文本**构建同版结构索引——标题/表格块/代码块/段落范围按 1-based 行号可回查，绑定与 provenance 同口径 `source_sha256`（`verify()` 对账，失配不当有效交接），时间位置与图片状态**如实声明**（absent / 引用 `image_inventory` 同款 url_key，不伪造；文本通道限制固定声明 `html_table_rows_flattened` + `no_visual_evidence`）。落盘 `notes/_meta/source_materials/<url_key>.json`，与图片台账互查。接入点两处（转写成功即写，失败不阻塞主流程）：`videos/asr.py` ASR 成功分支、`videos/main.py:_summarize_and_save` CC/实时路径（有 segments 才写）；transcript 缓存保持纯文本不动。**存量与量化**：存量 transcript 无时间戳 → 索引如实 absent；2370 个 `_raw_` 文章源 **0 个**含管道表格——HTML 表格行列在文章通道系统性打平（`_extract_bs4_content` get_text），已登记缺口未改抓取。测试 `tests/test_source_material.py` 18 条。见 [质量改进计划](plans/PLAN-20261026-low-cost-quality.md) §9.3–§9.6。
+
 会话独立审核可由`save_pending.py --review-file <报告.json>`随稿提交；存量重做读取稿件旁的`<稿.md>.review.json`（或批次条目的`review_file`）。报告必须绑定完整源、实际清理后的稿件正文及派单prompt，明确不同于作者的审者ID与全文字符范围。协议见[全文审核说明](../references/fulltext-review.md)，未知历史版本不得补造。
 
 已有draft-only/Landing两段出口同样受审核准入约束：新草稿元数据携带源/正文/审核版本和格式化文件hash；显式审核时旧草稿无版本、或草稿文件被改动，都保留草稿并停止Landing，不能绕过新门禁。

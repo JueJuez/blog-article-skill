@@ -139,6 +139,15 @@ def _summarize_and_save(segments, source_url: str, title: str, author: str,
                         tags: list, note_type: str, force: bool, visual_context: str = "",
                         publish_time: int = 0, folder: str = "", obsidian: bool = False):
     """总结并保存；返回 (filename, final_text, degraded, article_content, note_type)。"""
+    # S6 材料层（PLAN-20261026 §9.3）：CC/实时路径拿到 segments 时写同版材料索引
+    # （含字幕时间位置）；索引描述源本身，与笔记落盘成败无关；失败不阻塞主流程。
+    if isinstance(segments, list) and segments and isinstance(segments[0], dict):
+        try:
+            from shared.source_material import record_video_material
+            record_video_material(url=source_url, title=title or "",
+                                  text=segments_to_text(segments), segments=segments)
+        except Exception:
+            pass
     type_origin = "manual" if note_type else "auto"
     if not note_type:
         sample = (segments_to_text(segments)

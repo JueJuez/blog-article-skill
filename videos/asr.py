@@ -1206,6 +1206,13 @@ def transcribe_video(url: str, lang: str = "zh",
             return None
         text = "\n".join(s["text"] for s in segs)
         _save_transcript_cache(url, text)
+        # S6 材料层（PLAN-20261026 §9.3）：转写成功即写同版材料索引（含字幕时间位置）；
+        # 失败不阻塞转写主流程（函数内部吞错）。transcript 缓存本身保持纯文本不动。
+        try:
+            from shared.source_material import record_video_material
+            record_video_material(url=url, title=title or "", text=text, segments=segs)
+        except Exception:
+            pass
         # 标题兜底：用文件名（去掉扩展）
         if not title:
             title = os.path.splitext(os.path.basename(wav))[0]

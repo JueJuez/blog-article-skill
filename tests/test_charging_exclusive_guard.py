@@ -176,6 +176,7 @@ def _run_transcribe(info, audio_dur, chunked_result=None):
             mock.patch.object(asr, "extract_audio", side_effect=_fake_extract), \
             mock.patch.object(asr, "_wav_duration", return_value=audio_dur), \
             mock.patch.object(asr, "_save_transcript_cache"), \
+            mock.patch("shared.source_material.record_video_material"), \
             mock.patch.object(asr, "transcribe_audio_chunked", side_effect=_fake_chunked):
         res = asr.transcribe_video(URL, force=True)
     return res, seen
@@ -233,6 +234,7 @@ def test_transcribe_video_respects_asr_device_cpu():
                     mock.patch.object(asr, "extract_audio", return_value=True), \
                     mock.patch.object(asr, "_wav_duration", return_value=637.0), \
                     mock.patch.object(asr, "_save_transcript_cache"), \
+                    mock.patch("shared.source_material.record_video_material"), \
                     mock.patch.object(asr, "transcribe_audio_chunked", side_effect=_fake_chunked):
                 asr.transcribe_video(URL, force=True)
         finally:
