@@ -1,6 +1,6 @@
 # 个人项目低成本质量改进开发计划
 
-状态：**S1 已完成初版并留有遗留项，S2 无增益结案，S3 完成两阶段；S4 首轮验证未达门槛 → 生产保持现状；S5 输出契约已实施；S6 材料层首轮已完成；S7 独立提炼候选已完成；S8 首轮配对评价达保留门槛（适用范围=长源复杂论证/多案例）；S9 接线已实现但默认关、真实批次未跑**，下一步见 §9.11-S9 末段。CDP 信号、S5 模板契约、S6 材料索引、S7 提炼候选、S8 配对评价、S9 两阶段派发均已登记 PIPELINES §1；vizpurpose profile 登记于 §3.6 并有测试护栏。
+状态：**S1 已完成初版并留有遗留项，S2 无增益结案，S3 完成两阶段；S4 首轮验证未达门槛 → 生产保持现状；S5 输出契约已实施；S6 材料层首轮已完成；S7 独立提炼候选已完成；S8 首轮配对评价达保留门槛（适用范围=长源复杂论证/多案例）；S9 接线已实现并完成 n=2 真实抽样（2/2 选提炼臂，但数字固化与超长源边界未解决，开关仍默认关）**，下一步见 §9.11-S9 第 8 条。CDP 信号、S5 模板契约、S6 材料索引、S7 提炼候选、S8 配对评价、S9 两阶段派发均已登记 PIPELINES §1；vizpurpose profile 登记于 §3.6 并有测试护栏。
 进度真源：本文 §2；后续持续更新本文，不另建平行任务清单。
 2026-10-27 讨论补充：**输出目的、输入端方向和暂不做延伸分析已确认；九类模板微调与受约束编排方案已记录于 §9.7–§9.8，质检最小方案及一手来源依据见 §9.9–§9.10。S5（输出契约统一）/ S6（材料层首轮）/ S7（提炼候选）已于 2026-10-27 实施（各自实录见 §9.11 回写），共同写作版本已冻结（§9.11-S5.5）；S8 配对评价已完成并达保留门槛；S9 两阶段派发已实现但默认关、真实批次未跑（§9.11-S9）。§8.3 为历史接手快照，其「S5–S9 待开发」表述已过时，以本行与 §2 为准。** S1–S4 的证据与遗留项保留，S4 不接生产的结论不因本次规划而改变。
 关联：[已知缺陷](../KNOWN_DEFECTS.md)、[阶段决策](../decisions/DECISION-20261026-low-cost-quality.md)、[图像与图表补充决策](../decisions/DECISION-20261027-image-and-chart-policy.md)、[输入与输出目的决策](../decisions/DECISION-20261027-input-and-output-scope.md)、[管线入口](../PIPELINES.md)。
@@ -33,7 +33,7 @@
 | S6 | 原始材料结构、读取范围与回源定位 | S5 细化契约后实施；复用 S3 已有图片工作 | **首轮完成（2026-10-27）**：`shared/source_material.py` 同版结构索引（标题/表格/代码块/段落 1-based 行号可回查 + provenance 同口径 hash 对账 `verify()`）；时间位置与图片状态如实声明（absent / 引用 image_inventory 同款 url_key 互查），文本通道限制固定声明不伪造。接入 ASR 成功分支与 CC 实时路径（转写成功即写 sidecar，失败不阻塞；transcript 缓存保持纯文本）。**量化缺口**：2370 个文章 raw 源 0 个含管道表格（HTML 表格系统性打平，已登记未改抓取）；存量 transcript 无时间戳如实 absent。真实验证：B 页源索引↔台账互查（partial_read 4/24）、存量 transcript 边界、hash 对账。离线 18 条 + 全量回归。见 §9.11 S6 回写 |
 | S7 | 独立提炼契约与隔离候选流程 | S6 有可回查的冻结材料，S5 确定输出边界 | **候选实现完成（2026-10-27）**：`prompts/distill.py`（三类产物契约 + 自包含任务渲染 + `DISTILL_MARKER` 模板隔离断言）+ `shared/distill_pack.py`（build/validate/save/load，同版 hash 对账、行号 sanity、悬空引用、quote 原话机检——全部报告项，字段齐全≠语义完整）。落盘 `notes/_meta/distill_packs/`（与材料索引同款 url_key 互查；同版幂等可续跑；`store_dir` 支持隔离试验）。真实验证：B 页源 36 条目/15 关系/5 quote 一次过校验、行号抽查 3/3，pack 在 `notes/_meta/eval/20261027-distill/packs/`。**未接生产派单**——两阶段流程（提炼→写作消费 pack）的接线属 S9，收益验证属 S8。见 §9.11 S7 回写 |
 | S8 | 独立提炼的小样本配对评价 | S7 候选可运行；评价口径与消耗边界已定 | **首轮 5 对完成（2026-10-27），达保留门槛 → 适用范围=长源复杂论证/多案例**：盲评 distill 臂 P1 遗漏 **0**（cur 臂 6：D1 供应链三步/新人素养节/两个模板整块丢失、D3 十万卡算术整段丢失）、确定性失真 **0**（cur 3 项：D1 时序/口径实错）、取材 **15/15**（cur 13+2 无法回答）；短源 D5 无退步但 pack 9k>源 2.2k 不适用；数值密集表格源为 distill 已知弱项（D2 P2 丢失 9 项）。边界：cur D1 覆盖 0.26 属异常低生成、盲评非同题、小样本不外推全库。实录见 §9.11-S8；裁决 `notes/_meta/eval/20261027-distill-round/VERDICT.md`（本机证据） |
-| S9 | 有收益范围的有限接线与复查 | S8 有可定位改善、无新增严重失真且成本可接受 | **接线已实现（2026-10-27），默认关、真实批次未跑**：`shared/distill_dispatch.py` + `scripts/distill_prepare.py`（plan/emit/ingest/prepare 四步）+ `filter_pending.distill_prepare`（`NOTE_DISTILL_DISPATCH=1` 才生效）。路由从严（≥10000 字且数字密度 <0.08；短源/万字体量以下/数值密集一律单轮）；装配产物与 S8 distill 臂逐字节一致（D1 实测 34053 字符，仅 pack `recorded_at` 不同）；版本失配/校验不过 → 降级单轮。离线 25 条 + 全量回归；**真实批次抽样与消耗单记待跑**（见 §9.11-S9） |
+| S9 | 有收益范围的有限接线与复查 | S8 有可定位改善、无新增严重失真且成本可接受 | **接线已实现 + 真实批次抽样完成（2026-10-27），默认关**：`shared/distill_dispatch.py` + `scripts/distill_prepare.py`（plan/emit/ingest/prepare 四步）+ `filter_pending.distill_prepare`（`NOTE_DISTILL_DISPATCH=1` 才生效）。路由从严（≥10000 字且数字密度 <0.08；短源/万字体量以下/数值密集一律单轮）；装配产物与 S8 distill 臂逐字节一致（D1 实测 34053 字符，仅 pack `recorded_at` 不同）；版本失配/校验不过 → 降级单轮。离线 25 条 + 全量 1597 passed；**真实 n=2（庄子 30.9k / 美债 52.8k）隔离跑：2/2 盲评选提炼臂（P1 遗漏 2 vs 12），但暴露 4 个问题（超长源包块 79k 字符无边界、密度阈值漏 B 类、数字固化 2 处、稿子长 25%–59%）→ 开关维持 0**。实录 `notes/_meta/eval/20261027-s9-live/REPORT.md`，见 §9.11-S9 |
 
 每阶段分别记录：实现、离线验证、真实执行、语义结果、消耗、未解决项。阶段完成不代表全库质量通过；保留或放弃试验都可以是有效结论。
 
@@ -393,10 +393,10 @@ S1 的 22 条是审核发现项，其中仅 8 条已裁定（真错 5、误报 3
 
 ### 8.4 S8 完成后的当前接手入口（2026-10-27 晚，S9 阶段）
 
-> **状态注记（2026-10-27 晚，S9 接线后补）**：本节第 1–3 条已实现（`shared/distill_dispatch.py` +
-> `scripts/distill_prepare.py` + `filter_pending.distill_prepare`，默认关），落点与证据见
-> §9.11-S9。**仍未跑的只剩第 4 条的真实批次抽样**（当时 monitors/scys 队列为空）。
-> 接手直接从 §9.11-S9 第 8 条开始，不必重做接线。
+> **状态注记（2026-10-27 晚，S9 抽样后补）**：第 1–4 条均已执行——接线（`shared/distill_dispatch.py` +
+> `scripts/distill_prepare.py` + `filter_pending.distill_prepare`，默认关）与 **n=2 真实抽样**（隔离目录
+> `notes/_meta/eval/20261027-s9-live/`）落点见 §9.11-S9。抽样结论：链路通、2/2 盲评选提炼臂，但
+> 超长源包块规模、路由密度阈值、数字固化三类问题未解决，**开关维持 0**。接手从 §9.11-S9 第 8 条开始。
 
 - 起点：`master` / HEAD `c11bf6a`（已 push，远端 0/0）；工作区仅既存未跟踪 `_tmp_prompt_extract.txt`。现场状态优先于历史快照。
 - 已完成（勿重做）：S5 输出契约统一（commit 8b6c28d）、S6 材料层首轮（b3e3d30）、S7 独立提炼候选（d5c9636）、文档状态更新（f38b0dd）、S8 首轮配对评价（c11bf6a）。S8 达保留门槛，实录与裁决见 §9.11-S8 与 `notes/_meta/eval/20261027-distill-round/VERDICT.md`（本机证据，换机须重验）。
@@ -592,5 +592,9 @@ S9 接线实施回写（2026-10-27）：§8.4 第 1–4 条的落地口径——
 4. **派发协议（§8.4-3）**：`scripts/distill_prepare.py` 四步——`--plan`（只读路由+pack 状态）→ `--emit --out DIR`（`<url_key>_distill.txt` 自包含任务 + `manifest.json`，记 url/url_key/source_path/source_sha256/distill_prompt_sha256）→ 子 Agent 提炼 → `--ingest --dir DIR`（回包 `<url_key>.json`，源 hash 与派单时不一致直接拒收；`build_pack` → `validate_pack` 通过才落 `notes/_meta/distill_packs/`）→ `--prepare`（装配进队列条目，`prompt_sha256` 同步为装配后 hash，新增 `distill_pack_key`/`distill_pack_source_sha256`/`distill_prompt_sha256`；`validate_dispatch` 仍须通过）。留痕 `notes/_meta/distill_dispatch/*.jsonl`（路由/signals/回退原因/源与 prompt hash）；`--dry-run` 不写队列，模块默认 `log_path=""` 时不写日志（测试不得污染生产目录）。
 5. **现役入口接线**：`scripts/filter_pending.py:distill_prepare` 在 `NOTE_DISTILL_DISPATCH=1` 时对刷新后的条目装配，**必须排在 `refresh_prompt` 之后**（刷新会重建主体，顺序反了包块被抹掉——有专门测试）。默认关时 `_run_queue` 行为除报告多一个 `distill` 计数字段外不变。
 6. **验证**：离线 `tests/test_distill_dispatch.py` 25 条（路由 6 / 包块 4 / 版本绑定 4 / prepare 6 / 日志 1 / 现役入口 4）+ `test_filter_pending_refresh.py` 9 条；`pipeline_gate` 通过；全量回归见提交记录。存量路由分布（2373 个 `_raw_` 文章源实测）：`distill/long_source` **102 篇（4.3%）**、`single/numeric_dense` 26（1.1%）、`below_long_threshold` 439（18.5%）、`short_source` 1806（76.1%），密度中位数 0.024——即两阶段只作用在约 1/23 的文章上，与「有限接线」定位一致。
-7. **未做 / 边界（不夸大）**：**真实批次未跑**——当前 monitors/scys 队列为空，`--prepare` 只在隔离目录验证过；两阶段的真实收益与单篇提炼消耗（提炼轮 token 单记）须在有长源批次时补测。`--emit` 的 `--limit` 只截 manifest 不回删任务文件（无实际影响，如实登记）。数值密集源仍单轮，S8 的 P2 丢失弱项未处置。提炼仍是整篇一次（未做分块），超长源（≫20k）需观察输出截断。
-8. **下一步（新会话接手）**：有真实长源批次时按 `--plan → --emit → 子 Agent → --ingest → filter_pending(NOTE_DISTILL_DISPATCH=1) → 派单写稿 → 复审` 跑一轮，记录：路由命中数、fallback 原因分布、pack 校验失败项、提炼轮消耗、抽样质量（沿用 §9.5 的片段取材问题）；再决定是否把开关写进默认监控流程。
+7. **真实批次抽样（2026-10-27 晚，n=2）**：从库里**已总结**的真实长源挑 2 篇（A 庄子 30.9k 字/密度 0.0057/reading；B 美债周复盘 **52.8k 字，库里最长**/密度 0.0373/structured），隔离目录 `notes/_meta/eval/20261027-s9-live/`（不写 vault、不改任何已落盘笔记），两臂 = 生产单轮 prompt vs 同主体 + 材料包块。实录见该目录 `REPORT.md`，要点：
+   - **链路全通**：plan（2/2 命中 distill/long_source）→ emit（任务 99KB/165KB）→ 子 Agent 提炼（A 173 条/B 330 条）→ ingest（**B 末条行号越界被拒，机械校验生效**；核对实文后编排方把 `[3066,3074]` 修为 `[3066,3069]`，原始回包留 `.orig.json`，记录 `corrections.json`）→ prepare（prepared 2 / fallback 0）→ 4 份写作稿 → 2 份盲评。
+   - **质量**：2/2 盲评选提炼臂。A 篇 P1 遗漏 1 vs 6（cur 整块丢：钱尺子与 20/30/50/100/300 万加码、斯坦福三案例→四象限→正态分布）、无源信息 0 vs 2；B 篇 P1 2 vs 6（cur 丢后半段配置标准与基准链，另把债券义警定义/资产牺牲顺序/「特拉斯」三处写反）。两臂片段取材均达「可答或部分可答」。
+   - **新暴露的问题（比收益更重要）**：① **超长源包块规模无边界**——B 产出 330 条/105.6KB pack，写作 prompt 79,496 字符（S8 最大 36k 块），本次子 Agent 扛住但「多大要分块」没有结论；② **路由密度阈值漏 B 类源**——B 密度 0.0373 远低于 0.08 却被放行，而它有 223 个不同数字串，S8 已证该类是弱项；③ **弱项复现并升级**——distill 在 B 把断字读数「4.7 一 三」写成「4.713%」（cur 写「未补」）、把「11 个点／4.78」两说并成一说，属新增的"数字固化"失真；④ distill 两篇都更长（A +59%、B +25%）。**本轮不改阈值**：n=1 新样本上调参违反本计划纪律。
+   - **边界**：n=2；每篇仅 1 位盲评（S8 为 2 位互不见），强度弱于 S8；两篇均为 ASR 转写，未覆盖纯文章型长源；未做跨模型对照。
+8. **下一步（新会话接手）**：`NOTE_DISTILL_DISPATCH` 维持 `0`。要放开先做三件事：① 路由判据改/补（「不同数字串绝对值 ≤ N」或「数字类条目占比」，须在 S8-D2 + 本轮 B 上配对，确认能拦两类而不误伤 A 类长论证）；② 提炼契约加两条（数字行逐行成条、不确定读数保留原写法标"读数存疑"不得补精度）；③ >40k 字源先分块提炼再谈接线。改完按本轮同样的隔离流程复跑 A/B 两篇对比。
