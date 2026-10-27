@@ -64,6 +64,8 @@
 
 **材料层索引（S6 首轮，2026-10-27，抓取行为不变）**：`shared/source_material.py` 对**已落盘源文本**构建同版结构索引——标题/表格块/代码块/段落范围按 1-based 行号可回查，绑定与 provenance 同口径 `source_sha256`（`verify()` 对账，失配不当有效交接），时间位置与图片状态**如实声明**（absent / 引用 `image_inventory` 同款 url_key，不伪造；文本通道限制固定声明 `html_table_rows_flattened` + `no_visual_evidence`）。落盘 `notes/_meta/source_materials/<url_key>.json`，与图片台账互查。接入点两处（转写成功即写，失败不阻塞主流程）：`videos/asr.py` ASR 成功分支、`videos/main.py:_summarize_and_save` CC/实时路径（有 segments 才写）；transcript 缓存保持纯文本不动。**存量与量化**：存量 transcript 无时间戳 → 索引如实 absent；2370 个 `_raw_` 文章源 **0 个**含管道表格——HTML 表格行列在文章通道系统性打平（`_extract_bs4_content` get_text），已登记缺口未改抓取。测试 `tests/test_source_material.py` 18 条。见 [质量改进计划](plans/PLAN-20261026-low-cost-quality.md) §9.3–§9.6。
 
+**独立提炼候选（S7，2026-10-27，未接生产派单）**：`prompts/distill.py`（提炼契约：主线地图/信息条目/关系说明三类产物、原话与摘意区分、自包含任务 + JSON 输出，`DISTILL_MARKER` 隔离断言保证不拼接进九类写作模板）+ `shared/distill_pack.py`（pack 装壳/机械校验/落盘）。校验是**报告项**：同版 hash 对账（provenance 同口径，失配即 ok=False）、行号 sanity（越界/空行）、关系引用不悬空、枚举合法、`stance=quote` 原话机检（去空白口径同 extract_checklist）——**字段齐全 ≠ 语义完整**，语义核对属 S8 独立复核。落盘 `notes/_meta/distill_packs/<url_key>.json`（与材料索引/图片台账同款 key；同版重写幂等，失败可续跑；`store_dir` 可指定评估目录隔离试验）。真实验证：scys B 页源（19.7k 字）提炼 36 条目/15 关系/5 quote 一次通过校验，行号抽查 3/3 正确，pack 落 `notes/_meta/eval/20261027-distill/packs/`（本机证据，换机须重验）。测试 `tests/test_distill_pack.py` 16 条。
+
 会话独立审核可由`save_pending.py --review-file <报告.json>`随稿提交；存量重做读取稿件旁的`<稿.md>.review.json`（或批次条目的`review_file`）。报告必须绑定完整源、实际清理后的稿件正文及派单prompt，明确不同于作者的审者ID与全文字符范围。协议见[全文审核说明](../references/fulltext-review.md)，未知历史版本不得补造。
 
 已有draft-only/Landing两段出口同样受审核准入约束：新草稿元数据携带源/正文/审核版本和格式化文件hash；显式审核时旧草稿无版本、或草稿文件被改动，都保留草稿并停止Landing，不能绕过新门禁。
