@@ -254,6 +254,12 @@ python scripts/build_round.py measure --round-dir <round-dir>     # 变长幅度
 python scripts/score_eval_set.py --dir <round-dir> --report <round-dir>/_score.md
 ```
 
+`--prompt-profile` 可用臂：`current`（生产态）/ `a4only`（回退 A6 模板散文）/ `baseline`（剥短源块，配
+`--subset short`）/ `noblocks`（＋禁止并列铺开，配 `--subset short`）/ `vizpurpose`（＋按表达用途选图表
+条款，PLAN-20261026 §6 的图表 A/B 臂；**2026-10-27 首轮 5 对验证未达保留门槛，未接生产**，profile 留档
+见该计划 §6.7）。护栏测试 `tests/test_build_round_profile.py`：每对 profile 改动必须能在生产模板里定位到、
+试验臂与生产态逐字节 diff 只差目标块，定位不到即报错不静默。
+
 **测生成端改动（A4/A6）不能用「对已填表单重跑判分」**——那量不出生成差异。正确流程是同一批源
 **重新生成**、用**同一份清单**在新目录重新勾选、再判分，并记录笔记变长幅度。本工具把这条流程固化，
 且**绝不碰原评估目录与 vault**（新笔记写 `<round-dir>/notes/`）。防覆盖判据按「**已勾选**」算复核劳动
@@ -412,8 +418,15 @@ python -c "from shared import image_inventory as I; print(I.summary_line(I.load_
 `articles/main.py:summarize_content` 只在**有缺口**时往 prompt 追加一行提示（纯文本源字节不变）；
 `_enqueue_async_review` 放 `extra`。🔴 **图片状态不许进 `reasons`**——`reasons` 非空会触发入队，等于把 15% 抽样放大成 100%。
 
-**现状边界**：主源 scys 走 CDP 文本通道，仍然数不出图（要取 DOM 才能数）；"重要图"靠人挑，不做批量识图。
-小样本实测见 `notes/_meta/eval/20261026-image-gaps/REPORT.md`（2 张流程图恢复结构、1 项误读被独立核对抓出）。
+**现状边界**：~~主源 scys 走 CDP 文本通道，仍然数不出图~~ → **2026-10-27 起已接 DOM 快照**（下述）。"重要图"靠人挑，不做批量识图。
+小样本实测见 `notes/_meta/eval/20261026-image-gaps/REPORT.md`（2 张流程图恢复结构、1 项误读被独立核对抓出）；
+2026-10-27 真实主源 3 页小样本（A/B/D，35 图，重要图 2/5）见 `notes/_meta/eval/20261027-real-source-images/candidates/VERIFICATION.md`。
+
+**CDP DOM 快照记账（2026-10-27，`shared/cdp_session.page_html`）**：scys / 飞书 CDP 抓取时另取一次渲染后 DOM 快照
+（`page_html(page)`，只抽 `<img>` 元数据用于数图，**不落盘、不参与正文抽取**），`articles/fetch.py` 的
+`_feishu_cdp_fetch` / `_scys_cdp_fetch` 与 `scripts/scys_batch_fetch.py` 的对应路径用 `_record_images(url, html=..., kind="scys_cdp_html")` 记账。
+CDP 通道从 `unknown_no_html` 变为可数图（拿到 DOM 时按 `images_not_read`/`partial_read`/`read` 记；DOM 取不到时仍兜底 `unknown_no_html`，不冒充"无图"）。
+原 `fetch_web_content` 中两处 `kind="..._text_only"` 记账已注释（避免与 CDP fetch 内重复记）。测试：`tests/test_image_inventory.py`（16 条）。
 
 ## 4. 订阅监控管线
 
