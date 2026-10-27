@@ -228,6 +228,8 @@ OPENAI_API_KEY=sk-xxxx
 | `NOTE_ASYNC_REVIEW_RATE` | `0.15` | 触发式的抽样比例；消费端 `scripts/run_async_review.py` 才花钱 |
 | `NOTE_SHORT_GRANULARITY` | `0` | `1` 时短源块再加「禁止并列铺开」条款。**仅对照轮实验用，已否决**（`PLAN-20261019` §4.7：0-2k 能压到 1.49，但会挤掉必留的条件/原则）；生产保持 `0` |
 | `NOTE_THIN_CHECKLIST` | `0` | `1` 时给 2k–10k 源注入 799 字薄清单（S2 实验臂）。**已证伪：不推广，保持 0**（5 篇配对：保留率 96.6% vs 98.3%、失真 4 vs 2、字数 −13.9%），见 `notes/_meta/eval/20261026-thin-checklist/REPORT.md` |
+| `NOTE_DISTILL_DISPATCH` | `0` | `1` 时 `scripts/filter_pending.py` 给**长源（≥1万去空白字、数字密度<0.08）且已有同版有效提炼包**的队列条目追加材料包块（S9 两阶段）。默认关时派单 prompt 字节不变；提炼轮要额外花一次子 Agent，须先跑 `scripts/distill_prepare.py --emit/--ingest` 产出 pack |
+| `NOTE_DISTILL_DISPATCH_LOG` | 空 | S9 装配留痕 JSONL 路径；空则写 `notes/_meta/distill_dispatch/dispatch_<日期>.jsonl`（测试应显式指向临时目录） |
 
 - 开启后内容失败最多修订两次，每次重审；缺源、partial、无模型、超时或解析失败停止写入并保留候选/待办，force不豁免。
 - 关闭时`verify_note()`返回None，记录未审；`QUALITY_GATE_SELFCHECK`作者自检和现有抽检继续，但不认证独立全文通过。

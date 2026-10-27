@@ -3,10 +3,12 @@
 默认：清已总结项；仅对已知auto/manual且源可读的条目刷新派单。
 auto重算type，manual保留；legacy不改，类型建议差异进入报告。
 --dry-run：仅预览type/prompt，不运行去重、不写队列/登记表；包含已总结条目。
+`NOTE_DISTILL_DISPATCH=1`：刷新后给「长源且已有有效提炼包」的条目追加材料包块（S9，默认关）。
 """
 import json
 import os
 import sys
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -81,6 +83,28 @@ def refresh_prompt(e: dict) -> str:
     return "refreshed" if changed else "kept"
 
 
+def distill_prepare(e: dict) -> str:
+    """S9 长源两阶段装配（`NOTE_DISTILL_DISPATCH=1` 才生效，默认关闭）。
+
+    只有**已存在有效 pack** 的条目会被装配材料包块；短源/数值密集/无 pack/版本失配
+    一律降级单轮（`PrepareIneligible`），不阻塞批次、不改条目。
+    必须排在 `refresh_prompt` 之后——刷新会重建 prompt 主体，先装配会被覆盖。
+    """
+    if os.environ.get("NOTE_DISTILL_DISPATCH") != "1":
+        return "off"
+    from shared import distill_dispatch as DD
+    log = os.environ.get("NOTE_DISTILL_DISPATCH_LOG") or os.path.join(
+        ROOT, "notes", "_meta", "distill_dispatch",
+        "dispatch_%s.jsonl" % time.strftime("%Y%m%d"))
+    try:
+        rep = DD.prepare_entry(e, log_path=log)
+    except DD.PrepareIneligible:
+        return "fallback"
+    if rep["status"] == "prepared":
+        return "prepared"
+    return "stale" if rep["status"] == "stale_stripped" else "already"
+
+
 def _run_queue(path: str, filt, refresh: bool = True, dry_run: bool = False) -> dict:
     if not os.path.exists(path):
         return {"kept": 0, "dropped": 0, "prompt_refreshed": 0, "prompt_skipped": 0,
@@ -104,11 +128,17 @@ def _run_queue(path: str, filt, refresh: bool = True, dry_run: bool = False) -> 
                 refreshed += 1
             elif r == "skipped":
                 skipped += 1
-    if not dry_run and (dropped or refreshed):
+    distill = {"prepared": 0, "fallback": 0, "already": 0, "stale": 0, "off": 0}
+    if refresh and not dry_run:
+        for e in keep:
+            r = distill_prepare(e)
+            distill[r] = distill.get(r, 0) + 1
+    if not dry_run and (dropped or refreshed or distill["prepared"] or distill["stale"]):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(keep, f, ensure_ascii=False, indent=2)
     return {"kept": len(keep), "dropped": len(dropped),
             "prompt_refreshed": refreshed, "prompt_skipped": skipped,
+            "distill": distill,
             "type_differences": differences, "dry_run": dry_run,
             "titles": [e.get("title", "") for e in keep]}
 
