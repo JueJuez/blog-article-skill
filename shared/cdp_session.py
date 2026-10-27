@@ -108,6 +108,19 @@ def _import_skill_module():
 _skill = _import_skill_module()
 
 
+def page_html(page) -> str:
+    """取渲染后 DOM 快照（**只给图片台账用**，不落盘、不参与正文抽取）。
+
+    CDP 通道此前只抽 `innerText` → 图片一律记 `unknown_no_html`（连「有没有图」都不知道，
+    比「有图未读」更糟）。在同一次页面读取里补这一下即可数图；取不到返回空串 →
+    台账仍记 `unknown_no_html`，**不冒充「无图」**。
+    """
+    try:
+        return page.content() or ""
+    except Exception:
+        return ""
+
+
 def extract_body(page) -> str:
     """从已渲染页面抽取正文（唯一实现，2026-09-18 收敛）。
 

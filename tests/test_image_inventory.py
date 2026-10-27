@@ -181,10 +181,80 @@ def test_mark_read_matches_src_with_query_string(store):
     assert inv["state"] == IMG.STATE_READ
 
 
-def test_mark_read_matches_src_with_query_string(store):
-    """CDN 的 src 常带 ?utm_source=；报告里回填时往往只给裸地址，仍要能对上。"""
-    url = "https://e.com/post"
-    IMG.record(url, html='<img src="https://cdn.e.com/a/chart.png?utm_source=feed">')
-    inv = IMG.mark_read(url, "https://cdn.e.com/a/chart.png", text="图内文字", method="multimodal_read")
-    assert inv["read"] == 1
-    assert inv["state"] == IMG.STATE_READ
+# ------------------------------------------------- CDP 通道：从 unknown 变成「能数图」（§5.3 第 2 步）
+
+class _FakePage:
+    """最小 CDP page 桩：只实现抓取路径实际用到的方法。"""
+
+    def __init__(self, html="<html></html>", title="标题", content_error=None):
+        self._html, self._title, self._content_error = html, title, content_error
+        self.closed = False
+
+    def goto(self, *a, **k):
+        return None
+
+    def wait_for_timeout(self, *_a):
+        return None
+
+    def title(self):
+        return self._title
+
+    def content(self):
+        if self._content_error:
+            raise self._content_error
+        return self._html
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeSession:
+    def __init__(self, page):
+        self._page = page
+
+    def new_page(self):
+        return self._page
+
+    def close(self):
+        return None
+
+
+def test_page_html_helper_returns_empty_on_failure():
+    """DOM 快照是观测零件：取不到就返回空串，绝不能把抓取拖崩。"""
+    from shared.cdp_session import page_html
+    assert page_html(_FakePage(html="<img src='/a.png'>")) == "<img src='/a.png'>"
+    assert page_html(_FakePage(content_error=RuntimeError("Target closed"))) == ""
+
+
+def test_scys_cdp_channel_counts_images_instead_of_unknown(monkeypatch, tmp_path):
+    """主源 scys 此前只能记 unknown_no_html（连有没有图都不知道）；补 DOM 快照后必须能数图。"""
+    from articles import fetch as AF
+    monkeypatch.setattr(IMG, "STORE_DIR", str(tmp_path / "img"))
+    page = _FakePage(html='<article><p>正文</p><img src="/i/xmind.png" alt=""></article>')
+    monkeypatch.setattr(AF, "_get_scys_session", lambda: _FakeSession(page))
+    monkeypatch.setattr(AF, "_extract_body_scys", lambda p: "正文内容足够长" * 10)
+
+    out = tmp_path / "scys_latest.md"
+    AF._scys_cdp_fetch("https://scys.com/articleDetail/xq_topic/1", out_path=out)
+
+    inv = IMG.load_for_url("https://scys.com/articleDetail/xq_topic/1", str(tmp_path / "img"))
+    assert inv["state"] == IMG.STATE_NOT_READ, "拿到 DOM 就不能再报 unknown"
+    assert inv["total"] == 1 and inv["content_total"] == 1
+    assert out.read_text(encoding="utf-8").startswith("正文内容"), "记账不得改变正文产物"
+
+
+def test_scys_cdp_channel_falls_back_to_unknown_when_dom_unavailable(monkeypatch, tmp_path):
+    """DOM 取不到时退回 unknown（不冒充无图），且正文抓取照常成功。"""
+    from articles import fetch as AF
+    monkeypatch.setattr(IMG, "STORE_DIR", str(tmp_path / "img"))
+    page = _FakePage(content_error=RuntimeError("Target page has been closed"))
+    monkeypatch.setattr(AF, "_get_scys_session", lambda: _FakeSession(page))
+    monkeypatch.setattr(AF, "_extract_body_scys", lambda p: "正文内容足够长" * 10)
+
+    out = tmp_path / "scys_latest.md"
+    res = AF._scys_cdp_fetch("https://scys.com/articleDetail/xq_topic/2", out_path=out)
+
+    assert res["chars"] > 0, "图片台账失败不许影响抓取"
+    inv = IMG.load_for_url("https://scys.com/articleDetail/xq_topic/2", str(tmp_path / "img"))
+    assert inv["state"] == IMG.STATE_UNKNOWN
+    assert inv["html_available"] is False

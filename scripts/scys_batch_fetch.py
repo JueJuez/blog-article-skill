@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 让 shared 包可导入
 from login_cdp_fetch import discover_chrome_devtools, write_output
 from shared.feishu_ext import collect_full_text  # 飞书 bear 容器增量滚动（2026-10-25 永久修复）
-from shared.cdp_session import SharedCdpSession, extract_body
+from shared.cdp_session import SharedCdpSession, extract_body, page_html
 from prompts.classify import classify_note_type
 from prompts.templates import QUALITY_GATE_SELFCHECK, get_note_prompt, source_chars_of
 
@@ -341,6 +341,15 @@ def _touch(sess) -> None:
             pass
 
 
+def _record_images(url: str, *, html: str = "", kind: str = "scys_cdp_html") -> None:
+    """抓取时就地记图片台账（D2 / shared.image_inventory）。**观测零件，失败一律吞掉**。"""
+    try:
+        from shared.image_inventory import record
+        record(url, html=html, kind=kind)
+    except Exception:
+        pass
+
+
 def _sleep_with_touch(sess, seconds: float) -> None:
     """分段 sleep 并逐段给 daemon 心跳——覆盖 3~8 分钟的批量休息（远超 300s idle）。"""
     left = max(0.0, float(seconds))
@@ -586,6 +595,8 @@ class ScysBatchFetcher:
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         page.wait_for_timeout(5000)
         title, body = collect_full_text(page)
+        # 滚动收集完成后再取 DOM → 懒加载图已进 DOM，图片台账才数得准（D2）
+        _record_images(url, html=page_html(page), kind="feishu_cdp_html")
         return {"url": url, "title": title, "body": body}
 
     def fetch_article(self, page, topic_id, *, depth: int = 0, allow_internal: bool = True) -> dict:
@@ -596,6 +607,8 @@ class ScysBatchFetcher:
         page.wait_for_timeout(8000)
         title = page.title()
         body = self._extract_body(page)
+        # D2：同一次页面读取里顺带记图片台账（只抽 <img> 元数据，不下载不识图）
+        _record_images(url, html=page_html(page), kind="scys_cdp_html")
         links = self._collect_links(page)
         internal, external = self._classify(links)
         wall = [m for m in LOGIN_MARKERS if m in body]

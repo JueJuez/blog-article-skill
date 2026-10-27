@@ -299,6 +299,7 @@ def _feishu_cdp_fetch(url: str) -> tuple[str, str, int]:
     必须走 bear 容器增量滚动（唯一实现在 shared.feishu_ext.collect_full_text，
     2026-10-25 收敛，scys 批量外链同源）。发布时间取不到，返回 0。
     """
+    from shared.cdp_session import page_html
     from shared.feishu_ext import collect_full_text
     last_err = None
     for _attempt in range(2):  # 与 _scys_cdp_fetch 同款：浏览器崩溃重置会话重试1次
@@ -309,6 +310,8 @@ def _feishu_cdp_fetch(url: str) -> tuple[str, str, int]:
             page.goto(url, wait_until="domcontentloaded", timeout=60_000)
             page.wait_for_timeout(5_000)
             title, body = collect_full_text(page)
+            # 滚动收集完成后再取 DOM → 懒加载图片已进 DOM，图片台账才数得准（D2）
+            _record_images(url, html=page_html(page), kind="feishu_cdp_html")
             return (title, body, 0)
         except Exception as e:
             last_err = e
@@ -324,6 +327,7 @@ def _scys_cdp_fetch(url: str, out_path=None, **kwargs) -> dict:
     取代已废弃的 login_cdp_fetch（Chrome 151+ 默认 profile 无调试端口，login_cdp_fetch 仅剩探测原语）。
     会话进程内单例缓存：一轮 --fetch 内 62 篇复用同一 Chrome，避免反复 kill/重启。
     """
+    from shared.cdp_session import page_html   # 图片台账 DOM 快照（D2）
     if out_path is None:
         out_path = (Path(__file__).resolve().parent.parent / "notes" / "_scraped"
                     / "scys_single" / "latest.md")
@@ -335,11 +339,13 @@ def _scys_cdp_fetch(url: str, out_path=None, **kwargs) -> dict:
         try:
             sess = _get_scys_session()
             page = sess.new_page()
+            dom_snapshot = ""   # 图片台账用的 DOM 快照（D2，只抽 <img> 元数据，不落盘）
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 page.wait_for_timeout(8000)
                 title = page.title()
                 body = _extract_body_scys(page)
+                dom_snapshot = page_html(page)
             finally:
                 try:
                     page.close()
@@ -348,6 +354,7 @@ def _scys_cdp_fetch(url: str, out_path=None, **kwargs) -> dict:
 
             hit = [m for m in _SCYS_LOGIN_MARKERS if m in body]
             out_path.write_text(body, encoding="utf-8")
+            _record_images(url, html=dom_snapshot, kind="scys_cdp_html")
             return {
                 "title": title, "url": url, "chars": len(body),
                 "login_wall_hit": hit, "output": str(out_path),
@@ -644,7 +651,7 @@ def fetch_web_content(url: str, cdp_on_fail: bool = True):
         if len(body.strip()) < 100:
             print("❌ scys 抓取正文过短，视为失败")
             return None
-        _record_images(url, html="", kind="scys_cdp_text_only")
+        # 图片台账已在 _scys_cdp_fetch 内按 DOM 快照记过（kind=scys_cdp_html），此处不重复记
         return (result["title"], body, _scys_publish_time_from_body(body))
 
     # 微信公众号文章：直连常撞墙，先试直连，失败按 cdp_on_fail 处理（见 _fetch_wechat_article）
@@ -659,7 +666,7 @@ def fetch_web_content(url: str, cdp_on_fail: bool = True):
         if len(body.strip()) < 100:
             print("❌ 飞书文档抓取正文过短，视为失败")
             return None
-        _record_images(url, html="", kind="feishu_cdp_text_only")
+        # 图片台账已在 _feishu_cdp_fetch 内按 DOM 快照记过，此处不重复记
         return (title, body, _pt)
 
     html, response = _download(url)
