@@ -94,3 +94,41 @@ def _strip_oversized_env():
     import os
     for _k in ("ACC_PRODUCT_CONFIG", "ACC_PRODUCT_CONFIG_V2", "ACC_PRODUCT_CONFIG_V3"):
         os.environ.pop(_k, None)
+
+
+# ---------------------------------------------------------------- v6 fixture 助手
+
+def v6ize(parsed: dict) -> dict:
+    """把 v5 形态的 parsed 升到 v6 形态（测试 fixture 用，不用于生产）。
+
+    v5 的平面 `mainline` 并入树根 intent；条目挂到单节点 `n1`（span 由条目位置合并），
+    首条目 trunk、其余 support——满足 v6 机械校验的最小合法树。
+    """
+    from shared.distill_pack import source_span_issues
+
+    def _merge(ranges):
+        out = []
+        for a, b in sorted(ranges):
+            if out and a <= out[-1][1] + 1:
+                out[-1][1] = max(out[-1][1], b)
+            else:
+                out.append([a, b])
+        return out
+
+    spans = []
+    for it in parsed.get("items") or []:
+        raw = it.get("source_spans") or [it.get("source_lines")]
+        for s in raw:
+            if isinstance(s, list) and len(s) == 2 and all(isinstance(x, int) for x in s):
+                spans.append(tuple(s))
+    merged = _merge(spans) or [[1, 1]]
+    ml = parsed.get("mainline") or {}
+    out = {k: v for k, v in parsed.items() if k != "mainline"}
+    out["hierarchy"] = {"intent": str(ml.get("question") or ""),
+                        "children": [{"id": "n1", "label": "主线",
+                                      "intent": str(ml.get("question") or "源主线"),
+                                      "source_spans": merged, "children": []}]}
+    for i, it in enumerate(out.get("items") or []):
+        it.setdefault("node_id", "n1")
+        it.setdefault("tier", "trunk" if i == 0 else "support")
+    return out

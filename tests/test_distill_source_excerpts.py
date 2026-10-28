@@ -8,6 +8,7 @@ from prompts import distill as DT
 from prompts import synthesis as SY
 from shared import distill_dispatch as DD
 from shared import distill_pack as DP
+from conftest import v6ize
 
 
 SOURCE = ("很多人大学本科毕业\n从此一辈子不再学习了\n他只完成了4年的大学教育\n\n"
@@ -20,8 +21,8 @@ def parsed(spans=None, **extra):
             "source_spans": [[1, 3]] if spans is None else spans,
             "notes": "保留时间归属"}
     item.update(extra)
-    return {"mainline": {"question": "作者如何论证", "progression": [], "conclusions": []},
-            "items": [item], "relations": [], "deferred": []}
+    return v6ize({"mainline": {"question": "作者如何论证", "progression": [], "conclusions": []},
+                  "items": [item], "relations": [], "deferred": []})
 
 
 def pack(data=None):
@@ -169,10 +170,10 @@ def _long_plain_source(chars: int = 12000) -> str:
 
 def _long_parsed(src: str) -> dict:
     n = len(src.split("\n"))
-    return {"mainline": {"question": "源在论证什么", "progression": [], "conclusions": []},
-            "items": [{"id": "i1", "type": "argument", "label": "主体论证",
-                       "source_spans": [[1, n - 5]], "notes": "尾段未选，应有附录"}],
-            "relations": [], "deferred": []}
+    return v6ize({"mainline": {"question": "源在论证什么", "progression": [], "conclusions": []},
+                  "items": [{"id": "i1", "type": "argument", "label": "主体论证",
+                             "source_spans": [[1, n - 5]], "notes": "尾段未选，应有附录"}],
+                  "relations": [], "deferred": []})
 
 
 class TestPrepareEntryPackOnly:

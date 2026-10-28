@@ -21,13 +21,17 @@ from __future__ import annotations
 
 from prompts.provenance import text_hash
 
-DISTILL_MARKER = "<!-- DISTILL_CONTRACT v5 -->"
+DISTILL_MARKER = "<!-- DISTILL_CONTRACT v6 -->"
 
 # 与 shared/distill_pack.py 的枚举保持一致（单一真源在这里，pack 侧 import）
 # `argument` 是 v4 起的**首选**粒度：一条 = 一个完整观点/论证，连同依据、案例、步骤、
 # 条件、例外与数字归属；其余类型用于确实无法并入论证的原子信息。
 ITEM_TYPES = ("argument", "viewpoint", "case", "step", "number", "resource",
               "condition", "counterexample")
+# v6 三档选材权（单一真源，pack 侧 import）：
+# trunk=主干（该节点用意成立所必需，必落点）；support=支撑材料（写作端按主线取舍）；
+# drop=默认丢（重复表述、元信息、过程叙述、寒暄、与主线无关的岔题）。
+ITEM_TIERS = ("trunk", "support", "drop")
 STANCE_KINDS = ("source", "quote", "paraphrase")
 RELATION_KINDS = ("supports", "depends", "limits", "contradicts")
 
@@ -96,16 +100,38 @@ def readings_issues(prefix: str, readings) -> list:
 #   结论是不保留，`readings` 载体在 v5 退场。
 # v5（N6）：模型仅返回位置/主题/关联/疑点；程序从同版源生成正文。
 #   `readings_issues` 仅保留给 v4 旧 pack 的离线解读与示例自检，v5 回包不接受 readings。
-CONTRACT_VERSION = 5
+# v6（2026-10-30，PLAN-20261030-intent-tree-summary）：意图树契约——
+#   ① `mainline` 并入 `hierarchy` 树根（根 intent 可空，纯话题拼盘没有全局主线）；
+#   ② `items` 挂 `node_id` 与 `tier` 三档（trunk/support/drop），把选材权还给摘要；
+#   ③ 树形随源形态自适应：有显式章节用章节树，口播/直播按话题分段（回跳合并，
+#      非连续区间照实分列；话题=有独立用意的最小单元且有推进，防碎化）；
+#   ④ 唯一降级出口 `no_substance`（纯寒暄/无实质内容），「无结构」不降级；
+#   ⑤ 忠实度边界：intent 是笔记者对作者用意的推断，只用于组织选材，不进稿。
+CONTRACT_VERSION = 6
 
 _SCHEMA_EXAMPLE = """```json
 {
-  "mainline": {"question": "源的问题", "progression": ["背景", "案例与条件"], "conclusions": []},
+  "hierarchy": {
+    "intent": "",
+    "children": [
+      {"id": "n1", "label": "报价与交付条件", "intent": "先讲清接单的价格形成机制，为后文涨价铺垫",
+       "source_spans": [[7, 12]], "children": []},
+      {"id": "n2", "label": "适用边界", "intent": "划定方法成立的前提，防止读者照搬",
+       "source_spans": [[25, 27]], "children": [
+         {"id": "n2a", "label": "自备货源前提", "intent": "说明该模式的适用对象",
+          "source_spans": [[25, 26]], "children": []}
+       ]}
+    ]
+  },
   "items": [
-    {"id": "i1", "type": "argument", "label": "报价与交付条件", "source_spans": [[7, 12], [18, 20]],
-     "notes": "前后片段共同说明条件，非连续原文须分别标界"},
-    {"id": "i2", "type": "condition", "label": "适用边界", "source_spans": [[25, 27]],
-     "notes": "此处读数含混，保留原写法，不确定处按需回查"}
+    {"id": "i1", "type": "argument", "tier": "trunk", "node_id": "n1", "label": "报价与交付条件",
+     "source_spans": [[7, 12], [18, 20]],
+     "notes": "前后片段共同说明条件，非连续原文须分别标界；话题中途跳回也归同节点"},
+    {"id": "i2", "type": "condition", "tier": "support", "node_id": "n2a", "label": "适用边界",
+     "source_spans": [[25, 27]],
+     "notes": "此处读数含混，保留原写法，不确定处按需回查"},
+    {"id": "i3", "type": "case", "tier": "drop", "node_id": "n2", "label": "开场寒暄",
+     "source_spans": [[3, 3]], "notes": "纯寒暄过程叙述，默认丢"}
   ],
   "relations": [{"from": "i2", "to": "i1", "kind": "limits", "note": "适用条件"}],
   "deferred": []
@@ -133,24 +159,84 @@ def example_schema() -> dict:
     return json.loads(strip_fences(_SCHEMA_EXAMPLE))
 
 
+def _node_issues(nodes: list, prefix: str, source_text: str,
+                 seen_ids: set) -> list:
+    """hierarchy 节点的机械自检（示例与真实回包共用口径——单一真源）。
+
+    - 节点 id 唯一且非空；非根节点 `intent` 必填（填不出用意的不配成节点）；
+    - `source_spans` 照素材口径校验（越界/倒序/空行即报）；
+    - 子节点递归。
+    """
+    issues: list = []
+    for k, node in enumerate(nodes or []):
+        if not isinstance(node, dict):
+            issues.append(f"{prefix}children[{k}] 须为对象")
+            continue
+        nid = str(node.get("id") or "")
+        if not nid:
+            issues.append(f"{prefix}children[{k}] 缺少 id")
+        elif nid in seen_ids:
+            issues.append(f"{prefix}{nid}: 节点 id 重复")
+        seen_ids.add(nid)
+        if not str(node.get("intent") or "").strip():
+            issues.append(f"{prefix}{nid or k + 1}: 节点缺 intent（作者用意一句话，必填）")
+        issues += [f"{prefix}{nid or k + 1}: {m}"
+                   for m in (source_spans_issues(node.get("source_spans"), source_text)
+                             if source_text is not None else [])]
+        issues += _node_issues(node.get("children") or [], f"{prefix}{nid}.",
+                               source_text, seen_ids)
+    return issues
+
+
+def source_spans_issues(spans, source_text: str) -> list:
+    """提炼回包侧的 span 形状/越界校验（无源文本时只查形状）。
+
+    与 `shared.distill_pack.source_span_issues` 的分工：本函数在**没有源文本**也可用
+    （示例自检/契约测试），有源文本时逐条给出与 pack 侧一致的判定。
+    """
+    if not isinstance(spans, list) or not spans:
+        return ["source_spans 缺失或为空"]
+    issues = []
+    for span in spans:
+        if (not isinstance(span, list) or len(span) != 2
+                or not all(type(x) is int for x in span)):
+            issues.append("source_spans 须为 [起,止] 整数行区间")
+            continue
+        a, b = span
+        if a < 1 or a > b:
+            issues.append(f"原文位置越界或倒序：{span}")
+        elif source_text is not None and b > len((source_text or "").split("\n")):
+            issues.append(f"原文位置越界或倒序：{span}")
+    return issues
+
+
 def example_issues() -> list:
     """示例自身的机械自检——示例不得教反向做法。返回 issue 列表（空=自洽）。
 
-    三个检查点（§8.5 第 1 条第 2 点）：
+    检查点（§8.5 第 1 条第 2 点，v6 口径）：
     1. `quote` 条目不得带模型注解（命中 `ANNOTATION_MARKERS` 就要改判 paraphrase）；
-    2. 条目 id 唯一且非空、`type`/`stance` 在枚举内、`source_lines` 是升序二元组；
-    3. 关系的 `from`/`to` 不悬空、`kind` 合法。
+    2. 条目 id 唯一且非空、`type`/`tier` 在枚举内、`source_spans` 形状合法；
+    3. 关系的 `from`/`to` 不悬空、`kind` 合法；
+    4. hierarchy 节点 id 唯一、非根节点 intent 必填、节点 span 形状合法；
+    5. 条目 `node_id` 引用存在；trunk 至少一条。
     """
     try:
         ex = example_schema()
     except Exception as exc:          # 示例连 JSON 都不是 → 直接报
         return [f"示例 JSON 解析失败：{exc}"]
     issues: list = []
-    ml = ex.get("mainline") or {}
-    if not any(ml.get(f) for f in ("question", "progression", "conclusions")):
-        issues.append("示例主线地图为空")
+    hier = ex.get("hierarchy")
+    if not isinstance(hier, dict):
+        issues.append("示例缺 hierarchy（v6 树形为必填产物）")
+        node_ids: set = set()
+    else:
+        if "intent" not in hier:
+            issues.append("示例 hierarchy 根缺 intent 键（根 intent 可空但键必须在）")
+        node_ids = set()
+        issues += _node_issues(hier.get("children") or [], "示例", None, node_ids)
     items = ex.get("items") or []
     ids = []
+    trunk_count = 0
     for it in items:
         iid = it.get("id") or ""
         if not iid:
@@ -161,18 +247,26 @@ def example_issues() -> list:
         ids.append(iid)
         if it.get("type") not in ITEM_TYPES:
             issues.append(f"{iid}: 示例 type 非法（{it.get('type')!r}）")
-        stance = it.get("stance", "source")
-        if stance not in STANCE_KINDS:
-            issues.append(f"{iid}: 示例 stance 非法（{stance!r}）")
-        sl = it.get("source_lines") or (it.get("source_spans") or [[]])[0]
-        if (not isinstance(sl, list) or len(sl) != 2
-                or not all(isinstance(x, int) for x in sl) or sl[0] > sl[1]):
-            issues.append(f"{iid}: 示例 source_lines 须为升序整数二元组（{sl!r}）")
+        if it.get("tier") not in ITEM_TIERS:
+            issues.append(f"{iid}: 示例 tier 非法（{it.get('tier')!r}，须 {ITEM_TIERS}）")
+        elif it.get("tier") == "trunk":
+            trunk_count += 1
+        nid = it.get("node_id")
+        if not nid:
+            issues.append(f"{iid}: 示例条目缺 node_id（v6 条目必须挂节点）")
+        elif nid not in node_ids:
+            issues.append(f"{iid}: 示例 node_id 引用悬空：{nid}")
+        spans = it.get("source_spans")
+        if (not isinstance(spans, list) or not spans
+                or any(not isinstance(x, list) or len(x) != 2
+                       or not all(isinstance(v, int) for v in x) or x[0] > x[1]
+                       for x in spans)):
+            issues.append(f"{iid}: 示例 source_spans 须为升序整数行区间列表（{spans!r}）")
         content = str(it.get("content") or "")
-        if stance == "quote" and any(m in content for m in ANNOTATION_MARKERS):
-            issues.append(f"{iid}: 示例标 quote 却带模型注解 {[m for m in ANNOTATION_MARKERS if m in content]}，"
-                          "按「带注解不得标 quote」规则应改 paraphrase（逐字原句另起一条 quote）")
-        issues += readings_issues(f"{iid}: 示例", it.get("readings"))
+        if stance_marker_in(content):
+            issues.append(f"{iid}: 示例正文含模型注解（v6 条目不提交 content，注解写 notes）")
+    if items and not trunk_count:
+        issues.append("示例无 trunk 条目（主干为空不合法）")
     deferred = ex.get("deferred")
     if deferred is not None and not isinstance(deferred, list):
         issues.append("示例 deferred 须为字符串数组")
@@ -184,6 +278,11 @@ def example_issues() -> list:
             if ref and ref not in ids:
                 issues.append(f"示例关系 {side} 引用悬空：{ref}")
     return issues
+
+
+def stance_marker_in(content: str) -> bool:
+    """content 里是否带模型注解（v6 起条目不提交 content，此检查仅用于示例自检）。"""
+    return any(m in (content or "") for m in ANNOTATION_MARKERS)
 
 
 def _types_line() -> str:
@@ -198,39 +297,67 @@ def _types_line() -> str:
 
 
 def rules_text() -> str:
-    """提炼契约正文（自包含三类产物定义与边界；改这里 = 换 distill_prompt_sha256）。"""
+    """提炼契约正文（自包含产物定义与边界；改这里 = 换 distill_prompt_sha256）。"""
     return f"""{DISTILL_MARKER}
-# 独立提炼任务：原文素材选取与编排
+# 独立提炼任务：意图树选材与编排（契约 v6）
 
-你是素材选取者。通读本任务的全部源文本，判断观点、依据、案例、步骤、条件、反例、
-数字归属与资源的关系。输出一个 JSON 对象，**不输出素材正文**、不逐条重述原文。
-素材正文**由程序**按你提交的 `source_spans` 从同版源提取，不采信模型的 content/readings。
+你是素材选取者。通读本任务的全部源文本，先给源搭一棵**意图树**（作者为什么写、按什么
+结构推进），再把原文素材挂到树上并分档。输出一个 JSON 对象，**不输出素材正文**、
+不逐条重述原文。素材正文**由程序**按你提交的 `source_spans` 从同版源提取。
 
-## 硬边界
+## 意图树（hierarchy）
 
-- **完整论证单元**：同一观点及必要依据、案例、条件可归成一项；不为每个数字单列。
+- **树形随源形态自适应**：有显式章节的源用「章节 → 小节 → 节点」；没有显式章节的
+  口播/直播/随笔用**话题分段**——聊到哪说到哪，每个话题一个节点，树退化为话题列表。
+- **话题的判定**：有独立用意的最小单元，且对前文有推进；纯承接过渡、寒暄转场不算话题。
+- 每个节点一句 `intent`：作者在这一层的**用意/目的**（如「用自身踩坑建立可信度」）。
+  这是笔记者的推断，只用于组织选材，**不进稿、不得写成作者的明确主张**。
+- 根节点 `intent` 可空（纯话题拼盘的源没有全局主线）；**其余节点 intent 必填**——
+  填不出用意的内容不配成节点。
+- **话题回跳**（A→B→A′）：同一话题的两段归同一个节点，`source_spans` 照实分列
+  非连续区间，不伪装成连续原话。
+- 节点的 `source_spans` 是该节点覆盖的源行区间（1-based，照抄行号，升序）。
+
+## 素材条目（items）与三档选材权
+
+- 每条素材挂 `node_id`（指向树上的节点），并标 `tier` 三档：
+  - `trunk`：该节点用意成立所必需的**主干**内容（核心论点/方法/结论级），写作端必落点；
+  - `support`：支撑材料（案例、数字、步骤细节），写作端按主线取舍，丢了不需理由；
+  - `drop`：**默认丢**——重复表述、元信息（点赞/排版/「本文共」类）、过程叙述、寒暄、
+    与主线无关的岔题。标 drop 不删除原文位置，只是告诉写作端不写。
+- **完整论证单元，不为每个数字单列**：同一观点及必要依据、案例、条件归成一项；
   素材可跨几个自然段，但必须能独立理解。主线外有独立价值的信息也保留。
+- **不按压缩率或条数砍主干**：trunk 该有就有；support/drop 该丢就丢，丢得有意。
+- 条目粒度与硬边界沿用：完整论证单元（`{_types_line()}`）、`label` 简短、`notes` 只写
+  定位疑点/ASR 不确定性，不带注解的正文要求；不确定读数不补精度、不混口径。
+- **忠实度边界**：条目正文逐字取自同版源（程序提取）；intent/label 只是导航与用意
+  推断，不是作者事实。
+
+## 无实质内容出口（唯一降级出口）
+
+- **「无结构」不降级**：口播/直播没有章节，照样按话题分段建树。
+- 只有当全文**确实没有实质内容**（纯寒暄、纯流程性问候、无任何观点/方法/事实）时，
+  才输出 `{{"no_substance": true, "reason": "一句话说明为何无实质内容"}}`，不硬造树。
+  只要有任何实质内容，就必须正常输出树与条目。
+
+## 硬边界（沿用 v5，逐条不变）
+
 - **原文位置**：`source_spans` 是一组 1-based `[起行,止行]`，照抄源行号，升序、互不重叠。
-  连续内容用一个区间；不连续内容各列区间，不把中间未选内容伪装成连续原话。
-  选中指代、条件、例外、数字对象/单位/期间/基准所需上下文，不能只摘结论或数字。
-- **只选取，不改写**：不提交 `content`、`stance` 或结构化读数 `readings`。
-  保留“通常”“如”“至少”等限定；全职/兼职、薪酬/工作价值、在校/毕业后不可并口径。
-  不混口径不是新增数字表，而是保留能说明口径的原文。
-- **导航与原文分开**：`label` 仅写简短主题；`notes` 只写定位疑点、需要回查的指代或 ASR
-  不确定性，不写新的事实结论，不用注解替代原文。带注解的内容不得标 quote。
-- **不确定读数不许补精度**：不换算、不拼合、不二选一。原文原样提取，疑点写 notes。
+  连续内容用一个区间；不连续内容各列区间（话题回跳也如此）。选中指代、条件、例外、
+  数字对象/单位/期间/基准所需上下文，不能只摘结论或数字。
+- **只选取，不改写**：不提交 `content` 或结构化读数。保留“通常”“如”“至少”等限定；
+  全职/兼职、薪酬/工作价值等不同口径不可合并——不混口径靠保留能说明口径的原文。
+- **导航与原文分开**：`label` 仅写简短主题；`notes` 只写定位疑点、需要回查的指代或
+  ASR 不确定性，不写新的事实结论。
+- **范围与覆盖分开**：处理完整源不等于素材无遗漏；先检查每个有独立价值的部分是否有
+  位置，再决定 trunk/support/drop。信息不足如实留疑点，不补外部知识。
 - **必要关联**：只在必要时标 `relations`，`from/to` 是素材 id；没有关系留空。
-- **不得替全篇下结论**：局部任务只选本块核心区间；重叠上下文只供理解。
-  核心之外的指代/条件/冲突写 `deferred`，交给统稿按需回查，不越界摘录。
-- **范围与覆盖分开**：处理完整源不等于素材无遗漏；先检查每个有独立价值的部分是否有位置。
-  不按压缩率或条数砍内容；信息不足如实留疑点，不补外部知识。
 
-## 产物
+## 其他产物
 
-1. `mainline`：简短问题与主题推进导航（不是另一份摘要）；`conclusions` 留空，事实判断由原文承载。
-2. `items`：`id`、`type`（{_types_line()}）、简短 `label`、`source_spans`、可空的 `notes`。
-3. `relations`：必要的 supports/depends/limits/contradicts 关系；没有就空数组。
-4. `deferred`：必须留到其他块或统稿处理的事项；没有就空数组。
+- `relations`：必要的 supports/depends/limits/contradicts 关系；没有就空数组。
+- `deferred`：必须留到其他块或统稿处理的事项；没有就空数组。
+- 分块任务只为本块核心区间建条目，不替全篇下结论；跨块事项写 `deferred`。
 
 只输出 JSON；不把原文再次抄写到回包中：
 {_SCHEMA_EXAMPLE}

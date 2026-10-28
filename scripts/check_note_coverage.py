@@ -18,10 +18,15 @@
         --file <patched.md> --verify-insert-only <原稿.md>
     # exit 0=纯插入通过 / 5=发现 replace/delete（停止，不落盘）
 
-协议（VERDICT §六/§七，补稿 Agent 必守）：
-1. 对每个可疑条目**先核对「改写也算含」**——成稿以其他表述覆盖该主题即勾销，不补；
-2. 确认缺失才补：只做**纯插入**（定点插段），原稿其余逐字不动；
-3. 补稿后**刷新 EXTRACT_CHECKLIST**：新增覆盖的条目补登进稿内清单。
+协议（VERDICT §六/§七 + 意图树 v6 三出口，补稿 Agent 必守）：
+1. 对每个可疑条目**先核对「改写也算含」**——成稿已以其他表述覆盖该主题的，勾销不补；
+2. **出口②·核实为可舍弃**：确属重复表述/元信息/过程叙述/寒暄/与主线无关的岔题
+   （或 support 且主线放得下），勾销不补，并在稿尾记录一句舍弃理由
+   （`舍弃：条目 iX —— 一句理由`）；
+3. **出口③·缺才补**：主干（trunk）内容确认缺失才**纯插入**（定点插段），
+   原稿其余逐字不动；
+4. 补稿后**刷新 EXTRACT_CHECKLIST（仅新增覆盖的条目补登记）**——出口②勾销的
+   条目不是新增覆盖，不登记。
 """
 import argparse
 import json
@@ -61,10 +66,14 @@ def _emit_patch_task(path: str, draft: str, source_text: str, pack: dict,
     lines = [
         "# 定向补稿任务（机械自查可疑条目）",
         "",
-        "协议（先核对、缺才补）：",
-        "1. 逐条核对下方可疑条目：成稿已以改写形态覆盖该主题的，勾销不补；",
-        "2. 确认缺失的条目才补：在合适位置**纯插入**，原稿其余逐字不动；",
-        "3. 补完后刷新稿内 EXTRACT_CHECKLIST（新增覆盖条目补登记）。",
+        "协议（三出口：先核对、可舍弃、缺才补）：",
+        "1. **改写也算含**：成稿已以其他表述覆盖该主题的，勾销不补；",
+        "2. **出口②·核实为可舍弃**：确属重复表述/元信息/过程叙述/寒暄/与主线无关的岔题",
+        "   （或 support 且主线放得下），勾销不补，并在稿尾记一行",
+        "   `舍弃：条目 <id> —— <一句舍弃理由>`；",
+        "3. **出口③·缺才补**：主干（trunk）内容确认缺失才补：在合适位置**纯插入**，",
+        "   原稿其余逐字不动；",
+        "4. 补完后**仅对新增覆盖的条目**补登稿内 EXTRACT_CHECKLIST（出口②勾销的不登记）。",
         "",
     ]
     for x in issues:
@@ -73,8 +82,11 @@ def _emit_patch_task(path: str, draft: str, source_text: str, pack: dict,
             continue
         spans = it.get("source_spans") or []
         bad = source_span_issues(spans, source_text)
-        lines.append(f"## 条目 {it.get('id')}｜{it.get('label')}｜"
+        tier = str(it.get("tier") or "trunk")
+        lines.append(f"## 条目 {it.get('id')}｜{tier}｜{it.get('label')}｜"
                      f"命中率 {x['rate']}")
+        if tier == "drop":
+            lines.append("（该条目档位为 drop：默认丢。除非成稿明显需要它，按出口②勾销即可）")
         if bad:
             lines.append(f"（素材提取失败：{bad[0]}；请按行段回查源文件 "
                          f"{it.get('source_lines')}）")

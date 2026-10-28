@@ -831,6 +831,23 @@ def source_chars_of(text: str) -> int:
         return len(re.sub(r"\s", "", text or ""))
 
 
+def render_selection_rights() -> str:
+    """意图树 v6 写作契约：选材权明示（PLAN-20261030-intent-tree-summary §2.2）。
+
+    只在材料包块（pack_only 条目）里下发——没有意图树就没有三档语义。
+    核心是把「忠实 = 不丢」改成「主干完整 + 该丢的丢」：trunk 必落点、support 按主线
+    取舍、drop 默认丢；不设字数/压缩率生成硬闸（防为凑数砍内容的复辙）。
+    """
+    return (
+        "- **选材权（意图树契约 v6）**：条目 `tier` 三档——`trunk`＝主干（必落点：非 drop "
+        "内容在稿内必须有落点；确实写不下时在稿尾显式声明舍弃及一句理由，"
+        "**整章静默消失在结构上不允许**）；`support`＝支撑材料（按主线取舍，丢了不需理由）；"
+        "`drop`＝默认丢（重复表述/元信息/过程叙述/寒暄/岔题，不写进稿）。"
+        "`node_id`/`intent` 是提炼者对作者用意的推断，只用于组织选材，"
+        "**不进稿、不得写成作者的明确主张**。不设字数目标，主干完整优先于篇幅。\n"
+    )
+
+
 def render_coverage_guide(source_chars: int, note_type: str = "structured") -> str:
     """保留输入长度提示，取消比例目标；覆盖由要点与证据核对。"""
     if not source_chars or source_chars < 400:

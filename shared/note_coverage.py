@@ -59,25 +59,63 @@ def structural_headings(source_text: str) -> list:
     return out
 
 
+def item_tier(item: dict) -> str:
+    """条目档位：v6 有 tier 三档；缺 tier（v5 旧包）按 trunk 保守拦截。"""
+    tier = str(item.get("tier") or "")
+    return tier if tier in ("trunk", "support", "drop") else "trunk"
+
+
 def coverage_issues(pack: dict, note_text: str,
                     threshold: float = LABEL_3GRAM_THRESHOLD) -> list:
-    """可疑块清单（拦截项仅此一层）。空 label 的条目不产生可疑。"""
+    """可疑块清单（v6 起**仅 trunk 条目进拦截**；阈值冻结不变）。
+
+    support 按主线取舍、drop 默认丢——它们的落点缺失不算缺陷，只在 info 报告观察
+    （`coverage_report` 的 `nonsupport_suspects`）。缺 tier 的旧包按 trunk 处理（保守方向）。
+    """
     issues = []
     for it in (pack.get("items") or []):
         label = str(it.get("label") or "")
         if not label:
             continue
         rate = label_hit_rate(label, note_text)
-        if rate < threshold:
+        if rate < threshold and item_tier(it) == "trunk":
             issues.append({"kind": "item_label", "ref": it.get("id"),
+                           "tier": "trunk",
                            "what": label, "rate": round(rate, 3),
                            "why": f"label 3-gram 命中率 {rate:.2f} < {threshold}"})
     return issues
 
 
+def nonsupport_suspects(pack: dict, note_text: str,
+                        threshold: float = LABEL_3GRAM_THRESHOLD) -> list:
+    """support/drop 条目中命中率低于阈值者（info 观察，不拦截）。
+
+    drop 未进稿是**预期行为**（默认丢）；support 缺落点供审计观察取舍是否过宽。
+    """
+    out = []
+    for it in (pack.get("items") or []):
+        label = str(it.get("label") or "")
+        if not label:
+            continue
+        rate = label_hit_rate(label, note_text)
+        tier = item_tier(it)
+        if rate < threshold and tier in ("support", "drop"):
+            out.append({"ref": it.get("id"), "tier": tier, "what": label,
+                        "rate": round(rate, 3)})
+    return out
+
+
+def tier_counts(pack: dict) -> dict:
+    """条目三档计数（覆盖报告用）。"""
+    counts = {"trunk": 0, "support": 0, "drop": 0, "unlabeled": 0}
+    for it in (pack.get("items") or []):
+        counts[item_tier(it) if it.get("tier") else "unlabeled"] += 1
+    return counts
+
+
 def coverage_report(source_text: str, pack: dict, note_text: str,
                     threshold: float = LABEL_3GRAM_THRESHOLD) -> dict:
-    """完整报告：issues（拦截项）+ info（标题/数字覆盖，只报告不拦）。"""
+    """完整报告：issues（仅 trunk 拦截项）+ info（标题/数字覆盖 + support/drop 观察项）。"""
     from shared.source_metrics import source_numbers
     info = {}
     heads = structural_headings(source_text)
@@ -89,6 +127,8 @@ def coverage_report(source_text: str, pack: dict, note_text: str,
     info["numbers_total"] = len(nums)
     info["numbers_hit"] = len(hit)
     info["numbers_missed"] = sorted(nums - set(hit))
+    info["tiers"] = tier_counts(pack)
+    info["nonsupport_suspects"] = nonsupport_suspects(pack, note_text, threshold)
     return {"issues": coverage_issues(pack, note_text, threshold), "info": info}
 
 

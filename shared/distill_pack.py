@@ -28,17 +28,18 @@ from datetime import datetime
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACKS_DIR = os.path.join(ROOT, "notes", "_meta", "distill_packs")
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # 枚举从 prompt 契约侧 import（单一真源），import 失败时兜底（防循环依赖场景）
 try:
     from prompts.distill import (ITEM_TYPES, STANCE_KINDS, RELATION_KINDS,  # noqa: F401
-                                 CONTRACT_VERSION)
+                                 ITEM_TIERS, CONTRACT_VERSION)
 except Exception:  # pragma: no cover
     ITEM_TYPES = ("argument", "viewpoint", "case", "step", "number", "resource",
                   "condition", "counterexample")
     STANCE_KINDS = ("quote", "paraphrase")
     RELATION_KINDS = ("supports", "depends", "limits", "contradicts")
+    ITEM_TIERS = ("trunk", "support", "drop")
     CONTRACT_VERSION = 0
 
 _WS_RE = re.compile(r"\s")
@@ -86,6 +87,112 @@ def _norm_deferred(deferred) -> list:
     if not isinstance(deferred, (list, tuple)):
         return []
     return [str(x) for x in deferred if str(x or "").strip()]
+
+
+# ---------------------------------------------------------------- v6 意图树
+
+def _norm_node(node, source_text: str) -> dict:
+    """单个树节点规范化（不抛错：形状不对就给空壳，交给 `hierarchy_issues` 报出来）。"""
+    if not isinstance(node, dict):
+        return {"id": "", "label": "", "intent": "", "source_spans": [], "children": []}
+    spans = node.get("source_spans") or []
+    if isinstance(spans, list) and all(isinstance(x, list) for x in spans) \
+            and not source_span_issues(spans, source_text or ""):
+        spans_norm = [[int(a), int(b)] for a, b in spans]
+    else:
+        spans_norm = []
+    return {"id": str(node.get("id") or ""), "label": str(node.get("label") or ""),
+            "intent": str(node.get("intent") or ""), "source_spans": spans_norm,
+            "children": [_norm_node(c, source_text) for c in node.get("children") or []
+                         if isinstance(c, dict)]}
+
+
+def _norm_hierarchy(hier, source_text: str) -> dict:
+    """树规范化：根 intent 可空；子节点递归。"""
+    if not isinstance(hier, dict):
+        return {"intent": "", "children": []}
+    return {"intent": str(hier.get("intent") or ""),
+            "children": [_norm_node(c, source_text)
+                         for c in hier.get("children") or [] if isinstance(c, dict)]}
+
+
+def iter_nodes(hier: dict):
+    """先序遍历树节点（不含根）。"""
+    stack = list((hier or {}).get("children") or [])
+    while stack:
+        node = stack.pop(0)
+        yield node
+        stack = list(node.get("children") or []) + stack
+
+
+def _collect_node_ids(hier: dict) -> set:
+    return {str(n.get("id") or "") for n in iter_nodes(hier) if n.get("id")}
+
+
+def _prefix_node_ids(node: dict, tag: str) -> dict:
+    """分块合并时给节点及子树 id 加块前缀（`n1` → `c2_n1`），与条目 id 同一口径。"""
+    out = dict(node)
+    if out.get("id"):
+        out["id"] = f"{tag}_{out['id']}"
+    out["children"] = [_prefix_node_ids(c, tag) for c in out.get("children") or []]
+    return out
+
+
+def _hierarchy_issues(pack: dict, source_text: str) -> list:
+    """v6 树形机械校验：形状、节点 id 唯一、非根节点 intent 必填、节点 span 不越界。"""
+    issues: list = []
+    hier = pack.get("hierarchy")
+    if not isinstance(hier, dict) or not isinstance(hier.get("children"), list):
+        return ["hierarchy 缺失或形状非法（v6 必须给意图树；纯寒暄走 no_substance 出口）"]
+    lines = (source_text or "").split("\n")
+    seen = set()
+    stack = [("根", {"children": hier.get("children") or []})]
+    while stack:
+        prefix, holder = stack.pop(0)
+        for k, node in enumerate(holder.get("children") or []):
+            if not isinstance(node, dict):
+                issues.append(f"{prefix}children[{k}] 须为对象")
+                continue
+            nid = str(node.get("id") or "")
+            name = f"{prefix}{nid or k + 1}"
+            if not nid:
+                issues.append(f"{name}: 节点缺 id")
+            elif nid in seen:
+                issues.append(f"{name}: 节点 id 重复")
+            seen.add(nid)
+            if not str(node.get("intent") or "").strip():
+                issues.append(f"{name}: 节点缺 intent（作者用意一句话，必填；"
+                              "填不出用意的不配成节点）")
+            spans = node.get("source_spans") or []
+            if not spans:
+                issues.append(f"{name}: 节点缺 source_spans（该节点覆盖的源行区间）")
+            else:
+                issues += [f"{name}: {m}" for m in source_span_issues(spans, source_text)]
+            stack.append((f"{name}.", node))
+    return issues
+
+
+def _item_v6_issues(pack: dict) -> list:
+    """v6 条目挂接校验：node 引用存在、tier 枚举、trunk 不为空。"""
+    issues: list = []
+    node_ids = _collect_node_ids(pack.get("hierarchy") or {})
+    trunk_count = 0
+    for it in pack.get("items") or []:
+        iid = it.get("id") or "?"
+        nid = str(it.get("node_id") or "")
+        if not nid:
+            issues.append(f"{iid}: 条目缺 node_id（v6 条目必须挂节点）")
+        elif node_ids and nid not in node_ids:
+            issues.append(f"{iid}: node_id 引用悬空：{nid}（不存在于树节点）")
+        tier = it.get("tier")
+        if tier not in ITEM_TIERS:
+            issues.append(f"{iid}: tier 非法（{tier!r}，须 {ITEM_TIERS}）")
+        elif tier == "trunk":
+            trunk_count += 1
+    if (pack.get("items") or []) and not trunk_count and not pack.get("no_substance"):
+        issues.append("trunk 为空：没有任何 trunk 条目（主干内容必落点，"
+                      "确无主干内容应走 no_substance 出口）")
+    return issues
 
 
 def _line_count(source_text: str) -> int:
@@ -174,6 +281,8 @@ def _source_items(parsed: dict, source_text: str) -> list:
                       "stance": "source", "content": source_excerpt(spans, source_text),
                       "source_lines": envelope, "source_spans": spans,
                       "label": str(it.get("label") or ""),
+                      "node_id": str(it.get("node_id") or ""),
+                      "tier": str(it.get("tier") or ""),
                       "notes": str(it.get("notes") or "")})
     return items
 
@@ -193,12 +302,16 @@ def build_pack(*, title: str, url: str, source_text: str,
       声称完整但区间有洞会被 `validate_pack` 拦下。
     """
     from prompts.provenance import text_hash
-    mainline = parsed.get("mainline") or {}
-    items = _source_items(parsed, source_text)
-    relations = parsed.get("relations") or []
+    # v6：意图树 + 三档选材权；`no_substance` 是唯一降级出口（纯寒暄/无实质内容）。
+    # v5 的平面 `mainline` 已并入树根（根 intent），v6 pack 不再有 mainline 字段。
+    no_substance = bool(parsed.get("no_substance"))
+    items = [] if no_substance else _source_items(parsed, source_text)
+    relations = [] if no_substance else (parsed.get("relations") or [])
+    hierarchy = _norm_hierarchy(parsed.get("hierarchy"), source_text) \
+        if not no_substance else {"intent": "", "children": []}
     n_lines = _line_count(source_text)
     ranges = processed_ranges if processed_ranges else [[1, n_lines]]
-    return {
+    pack = {
         "schema_version": SCHEMA_VERSION,
         "contract_version": CONTRACT_VERSION,
         "kind": "distill_pack",
@@ -210,11 +323,7 @@ def build_pack(*, title: str, url: str, source_text: str,
         "distill_prompt_sha256": distill_prompt_sha256 or "unknown",
         "material_key": material_key or "",
         "material_available": bool(material_key),
-        "mainline": {
-            "question": str(mainline.get("question") or ""),
-            "progression": [str(x) for x in (mainline.get("progression") or [])],
-            "conclusions": [str(x) for x in (mainline.get("conclusions") or [])],
-        },
+        "hierarchy": hierarchy,
         "items": items,
         "relations": [{
             "from": str(r.get("from") or ""),
@@ -233,6 +342,10 @@ def build_pack(*, title: str, url: str, source_text: str,
         },
         "notes": notes or "",
     }
+    if no_substance:
+        pack["no_substance"] = True
+        pack["no_substance_reason"] = str(parsed.get("reason") or "")
+    return pack
 
 
 def validate_pack(pack: dict, source_text: str) -> dict:
@@ -265,15 +378,25 @@ def validate_pack(pack: dict, source_text: str) -> dict:
     elif recorded != text_hash(source_text or ""):
         issues.append("source_sha256 与给定源文本失配（换源/改稿后旧提炼不能当有效交接）")
 
-    # ② 主线地图
-    ml = pack.get("mainline") or {}
-    if not any((ml.get(f) for f in _MAINLINE_FIELDS)):
-        issues.append("主线地图缺失（question/progression/conclusions 全空）")
+    # ② 意图树（v6）/主线地图（v5 旧形态）：版本门只认当前契约
+    if pack.get("no_substance"):
+        if not str(pack.get("no_substance_reason") or "").strip():
+            issues.append("no_substance 出口缺 reason（必须一句话说明为何无实质内容）")
+        if pack.get("items"):
+            issues.append("no_substance=True 但仍有条目（两态互斥，不得硬造树）")
+    elif "mainline" in pack and "hierarchy" not in pack:
+        # v5 旧形态（已被版本门拦）：validate 仍按旧口径报主线地图，便于离线解读
+        ml = pack.get("mainline") or {}
+        if not any((ml.get(f) for f in _MAINLINE_FIELDS)):
+            issues.append("主线地图缺失（question/progression/conclusions 全空）")
+    else:
+        issues += _hierarchy_issues(pack, source_text)
+        issues += _item_v6_issues(pack)
 
     # ③ 条目
     items = pack.get("items") or []
-    if not items:
-        issues.append("信息条目为空（源再短也应有主线外条目；确无可提炼须在 notes 说明）")
+    if not items and not pack.get("no_substance"):
+        issues.append("信息条目为空（源再短也应有主干外条目；确无可提炼须在 notes 说明）")
     ids = set()
     lines = (source_text or "").split("\n")
     n_lines = len(lines)
@@ -448,7 +571,7 @@ def merge_chunk_packs(*, title: str, url: str, source_text: str,
     order = sorted(parts, key=lambda p: int((p.get("chunk") or {}).get("index") or 0))
 
     question, prog, concl, notes_out = "", [], [], []
-    items, relations, seen = [], [], set()
+    root_children, items, relations, seen = [], [], [], set()
     chunk_meta, dup_count = [], 0
     chunk_totals, deferred, deferred_seen, ranges = set(), [], set(), []
     for p in order:
@@ -460,6 +583,10 @@ def merge_chunk_packs(*, title: str, url: str, source_text: str,
             question = str(ml.get("question") or "")
         prog += [str(x) for x in (ml.get("progression") or [])]
         concl += [str(x) for x in (ml.get("conclusions") or [])]
+        # v6：树按块拼接，节点 id 加块前缀防跨块撞号（与条目 id 同一口径）
+        hier = _norm_hierarchy(parsed.get("hierarchy"), source_text)
+        for node in hier.get("children") or []:
+            root_children.append(_prefix_node_ids(node, tag))
         for x in _norm_deferred(parsed.get("deferred")):
             if x not in deferred_seen:
                 deferred_seen.add(x)
@@ -476,6 +603,8 @@ def merge_chunk_packs(*, title: str, url: str, source_text: str,
         for it in _source_items(parsed, source_text):
             cid = str(it.get("id") or "")
             new_id = f"{tag}_{cid}" if cid else ""
+            # v6：条目挂接的节点 id 同步加块前缀
+            new_nid = f"{tag}_{it.get('node_id')}" if it.get("node_id") else ""
             readings = _norm_readings(it.get("readings"))
             # 去重键必须带 type/stance/readings：只比 content 会把「同一句、不同读数口径」
             # 的第二块条目当成重复丢掉，正好丢掉 N3 要保住的相反读数与独有条件。
@@ -499,6 +628,8 @@ def merge_chunk_packs(*, title: str, url: str, source_text: str,
                 "source_lines": list(it.get("source_lines") or []),
                 "source_spans": it.get("source_spans"),
                 "label": it.get("label") or "",
+                "node_id": new_nid,
+                "tier": str(it.get("tier") or ""),
                 "notes": it.get("notes") or "",
                 **({"readings": readings} if readings else {}),
             })
@@ -555,7 +686,7 @@ def merge_chunk_packs(*, title: str, url: str, source_text: str,
         "chunks": chunk_meta,
         "material_key": "",
         "material_available": False,
-        "mainline": {"question": question, "progression": prog, "conclusions": concl},
+        "hierarchy": {"intent": "", "children": root_children},
         "items": items,
         "relations": relations,
         "deferred": deferred,
@@ -691,6 +822,7 @@ def serialize_pack_lines(pack: dict) -> str:
     分隔符由 `_pick_line_delim` 动态挑一个正文里不存在的字符，杜绝「压缩把正文切坏」。
     """
     ml = pack.get("mainline") or {}
+    hier = pack.get("hierarchy") or {}
     items = list(pack.get("items") or [])
     readings_values = [str(r.get(f) or "") for it in items
                        for r in (it.get("readings") or [])
@@ -714,6 +846,22 @@ def serialize_pack_lines(pack: dict) -> str:
         out.append("@p " + str(x).replace("\n", " "))
     for x in ml.get("conclusions") or []:
         out.append("@c " + str(x).replace("\n", " "))
+    if pack.get("no_substance"):
+        out.append("@ns " + str(pack.get("no_substance_reason") or "").replace("\n", " "))
+    if hier:
+        # v6 树：根 intent + 先序节点行（JSON 单行），parent 为空 = 根
+        out.append("@h " + json.dumps({"id": "", "parent": None,
+                                       "intent": hier.get("intent") or ""},
+                                      ensure_ascii=False, separators=(",", ":")))
+        stack = [(n, "") for n in hier.get("children") or []]
+        while stack:
+            node, parent = stack.pop(0)
+            out.append("@h " + json.dumps(
+                {"id": node.get("id") or "", "parent": parent,
+                 "label": node.get("label") or "", "intent": node.get("intent") or "",
+                 "source_spans": node.get("source_spans") or []},
+                ensure_ascii=False, separators=(",", ":")))
+            stack += [(c, node.get("id") or "") for c in node.get("children") or []]
     for it in items:
         sl = it.get("source_lines") or [0, 0]
         out.append("@i " + delim.join([
@@ -721,9 +869,10 @@ def serialize_pack_lines(pack: dict) -> str:
             str(it.get("stance") or ""),
             f"{sl[0]}-{sl[1]}" if len(sl) == 2 else str(sl),
             _escape_field(it.get("content"), delim)]))
-        if "source_spans" in it:
+        if "source_spans" in it or it.get("node_id") or it.get("tier"):
             out.append("@x " + json.dumps({f: it.get(f) for f in
-                                          ("id", "source_spans", "label", "notes")},
+                                          ("id", "source_spans", "label", "notes",
+                                           "node_id", "tier")},
                                          ensure_ascii=False, separators=(",", ":")))
         for r in it.get("readings") or []:
             out.append("@q " + delim.join(
@@ -747,15 +896,42 @@ def parse_pack_lines(text: str) -> dict:
     id/type/stance/content/source_lines/关系/主线，少一条都算内容丢失。
     """
     out = {"mainline": {"question": "", "progression": [], "conclusions": []},
-           "items": [], "relations": [], "meta": {}, "deferred": [], "notes": ""}
+           "items": [], "relations": [], "meta": {}, "deferred": [], "notes": "",
+           "hierarchy": {"intent": "", "children": []}}
     raw = (text or "").split("\n")
     delim = ""
+    node_index: dict = {}
     for ln in raw:
+        if ln.startswith("@h "):
+            try:
+                node = json.loads(ln[3:])
+            except Exception:
+                continue
+            if node.get("parent") is None:
+                out["hierarchy"]["intent"] = str(node.get("intent") or "")
+                node_index[""] = out["hierarchy"]
+            else:
+                parent = node_index.get(str(node.get("parent") or ""))
+                if parent is None:
+                    continue
+                child = {"id": str(node.get("id") or ""),
+                         "label": str(node.get("label") or ""),
+                         "intent": str(node.get("intent") or ""),
+                         "source_spans": node.get("source_spans") or [],
+                         "children": []}
+                parent.setdefault("children", []).append(child)
+                node_index[child["id"]] = child
+            continue
+        if ln.startswith("@ns "):
+            out["no_substance"] = True
+            out["no_substance_reason"] = ln[4:]
+            continue
         if ln.startswith("@x "):
             extra = json.loads(ln[3:])
             item = next((it for it in out["items"] if it["id"] == extra.get("id")), None)
             if item is not None:
-                item.update({f: extra[f] for f in ("source_spans", "label", "notes") if f in extra})
+                item.update({f: extra[f] for f in ("source_spans", "label", "notes",
+                                                   "node_id", "tier") if f in extra})
             continue
         if ln.startswith("@meta "):
             body = ln[len("@meta "):]
@@ -851,6 +1027,9 @@ def lines_roundtrip_issues(pack: dict) -> list:
             if str(a.get(f) or "") != str(b.get(f) or ""):
                 issues.append(f"{a.get('id')}: {f} 不一致（{str(a.get(f))[:30]!r} → "
                               f"{str(b.get(f))[:30]!r}）")
+        for f in ("node_id", "tier"):
+            if str(a.get(f) or "") != str(b.get(f) or ""):
+                issues.append(f"{a.get('id')}: {f} 不一致（v6 挂接/分档不得在压缩中丢失）")
         sa = [int(x) for x in (a.get("source_lines") or []) if str(x).isdigit()]
         if sa != list(b.get("source_lines") or []):
             issues.append(f"{a.get('id')}: source_lines 不一致 {sa} → {b.get('source_lines')}")
@@ -875,6 +1054,23 @@ def lines_roundtrip_issues(pack: dict) -> list:
         issues.append("主线 progression 不一致")
     if [str(x) for x in (ml.get("conclusions") or [])] != gm["conclusions"]:
         issues.append("主线 conclusions 不一致")
+    # v6 树：先序展开逐节点比对（id/label/intent/spans/父子关系）
+    def _flatten(hier):
+        flat = []
+        stack = [(n, "") for n in (hier or {}).get("children") or []]
+        while stack:
+            node, parent = stack.pop(0)
+            flat.append((node.get("id") or "", parent,
+                         node.get("label") or "", node.get("intent") or "",
+                         json.dumps(node.get("source_spans") or [], ensure_ascii=False)))
+            stack = [(c, node.get("id") or "") for c in node.get("children") or []] + stack
+        return flat
+    if _flatten(pack.get("hierarchy")) != _flatten(got.get("hierarchy")):
+        issues.append("hierarchy 不一致（意图树不得在压缩中丢失或变形）")
+    if bool(pack.get("no_substance")) != bool(got.get("no_substance")):
+        issues.append("no_substance 标记不一致")
+    if str(pack.get("no_substance_reason") or "") != str(got.get("no_substance_reason") or ""):
+        issues.append("no_substance_reason 不一致")
     if [str(x) for x in (pack.get("deferred") or [])] != got["deferred"]:
         issues.append("deferred 不一致（跨段交接事项不得在压缩中丢失）")
     return issues

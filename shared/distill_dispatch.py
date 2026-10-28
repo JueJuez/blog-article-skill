@@ -33,7 +33,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from prompts.distill import prompt_hash, strip_fences as _strip_fences  # noqa: E402
 from prompts.distill import CONTRACT_VERSION  # noqa: E402
 from prompts import synthesis as SY  # noqa: E402
-from prompts.templates import source_chars_of  # noqa: E402
+from prompts.templates import source_chars_of, render_selection_rights  # noqa: E402
 from shared import distill_pack as DP  # noqa: E402
 from shared.source_metrics import unique_number_count  # noqa: E402
 
@@ -69,7 +69,8 @@ PACK_BLOCK_HEADER = (
     "- 材料包不是标准答案：它与源冲突时以源文本为准；条目外的源信息仍须覆盖；\n"
     "- stance=source 的正文由程序提取；清楚原文可直接用，只做必要整理；\n"
     "- `source_spans` 是多段原文位置；非连续片段间的标界不是作者原话，不得拼成连续引文；\n"
-    "- `deferred` 是提炼者留给全篇统稿的跨段事项，写作前先据此核对跨块指代与条件。"
+    "- `deferred` 是提炼者留给全篇统稿的跨段事项，写作前先据此核对跨块指代与条件。\n"
+    + render_selection_rights().rstrip("\n")
 )
 
 _DIGIT_RE = re.compile(r"[0-9]")
@@ -153,6 +154,7 @@ def render_pack_block(pack: dict, style: str = "", dedupe: bool = False,
             "- 条目格式：`@i 编号‖类型‖source‖起-止行‖原文`；`@q 编号‖读数‖对象‖单位‖期间‖基准‖确定性`"
             "为历史读数字段；`@x` 为多片段位置/主题/疑点；`@m/@p/@c` 为导航；"
             "`@r 源条目‖目标条目‖关系类型‖说明`；`@f` 为跨段待统稿事项；`@meta` 为版本字段。",
+            render_selection_rights().rstrip("\n"),
         ])
         meta = json.dumps(DP.pack_meta_json(pack), ensure_ascii=False, separators=(",", ":"))
         body = DP.serialize_pack(pack, style="lines", dedupe=dedupe)

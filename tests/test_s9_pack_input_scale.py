@@ -29,6 +29,7 @@ from prompts import distill as DT
 from prompts.provenance import text_hash
 from shared import distill_pack as DP
 from shared import distill_dispatch as DD
+from conftest import v6ize
 
 REAL_PACKS = os.path.join(ROOT, "notes", "_meta", "eval", "20261027-s9-fix", "packs")
 
@@ -54,11 +55,11 @@ def _mk_pack(n: int = 60) -> dict:
     return DP.build_pack(
         title="规模测试", url="eval://s9/size", source_text=src,
         distill_prompt_sha256=DT.prompt_hash("规模测试", src),
-        parsed={"mainline": {"question": "要回答什么", "progression": ["先", "再"],
+        parsed=v6ize({"mainline": {"question": "要回答什么", "progression": ["先", "再"],
                              "conclusions": ["结论带强度"]},
                 "items": _mk_items(n),
                 "relations": [{"from": f"i{k}", "to": f"i{k + 1}", "kind": "supports",
-                               "note": f"第{k}条支持第{k + 1}条"} for k in range(1, n)]})
+                               "note": f"第{k}条支持第{k + 1}条"} for k in range(1, n)]}))
 
 
 class TestSerializationKeepsEverything:
@@ -142,9 +143,9 @@ class TestVersionBindingSurvivesStyle:
         return DP.build_pack(title="形态测试", url="eval://s9/style", source_text=src,
                              distill_prompt_sha256=phash
                              or DT.prompt_hash("形态测试", src),
-                             parsed={"mainline": {"question": "q", "progression": ["p"],
-                                                 "conclusions": ["c"]},
-                                     "items": _mk_items(3), "relations": []})
+                             parsed=v6ize({"mainline": {"question": "q", "progression": ["p"],
+                                                        "conclusions": ["c"]},
+                                           "items": _mk_items(3), "relations": []}))
 
     def test_lines_block_still_readable_for_version_binding(self):
         src = "源文本第一行。\n源文本第二行。\n"
@@ -219,7 +220,7 @@ class TestCostTelemetryIsHonest:
     def _make_valid_pack(self, src: str) -> dict:
         """多条目（贴近真实量级）——单条目样本下固定开销占比过高，
         压缩比没有参考价值，还会把结论误导成「压缩无效」。"""
-        parsed = {"mainline": {"question": "q", "progression": ["p"], "conclusions": ["c"]},
+        parsed = v6ize({"mainline": {"question": "q", "progression": ["p"], "conclusions": ["c"]},
                   "items": [{"id": "i1", "type": "step", "stance": "paraphrase",
                              "content": "先做背调再开发信", "source_lines": [1, 2]}]
                   + [{"id": f"j{k}", "type": ["number", "condition", "case"][k % 3],
@@ -227,7 +228,7 @@ class TestCostTelemetryIsHonest:
                       "content": f"第{k}处：口径 {k * 3}% 的条件与反例都保留在材料包里",
                       "source_lines": [k + 2, k + 2]} for k in range(1, 25)],
                   "relations": [{"from": "i1", "to": "j1", "kind": "supports",
-                                 "note": "步骤依赖前置判断"}]}
+                                 "note": "步骤依赖前置判断"}]})
         return DP.build_pack(title="成本核算", url="eval://s9/cost", source_text=src,
                              distill_prompt_sha256=DT.prompt_hash("成本核算", src),
                              parsed=parsed)

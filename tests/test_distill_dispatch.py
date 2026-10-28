@@ -34,6 +34,7 @@ from prompts import distill as DT
 from shared import distill_pack as DP
 from shared import distill_dispatch as DD
 from prompts.provenance import text_hash
+from conftest import v6ize
 
 
 # ---------------------------------------------------------------- 路由
@@ -144,13 +145,13 @@ class TestRoute:
 # ---------------------------------------------------------------- 材料包块
 
 def _mk_pack(source: str, prompt_hash_tag: str = "") -> dict:
-    parsed = {
+    parsed = v6ize({
         "mainline": {"question": "怎么入行", "progression": ["先学", "再练"],
                      "conclusions": ["可行"]},
         "items": [{"id": "i1", "type": "step", "stance": "paraphrase",
                    "content": "先做背调再开发信", "source_lines": [1, 2]}],
         "relations": [],
-    }
+    })
     return DP.build_pack(title="测试", url="eval://s9/T1", source_text=source,
                          distill_prompt_sha256=prompt_hash_tag
                          or DT.prompt_hash("测试", source),

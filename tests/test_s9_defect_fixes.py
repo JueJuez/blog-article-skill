@@ -32,6 +32,7 @@ from prompts import distill as DT
 from prompts.provenance import text_hash
 from shared import distill_pack as DP
 from shared import distill_dispatch as DD
+from conftest import v6ize
 
 
 # ---------------------------------------------------------------- 素材
@@ -70,13 +71,13 @@ def _numeric_heavy_source(chars: int = 15000) -> str:
 
 def _mk_pack(source: str, url: str = "eval://s9/T1", title: str = "测试",
              prompt_hash_tag: str = "") -> dict:
-    parsed = {
+    parsed = v6ize({
         "mainline": {"question": "怎么入行", "progression": ["先学", "再练"],
                      "conclusions": ["可行"]},
         "items": [{"id": "i1", "type": "step", "stance": "paraphrase",
                    "content": "先做背调再开发信", "source_lines": [1, 2]}],
         "relations": [],
-    }
+    })
     return DP.build_pack(title=title, url=url, source_text=source,
                          distill_prompt_sha256=prompt_hash_tag
                          or DT.prompt_hash(title, source), parsed=parsed)
@@ -319,12 +320,10 @@ class TestEmitTasks:
 
 class TestQuoteRuleConsistency:
     def test_rules_forbid_annotation_on_quote(self):
-        """契约正文必须写明「带模型注解的 content 不得标 quote」，防止再退化。"""
+        """v6：模型不提交正文——「只选取不改写」与「注解只进 notes」的边界在契约正文。"""
         rules = DT.rules_text()
-        assert "quote" in rules and "注解" in rules
-        low = rules.replace(" ", "")
-        assert ("不得标`quote`" in low or "不得标quote" in low
-                or "只能 paraphrase" in low or "只能`paraphrase`" in low)
+        assert "不提交 `content`" in rules
+        assert "notes" in rules and "不写新的事实结论" in rules
 
     def test_schema_example_is_self_consistent(self):
         """示例自身过机械自检：quote 条目不得含模型注解、id 唯一、关系不悬空。"""
@@ -333,13 +332,13 @@ class TestQuoteRuleConsistency:
     def test_real_output_quote_still_machine_checked(self):
         """一致性要求只收紧示例，不放宽真实回包：quote 未逐字命中仍须报错。"""
         src = "行一内容。\n行二内容。\n"
-        parsed = {
+        parsed = v6ize({
             "mainline": {"question": "q", "progression": ["p"], "conclusions": ["c"]},
             "items": [{"id": "i1", "type": "number", "stance": "quote",
                        # 带注解的错误 quote：既不是逐字原话，也不应被放行
                        "content": "利率上涨了（源此处疑似读数断字）", "source_lines": [1, 1]}],
             "relations": [],
-        }
+        })
         pack = DP.build_pack(title="t", url="eval://s9/quote", source_text=src,
                              distill_prompt_sha256=DT.prompt_hash("t", src), parsed=parsed)
         rep = DP.validate_pack(pack, src)
@@ -352,13 +351,13 @@ class TestQuoteRuleConsistency:
     def test_paraphrase_with_annotation_passes_quote_check(self):
         """同一句改成 paraphrase 就合法——规则要区分的是 stance，不是删掉限制。"""
         src = "利率从4.67上涨到了4.7 一 三\n"
-        parsed = {
+        parsed = v6ize({
             "mainline": {"question": "q", "progression": ["p"], "conclusions": ["c"]},
             "items": [{"id": "i1", "type": "number", "stance": "paraphrase",
                        "content": "利率从4.67上涨到了4.7 一 三（读数存疑，不得拼写成 4.713%）",
                        "source_lines": [1, 1]}],
             "relations": [],
-        }
+        })
         pack = DP.build_pack(title="t", url="eval://s9/para", source_text=src,
                              distill_prompt_sha256=DT.prompt_hash("t", src), parsed=parsed)
         rep = DP.validate_pack(pack, src)

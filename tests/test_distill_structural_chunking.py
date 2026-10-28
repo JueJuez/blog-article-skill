@@ -28,6 +28,7 @@ from prompts import distill as DT
 from shared import distill_pack as DP
 from shared import distill_dispatch as DD
 from shared import source_material as SM
+from conftest import v6ize
 
 _TALK = ("这一段口语论述用来占位本身不含数字只是把前因后果和背景交代清楚便于理解上下文"
          "不会进入任何统计口径")
@@ -266,12 +267,12 @@ class TestDownstreamUsesCore:
     def test_merge_processed_ranges_use_core_not_context(self):
         src = _structured_source()
         chunks = DD.plan_chunks(src)
-        parts = [{"chunk": c, "parsed": {
+        parts = [{"chunk": c, "parsed": v6ize({
             "mainline": {"question": "q", "progression": [], "conclusions": []},
             "items": [{"id": "i1", "type": "argument", "stance": "paraphrase",
                        "content": f"第{c['index']}块的核心论证",
                        "source_lines": [c["core_start_line"], c["core_start_line"]]}],
-            "relations": []}, "prompt_sha256": "h"} for c in chunks]
+            "relations": []}), "prompt_sha256": "h"} for c in chunks]
         pack = DP.merge_chunk_packs(title="T", url="eval://n2/merge", source_text=src,
                                     distill_prompt_sha256=DT.prompt_hash("T", src),
                                     parts=parts)
@@ -307,11 +308,11 @@ class TestDownstreamUsesCore:
         assert len(man["tasks"]) >= 2
         for t in man["tasks"]:
             c = t["chunk"]
-            parsed = {"mainline": {"question": "q", "progression": [], "conclusions": []},
-                      "relations": [],
-                      "items": [{"id": "i1", "type": "argument", "stance": "paraphrase",
-                                 "content": f"块{t['chunk']['index']}",
-                                 "source_lines": [c["core_start_line"], c["core_start_line"]]}]}
+            parsed = v6ize({"mainline": {"question": "q", "progression": [], "conclusions": []},
+                            "relations": [],
+                            "items": [{"id": "i1", "type": "argument", "stance": "paraphrase",
+                                       "content": f"块{t['chunk']['index']}",
+                                       "source_lines": [c["core_start_line"], c["core_start_line"]]}]})
             if t is man["tasks"][1]:   # 第二块故意写到第一块核心区间
                 parsed["items"][0]["source_lines"] = [1, 1]
             stem = t["task_file"].replace("_distill.txt", "")

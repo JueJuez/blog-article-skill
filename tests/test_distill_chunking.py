@@ -24,6 +24,7 @@ import pytest
 from prompts import distill as DT
 from shared import distill_pack as DP
 from shared import distill_dispatch as DD
+from conftest import v6ize
 
 _TALK = ("这一段口语论述用于占位本身不含数字只是把前因后果和背景交代清楚便于理解上下文")
 
@@ -132,13 +133,13 @@ def _parsed(idx: int, start_line: int, extra_item_id: str = "") -> dict:
         items.append({"id": extra_item_id, "type": "viewpoint", "stance": "paraphrase",
                       "content": f"第{idx}块的观点",
                       "source_lines": [start_line + 1, start_line + 1]})
-    return {
+    return v6ize({
         "mainline": {"question": f"Q{idx}", "progression": [f"推进{idx}"],
                      "conclusions": [f"结论{idx}"]},
         "items": items,
         "relations": [{"from": "i1", "to": extra_item_id or "i1", "kind": "supports",
                        "note": "证据"}],
-    }
+    })
 
 
 class TestMergeChunkPacks:
@@ -176,9 +177,9 @@ class TestMergeChunkPacks:
         # 两块提炼出完全相同的条目（重叠区常见）→ 应去重并如实声明
         same = {"id": "i1", "type": "number", "stance": "paraphrase",
                 "content": "重叠区的同一个读数", "source_lines": [chunks[0]["end_line"]] * 2}
-        parts = [{"chunk": c, "parsed": {"mainline": {"question": "q", "progression": [],
-                                                      "conclusions": []},
-                                         "items": [dict(same)], "relations": []},
+        parts = [{"chunk": c, "parsed": v6ize({"mainline": {"question": "q", "progression": [],
+                                                            "conclusions": []},
+                                               "items": [dict(same)], "relations": []}),
                   "prompt_sha256": "h"} for c in chunks]
         pack = DP.merge_chunk_packs(title="T", url="eval://s9/dup", source_text=src,
                                     distill_prompt_sha256="x", parts=parts)
@@ -194,10 +195,15 @@ class TestMergeChunkPacks:
         assert pack["distill_prompt_sha256"] == DT.prompt_hash("T", _big_source())
         assert pack["chunk_prompt_sha256s"] == ["h1", "h2"]
 
-    def test_mainline_concatenated_in_order(self):
+    def test_hierarchy_concatenated_in_order(self):
+        # v6：mainline 并入树根；分块树按块序拼接、节点 id 加块前缀
         pack, chunks = self._merge(_big_source())
-        assert pack["mainline"]["question"] == "Q1"
-        assert pack["mainline"]["progression"] == [f"推进{c['index']}" for c in chunks]
+        assert pack["hierarchy"]["children"][0]["id"] == "c1_n1"
+        ids = [n["id"] for n in pack["hierarchy"]["children"]]
+        assert ids == [f"c{c['index']}_n1" for c in chunks]
+        intents = [n["intent"] for n in pack["hierarchy"]["children"]]
+        # v6ize 用 mainline.question 当节点 intent
+        assert intents == [f"Q{c['index']}" for c in chunks]
 
 
 # ---------------------------------------------------------------- 端到端（emit → 回包 → ingest）

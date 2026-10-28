@@ -30,6 +30,7 @@ from prompts import distill as DT
 from prompts.provenance import text_hash
 from shared import distill_pack as DP
 from shared import distill_dispatch as DD
+from conftest import v6ize
 
 _TALK = ("这一段口语论述用于占位本身不含数字只是把前因后果和背景交代清楚便于理解上下文"
          "也不会被当成任何统计口径")
@@ -62,13 +63,13 @@ def _argument_item(**kw) -> dict:
 
 
 def _parsed(source: str, items=None, deferred=None) -> dict:
-    return {
+    return v6ize({
         "mainline": {"question": "怎么定价", "progression": ["首单", "涨价"],
                      "conclusions": ["报价随交付成熟度上调"]},
         "items": items or [_argument_item()],
         "relations": [],
         "deferred": deferred or [],
-    }
+    })
 
 
 def _pack(source: str, **kw) -> dict:
@@ -81,8 +82,8 @@ def _pack(source: str, **kw) -> dict:
 
 class TestContractV5Text:
     def test_version_and_marker_in_sync(self):
-        assert DT.CONTRACT_VERSION == 5
-        assert "v5" in DT.DISTILL_MARKER
+        assert DT.CONTRACT_VERSION == 6
+        assert "v6" in DT.DISTILL_MARKER
 
     def test_granularity_is_argument_unit_not_per_number(self):
         rules = DT.rules_text()
@@ -92,11 +93,11 @@ class TestContractV5Text:
         assert "不为每个数字单列" in rules or "不强制每个数字" in rules
 
     def test_numbers_keep_caliber_in_one_unit(self):
+        # v6：结构化 readings 退场，口径靠「保留能说明口径的原文」承载
         rules = DT.rules_text()
-        assert "readings" in rules
-        for field in ("对象", "单位", "期间", "基准"):
-            assert field in rules
+        assert "readings" not in rules
         assert "不混口径" in rules or "不得混口径" in rules
+        assert "口径" in rules
 
     def test_cross_unit_handoff_is_deferred(self):
         rules = DT.rules_text()
@@ -122,12 +123,12 @@ class TestContractV5Text:
 
 class TestPackSchemaV3:
     def test_schema_version_bumped(self):
-        assert DP.SCHEMA_VERSION == 3
+        assert DP.SCHEMA_VERSION == 4
 
     def test_build_records_contract_and_processed_range(self):
         src = _src()
         pack = _pack(src)
-        assert pack["schema_version"] == 3
+        assert pack["schema_version"] == 4
         assert pack["contract_version"] == DT.CONTRACT_VERSION
         assert pack["coverage"]["processed_ranges"] == [[1, len(src.split("\n"))]]
         assert pack["coverage"]["complete"] is True

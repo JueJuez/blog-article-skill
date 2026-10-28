@@ -28,6 +28,7 @@ from prompts import synthesis as SY
 from prompts.provenance import text_hash
 from shared import distill_pack as DP
 from shared import distill_dispatch as DD
+from conftest import v6ize
 
 _TALK = ("这一段口语论述用来占位本身不含数字只是把前因后果和背景交代清楚便于理解上下文"
          "不会进入任何统计口径")
@@ -42,12 +43,12 @@ def _src(chars: int = 90000) -> str:
 
 
 def _parsed(core_start: int, tag: str = "论证") -> dict:
-    return {"mainline": {"question": "q", "progression": [], "conclusions": []},
-            "relations": [],
-            "items": [{"id": "i1", "type": "argument", "stance": "paraphrase",
-                       "content": f"第{tag}块的核心论证",
-                       "source_lines": [core_start, core_start]}],
-            "deferred": []}
+    return v6ize({"mainline": {"question": "q", "progression": [], "conclusions": []},
+                  "relations": [],
+                  "items": [{"id": "i1", "type": "argument", "stance": "paraphrase",
+                             "content": f"第{tag}块的核心论证",
+                             "source_lines": [core_start, core_start]}],
+                  "deferred": []})
 
 
 def _merged_pack(src: str, deferred_each: bool = False) -> dict:
@@ -212,16 +213,16 @@ class TestMergeIntegrity:
              "core_start_line": half + 1, "core_end_line": n},
         ]
         parts = [
-            {"chunk": chunks[0], "prompt_sha256": "h", "parsed": {
+            {"chunk": chunks[0], "prompt_sha256": "h", "parsed": v6ize({
                 "mainline": {"question": "q"}, "relations": [],
                 "items": [{"id": "i1", "type": "argument", "stance": "paraphrase",
                            "content": content, "source_lines": [1, 1],
-                           "readings": [{"value": "11 个点", "period": "2023 年"}]}]}},
-            {"chunk": chunks[1], "prompt_sha256": "h", "parsed": {
+                           "readings": [{"value": "11 个点", "period": "2023 年"}]}]})},
+            {"chunk": chunks[1], "prompt_sha256": "h", "parsed": v6ize({
                 "mainline": {"question": "q"}, "relations": [],
                 "items": [{"id": "i1", "type": "argument", "stance": "paraphrase",
                            "content": content, "source_lines": [half + 1, half + 1],
-                           "readings": [{"value": "4.78", "period": "2024 年"}]}]}},
+                           "readings": [{"value": "4.78", "period": "2024 年"}]}]})},
         ]
         pack = DP.merge_chunk_packs(title="T", url="eval://n3/readings", source_text=src,
                                     distill_prompt_sha256="h", parts=parts)

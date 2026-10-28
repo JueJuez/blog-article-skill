@@ -58,19 +58,26 @@ def _pack(source=_SOURCE, **kw):
         "source_sha256": text_hash(source),
         "distill_prompt_sha256": text_hash(DT.render_distill_prompt("代运营复盘", source)),
         "material_key": "",
-        "mainline": {
-            "question": "代运营怎么做才不亏",
-            "progression": ["接单条件", "踩坑", "补救"],
-            "conclusions": ["必须签竞业条款"],
+        "hierarchy": {
+            "intent": "代运营怎么做才不亏",
+            "children": [
+                {"id": "n1", "label": "为什么做代运营", "intent": "先讲清入行动机，为踩坑铺垫",
+                 "source_spans": [[7, 7], [10, 11]], "children": []},
+                {"id": "n2", "label": "踩过的坑", "intent": "用竞业条款反例说明代价",
+                 "source_spans": [[15, 15]], "children": []},
+            ],
         },
         "items": [
-            {"id": "i1", "type": "viewpoint", "stance": "quote",
+            {"id": "i1", "type": "viewpoint", "stance": "quote", "tier": "trunk",
+             "node_id": "n1",
              "content": "代运营的本质是把别人的坑变成自己的经验。",
              "source_lines": [7, 7]},
-            {"id": "i2", "type": "number", "stance": "paraphrase",
+            {"id": "i2", "type": "number", "stance": "paraphrase", "tier": "support",
+             "node_id": "n1",
              "content": "首单报价 8000 元/月",
              "source_lines": [10, 10]},
-            {"id": "i3", "type": "condition", "stance": "paraphrase",
+            {"id": "i3", "type": "condition", "stance": "paraphrase", "tier": "support",
+             "node_id": "n2",
              "content": "客户必须自备货源，否则不接",
              "source_lines": [11, 11]},
         ],
@@ -168,12 +175,29 @@ def test_quote_must_hit_source():
     assert any("i2" in i and "原话" in i for i in v2["issues"])
 
 
-def test_missing_mainline_reported():
-    """缺主线地图 → issue（字段齐全不冒充语义完整，缺类即报）。"""
+def test_missing_hierarchy_reported():
+    """v6：缺意图树 → issue（字段齐全不冒充语义完整，缺类即报）。"""
     bad = _pack()
-    bad["mainline"] = {"question": "", "progression": [], "conclusions": []}
+    del bad["hierarchy"]
     v = DP.validate_pack(bad, _SOURCE)
-    assert any("主线" in i for i in v["issues"])
+    assert any("hierarchy" in i for i in v["issues"])
+
+
+def test_empty_trunk_reported():
+    """v6：全 support/drop 无 trunk → 主干为空，机械拦下。"""
+    bad = _pack()
+    for it in bad["items"]:
+        it["tier"] = "support"
+    v = DP.validate_pack(bad, _SOURCE)
+    assert any("trunk" in i for i in v["issues"])
+
+
+def test_dangling_node_ref_reported():
+    """v6：条目 node_id 引用悬空 → issue。"""
+    bad = _pack()
+    bad["items"][0]["node_id"] = "nx"
+    v = DP.validate_pack(bad, _SOURCE)
+    assert any("nx" in i for i in v["issues"])
 
 
 def test_empty_items_reported():
@@ -226,6 +250,7 @@ def test_distill_prompt_is_self_contained():
     assert "1| " in p and f"{len(_SOURCE.splitlines())}| " in p  # 首尾行号对得上
     assert "主线" in p and "items" in p and "relations" in p
     assert "通读本任务的全部源文本" in p
+    assert "意图树" in p
     assert "JSON" in p
     assert "不输出素材正文" in p and "由程序" in p
     assert "行号" in p
@@ -240,20 +265,20 @@ def test_contract_number_rules_present():
     p = DT.render_distill_prompt("t", _SOURCE)
     assert "数字逐行成条" not in p
     assert "不混口径" in p
-    assert "readings" in p
-    assert "不确定读数不许补精度" in p
+    assert "readings" not in p    # v6 回包不提交结构化读数（v4 遗留退场）
+    assert "不确定读数不补精度" in p or "不确定读数不许补精度" in p
     assert "notes" in p  # 存疑说明独立于原文正文
-    assert "不换算" in p           # 不许把「4.7 一 三」拼成 4.713%
     assert "source_spans" in p and "照抄源行号" in p
 
 
 def test_contract_v4_granularity():
     """契约 v4（N1）：段级论证单元、跨段 deferred、局部不替全篇下结论。"""
     p = DT.render_distill_prompt("t", _SOURCE)
-    assert "带注解的内容不得标 quote" in p
+    assert "不提交 `content`" in p     # v6：条目正文程序提取，模型不交正文
     assert "完整论证单元" in p and "不输出素材正文" in p
     assert "deferred" in p
-    assert DT.CONTRACT_VERSION == 5
+    assert "no_substance" in p
+    assert DT.CONTRACT_VERSION == 6
     assert DT.example_issues() == []
 
 

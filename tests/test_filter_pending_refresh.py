@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from prompts.provenance import dispatch_fields
 from scripts.filter_pending import _run_queue, refresh_prompt  # noqa: E402
+from conftest import v6ize
 
 
 def _expected_prompt(note_type: str, chars: int) -> str:
@@ -124,13 +125,13 @@ class TestDistillFallbackPersisted:
         from shared import distill_pack as DP
         return DP.build_pack(title=title, url=url, source_text=src,
                              distill_prompt_sha256=DT.prompt_hash(title, src),
-                             parsed={"mainline": {"question": "q", "progression": ["p"],
-                                                 "conclusions": ["c"]},
-                                     "items": [{"id": "i1", "type": "step",
-                                                "stance": "paraphrase",
-                                                "content": "先做背调",
-                                                "source_lines": [1, 1]}],
-                                     "relations": []})
+                             parsed=v6ize({"mainline": {"question": "q", "progression": ["p"],
+                                                        "conclusions": ["c"]},
+                                           "items": [{"id": "i1", "type": "step",
+                                                      "stance": "paraphrase",
+                                                      "content": "先做背调",
+                                                      "source_lines": [1, 1]}],
+                                           "relations": []}))
 
     def test_stripped_pack_is_written_back(self, tmp_path, monkeypatch):
         monkeypatch.setenv("NOTE_DISTILL_DISPATCH", "1")
