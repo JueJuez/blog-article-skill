@@ -87,7 +87,7 @@
 |---|---|---|
 | F1 | 提炼契约 v6：`prompts/distill.py` 契约/渲染/校验升版 + `shared/distill_pack.py` schema（hierarchy/node_id/tier 字段与机械校验：span 不越界、node 引用存在、trunk 不为空）+ 测试 | RED 先行；旧 v5 pack 被 `contract_version_mismatch` 拒消费的用例；话题分段树（含回跳合并、根 intent 可空）与 `no_substance` 出口用例 |
 | F2 | 写作/自查/补稿契约：模板选材权段落；`note_coverage.check` 增加 tier 过滤（trunk-only 拦截）；补稿三出口写进 `check_note_coverage.py` 头注与 PIPELINES §4「写作端两环」；EXTRACT_CHECKLIST 刷新条件同步 | 测试：trunk 拦截/support 放行；三出口文档与用例 |
-| F3 | 试点批 A（**2 源**：P1（最厚、116% 超源）+ P4（ASR 结构源））：复用 F7 冻结源与 cur 稿，v6 提炼 → 写作 → 自查 → 补稿 → **三稿盲比**（cur / F7 po 冻结稿 / v6 稿，映射 `review/_MAP2.json`，F5b 协议） | 逐稿：主干落点矩阵、压缩率、失真计数、写作时长；登记 ≤10 调用（提炼 2 + 写作 2 + 补稿 ≤2 + 审计 2 + 修订余量 2） |
+| F3 | 试点批 A（**2 源**：P1（最厚、116% 超源）+ P4（ASR 结构源））：复用 F7 冻结源与 cur 稿，v6 提炼 → 写作 → 自查 → 补稿 → **三稿盲比**（cur / F7 po 冻结稿 / v6 稿，映射 `review/_MAP.json`，F5b 协议） | **已完成（2026-10-31，8/10 调用）**：P1 **v6 全胜**（p1=0/失真 0/压缩率 0.99 vs po 1.16，v6>po>cur）；P4 **停止点①触发**——v6 出现 F7 po 没有的失真 3 处（张冠李戴中 1 + 轻 2），回源核实成立，根因定位**全部为写作回退、树/选材零错**（跨节点素材错配 + 概括越界 + 强度放大）；批 A 收口不扩批 B，扩批与修法交用户。证据：`notes/_meta/eval/20261031-intent-tree-batchA/REPORT_BATCH_A.md` |
 | F4 | 试点批 B：扩 6 源全对照（同协议），汇总吞吐模型（压缩后写作时长 vs F7 po 实测） | 6 源三档齐备的对照表；时长对比 |
 | F5 | 结论回写本计划 §7 与 F7 VERDICT 附录；向用户交启用建议（三轴验收 + 吞吐账） | 出口三选一：①v6 替换现役两阶段契约并建议启用；②修 F3/F4 发现的缺陷重验；③判意图树无增益，回 F7 po 形态交裁决 |
 
@@ -114,3 +114,38 @@
   `tests/test_note_coverage.py` + 契约测试；文档落点 PIPELINES §4 / RULES §4.1 / 本计划 §7。
 - 红线：不写生产队列、不落 vault、`NOTE_DISTILL_DISPATCH` 保持 0、证据只增不改、
   派发前登记预算。
+
+## 7. 交付记录（批 A，2026-10-31）
+
+**实施**：F1+F2 已实现并过全量测试（1813，commit 28eeb17）：提炼契约 v6
+（`prompts/distill.py` hierarchy/node_id/tier/no_substance + `shared/distill_pack.py`
+机械校验）、写作选材权段（`prompts/templates.py render_selection_rights` 进包块）、
+自查 trunk-only 过滤与补稿三出口（`shared/note_coverage.py` +
+`scripts/check_note_coverage.py`）；存量 fixture 经 `tests/conftest.py::v6ize` 升版；
+PIPELINES §4 与 RULES §4.1 同步。
+
+**批 A**（登记 `notes/_meta/eval/20261031-intent-tree-batchA/REGISTRATION_BATCH_A.md`，
+实际 8/10 调用；证据 `REPORT_BATCH_A.md`，只增不改）：
+
+- **P1（最坏样本，116% 超源稿）：v6 全胜**——三稿盲比 v6 > F7 po > cur；v6 P1=0、
+  确定性失真 0、反支 3/3、压缩率 0.99（po 1.16、cur 0.30/p1=3/失真 5）。
+  意图树在「该压缩的稿」上的核心命题得到正面证据。
+- **P4（ASR 口播）：停止点①触发**——v6 失真 3 处（po 为 0），逐条回源核实成立；
+  根因全部为**写作回退**（跨节点素材错配 1 + 概括越界 1 + 强度放大 1），树与选材
+  零错。v6 给写作端多话题全局视野后，单轮写作在话题切换处出现错配与强度漂移，
+  是 v6 特有的新失败模式；覆盖自查对此天然盲（落点在，归属错）。
+- **选材权未兑现为压缩**：trunk 占比 52–65%，drop 仅 5/2 条，压缩率 0.99/0.863，
+  均未进 ≤0.5 观察带（P4 反厚于 po）；自查的「厚度污染计分」问题确已消失
+  （5 条可疑全出口①，零漏检）。
+- **成本超限**：全链 3.61×/3.72×（登记 ≤3.0×），主因 v6 pack 厚 +54%；
+  并发现 **F7 VERDICT 的 1.31–1.39× 分母口径偏大**（用了装配后 prompt+源；按登记
+  口径复算 F7 同样 >3×）——两代契约的真实输入成本账都须重算后才能进启用裁决。
+- **停止点③现场裁决**（`ADJUDICATION.md`）：P4 话题节点 17>15 触发代理阈值，
+  直接判据「碎到无法组织」不成立（intent 互异、粒度 ~30 行/节点、审计无组织性问题），
+  裁决继续并留痕；阈值与判据脱节交用户复核。
+
+**出口判定**：出口①不支持（P4 失真+成本超限）、出口③不支持（P1 全胜）；证据指向
+**出口②（修写作端契约后重验）**——候选修法：跨节点素材不得并置硬约束、概括句回指
+节点 intent、补稿加归属核对出口、提炼端收 trunk 比例与 pack 厚度。是否按此修并扩批 B、
+以及停止点③阈值与 F7 成本口径修正，交用户裁决。`NOTE_DISTILL_DISPATCH` 保持 0，
+生产未动。
