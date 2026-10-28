@@ -18,7 +18,7 @@
 | 接地审计（分析层数字 / 表格归属） | `shared/note_grounding.py`、`scripts/audit_note_grounding.py`；入口与边界见 PIPELINES §3.9，理由见 [接地审计决策](decisions/DECISION-20261019-grounding-audits.md) |
 | 测试纪律与术语 | [testing_rules](../references/testing_rules.md)、[glossary](../references/glossary.md) |
 | 决策、理由与取代关系 | [决策索引](decisions/README.md) |
-| 已知缺陷与优化方向（增量生产 + 存量重做） | [KNOWN_DEFECTS](KNOWN_DEFECTS.md)；本轮任务与验收见下方长源总结计划 |
+| 已知缺陷与优化方向（增量生产 + 存量重做） | [KNOWN_DEFECTS](KNOWN_DEFECTS.md)；本轮任务与验收见下方总结流程简化计划 |
 | 外部仓库调研参考（open-notebook / open-webui，未立项） | [external-repo-benchmarks](../references/external-repo-benchmarks.md)；决策见 [DECISION-20261024](decisions/DECISION-20261024-external-repo-benchmarks.md) |
 | 项目抽取归档 | [项目抽取技能](../tools/project_import/SKILL.md) 与 [用法](../tools/project_import/README.md) |
 
@@ -34,7 +34,8 @@
 
 | 文档 | 状态与用途 |
 |---|---|
-| [长源总结效率与质量计划](plans/PLAN-20261028-long-source-summary.md) | **本轮任务与验收唯一真源，2026-10-28 已收口**。N1–N3 离线实现；**N4 实测判「不保留」**（长字幕/长文章两源 P1 均 0:0、无改善，D1 上确定性失真 5 vs 4，端到端输入 +165%/+196%）；**N5 机械门槛 9/9 实测通过**（版本门、块对账、幂等、剥包、缺块拒收、恢复、队列回收）。§3 逐项裁定旧计划遗留，§6 保留独立收尾与条件任务；`NOTE_DISTILL_DISPATCH` 保持默认关闭，重启条件见[不启用决策](decisions/DECISION-20261028-long-source-not-enabled.md) |
+| [总结流程简化与材料包消费计划](plans/PLAN-20261028-summary-flow-simplification.md) | **当前任务与验收唯一真源**。普通源单轮；复杂长源按收益保留选材，七步收为四阶段。**2026-10-29 F1–F4 已接线**（`prepare_entry` 消费完整材料包 + 未选区间附录、`--ingest --prepare` 批次交接、派工指令更新；状态见计划 §4/§8），F5 真实对照待登记预算，隔离运行演练与启用结论随 F5b；`NOTE_DISTILL_DISPATCH` 保持 `0`，接线完成不等于质量或成本验收 |
+| [长源总结效率与质量计划](plans/PLAN-20261028-long-source-summary.md) | **2026-10-28 退役为历史，未全部验收**。保留 N1–N5 的实现及不启用结论、N6 原文素材两源有限质量证据与成本校正；后续不从 N1/N6 续跑，任务和 Q1–Q4 已由当前计划承接 |
 | [低成本质量改进开发计划](plans/PLAN-20261026-low-cost-quality.md) | **2026-10-28 已退役，未全部验收**。完整保留 S1–S9 的历史实现、有限证据与失败修正；后续只按新计划执行，不再按旧 §8.5 续跑 |
 | [模板质量提升计划](plans/PLAN-20261014-template-quality.md) | §8.4为批次4收尾；§8.5~§8.10为批次5七组评估（17组诊断样本全部纳入同条件评估§8.9；完整讲书形态源§8.10）；**2026-10-18 按有限验证收尾**（§8.11：留出/人工/费用三项不再执行、缺口登记，见 DECISION-20261018-batch5-closeout），质量模块已解冻；§9/§10 系历史快照，勿据其续跑 |
 | [知识层计划](plans/PLAN-20261018-knowledge-layer.md) | 方向已定为「服务下游 agent」，按 §6 的 A/B 分组执行。**A 组（自身受益）7 项已全部验收完成（2026-10-18）**：A1 基线 84.2%（AI 标注 30 篇）、A2（T13+T8 受控替换）、A3（T7×2 稿件不丢+异步审核）、A7 悬空扫描（0.92%，不立项）；**A4 正式轮 84.2%→99.4%**（代价变长 +173% 未压下；⚠️ **A4 单步净效应经补跑的干净 A/B 未检出**，该数应读作「当前整套提示词 + 重新生成 vs 历史旧稿」——见 [A4 视频侧决策](decisions/DECISION-20261018-a4-video-side.md)）、A5 报告项（机械覆盖率**禁当指标**）、A6 正式轮（保留率无可测增量、结构硬拦误报 0）。**B 组（下游受益）已于 2026-10-19 全部结项（无一保留）** —— B1 已由下游自行解决、B2/B3 收益不足、B4/B5 下游无需求、B6 前提被证伪（库内无跨源整合层）且成本高，逐条结论见计划 §6「B 组结项说明」。进度真源＝§6 表 + §8 三层循环结果；工具入口见 [PIPELINES §3.1–§3.7](PIPELINES.md) |

@@ -32,6 +32,7 @@
 - 复用入口，抓取、路由、门禁、登记由代码负责。不要手搓平台私有接口、临时抓取脚本或直接调生产落盘函数绕过门禁。
 - `FORCE_AGENT_MODE=1` 下消费入口返回的 prompt 与原文；批量总结派子 Agent，主会话负责编排与核验。
 - 监控结束在本次会话闭环 monitors / scys 队列：`filter_pending.py` 刷新 prompt 并清已总结条目 → 子 Agent 按条目 prompt 写稿 → `save_pending.py` 落盘 → 编排方统一再清队列。字段与命令见 PIPELINES §4。
+- 条目 `generation_context.distill_input_mode == "pack_only"` 时，prompt 自带完整材料包（原文素材 + 未选区间附录）：派工不附原文全文、不让子 Agent 整篇读 `raw_file`，按需按行段回源并登记范围；无此标记的条目维持 prompt + 原文派工。门禁仍以磁盘同版源对账，见 PIPELINES §4「材料包消费模式」。
 - 类型与版本刷新以 PIPELINES §4 为准；`filter_pending.py --dry-run` 只读预览，不清队列。auto可重算type，manual保留，legacy只报差异；版本失配不能用force绕过。
 - 返回 `VERIFIER_FAILED` 或 `VERIFIER_CONTENT_FAILED` 时按 issues 修稿重交，最多两次；机械缺陷不能用 force 绕过。仍失败按 RULES §4.6 处理，不静默声称完成。
 - 存量重做走原路径覆盖入口，不能用增量脚本重新推导文件名；重做前备份，见 PIPELINES §3。

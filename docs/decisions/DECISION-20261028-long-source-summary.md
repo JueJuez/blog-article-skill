@@ -1,4 +1,5 @@
 # DECISION-20261028-long-source-summary
+状态：历史决策；执行计划已由[流程简化暂定决策](DECISION-20261028-summary-flow-simplification.md)及其计划取代，下文保留首次迁移时点。
 ## 背景
 用户于 2026-10-28 确认优化长源总结效率，并要求先裁定旧计划遗留再建立清晰的新计划。
 ## 决策

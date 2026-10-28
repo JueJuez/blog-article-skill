@@ -11,8 +11,12 @@ PLAN-20261026-low-cost-quality §8.4（S9 入口）/ §9.11-S9（协议）。**�
    误判方向必须落在「保守回单轮」——S8 已证短源无增益、数值密集源 P2 丢失多，
    S9 真实抽样又补了一类：**密度不高但数字串绝对量很大**的直播复盘（美债 B 篇密度
    仅 0.0373，却有 191 个不同数字串）同样命中该弱项。
-2. **装配不改主体**：`assemble_write_prompt` = 生产 prompt 主体（逐字节）+ 材料包块；
-   包块标记与文案与 S8 distill 臂逐字节同款，`DISTILL_MARKER`（提炼契约）不进写作 prompt。
+2. **装配不改主体**：`prepare_entry`（流程简化 F2 起）用 `assemble_pack_only_prompt` =
+   生产 prompt 主体（逐字节）+ 材料包块 + 未选区间附录——写作端输入自包含，默认不再
+   另读源文件全文，按需按行段回查。`assemble_write_prompt`（无附录的旧输入模式）保留
+   给对照与历史装配；两种模式的块靠 `UNCOVERED_BEGIN` 区分，旧模式块不会被幂等判定
+   误认为已按新模式装配。包块标记与文案与 S8 distill 臂同源，`DISTILL_MARKER`（提炼
+   契约）不进写作 prompt。
 3. **版本绑定**：源 hash 或提炼契约（prompt）hash 失配、pack 机械校验不通过 → 不消费，
    该篇降级单轮，不阻塞批次（§9.6：换源/改稿后旧提炼不能当有效交接）。
 4. **留痕**：路由、回退原因、源/prompt hash 全部可写 JSONL；`log_path` 为空则不写
@@ -61,10 +65,10 @@ _SENTENCE_END_RE = re.compile(r"[。！？；!?;…]\s*$")
 
 PACK_BLOCK_HEADER = (
     "以下是**同版源**的独立提炼材料包（先行提炼步骤的产物），供取材与对账使用：\n"
-    "- 材料包不是大纲，而是**段级论证单元**：正文仍按上面模板组织，不得按条目顺序扩写；\n"
+    "- 材料包不是大纲，而是**原文素材与位置**：正文仍按上面模板组织，不得按条目顺序扩写；\n"
     "- 材料包不是标准答案：它与源冲突时以源文本为准；条目外的源信息仍须覆盖；\n"
-    "- 标为 quote 的内容是逐字原话，可直接引用；其余为摘意，用你的话重组时保持口径；\n"
-    "- 多读数条目的 `readings` 已按对象/单位/期间/基准分列，引用时不得混口径或合并；\n"
+    "- stance=source 的正文由程序提取；清楚原文可直接用，只做必要整理；\n"
+    "- `source_spans` 是多段原文位置；非连续片段间的标界不是作者原话，不得拼成连续引文；\n"
     "- `deferred` 是提炼者留给全篇统稿的跨段事项，写作前先据此核对跨块指代与条件。"
 )
 
@@ -143,11 +147,11 @@ def render_pack_block(pack: dict, style: str = "", dedupe: bool = False,
         from shared.distill_pack import pack_meta_json
         head = "\n".join([
             "以下是**同版源**的独立提炼材料包（先行提炼步骤的产物），供取材与对账使用：",
-            "- 材料包不是大纲，而是**段级论证单元**：正文仍按上面模板组织，不得按条目顺序扩写；",
+            "- 材料包不是大纲，而是**原文素材与位置**：正文仍按上面模板组织，不得按条目顺序扩写；",
             "- 材料包不是标准答案：它与源冲突时以源文本为准；条目外的源信息仍须覆盖；",
-            "- 条目标 quote 的是逐字原话，可直接引用；其余为摘意，用你的话重组时保持口径；",
-            "- 条目格式：`@i 编号‖类型‖quote/paraphrase‖起-止行‖内容`；`@q 编号‖读数‖对象‖单位‖期间‖基准‖确定性`"
-            "为多口径读数（不得合并）；`@m/@p/@c` 为主线；"
+            "- stance=source 的正文由程序提取；按需编辑，保留限定与口径；",
+            "- 条目格式：`@i 编号‖类型‖source‖起-止行‖原文`；`@q 编号‖读数‖对象‖单位‖期间‖基准‖确定性`"
+            "为历史读数字段；`@x` 为多片段位置/主题/疑点；`@m/@p/@c` 为导航；"
             "`@r 源条目‖目标条目‖关系类型‖说明`；`@f` 为跨段待统稿事项；`@meta` 为版本字段。",
         ])
         meta = json.dumps(DP.pack_meta_json(pack), ensure_ascii=False, separators=(",", ":"))
@@ -157,6 +161,55 @@ def render_pack_block(pack: dict, style: str = "", dedupe: bool = False,
     body = DP.serialize_pack(pack, style=style, dedupe=dedupe)
     return (f"{MATERIAL_PACK_BEGIN}\n{handoff}\n{PACK_BLOCK_HEADER}\n```json\n{body}\n```\n"
             f"{MATERIAL_PACK_END}")
+
+
+UNCOVERED_BEGIN = "<<<DISTILL_UNCOVERED_BEGIN>>>"
+UNCOVERED_END = "<<<END_DISTILL_UNCOVERED>>>"
+
+PACK_ONLY_NOTE = (
+    "**本次输入已完整**：素材正文逐字取自同版源；未被素材选中的源行在下方「未选区间附录」里"
+    "逐字补齐。因此**不需要另行读取源文件**——素材按主题归组，不是原文顺序，写稿仍按上面模板组织。"
+    "只有需要核对某一行的上下文时才按 `source_lines` 回查同版源，默认不要整篇重读。"
+)
+
+
+def render_uncovered_appendix(pack: dict, source_text: str) -> str:
+    """未选区间附录：逐字、按源顺序，保证「只吃包」也不缺原文。"""
+    ranges = DP.uncovered_ranges(pack, source_text)
+    lines = (source_text or "").split("\n")
+    parts = [UNCOVERED_BEGIN,
+             "（素材未覆盖的源行；按源顺序逐字补齐）"
+             if ranges else "（无：素材已覆盖全部源行）"]
+    for a, b in ranges:
+        parts.append(f"〔源第 {a}–{b} 行〕")
+        parts.append("\n".join(lines[a - 1:b]))
+    parts.append(UNCOVERED_END)
+    return "\n".join(parts)
+
+
+def render_pack_only_block(pack: dict, source_text: str, style: str = "",
+                           dedupe: bool = False,
+                           source_ref: "dict | None" = None) -> str:
+    """材料包即完整写作输入：包块 + 未选区间附录 + 「不要重读源」说明。
+
+    与 `render_pack_block` 的差别只在输入完整性：写作端拿到这一块就不必再读源文件，
+    省掉一次全文投喂；源路径/行号仍保留，供按需回查。
+    """
+    block = render_pack_block(pack, style=style or "lines", dedupe=dedupe,
+                              source_ref=source_ref)
+    appendix = render_uncovered_appendix(pack, source_text)
+    note = PACK_ONLY_NOTE
+    marker = MATERIAL_PACK_END
+    return (block.replace(marker, f"{note}\n{appendix}\n{marker}")
+            if marker in block else f"{note}\n{appendix}\n{block}")
+
+
+def assemble_pack_only_prompt(base_prompt: str, pack: dict, source_text: str,
+                              style: str = "lines", dedupe: bool = False,
+                              source_ref: "dict | None" = None) -> str:
+    """写作输入 = 生产 prompt 主体 + 完整材料包（含未选区间），不再附原文全文。"""
+    return (base_prompt or "").rstrip("\n") + "\n\n" + render_pack_only_block(
+        pack, source_text, style=style, dedupe=dedupe, source_ref=source_ref)
 
 
 def resolved_pack_style(override: str = "") -> str:
@@ -613,13 +666,16 @@ def chunk_scope_issues(chunk: dict, parsed: dict) -> list:
         return []
     issues = []
     for it in (parsed or {}).get("items") or []:
-        sl = it.get("source_lines") or []
-        if (not isinstance(sl, list) or len(sl) != 2
-                or not all(isinstance(x, int) for x in sl)):
-            continue      # 形状问题交给 validate_pack，不在这里重复报
-        if sl[0] < cs or sl[1] > ce:
-            issues.append(f"{it.get('id') or '条目'}: source_lines {sl} 越出本块核心区间 "
-                          f"[{cs},{ce}]——重叠上下文只用于理解，不得为其建条目")
+        spans = it.get("source_spans") if "source_spans" in it else [it.get("source_lines") or []]
+        if not isinstance(spans, list):
+            continue
+        for sl in spans:
+            if (not isinstance(sl, list) or len(sl) != 2
+                    or not all(type(x) is int for x in sl)):
+                continue  # 形状错误交给素材校验
+            if sl[0] < cs or sl[1] > ce:
+                issues.append(f"{it.get('id') or '条目'}: source_lines {sl} 越出本块核心区间 "
+                              f"[{cs},{ce}]——重叠上下文只用于理解，不得为其建条目")
     return issues
 
 
@@ -657,7 +713,11 @@ def _source_ref(entry: dict, source_text: str) -> dict:
 def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
                   source_text: "str | None" = None, dry_run: bool = False,
                   pack_style: str = "", dedupe_items: bool = False) -> dict:
-    """给单条队列条目装配材料包块；不适用时抛 `PrepareIneligible`（见 `exc.stripped`）。
+    """给单条队列条目装配完整材料包（包块 + 未选区间附录，F2）；不适用时抛
+    `PrepareIneligible`（见 `exc.stripped`）。
+
+    写作端输入自包含（`distill_input_mode=pack_only`）：模型只消费 prompt，不默认
+    整篇重读源文件；源路径与行号仍在块内，供按需回查。
 
     **回退语义（§8.5 第 1 条，2026-10-27 修正）**：
     - **先判路由/源可读性，再决定旧包去留**。旧实现只在走到装配分支时才剥包，于是
@@ -705,6 +765,10 @@ def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
     if n_blocks:
         _, block = split_write_prompt(prompt)
         current, why = block_is_current(block, src, title=title)
+        if current and n_blocks == 1 and UNCOVERED_BEGIN not in block:
+            # 旧输入模式（包块不含未选区间附录）：源与契约虽同版，写作端输入形态已换，
+            # 不能凭版本对账把旧模式块当成新模式已装配（流程简化 F2）。
+            current, why = False, "input_mode_changed"
         if current and n_blocks == 1:
             log_dispatch({**base_record, "status": "already_prepared",
                           "source_sha256": _text_hash(src),
@@ -731,15 +795,23 @@ def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
         raise _bail(reason, "no_valid_pack")
 
     ref = _source_ref(entry, src)
-    cost = measure_assembly(base_prompt, pack, style=pack_style, dedupe=dedupe_items,
+    style = pack_style or resolved_pack_style()
+    cost = measure_assembly(base_prompt, pack, style=style, dedupe=dedupe_items,
                             source_ref=ref)
-    assembled = assemble_write_prompt(base_prompt, pack, style=pack_style,
-                                      dedupe=dedupe_items, source_ref=ref)
+    appendix = render_uncovered_appendix(pack, src)
+    # 流程简化 F2：写作端输入 = 包 + 未选区间附录，不再默认另读全文。
+    # 附录与重叠分开记账（F5 成本核算要能分出「双份投喂」消除没有）。
+    cost["input_mode"] = "pack_only"
+    cost["appendix_chars"] = len(appendix)
+    cost["uncovered_ranges"] = len(DP.uncovered_ranges(pack, src))
+    assembled = assemble_pack_only_prompt(base_prompt, pack, src, style=style,
+                                          dedupe=dedupe_items, source_ref=ref)
     cov = pack.get("coverage") or {}
     _apply_prompt(entry, assembled, updates={
         "distill_pack_key": pack.get("url_key") or "",
         "distill_pack_source_sha256": pack.get("source_sha256") or "",
         "distill_prompt_sha256": pack.get("distill_prompt_sha256") or "",
+        "distill_input_mode": "pack_only",
         "distill_pack_style": cost["style"],
         "distill_chunks": int(cov.get("chunk_count") or 1),
         "distill_source_path": ref["path"],
@@ -770,8 +842,8 @@ def _apply_prompt(entry: dict, new_prompt: str, updates: "dict | None" = None,
     gc["prompt_sha256"] = _text_hash(new_prompt)
     if drop_distill:
         for k in ("distill_pack_key", "distill_pack_source_sha256", "distill_prompt_sha256",
-                  "distill_pack_style", "distill_chunks", "distill_source_path",
-                  "distill_source_lines", "distill_synthesis"):
+                  "distill_input_mode", "distill_pack_style", "distill_chunks",
+                  "distill_source_path", "distill_source_lines", "distill_synthesis"):
             gc.pop(k, None)
     gc.update(updates or {})
     entry["generation_context"] = gc
@@ -1064,6 +1136,53 @@ def prepare_queue(queue_path: str, store_dir: str = "", log_path: str = "",
             bucket = "prepared"
             changed = True
         result[bucket].append({"url": e.get("url", "")})
+    if changed and not dry_run:
+        with open(queue_path, "w", encoding="utf-8") as f:
+            json.dump(entries, f, ensure_ascii=False, indent=2)
+    return result
+
+
+def prepare_batch_entries(queue_path: str, urls: "list | tuple", store_dir: str = "",
+                          log_path: str = "", dry_run: bool = False) -> dict:
+    """只装配给定 URL 的队列条目（流程简化 F3：回收 → 写作任务的批次交接）。
+
+    `--ingest` 回收成功的条目才进 `urls`：失败/缺块的篇目不在其中，自然不推进；
+    批次外的队列条目一概不碰（不误装配其他批次）。单条降级（路由回单轮/无有效
+    pack）记 `fallback` 不阻塞批内其他条目；队列至多写回一次。
+    """
+    entries = json.load(open(queue_path, encoding="utf-8"))
+    if not isinstance(entries, list):
+        raise ValueError("队列不是列表")
+    by_url: dict = {}
+    for i, e in enumerate(entries):
+        u = e.get("url", "") or ""
+        if u:
+            by_url.setdefault(u, []).append(i)
+    result = {"prepared": [], "already": [], "stale": [], "fallback": [],
+              "not_in_queue": []}
+    changed = False
+    for url in urls:
+        idxs = by_url.get(url)
+        if not idxs:
+            result["not_in_queue"].append(url)
+            continue
+        try:
+            rep = prepare_entry(entries[idxs[0]], store_dir=store_dir,
+                                log_path=log_path, dry_run=dry_run)
+        except PrepareIneligible as exc:
+            result["fallback"].append({"url": url, "reason": exc.reason,
+                                       "stripped": exc.stripped})
+            if exc.stripped:
+                changed = True
+            continue
+        if rep["status"] == "already_prepared":
+            result["already"].append(url)
+        elif rep["status"] == "stale_stripped":
+            result["stale"].append(url)
+            changed = True
+        else:
+            result["prepared"].append(url)
+            changed = True
     if changed and not dry_run:
         with open(queue_path, "w", encoding="utf-8") as f:
             json.dump(entries, f, ensure_ascii=False, indent=2)

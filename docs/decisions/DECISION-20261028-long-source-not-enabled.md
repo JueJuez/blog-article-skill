@@ -1,6 +1,6 @@
 # 决策：长源两阶段提炼不启用（2026-10-28）
 
-状态：生效（`NOTE_DISTILL_DISPATCH` 保持默认 `0`）
+状态：v4 试验结论保留，生产开关仍默认 `0`。后续用户确认 [N6 原文素材候选](DECISION-20261028-source-excerpts.md)，不沿用本轮质量结论评价新方案。
 关联：[长源总结效率与质量计划](../plans/PLAN-20261028-long-source-summary.md) §4 N4；[新计划决策](DECISION-20261028-long-source-summary.md)
 
 ## 问题

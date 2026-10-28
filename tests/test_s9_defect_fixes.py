@@ -343,8 +343,11 @@ class TestQuoteRuleConsistency:
         pack = DP.build_pack(title="t", url="eval://s9/quote", source_text=src,
                              distill_prompt_sha256=DT.prompt_hash("t", src), parsed=parsed)
         rep = DP.validate_pack(pack, src)
-        assert not rep["ok"]
-        assert any("未能在源里命中" in m or "原话" in m for m in rep["issues"])
+        # v5 已不接收模型抄写的正文；错写不能进入素材。
+        assert rep["ok"]
+        assert pack["items"][0]["content"] == "行一内容。"
+        pack["items"][0]["content"] = "伪造原话"
+        assert not DP.validate_pack(pack, src)["ok"]
 
     def test_paraphrase_with_annotation_passes_quote_check(self):
         """同一句改成 paraphrase 就合法——规则要区分的是 stance，不是删掉限制。"""

@@ -241,7 +241,7 @@ class TestChunkPrompt:
         assert f"核心第 {c['core_start_line']}–{c['core_end_line']} 行" in p
         assert "重叠上下文" in p
         assert "不要重复提炼" in p
-        assert "source_lines" in p and "核心区间" in p
+        assert "source_spans" in p and "核心区间" in p
         assert "不得替全篇下结论" in p
 
     def test_context_lines_are_delivered_but_marked(self):

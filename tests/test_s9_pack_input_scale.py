@@ -87,7 +87,7 @@ class TestSerializationKeepsEverything:
         pack = _mk_pack(30)
         text = DP.serialize_pack(pack, style="lines")
         for it in pack["items"]:
-            assert it["content"][: 20] in text
+            assert DP.parse_pack_lines(text)["items"][pack["items"].index(it)]["content"] == it["content"]
             assert it["id"] in text
         for kind in ("condition", "counterexample", "number"):
             if any(i["type"] == kind for i in pack["items"]):

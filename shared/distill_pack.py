@@ -28,22 +28,18 @@ from datetime import datetime
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACKS_DIR = os.path.join(ROOT, "notes", "_meta", "distill_packs")
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # 枚举从 prompt 契约侧 import（单一真源），import 失败时兜底（防循环依赖场景）
 try:
     from prompts.distill import (ITEM_TYPES, STANCE_KINDS, RELATION_KINDS,  # noqa: F401
-                                 CONTRACT_VERSION, readings_issues)
+                                 CONTRACT_VERSION)
 except Exception:  # pragma: no cover
     ITEM_TYPES = ("argument", "viewpoint", "case", "step", "number", "resource",
                   "condition", "counterexample")
     STANCE_KINDS = ("quote", "paraphrase")
     RELATION_KINDS = ("supports", "depends", "limits", "contradicts")
     CONTRACT_VERSION = 0
-
-    def readings_issues(prefix: str, readings) -> list:
-        """兜底：正常路径从 `prompts.distill` 取同一实现（单一真源）。"""
-        return []
 
 _WS_RE = re.compile(r"\s")
 _MAINLINE_FIELDS = ("question", "progression", "conclusions")
@@ -108,6 +104,80 @@ def _range_union(ranges: list) -> list:
     return [[a, b] for a, b in out]
 
 
+def source_span_issues(spans, source_text: str) -> list:
+    """位置必须明确且有序，不自动截断、排序或吞掉重叠。"""
+    if not isinstance(spans, list) or not spans:
+        return ["source_spans 缺失或为空，无法提取原文"]
+    lines = (source_text or "").split("\n")
+    issues, previous = [], 0
+    for span in spans:
+        if (not isinstance(span, list) or len(span) != 2
+                or not all(type(x) is int for x in span)):
+            issues.append("source_spans 须为原文 [起,止] 整数行区间")
+            continue
+        a, b = span
+        if not 1 <= a <= b <= len(lines):
+            issues.append(f"原文位置越界或倒序：{span}")
+        elif a <= previous:
+            issues.append(f"原文位置重复、重叠或乱序：{span}")
+        elif not any(x.strip() for x in lines[a - 1:b]):
+            issues.append(f"原文位置指向空行：{span}")
+        previous = b
+    return issues
+
+
+SOURCE_GAP = "\n\n[…非连续原文片段…]\n\n"
+
+
+def uncovered_ranges(pack: dict, source_text: str) -> list:
+    """素材未覆盖的源行区间（升序合并）。用于让写作端只吃包也不缺原文。"""
+    lines = (source_text or "").split("\n")
+    covered = set()
+    for it in (pack or {}).get("items") or []:
+        for span in it.get("source_spans") or []:
+            if (isinstance(span, list) and len(span) == 2
+                    and all(type(x) is int for x in span) and 1 <= span[0] <= span[1]):
+                covered.update(range(span[0], span[1] + 1))
+    out = []
+    for n in range(1, len(lines) + 1):
+        if n in covered:
+            continue
+        if out and n == out[-1][1] + 1:
+            out[-1][1] = n
+        else:
+            out.append([n, n])
+    return out
+
+
+def uncovered_excerpt(pack: dict, source_text: str) -> str:
+    """未选区间的原文（逐字、按源顺序），供写作端补全覆盖。"""
+    lines = (source_text or "").split("\n")
+    return "\n".join("\n".join(lines[a - 1:b]) for a, b in uncovered_ranges(pack, source_text))
+
+
+def source_excerpt(spans, source_text: str) -> str:
+    """只从同版源复制正文，不消费模型生成的 content/readings。"""
+    if source_span_issues(spans, source_text):
+        return ""
+    lines = (source_text or "").split("\n")
+    return SOURCE_GAP.join("\n".join(lines[a - 1:b]) for a, b in spans)
+
+
+def _source_items(parsed: dict, source_text: str) -> list:
+    items = []
+    for it in parsed.get("items") or []:
+        # source_lines 单区间兼容位置输入，绝不复用旧的模型正文。
+        spans = it.get("source_spans") if "source_spans" in it else [it.get("source_lines") or []]
+        valid = not source_span_issues(spans, source_text)
+        envelope = [spans[0][0], spans[-1][1]] if valid else []
+        items.append({"id": str(it.get("id") or ""), "type": str(it.get("type") or ""),
+                      "stance": "source", "content": source_excerpt(spans, source_text),
+                      "source_lines": envelope, "source_spans": spans,
+                      "label": str(it.get("label") or ""),
+                      "notes": str(it.get("notes") or "")})
+    return items
+
+
 def build_pack(*, title: str, url: str, source_text: str,
                distill_prompt_sha256: str, parsed: dict,
                material_key: str = "", notes: str = "",
@@ -124,7 +194,7 @@ def build_pack(*, title: str, url: str, source_text: str,
     """
     from prompts.provenance import text_hash
     mainline = parsed.get("mainline") or {}
-    items = parsed.get("items") or []
+    items = _source_items(parsed, source_text)
     relations = parsed.get("relations") or []
     n_lines = _line_count(source_text)
     ranges = processed_ranges if processed_ranges else [[1, n_lines]]
@@ -145,14 +215,7 @@ def build_pack(*, title: str, url: str, source_text: str,
             "progression": [str(x) for x in (mainline.get("progression") or [])],
             "conclusions": [str(x) for x in (mainline.get("conclusions") or [])],
         },
-        "items": [{
-            "id": str(it.get("id") or ""),
-            "type": str(it.get("type") or ""),
-            "stance": str(it.get("stance") or ""),
-            "content": str(it.get("content") or ""),
-            "source_lines": list(it.get("source_lines") or []),
-            **_readings_field(it),
-        } for it in items],
+        "items": items,
         "relations": [{
             "from": str(r.get("from") or ""),
             "to": str(r.get("to") or ""),
@@ -226,7 +289,18 @@ def validate_pack(pack: dict, source_text: str) -> dict:
             issues.append(f"{iid}: type 非法（{it.get('type')!r}）")
         if it.get("stance") not in STANCE_KINDS:
             issues.append(f"{iid}: stance 非法（{it.get('stance')!r}）")
-        issues += readings_issues(iid, it.get("readings"))
+        span_issues = source_span_issues(it.get("source_spans"), source_text)
+        issues += [f"{iid}: {m}" for m in span_issues]
+        if not span_issues:
+            spans = it["source_spans"]
+            if it.get("source_lines") != [spans[0][0], spans[-1][1]]:
+                issues.append(f"{iid}: source_lines 与原文片段位置不一致")
+            if it.get("content") != source_excerpt(spans, source_text):
+                issues.append(f"{iid}: 原文原话与声明位置不一致，素材正文不得改写")
+        if it.get("stance") != "source":
+            issues.append(f"{iid}: 原文素材 stance 必须为 source")
+        if it.get("readings"):
+            issues.append(f"{iid}: 原文素材不接受二次生成的读数 readings，口径随原文保留")
         sl = it.get("source_lines") or []
         if (not isinstance(sl, list) or len(sl) != 2
                 or not all(isinstance(x, int) for x in sl)):
@@ -399,7 +473,7 @@ def merge_chunk_packs(*, title: str, url: str, source_text: str,
             chunk_totals.add(int(chunk.get("total")))
         local_ids = set()
         n_before = len(items)
-        for it in (parsed.get("items") or []):
+        for it in _source_items(parsed, source_text):
             cid = str(it.get("id") or "")
             new_id = f"{tag}_{cid}" if cid else ""
             readings = _norm_readings(it.get("readings"))
@@ -408,7 +482,9 @@ def merge_chunk_packs(*, title: str, url: str, source_text: str,
             key = (str(it.get("type") or ""), str(it.get("stance") or ""),
                    _norm(str(it.get("content") or "")),
                    tuple(tuple(str(r.get(f) or "") for f in READING_FIELDS)
-                         for r in readings))
+                         for r in readings),
+                   json.dumps(it.get("source_spans"), ensure_ascii=False),
+                   str(it.get("label") or ""), str(it.get("notes") or ""))
             if key[2] and key in seen:
                 dup_count += 1
                 continue
@@ -421,6 +497,9 @@ def merge_chunk_packs(*, title: str, url: str, source_text: str,
                 "stance": str(it.get("stance") or ""),
                 "content": str(it.get("content") or ""),
                 "source_lines": list(it.get("source_lines") or []),
+                "source_spans": it.get("source_spans"),
+                "label": it.get("label") or "",
+                "notes": it.get("notes") or "",
                 **({"readings": readings} if readings else {}),
             })
         for r in (parsed.get("relations") or []):
@@ -514,7 +593,9 @@ def dedupe_pack_items(pack: dict) -> tuple:
         key = (str(it.get("type") or ""), str(it.get("stance") or ""),
                str(it.get("content") or ""), tuple(it.get("source_lines") or []),
                tuple(tuple(str(r.get(f) or "") for f in READING_FIELDS)
-                     for r in (it.get("readings") or [])))
+                     for r in (it.get("readings") or [])),
+               json.dumps(it.get("source_spans"), ensure_ascii=False),
+               str(it.get("label") or ""), str(it.get("notes") or ""))
         winner = by_key.get(key)
         if winner is None:
             by_key[key] = it.get("id") or ""
@@ -640,6 +721,10 @@ def serialize_pack_lines(pack: dict) -> str:
             str(it.get("stance") or ""),
             f"{sl[0]}-{sl[1]}" if len(sl) == 2 else str(sl),
             _escape_field(it.get("content"), delim)]))
+        if "source_spans" in it:
+            out.append("@x " + json.dumps({f: it.get(f) for f in
+                                          ("id", "source_spans", "label", "notes")},
+                                         ensure_ascii=False, separators=(",", ":")))
         for r in it.get("readings") or []:
             out.append("@q " + delim.join(
                 [str(it.get("id") or "")] +
@@ -666,6 +751,12 @@ def parse_pack_lines(text: str) -> dict:
     raw = (text or "").split("\n")
     delim = ""
     for ln in raw:
+        if ln.startswith("@x "):
+            extra = json.loads(ln[3:])
+            item = next((it for it in out["items"] if it["id"] == extra.get("id")), None)
+            if item is not None:
+                item.update({f: extra[f] for f in ("source_spans", "label", "notes") if f in extra})
+            continue
         if ln.startswith("@meta "):
             body = ln[len("@meta "):]
             for piece in body.split(" "):
@@ -730,6 +821,10 @@ def _split_escaped(s: str, delim: str) -> list:
             cur.append(s[i + 1])
             i += 2
             continue
+        if ch == "\\" and i + 1 < n and s[i + 1] == "n":
+            cur.append("\n")
+            i += 2
+            continue
         if ch == delim:
             parts.append("".join(cur))
             cur = []
@@ -749,6 +844,9 @@ def lines_roundtrip_issues(pack: dict) -> list:
     if len(got["items"]) != len(src_items):
         issues.append(f"条目数不一致：原 {len(src_items)} vs 还原 {len(got['items'])}")
     for a, b in zip(src_items, got["items"]):
+        for f in ("source_spans", "label", "notes"):
+            if a.get(f) != b.get(f):
+                issues.append(f"{a.get('id')}: {f} 不一致（原文素材定位或注解丢失）")
         for f in ("id", "type", "stance", "content"):
             if str(a.get(f) or "") != str(b.get(f) or ""):
                 issues.append(f"{a.get('id')}: {f} 不一致（{str(a.get(f))[:30]!r} → "

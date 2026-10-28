@@ -1,3 +1,4 @@
+"""N1 基础保护随 N6 迁移到原文素材；v4 的历史规则见 Git。"""
 # -*- coding: utf-8 -*-
 """N1 新粒度与交接协议回归测试（PLAN-20261028-long-source-summary §4-N1）。
 
@@ -78,10 +79,10 @@ def _pack(source: str, **kw) -> dict:
 
 # ---------------------------------------------------------------- 1. 契约 v4 文案
 
-class TestContractV4Text:
+class TestContractV5Text:
     def test_version_and_marker_in_sync(self):
-        assert DT.CONTRACT_VERSION == 4
-        assert "v4" in DT.DISTILL_MARKER
+        assert DT.CONTRACT_VERSION == 5
+        assert "v5" in DT.DISTILL_MARKER
 
     def test_granularity_is_argument_unit_not_per_number(self):
         rules = DT.rules_text()
@@ -106,7 +107,7 @@ class TestContractV4Text:
         assert DT.example_issues() == [], DT.example_issues()
         ex = DT.example_schema()
         assert ex.get("deferred") == [] or isinstance(ex.get("deferred"), list)
-        assert any(it.get("readings") for it in ex.get("items") or [])
+        assert all(it.get("source_spans") and not it.get("content") for it in ex["items"])
 
     def test_chunk_task_states_scope_and_no_whole_doc_conclusion(self):
         src = _src()
@@ -119,26 +120,26 @@ class TestContractV4Text:
 
 # ---------------------------------------------------------------- 2. pack schema v2
 
-class TestPackSchemaV2:
+class TestPackSchemaV3:
     def test_schema_version_bumped(self):
-        assert DP.SCHEMA_VERSION == 2
+        assert DP.SCHEMA_VERSION == 3
 
     def test_build_records_contract_and_processed_range(self):
         src = _src()
         pack = _pack(src)
-        assert pack["schema_version"] == 2
+        assert pack["schema_version"] == 3
         assert pack["contract_version"] == DT.CONTRACT_VERSION
         assert pack["coverage"]["processed_ranges"] == [[1, len(src.split("\n"))]]
         assert pack["coverage"]["complete"] is True
         assert pack["deferred"] == []
 
-    def test_build_normalizes_readings_and_deferred(self):
+    def test_build_copies_source_and_preserves_deferred(self):
         src = _src()
         parsed = _parsed(src, deferred=["第 2 块才知道的指代：'他' 指作者本人"])
         pack = DP.build_pack(title="长源", url="eval://n1/norm", source_text=src,
                              distill_prompt_sha256="h", parsed=parsed)
-        assert pack["items"][0]["readings"][0]["period"] == "2019 年"
-        assert pack["items"][0]["readings"][1]["object"] == "复购单"
+        assert not pack["items"][0].get("readings")
+        assert pack["items"][0]["content"] == "\n".join(src.split("\n")[:3])
         assert pack["deferred"] == ["第 2 块才知道的指代：'他' 指作者本人"]
 
     def test_partial_scope_is_declared_honestly(self):
@@ -197,9 +198,11 @@ class TestVersionBinding:
         assert ok is False and why == "contract_upgraded"
 
 
-# ---------------------------------------------------------------- 4. readings 机械校验
+# ---------------------------------------------------------------- 4. 二次读数一律拒收
 
-class TestReadingsValidation:
+class TestReadingsRejected:
+    """v5 起素材正文由同版源提取，模型生成的 readings 不再是合法载体。"""
+
     def test_two_calibers_without_discriminator_rejected(self):
         src = _src()
         bad = _pack(src)
@@ -209,7 +212,7 @@ class TestReadingsValidation:
         ]
         rep = DP.validate_pack(bad, src)
         assert rep["ok"] is False
-        assert any("口径" in m for m in rep["issues"])
+        assert any("readings" in m or "读数" in m for m in rep["issues"])
 
     def test_reading_without_value_rejected(self):
         src = _src()
@@ -221,16 +224,16 @@ class TestReadingsValidation:
     def test_duplicate_readings_reported(self):
         src = _src()
         bad = _pack(src)
-        same = dict(bad["items"][0]["readings"][0])
+        same = {"value": "8000 元/月", "object": "首单"}
         bad["items"][0]["readings"] = [same, dict(same)]
         rep = DP.validate_pack(bad, src)
-        assert any("重复" in m for m in rep["issues"])
+        assert any("readings" in m or "读数" in m for m in rep["issues"])
 
-    def test_single_reading_needs_no_discriminator(self):
+    def test_generated_reading_not_accepted_as_original(self):
         src = _src()
         ok = _pack(src)
         ok["items"][0]["readings"] = [{"value": "8000 元/月"}]
-        assert DP.validate_pack(ok, src)["ok"] is True
+        assert DP.validate_pack(ok, src)["ok"] is False
 
 
 # ---------------------------------------------------------------- 5. 实际处理范围
@@ -293,13 +296,13 @@ class TestDeferred:
         assert len(pack["deferred"]) == len(chunks)
         assert DP.validate_pack(pack, src)["ok"] is True
 
-    def test_merge_preserves_readings(self):
+    def test_merge_preserves_source_spans(self):
         src = _src(90000)
         chunks = DD.plan_chunks(src)
         parts = [{"chunk": c, "parsed": _parsed(src), "prompt_sha256": "h"} for c in chunks]
         pack = DP.merge_chunk_packs(title="长源", url="eval://n1/merge2", source_text=src,
                                     distill_prompt_sha256="h", parts=parts)
-        assert all(it["readings"] for it in pack["items"])
+        assert all(it["source_spans"] and not it.get("readings") for it in pack["items"])
 
 
 # ---------------------------------------------------------------- 7. 行式序列化不丢新字段
@@ -311,12 +314,12 @@ class TestLinesStyleKeepsNewFields:
         pack["deferred"] = ["待统稿：第 3 块的同一指标另说"]
         assert DP.lines_roundtrip_issues(pack) == []
 
-    def test_serialized_lines_contains_readings_and_deferred(self):
+    def test_serialized_lines_contains_source_and_deferred(self):
         src = _src()
         pack = _pack(src)
         pack["deferred"] = ["跨块条件待统稿"]
         text = DP.serialize_pack(pack, style="lines")
-        assert "8000 元/月" in text and "12000 元/月" in text
+        assert DP.parse_pack_lines(text)["items"][0]["content"] == pack["items"][0]["content"]
         assert "跨块条件待统稿" in text
 
 
@@ -329,7 +332,7 @@ class TestCostTelemetry:
         assert cost["schema_version"] == DP.SCHEMA_VERSION
         assert cost["contract_version"] == DT.CONTRACT_VERSION
         assert cost["items"] == 1
-        assert cost["readings"] == 2
+        assert cost["readings"] == 0
         assert cost["deferred"] == 0
         assert cost["source_lines_total"] == len(src.split("\n"))
         assert cost["processed_ranges"] == [[1, len(src.split("\n"))]]

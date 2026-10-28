@@ -98,7 +98,26 @@ def main(argv=None) -> int:
                             "missing": len(res["missing"])}
         if not args.json:
             report["ingest"]["detail"] = res
-    if args.prepare:
+        if args.prepare:
+            # 流程简化 F3：组合命令下只装配本批回收成功的条目——失败/缺块不推进
+            # 该篇，也不碰批次外的其他队列条目（全队列修复仍走单独 `--prepare`）。
+            log_path = args.log
+            if not log_path and not args.dry_run:
+                os.makedirs(DEFAULT_LOG_DIR, exist_ok=True)
+                log_path = os.path.join(DEFAULT_LOG_DIR, "dispatch_%s.jsonl"
+                                        % time.strftime("%Y%m%d_%H%M%S"))
+            prep = DD.prepare_batch_entries(queue, [s["url"] for s in res["saved"]],
+                                            store_dir=args.store_dir, log_path=log_path,
+                                            dry_run=args.dry_run)
+            report["prepare"] = {"prepared": len(prep["prepared"]),
+                                 "already": len(prep["already"]),
+                                 "stale": len(prep["stale"]),
+                                 "fallback": len(prep["fallback"]),
+                                 "not_in_queue": len(prep["not_in_queue"]),
+                                 "dry_run": args.dry_run, "log": log_path}
+            if not args.json:
+                report["prepare"]["detail"] = prep
+    elif args.prepare:
         log_path = args.log
         if not log_path and not args.dry_run:
             os.makedirs(DEFAULT_LOG_DIR, exist_ok=True)

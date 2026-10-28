@@ -1,6 +1,6 @@
 # DECISION-20261027-input-and-output-scope
 ## 背景
-用户于 2026-10-27 确认输入优化方向与输出目的，要求先记录开发计划，再讨论输出模板和内容质量；下方正文保留最初讨论时点。2026-10-28 起[原计划](../plans/PLAN-20261026-low-cost-quality.md)退役为历史，任务与验收迁至[新计划](../plans/PLAN-20261028-long-source-summary.md)；目标与输出边界保留，提炼粒度的后续选择见[新决策](DECISION-20261028-long-source-summary.md)。
+用户于 2026-10-27 确认输入优化方向与输出目的，要求先记录开发计划，再讨论输出模板和内容质量；下方正文保留最初讨论时点。[原计划](../plans/PLAN-20261026-low-cost-quality.md)及首次承接的[旧长源计划](../plans/PLAN-20261028-long-source-summary.md)现均退役；目标与输出边界保留，当前任务与验收只看[流程简化计划](../plans/PLAN-20261028-summary-flow-simplification.md)，方向调整见[暂定决策](DECISION-20261028-summary-flow-simplification.md)。
 ## 决策
 - 项目继续主打自动监控、抓取与总结，内容总结和知识笔记面向下游 Agent 提供完整、可追溯、便于取材的源内信息，不据此新增模板类型。
 - 完整包含主线、独立信息、证据关系、条件与反例；主线外有独立价值的信息保留，重复可合并，重要陈述能回源，片段保有必要上下文。

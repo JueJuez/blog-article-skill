@@ -201,6 +201,10 @@ class TestMergeIntegrity:
         n = len(src.split("\n"))
         half = n // 2
         content = "同一句结论，但两块的读数口径不同。"
+        raw = src.split("\n")
+        raw[0] = "2023 年有 11 个点"
+        raw[half] = "2024 年读数 4.78"
+        src = "\n".join(raw)
         chunks = [
             {"index": 1, "total": 2, "start_line": 1, "end_line": half,
              "core_start_line": 1, "core_end_line": half},
@@ -222,8 +226,9 @@ class TestMergeIntegrity:
         pack = DP.merge_chunk_packs(title="T", url="eval://n3/readings", source_text=src,
                                     distill_prompt_sha256="h", parts=parts)
         assert len(pack["items"]) == 2, "同 content 不同读数不得被去重丢掉"
-        values = sorted(r["value"] for it in pack["items"] for r in it["readings"])
-        assert values == ["11 个点", "4.78"]
+        assert "11 个点" in pack["items"][0]["content"]
+        assert "4.78" in pack["items"][1]["content"]
+        assert all(not it.get("readings") for it in pack["items"])
 
     def test_chunk_order_and_declared_total_recorded(self):
         src = _src()

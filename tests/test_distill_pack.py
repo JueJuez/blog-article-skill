@@ -66,13 +66,13 @@ def _pack(source=_SOURCE, **kw):
         "items": [
             {"id": "i1", "type": "viewpoint", "stance": "quote",
              "content": "代运营的本质是把别人的坑变成自己的经验。",
-             "source_lines": [5, 5]},
+             "source_lines": [7, 7]},
             {"id": "i2", "type": "number", "stance": "paraphrase",
              "content": "首单报价 8000 元/月",
-             "source_lines": [7, 7]},
+             "source_lines": [10, 10]},
             {"id": "i3", "type": "condition", "stance": "paraphrase",
              "content": "客户必须自备货源，否则不接",
-             "source_lines": [8, 8]},
+             "source_lines": [11, 11]},
         ],
         "relations": [
             {"from": "i3", "to": "i2", "kind": "limits", "note": "报价前提"},
@@ -90,6 +90,9 @@ def _pack(source=_SOURCE, **kw):
         "notes": "",
     }
     base.update(kw)
+    base["items"] = DP.build_pack(title=base["title"], url=base["url"], source_text=source,
+                                  distill_prompt_sha256=base["distill_prompt_sha256"],
+                                  parsed=base)["items"]
     return base
 
 
@@ -112,7 +115,7 @@ def test_prompt_hash_recorded():
     p = DT.render_distill_prompt("t", _SOURCE)
     p2 = DT.render_distill_prompt("t", _SOURCE)
     assert text_hash(p) == text_hash(p2)
-    assert "主线" in p and "条目" in p and "关系" in p
+    assert "主线" in p and "items" in p and "relations" in p
 
 
 # ---------------------------------------------------------------- 机械校验（报告项）
@@ -162,7 +165,7 @@ def test_quote_must_hit_source():
     ok = _pack()
     ok["items"][1]["content"] = "换个说法：首月收费八千。"
     v2 = DP.validate_pack(ok, _SOURCE)
-    assert not any("i2" in i and "原话" in i for i in v2["issues"])
+    assert any("i2" in i and "原话" in i for i in v2["issues"])
 
 
 def test_missing_mainline_reported():
@@ -221,10 +224,10 @@ def test_distill_prompt_is_self_contained():
     # 契约 v2 起源文本逐行带 `NNN| ` 全局行号前缀下发（分块提炼拼回同一坐标的前提）
     assert DT.numbered_source(_SOURCE) in p
     assert "1| " in p and f"{len(_SOURCE.splitlines())}| " in p  # 首尾行号对得上
-    assert "主线" in p and "条目" in p and "关系" in p
-    assert "先按原文提炼" in p
+    assert "主线" in p and "items" in p and "relations" in p
+    assert "通读本任务的全部源文本" in p
     assert "JSON" in p
-    assert "原话" in p and "摘意" in p  # 原话/摘意区分
+    assert "不输出素材正文" in p and "由程序" in p
     assert "行号" in p
 
 
@@ -239,18 +242,18 @@ def test_contract_number_rules_present():
     assert "不混口径" in p
     assert "readings" in p
     assert "不确定读数不许补精度" in p
-    assert "读数存疑" in p          # 存疑标法落到 content 里
-    assert "不得换算" in p           # 不许把「4.7 一 三」拼成 4.713%
-    assert "先定位到该句所在行再写行号" in p
+    assert "notes" in p  # 存疑说明独立于原文正文
+    assert "不换算" in p           # 不许把「4.7 一 三」拼成 4.713%
+    assert "source_spans" in p and "照抄源行号" in p
 
 
 def test_contract_v4_granularity():
     """契约 v4（N1）：段级论证单元、跨段 deferred、局部不替全篇下结论。"""
     p = DT.render_distill_prompt("t", _SOURCE)
     assert "带注解的内容不得标 quote" in p
-    assert "以完整论证单元为条" in p
+    assert "完整论证单元" in p and "不输出素材正文" in p
     assert "deferred" in p
-    assert DT.CONTRACT_VERSION == 4
+    assert DT.CONTRACT_VERSION == 5
     assert DT.example_issues() == []
 
 

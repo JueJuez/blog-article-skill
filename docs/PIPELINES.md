@@ -1,5 +1,9 @@
 # 管线入口总表（唯一真源 · 2026-09-17 建立）
 
+**流程简化（2026-10-28 立项，2026-10-29 F1–F4 接线完成、F5 验证未做）**：普通源单轮；复杂长源按收益保留选材。目标为「准备任务 → 模型选材 → 自动校验/提取/装配 → 模型成稿后自动门禁保存」四阶段。已接线：提炼契约 v5 + pack schema v3（模型只报 `source_spans`，素材正文由程序从同版源逐字提取）；`prepare_entry` 改用 `assemble_pack_only_prompt`（包块 + 未选区间附录 + 「不重读源文件」说明；provenance 记 `distill_input_mode=pack_only`；旧输入模式块判 `input_mode_changed` 重装，不会把旧模式误当已装配）；`--ingest --prepare` 组合只装配本批回收成功条目（失败/缺块不推进该篇、不碰批次外条目；全队列修复仍走单独 `--prepare`）。**当前现役入口**：`python scripts/distill_prepare.py --emit --out <DIR>`、子 Agent 选材、`python scripts/distill_prepare.py --ingest --dir <DIR> --prepare`；`--plan` 是可选只读预览。**未完成**：F5 有界同源对照（§5 质量/成本保留条件）未验证，真实多块证据缺失；`NOTE_DISTILL_DISPATCH` 保持 `0`，启用范围须按计划 §5 验收后由用户裁决。任务真源：[总结流程简化计划](plans/PLAN-20261028-summary-flow-simplification.md)，旧长源计划与低成本计划均为历史。
+
+**原文素材前轮记录（N6，2026-10-28，已实测、未启用）**：提炼契约 v5 / pack schema v3——模型只交原文位置（`source_spans`）、简短主题、必要关联与疑点，素材正文由程序从同版源逐字提取，成稿时按需整理。两源实测（S3 字幕 / D1 长文）：逐字保真通过，有限复核显示成稿失真减少；成本复核发现原表漏算提炼输入，统一含空白字符后总输入相对单轮约 +200%～+236%。实际 token/耗时与可用预算尚待验收，保持不启用。证据见[旧长源计划 §4 N6](plans/PLAN-20261028-long-source-summary.md) 与本机 `notes/_meta/eval/20261028-n6/VERDICT.md`；理由见[原文素材决策](decisions/DECISION-20261028-source-excerpts.md)。该轮写作仍重读全文，不能作为新完整包消费方式的验收；下文 N1–N5 同为前轮记录。
+
 > **找「这事从哪进」只看本文。本文没登记的入口 = 不存在。**
 > 新会话 / 新 Agent 开工前先读本文，再决定调什么。
 
@@ -58,7 +62,7 @@
 
 **提取清单内化（A4，2026-10-18，入口不变）**：`FORCE_AGENT_MODE=1` 下无外部 provider，提取只能由执行模型在**同一次派工**里做，故清单指令按源长条件拼进条目 prompt（`prompts/templates.py:get_note_prompt` → `prompts/extract_checklist.render_extraction_rules`）：源长 >10000 字要求「先列清单、再成文」（清单是自查表，不得当大纲）；<2000 字只给 T0「源撑不起」事前报告钩。落盘前由 `prompts.extract_checklist.process` 把清单块**剥离出正文**、逐条机械校验「原句能在源里命中」（命中不了丢弃）、再对成文做机械对账（数字/专名/专名类中文名），未命中并入异步审核理由。**全部是报告项**：不计分、不拦盘、不触发重交；清单按源 hash 存档于 `notes/_meta/extract_checklists/`。**2k–10k 档已试过薄清单并否决**（S2，5 篇配对：保留率 96.6% vs 98.3%、失真 4 vs 2、成稿 −13.9%；该档一次能写完，加清单只诱导压缩），开关 `NOTE_THIN_CHECKLIST` 默认 `0`，证据 `notes/_meta/eval/20261026-thin-checklist/REPORT.md`。决策与 Loop 0 结果见 [A4 落点决策](decisions/DECISION-20261018-a4-agent-mode-landing.md) 与[知识层计划](plans/PLAN-20261018-knowledge-layer.md) §6 A4。**视频侧接线现状（2026-10-18 实测，非文档推断）**：视频侧**全部总结路径都含 A4**，与文章侧一致——单篇视频、系列课单集、监控 ASR 批量三条入口最终都汇到 `videos/main.py:_finalize_single`，其降级分支用 `prompts/provenance.dispatch_fields` 生成条目 prompt；该函数自 2026-10-15 起即传 `source_chars_of`（原为篇幅目标），本批 A4 落地后**顺带生效**；落盘走 `articles/_save_summary.py` → `save_summary_only`，剥离同样生效。仅两处例外：① 外部 provider 直调路径（`videos/main.py:_summarize_segments` → `get_note_prompt(note_type)`，仅 `FORCE_AGENT_MODE=0` 时走，默认关）不注入；② 系列维护脚本 `scripts/series_maintenance.py` → `_save_series_note`（接收已写好的正文，不经 `_finalize_single`）不注入，也不触发落盘后异步审核。⚠️ **历史误述更正**：原「videos 单集/系列路径尚未接线（其 prompt 未传源长）」系据 `videos/main.py:_build_subagent_prompt` 与外部 provider 分支写成，而该函数**自 2026-07-21 起无任何调用点（死代码）**，与实测不符，已按实测更正。干净 A/B（12 视频源）测得视频侧 A4 保留率增量未检出，**决定保留现状**；依据见 [A4 视频侧保留决策](decisions/DECISION-20261018-a4-video-side.md)。
 
-**质量优化收口状态（2026-10-28，本轮已完成）**：任务、进度与验收只维护于[长源总结效率与质量计划](plans/PLAN-20261028-long-source-summary.md) §4（N1–N5 全部完成）；[旧计划](plans/PLAN-20261026-low-cost-quality.md)退役为历史，迁移裁定见新计划 §3。已确认目标为短源保留单轮、长源结构切分→分块提炼→全篇统稿。**N1–N3 已离线实现；N4 已用真实模型跑完粒度调试（S3 长字幕 35k，契约 v4 vs v2）与生产配对（S3 + D1 长文章 19.7k），结论「不保留」**：两源 P1 遗漏均 0:0、无可定位改善，D1 上两阶段确定性失真 5 vs 单轮 4，端到端输入 +165%/+196%、调用 2×；粒度本身相对 v2 细条目降本成立（材料 -63%、条目 -82%），但合并丢失读数口径（兼职/顾问 80–100 万被并、两说并成单区间）。**N5 已收口**：版本门四态、装配块对账四态、幂等、剥包与 `distill_*` 同步、缺块/清单截断/覆盖空洞拒收、补回包恢复、队列回收七态实测 9/9 通过（证据 `notes/_meta/eval/20261028-n5/`）。因此 `NOTE_DISTILL_DISPATCH` 保持默认关闭，有限启用不评估；重启前须先修契约（多口径读数强制分列 + 段级已读声明）并补真实多块样本（D13）。下列 S5–S9 段记录既有实现与有限试验；提炼契约/schema 的当前形态以「长源总结 N1」段为准，切分行为以「N2」段为准，装配/统稿消费以「N3」段为准。
+**质量优化前轮记录（N1–N5，2026-10-28）**：v4 论证转述方案已实测并决定不启用，N5 机械门槛 9/9 通过；原始证据及边界保留在[旧长源计划](plans/PLAN-20261028-long-source-summary.md) §4。原“5 对 4”属于模型审计计数，其中两项有争议，不能当严格优劣证据；字符增长只表示登记口径下的近似输入规模。用户随后确认 N6 原文素材方向，其原则继续有效；后续任务以本文开头的流程简化计划为准，下列 N1–N3/S5–S9 段是前轮实现历史。
 
 **输出契约统一（S5，2026-10-27 实施）**：生产 prompt **关闭额外延伸**——思维模型透镜与「笔记者分析」区、延伸思考留白、自测三问、费曼「讲出来」、类比迁移、无源行动项、认知误区与「我的立场」退出九类模板；**源内已有的分析、反驳、类比、方法、练习和迁移内容照常保留并归属作者**，不按栏目关键词整段删除（PLAN-20261026 §9.7，入口与命令不变）。九类「固定结构（顺序不可颠倒）」改为「模块与组织（按源准入；顺序可受约束重组）」，开篇系统契约（作者行/禁H1/标签行/主题词区块）不动；`SECTION_CONTRACTS` 同步去掉已关闭小节（structured/general 去「延伸思考」，opinion 去「认知误区/笔记者分析」）；`QUALITY_GATE_PROMPT` 以「无源延伸」维度取代「思维模型落地」，`QUALITY_GATE_SELFCHECK` 与 `prompts/review_rubric.py` D/E 维度同步。`SECTION_ALIAS` 与 `shared/note_grounding.py` 分析层正则保留（旧库笔记兼容）；S4 vizpurpose profile 的替换目标句未动。测试 `tests/test_s5_output_contract.py`（40 条）+ 更新后的模板/学习包/门禁自检回归。
 
@@ -474,6 +478,14 @@ CDP 通道从 `unknown_no_html` 变为可数图（拿到 DOM 时按 `images_not_
 ⚠️ force 只用于「该 URL 已落过盘」的修订场景，新条目别传（无旧版可覆盖）。
 派单 prompt 里写死两个拦点可显著提高一次通过率：**原话必须改写**（20 字片段重合 >20% 硬拦）、
 **硬锚点入正文**（发布日期 / BV 号或帖号 / 作者 / 关键数字，召回 <60% 硬拦）。历史一次并发 4 个子 Agent 未触发 429，不保证其他平台或当前配额同样可用。
+
+**材料包消费模式（流程简化 F2–F4，2026-10-29 接线）**：`generation_context.distill_input_mode == "pack_only"`
+的条目，prompt 自带完整材料包（已选原文素材 + 未选区间附录 + 版本绑定与回源路径）——
+**派工时不再附原文全文、不指示子 Agent 整篇读 `raw_file`**；子 Agent 只消费条目 prompt，
+需要核对某行上下文时按 `source_lines`/行段局部读源并在稿内登记回查范围。
+条目 prompt 无包块（`distill_input_mode` 缺失）的条目维持现役单轮派工（prompt + 原文）。
+落盘侧不变：`save_pending.py` 仍按 `raw_file` 磁盘原文做 `source_sha256` 对账，
+公共门禁的比对依据是完整同版源，不以包替换；保存成功才登记/清队列，失败保留候选按原上限修订。
 
 **weread 直连公众号源（2026-09-19 起现役，PLAN-20260919）**：旧 wewe-rss 代理已死，
 接替方案 `monitors/weread.py`。⚠️ **2026-09-26 起不再随 `--mode auto` 自动参与**：因撞人机验证
