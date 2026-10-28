@@ -228,7 +228,7 @@ OPENAI_API_KEY=sk-xxxx
 | `NOTE_ASYNC_REVIEW_RATE` | `0.15` | 触发式的抽样比例；消费端 `scripts/run_async_review.py` 才花钱 |
 | `NOTE_SHORT_GRANULARITY` | `0` | `1` 时短源块再加「禁止并列铺开」条款。**仅对照轮实验用，已否决**（`PLAN-20261019` §4.7：0-2k 能压到 1.49，但会挤掉必留的条件/原则）；生产保持 `0` |
 | `NOTE_THIN_CHECKLIST` | `0` | `1` 时给 2k–10k 源注入 799 字薄清单（S2 实验臂）。**已证伪：不推广，保持 0**（5 篇配对：保留率 96.6% vs 98.3%、失真 4 vs 2、字数 −13.9%），见 `notes/_meta/eval/20261026-thin-checklist/REPORT.md` |
-| `NOTE_DISTILL_DISPATCH` | `0` | `1` 时 `scripts/filter_pending.py` 给**长源（≥1万去空白字、数字密度<0.08）且已有同版有效提炼包**的队列条目追加材料包块（S9 两阶段）。默认关时派单 prompt 字节不变；提炼轮要额外花一次子 Agent，须先跑 `scripts/distill_prepare.py --emit/--ingest` 产出 pack |
+| `NOTE_DISTILL_DISPATCH` | `0` | `1` 时 `scripts/filter_pending.py` 给**长源（≥1万去空白字、数字密度<0.08、源内不同数字串<130）且已有同版有效提炼包**的队列条目追加材料包块（两阶段）。默认关时派单 prompt 字节不变；提炼轮要额外花一次子 Agent，须先跑 `scripts/distill_prepare.py --emit/--ingest` 产出 pack。**2026-10-28 N4 实测判「不保留」，保持 `0`**：两源（长字幕/长文章）P1 遗漏均 0:0、无可定位改善，D1 上两阶段确定性失真 5 vs 单轮 4，端到端输入 +165%/+196%、调用 2×；粒度相对 v2 细条目降本成立（材料 -63%）但合并丢读数口径。重启前须先修契约（多口径读数强制分列 + 段级已读声明）并补真实多块样本，见 `docs/plans/PLAN-20261028-long-source-summary.md` §4 与 `docs/decisions/DECISION-20261028-long-source-not-enabled.md` |
 | `NOTE_DISTILL_DISPATCH_LOG` | 空 | S9 装配留痕 JSONL 路径；空则写 `notes/_meta/distill_dispatch/dispatch_<日期>.jsonl`（测试应显式指向临时目录） |
 
 - 开启后内容失败最多修订两次，每次重审；缺源、partial、无模型、超时或解析失败停止写入并保留候选/待办，force不豁免。
