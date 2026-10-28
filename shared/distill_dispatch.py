@@ -28,6 +28,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from prompts.distill import prompt_hash, strip_fences as _strip_fences  # noqa: E402
 from prompts.distill import CONTRACT_VERSION  # noqa: E402
+from prompts import synthesis as SY  # noqa: E402
 from prompts.templates import source_chars_of  # noqa: E402
 from shared import distill_pack as DP  # noqa: E402
 from shared.source_metrics import unique_number_count  # noqa: E402
@@ -120,14 +121,24 @@ def route_for_source(source_text: str) -> dict:
 
 # ------------------------------------------------------------------ 材料包块
 
-def render_pack_block(pack: dict, style: str = "", dedupe: bool = False) -> str:
-    """渲染材料包块。`style` 来自 `resolved_pack_style()`（`json` = 现役逐字节同款）。
+def render_pack_block(pack: dict, style: str = "", dedupe: bool = False,
+                      source_ref: "dict | None" = None) -> str:
+    """渲染材料包块。`style` 来自 `resolved_pack_style()`（`json` = 现役序列化形态）。
+
+    `source_ref`（N3）：`{"path", "lines", "sha256"}`，渲染成「回源核对」说明——
+    材料条目 `source_lines` 指向同版源的 1-based 行号，统稿时可回读。读不到源就明说
+    不可回源；回源不可用不等于缺口可以补写。
+
+    块开头的 `HANDOFF_MARKER` 是装配契约版本：旧块没有它 → `block_is_current` 判
+    `handoff_upgraded` 并重装（只重装 prompt，不重跑提炼）。多块或有 deferred 的 pack
+    还会带一段「全篇统稿」对账要求（`prompts.synthesis`）。
 
     行式形态（lines）也要带上版本绑定字段：单独一张紧凑 JSON 放在代码围栏里，
     `block_json_field` 靠它读 `source_sha256` / `distill_prompt_sha256`——
     否则换序列化后 `[block_is_current]` 会全部误判为陈旧。
     """
     style = style or resolved_pack_style()
+    handoff = SY.render_section(pack, source_ref=source_ref)
     if style == "lines":
         from shared.distill_pack import pack_meta_json
         head = "\n".join([
@@ -141,10 +152,10 @@ def render_pack_block(pack: dict, style: str = "", dedupe: bool = False) -> str:
         ])
         meta = json.dumps(DP.pack_meta_json(pack), ensure_ascii=False, separators=(",", ":"))
         body = DP.serialize_pack(pack, style="lines", dedupe=dedupe)
-        return (f"{MATERIAL_PACK_BEGIN}\n{head}\n```json\n{meta}\n```\n{body}\n"
+        return (f"{MATERIAL_PACK_BEGIN}\n{handoff}\n{head}\n```json\n{meta}\n```\n{body}\n"
                 f"{MATERIAL_PACK_END}")
     body = DP.serialize_pack(pack, style=style, dedupe=dedupe)
-    return (f"{MATERIAL_PACK_BEGIN}\n{PACK_BLOCK_HEADER}\n```json\n{body}\n```\n"
+    return (f"{MATERIAL_PACK_BEGIN}\n{handoff}\n{PACK_BLOCK_HEADER}\n```json\n{body}\n```\n"
             f"{MATERIAL_PACK_END}")
 
 
@@ -159,15 +170,16 @@ def resolved_pack_style(override: str = "") -> str:
 
 
 def measure_assembly(base_prompt: str, pack: dict, style: str = "",
-                     dedupe: bool = False) -> dict:
+                     dedupe: bool = False, source_ref: "dict | None" = None) -> dict:
     """装配成本实测：返回字符数与相对 `json` 基准的压缩比（§8.5 第 2 条要求持续留痕）。
 
     只报**字符数**（不是 token）；token/耗时取不到就写 `unknown`——不拿估算充数。
     """
     style = style or resolved_pack_style()
     base_len = len(base_prompt or "")
-    ref = len(render_pack_block(pack, style="json"))
-    got = len(render_pack_block(pack, style=style, dedupe=dedupe))
+    # 基准与实测用同一份交接段：压缩比只反映序列化形态差异，不把统稿契约算进"收益"
+    ref = len(render_pack_block(pack, style="json", source_ref=source_ref))
+    got = len(render_pack_block(pack, style=style, dedupe=dedupe, source_ref=source_ref))
     deduped, removed = DP.dedupe_pack_items(pack)
     cov = (pack or {}).get("coverage") or {}
     items = (pack or {}).get("items") or []
@@ -188,14 +200,17 @@ def measure_assembly(base_prompt: str, pack: dict, style: str = "",
             "source_lines_total": cov.get("source_lines_total"),
             "processed_ranges": cov.get("processed_ranges") or [],
             "chunk_count": cov.get("chunk_count", 1),
+            "needs_synthesis": SY.needs_synthesis(pack),
+            "synthesis_boundaries": len(SY.chunk_boundaries(pack)),
             "token": "unknown", "latency": "unknown"}
 
 
 def assemble_write_prompt(base_prompt: str, pack: dict, style: str = "",
-                          dedupe: bool = False) -> str:
+                          dedupe: bool = False,
+                          source_ref: "dict | None" = None) -> str:
     """生产 prompt 主体逐字节保留，材料包块追加在后（与 S8 distill 臂同款布局）。"""
     return (base_prompt or "").rstrip("\n") + "\n\n" + render_pack_block(
-        pack, style=style, dedupe=dedupe)
+        pack, style=style, dedupe=dedupe, source_ref=source_ref)
 
 
 def split_write_prompt(prompt: str) -> tuple:
@@ -230,16 +245,43 @@ def strip_pack_blocks(prompt: str) -> tuple:
 
 def block_json_field(block: str, field: str) -> str:
     """取已装配包块里的某个顶层字段（读不到返回空串——按陈旧处理）。"""
-    if not block:
+    data = _block_json(block)
+    try:
+        return str(data.get(field) or "") if data else ""
+    except Exception:
         return ""
+
+
+def _block_json(block: str) -> dict:
+    """解析包块里的第一张 JSON（json 形态是整包；lines 形态是 meta JSON）。"""
+    if not block:
+        return {}
     i = block.find("```json")
     j = block.rfind("```")
     if i < 0 or j <= i:
-        return ""
+        return {}
     try:
-        return str(json.loads(block[i + len("```json"):j].strip()).get(field) or "")
+        data = json.loads(block[i + len("```json"):j].strip())
     except Exception:
-        return ""
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def block_coverage_complete(block: str) -> "bool | None":
+    """从已装配块读「是否完整覆盖全文」。读不到返回 None（按陈旧处理）。
+
+    这是 N3 的关键回归：只比源/契约 hash 时，一个由**不完整 pack** 装配出来的块
+    会永远停在队列里当「已就绪」。包块自身带着覆盖声明，必须一起对账。
+    """
+    data = _block_json(block)
+    if not data:
+        return None
+    cov = data.get("coverage")
+    if isinstance(cov, dict) and "complete" in cov:
+        return cov.get("complete") is True
+    if "coverage_complete" in data:
+        return data.get("coverage_complete") is True
+    return None
 
 
 def block_source_sha(block: str) -> str:
@@ -248,13 +290,17 @@ def block_source_sha(block: str) -> str:
 
 
 def block_is_current(block: str, source_text: str, title: str = "") -> tuple:
-    """已装配的包块是否还算「当前」——**源与契约两版都要对得上**。
+    """已装配的包块是否还算「当前」——**源、提炼契约、装配契约三版都要对得上**。
 
     第二轮轮的教训（2026-10-27）：只比 `source_sha256` 时，提炼契约升级（v1→v2）
     后旧包块会被当成「已装配」长期不换，等于把旧契约的已知缺陷钉在队列里。
-    返回 (bool, reason)：reason ∈ {"ok", "source_sha256_mismatch", "contract_upgraded"}。
+    返回 (bool, reason)：reason ∈ {"ok", "source_sha256_mismatch", "contract_upgraded",
+    "handoff_upgraded", "coverage_incomplete"}。
     `contract_upgraded` 覆盖两种情况：提炼契约 hash 变了，或包块 meta 里记的
     `contract_version` 不是当前版本（v4 起显式落盘，不再只靠 hash 间接判断）。
+    `handoff_upgraded`（N3）：块里没有 `prompts.synthesis.HANDOFF_MARKER`，说明它是
+    统稿契约之前装配的——pack 可能还是好的，但写作端少了回源/跨块对账要求，必须重装。
+    `coverage_incomplete`（N3）：块所据的 pack 没有完整覆盖全文，不能当已就绪。
     """
     if not block:
         return False, "source_sha256_mismatch"
@@ -266,6 +312,11 @@ def block_is_current(block: str, source_text: str, title: str = "") -> tuple:
     if block_json_field(block, "distill_prompt_sha256") != prompt_hash(title or "",
                                                                        source_text or ""):
         return False, "contract_upgraded"
+    if not SY.block_has_handoff(block):
+        return False, "handoff_upgraded"
+    if block_coverage_complete(block) is not True:
+        # 由不完整 pack 装配出来的块不能当「已就绪」——缺块会被当成已覆盖全文
+        return False, "coverage_incomplete"
     return True, "ok"
 
 
@@ -273,9 +324,11 @@ def block_is_current(block: str, source_text: str, title: str = "") -> tuple:
 
 def load_valid_pack_for_source(url: str, source_text: str, title: str = "",
                                store_dir: str = "") -> tuple:
-    """按 URL 读 pack 并做同版/契约对账。返回 (pack|None, reason)。
+    """按 URL 读 pack 并做同版/契约/覆盖对账。返回 (pack|None, reason)。
 
     不通过就返回 None —— 调用方降级单轮，不消费、不修补、不拿旧 pack 硬套新源。
+    **覆盖门槛**（N3）：`coverage.complete` 非 True 或块序不完整时同样不消费——
+    「全块完整回收才允许形成可统稿材料」，缺块的 pack 会让写作端误以为已覆盖全文。
     """
     pack = DP.load_pack(url, store_dir) if url else None
     if not pack:
@@ -293,6 +346,9 @@ def load_valid_pack_for_source(url: str, source_text: str, title: str = "",
     report = DP.validate_pack(pack, source_text)
     if not report["ok"]:
         return None, "pack_invalid: " + "；".join(report["issues"][:3])
+    cov_issues = DP.coverage_issues(pack)
+    if cov_issues:
+        return None, "incomplete_coverage: " + "；".join(cov_issues[:2])
     return pack, "ok"
 
 
@@ -583,6 +639,19 @@ def _read_source(entry: dict) -> "str | None":
         return None
 
 
+def _source_path(entry: dict) -> str:
+    """队列条目记录的源文件路径（回源核对用；读不到就空）。"""
+    return str(entry.get("raw_file") or entry.get("output") or "")
+
+
+def _source_ref(entry: dict, source_text: str) -> dict:
+    """装配块里的回源引用：路径 + 行数 + hash 前缀。源码不可回读时路径为空，
+    渲染层会明确写「回源不可用」，不假装可核对。"""
+    return {"path": _source_path(entry),
+            "lines": len((source_text or "").split("\n")),
+            "sha256": _text_hash(source_text or "")}
+
+
 # ------------------------------------------------------------------ 单条装配
 
 def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
@@ -632,7 +701,7 @@ def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
     if decision["route"] != "distill":
         raise _bail(decision["reason"], "route_fallback")
 
-    block_reason = ""
+    current, why = False, ""
     if n_blocks:
         _, block = split_write_prompt(prompt)
         current, why = block_is_current(block, src, title=title)
@@ -642,8 +711,11 @@ def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
                           "write_prompt_sha256": _text_hash(prompt)}, log_path)
             return {"status": "already_prepared", "route": "distill", "entry": entry,
                     "decision": decision}
-        # 已装配的包块属于旧源（换源/改稿）、旧提炼契约（升级），或本身就是重复装配
-        block_reason = why if not current else f"duplicate_blocks:{n_blocks}"
+    # 已装配的包块属于旧源（换源/改稿）、旧提炼契约（升级）、旧装配契约（缺统稿段），
+    # 或本身就是重复装配
+    block_reason = "" if current else why
+    if current and n_blocks != 1:
+        block_reason = f"duplicate_blocks:{n_blocks}"
 
     pack, reason = load_valid_pack_for_source(url, src, title=title, store_dir=store_dir)
     if pack is None:
@@ -658,20 +730,29 @@ def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
                     "decision": decision, "reason": reason}
         raise _bail(reason, "no_valid_pack")
 
-    cost = measure_assembly(base_prompt, pack, style=pack_style, dedupe=dedupe_items)
+    ref = _source_ref(entry, src)
+    cost = measure_assembly(base_prompt, pack, style=pack_style, dedupe=dedupe_items,
+                            source_ref=ref)
     assembled = assemble_write_prompt(base_prompt, pack, style=pack_style,
-                                      dedupe=dedupe_items)
+                                      dedupe=dedupe_items, source_ref=ref)
+    cov = pack.get("coverage") or {}
     _apply_prompt(entry, assembled, updates={
         "distill_pack_key": pack.get("url_key") or "",
         "distill_pack_source_sha256": pack.get("source_sha256") or "",
         "distill_prompt_sha256": pack.get("distill_prompt_sha256") or "",
         "distill_pack_style": cost["style"],
+        "distill_chunks": int(cov.get("chunk_count") or 1),
+        "distill_source_path": ref["path"],
+        "distill_source_lines": ref["lines"],
+        "distill_synthesis": bool(cost["needs_synthesis"]),
     }, dry_run=dry_run)
     log_dispatch({**base_record, "status": "prepared" if not dry_run else "would_prepare",
                   "source_sha256": _text_hash(src),
                   "pack_key": pack.get("url_key") or "",
                   "blocks_removed": n_blocks,
+                  "block_stale_reason": block_reason,
                   "blocks_after": assembled.count(MATERIAL_PACK_BEGIN),  # 必须恒为 1
+                  "handoff": SY.HANDOFF_MARKER,
                   "cost": cost,
                   "write_prompt_sha256": _text_hash(assembled)}, log_path)
     return {"status": "prepared" if not dry_run else "would_prepare", "route": "distill",
@@ -688,7 +769,9 @@ def _apply_prompt(entry: dict, new_prompt: str, updates: "dict | None" = None,
     gc = dict(entry.get("generation_context") or {})
     gc["prompt_sha256"] = _text_hash(new_prompt)
     if drop_distill:
-        for k in ("distill_pack_key", "distill_pack_source_sha256", "distill_prompt_sha256"):
+        for k in ("distill_pack_key", "distill_pack_source_sha256", "distill_prompt_sha256",
+                  "distill_pack_style", "distill_chunks", "distill_source_path",
+                  "distill_source_lines", "distill_synthesis"):
             gc.pop(k, None)
     gc.update(updates or {})
     entry["generation_context"] = gc
@@ -750,7 +833,10 @@ def plan_queue(queue_path: str, store_dir: str = "") -> dict:
         pack, why = load_valid_pack_for_source(url, src, title=e.get("title", ""),
                                                store_dir=store_dir)
         row["pack"] = why
+        row["pack_ok"] = why == "ok"               # 只有 ok 才会被 `--prepare` 消费
         row["pack_items"] = len((pack or {}).get("items") or []) if pack else 0
+        row["pack_chunks"] = int(((pack or {}).get("coverage") or {}).get("chunk_count") or 0) \
+            if pack else 0
         rows.append(row)
     counts = {}
     for r in rows:
@@ -810,6 +896,26 @@ def _task_stem(task: dict) -> str:
     return name[:-len("_distill.txt")] if name.endswith("_distill.txt") else name.rsplit(".", 1)[0]
 
 
+def _manifest_chunk_issues(tasks: list) -> list:
+    """派单清单自身的块序是否完整（**全块完整回收**的第一道门）。
+
+    只数回包份数不够：`--limit` 截断 manifest 后，被截断那一篇的剩余块根本不在清单里，
+    回包数量与任务数量仍然相等，但源没被完整处理。这里按每块自报的 `total` 校验
+    序号必须是 1..total（缺块/重复都拒收）。
+    """
+    if not tasks:
+        return ["派单清单为空"]
+    totals = {int((t.get("chunk") or {}).get("total") or 1) for t in tasks}
+    if len(totals) > 1:
+        return [f"块总数声明不一致：{sorted(totals)}（清单被截断或混入不同篇的块）"]
+    total = totals.pop()
+    indices = sorted(int((t.get("chunk") or {}).get("index") or 0) for t in tasks)
+    if indices != list(range(1, total + 1)):
+        return [f"派单清单缺块或重复：现有块 {indices}，声明共 {total} 块——"
+                "不能当完整回收，补齐清单后重跑"]
+    return []
+
+
 def ingest_distill_results(in_dir: str, store_dir: str = "") -> dict:
     """回收提炼回包 → build/validate → 通过才落盘。
 
@@ -817,6 +923,8 @@ def ingest_distill_results(in_dir: str, store_dir: str = "") -> dict:
     - >40k 超长源：回包 `<url_key>_c<k>of<N>.json` 每块一份，**全部到齐且各自通过
       机械校验才合并落一个整篇 pack**；缺一块或任一块不过 → 整篇不落盘
       （保守方向：半份 pack 会让写作端误以为已全覆盖，等于把遗漏藏起来）。
+      派单清单本身也必须完整（块序号 = 1..total）；合并后处理范围不覆盖全文同样不落盘
+      ——「全块完整回收才允许形成可统稿材料」（N3）。
       校验不通过的细节进 `failed`，供编排方修正重跑。
     """
     manifest_path = os.path.join(in_dir, "manifest.json")
@@ -838,6 +946,11 @@ def ingest_distill_results(in_dir: str, store_dir: str = "") -> dict:
     for key in order:
         grp = groups[key]
         tasks = grp["tasks"]
+        # 派单清单块序必须完整：清单被截断时回包数照样凑得上，但源没处理完
+        decl_issues = _manifest_chunk_issues(tasks)
+        if decl_issues:
+            failed.append({"url": grp["url"], "url_key": key, "issues": decl_issues})
+            continue
         try:
             src = open(grp["source_path"], encoding="utf-8").read()
         except (OSError, UnicodeError):
@@ -911,6 +1024,13 @@ def ingest_distill_results(in_dir: str, store_dir: str = "") -> dict:
         report = DP.validate_pack(pack, src)
         if not report["ok"]:
             failed.append({"url": grp["url"], "url_key": key, "issues": report["issues"]})
+            continue
+        cov_issues = DP.coverage_issues(pack)
+        if cov_issues:
+            # 份数齐了但处理范围有缺口（分块边界算错/源尾没覆盖）→ 同样不能落盘
+            failed.append({"url": grp["url"], "url_key": key,
+                           "issues": ["分块未完整覆盖全文，整篇不落盘：" + m
+                                      for m in cov_issues]})
             continue
         path_saved = DP.save_pack(pack, store_dir)
         saved.append({"url": grp["url"], "url_key": key, "pack": path_saved,

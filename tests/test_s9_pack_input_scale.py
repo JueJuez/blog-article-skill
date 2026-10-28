@@ -161,15 +161,23 @@ class TestVersionBindingSurvivesStyle:
         assert DD.block_is_current(block, src, title="换标题")[1] == "contract_upgraded"
         assert DP.style_of_pack_block(block) == "lines"
 
-    def test_json_is_the_default_and_stays_byte_compatible(self):
-        """生产默认必须是 `json`（逐字节同款），新的 consumption 方式默认不生效。"""
+    def test_json_is_the_default_and_serialization_stays_byte_compatible(self):
+        """生产默认必须是 `json`；pack 序列化与包说明逐字节不变。
+
+        N3 起块开头多了一段**带版本标记**的交接/统稿契约（回源行号、跨块对账）——
+        那是写作消费契约的升级，不是序列化形态变化：`json.dumps(pack)` 与
+        `PACK_BLOCK_HEADER` 仍逐字节保持，S8/S9 的字节数对照继续有效。
+        """
+        from prompts import synthesis as SY
         assert DD.resolved_pack_style() == "json"
         pack = _mk_pack(3)
-        old_style = (f"{DD.MATERIAL_PACK_BEGIN}\n{DD.PACK_BLOCK_HEADER}\n```json\n"
-                     f"{json.dumps(pack, ensure_ascii=False, indent=1)}\n```\n"
-                     f"{DD.MATERIAL_PACK_END}")
-        assert DD.render_pack_block(pack) == old_style
-        assert DP.style_of_pack_block(DD.render_pack_block(pack)) == "json"
+        block = DD.render_pack_block(pack)
+        tail = (f"{DD.PACK_BLOCK_HEADER}\n```json\n"
+                f"{json.dumps(pack, ensure_ascii=False, indent=1)}\n```\n"
+                f"{DD.MATERIAL_PACK_END}")
+        assert block.endswith(tail)
+        assert block.startswith(f"{DD.MATERIAL_PACK_BEGIN}\n{SY.HANDOFF_MARKER}")
+        assert DP.style_of_pack_block(block) == "json"
 
     def test_style_switch_and_unknown_value_fall_back(self, monkeypatch):
         monkeypatch.setenv("NOTE_DISTILL_PACK_STYLE", "lines")

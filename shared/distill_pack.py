@@ -297,7 +297,54 @@ def validate_pack(pack: dict, source_text: str) -> dict:
     if pack.get("material_available") and not pack.get("material_key"):
         issues.append("material_available=True 但 material_key 为空（不得伪造结构可回查）")
 
+    # ⑧ 块序完整性：多块 pack 的块序号必须是 1..chunk_count 且不重复/不缺
+    issues += chunk_set_issues(pack)[1]
+
     return {"ok": not issues, "issues": issues}
+
+
+def chunk_set_issues(pack: dict) -> tuple:
+    """多块 pack 的块序检查。返回 (声明块总数, issues)。
+
+    「全块完整回收」的第二道机械门：只数回包份数不够——派单 manifest 被截断时
+    份数依然凑得上，但块序号会缺。消费侧（`coverage_issues`）与本函数共用同一口径。
+    """
+    cov = (pack or {}).get("coverage") or {}
+    try:
+        total = int(cov.get("chunk_count") or 1)
+    except (TypeError, ValueError):
+        total = 1
+    if total <= 1:
+        return total, []
+    indices = sorted(int((c or {}).get("index") or 0) for c in (pack or {}).get("chunks") or [])
+    issues = []
+    if indices != list(range(1, total + 1)):
+        issues.append(f"块序不完整：实际块 {indices}，声明 {total} 块"
+                      "（缺块或重复不能当完整回收）")
+    declared = cov.get("chunk_total_declared")
+    if isinstance(declared, list) and len(declared) > 1:
+        issues.append(f"块总数自报不一致：{declared}")
+    return total, issues
+
+
+def coverage_issues(pack: dict) -> list:
+    """整篇是否可进入**统稿材料**（消费侧硬门槛）。
+
+    与 `validate_pack` 分工：validate 只判「pack 自身是否自洽」，`complete=False` 是
+    如实声明，可以过；但**不完整覆盖的材料不能当统稿底座**——缺块时写作端会以为
+    已经覆盖全文，把遗漏藏起来。返回空列表 = 可作为统稿材料。
+    """
+    cov = (pack or {}).get("coverage") or {}
+    issues = []
+    if cov.get("complete") is not True:
+        issues.append("coverage.complete 非 True（分块未完整回收或部分读取），"
+                      "不能当全篇统稿材料")
+    total, chunk_issues = chunk_set_issues(pack)
+    issues += chunk_issues
+    ranges = cov.get("processed_ranges")
+    if not isinstance(ranges, list) or not ranges:
+        issues.append("处理范围缺失，无法确认实际读过哪些行")
+    return issues
 
 
 def merge_chunk_packs(*, title: str, url: str, source_text: str,
@@ -311,7 +358,12 @@ def merge_chunk_packs(*, title: str, url: str, source_text: str,
     - 条目 id 加块前缀（`i1` → `c2_i1`）避免跨块撞号；**`source_lines` 不动**——提炼者收到的是
       `prompts.distill.numbered_source` 带全局行号前缀的文本，报的就是全局行号。
     - `relations` 的 from/to 同步加块前缀；**跨块关系提炼者看不到，不臆造**，缺失事实写进 notes。
-    - 相邻块重叠区会产生重复条目：按去空白 `content` 去重，保留块序靠前那条，去重数记 notes。
+    - 相邻块重叠区会产生重复条目：按（type, stance, 去空白 content, readings）去重，
+      保留块序靠前那条。**去重键不得只看 content**——同一句在相邻块里可能挂着不同口径的
+      读数，只看 content 会把第二块的读数静默丢掉（N3：合并不得丢独有事实与相反读数）。
+    - **块序**：`coverage.chunk_count` 记实际合并数，`coverage.chunk_indices` 记块序号，
+      `coverage.chunk_total_declared` 记各块自报的总块数；三者不一致由调用方拒收
+      （全块完整回收才允许形成可统稿材料）。
     - `mainline` 按块顺序拼接（question 取首块，progression/conclusions 逐块追加），
       并在 notes 注明「主线为分块拼接」——这与整篇提炼得到的主线不等价，如实标注。
     - `distill_prompt_sha256` 记**整篇**契约 hash（`prompts.distill.prompt_hash`），
@@ -324,7 +376,7 @@ def merge_chunk_packs(*, title: str, url: str, source_text: str,
     question, prog, concl, notes_out = "", [], [], []
     items, relations, seen = [], [], set()
     chunk_meta, dup_count = [], 0
-    deferred, deferred_seen, ranges = [], set(), []
+    chunk_totals, deferred, deferred_seen, ranges = set(), [], set(), []
     for p in order:
         chunk = p.get("chunk") or {}
         parsed = p.get("parsed") or {}
@@ -343,19 +395,26 @@ def merge_chunk_packs(*, title: str, url: str, source_text: str,
             ranges.append((int(chunk.get("core_start_line") or chunk["start_line"]),
                            int(chunk.get("core_end_line") or chunk["end_line"])))
 
+        if chunk.get("total"):
+            chunk_totals.add(int(chunk.get("total")))
         local_ids = set()
         n_before = len(items)
         for it in (parsed.get("items") or []):
             cid = str(it.get("id") or "")
             new_id = f"{tag}_{cid}" if cid else ""
-            key = _norm(str(it.get("content") or ""))
-            if key and key in seen:
+            readings = _norm_readings(it.get("readings"))
+            # 去重键必须带 type/stance/readings：只比 content 会把「同一句、不同读数口径」
+            # 的第二块条目当成重复丢掉，正好丢掉 N3 要保住的相反读数与独有条件。
+            key = (str(it.get("type") or ""), str(it.get("stance") or ""),
+                   _norm(str(it.get("content") or "")),
+                   tuple(tuple(str(r.get(f) or "") for f in READING_FIELDS)
+                         for r in readings))
+            if key[2] and key in seen:
                 dup_count += 1
                 continue
-            if key:
+            if key[2]:
                 seen.add(key)
             local_ids.add(cid)
-            readings = _norm_readings(it.get("readings"))
             items.append({
                 "id": new_id,
                 "type": str(it.get("type") or ""),
@@ -399,6 +458,9 @@ def merge_chunk_packs(*, title: str, url: str, source_text: str,
     complete = bool(union) and len(union) == 1 and union[0][0] == 1 and union[0][1] == n_lines
     if not ranges:
         notes_out.append("未记录分块行区间，无法声明完整覆盖")
+    declared = sorted(chunk_totals)
+    if len(declared) > 1:
+        notes_out.append(f"块总数自报不一致：{declared}（不能当完整回收）")
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -425,6 +487,8 @@ def merge_chunk_packs(*, title: str, url: str, source_text: str,
             "item_count": len(items),
             "relation_count": len(relations),
             "chunk_count": len(chunk_meta),
+            "chunk_indices": [c["index"] for c in chunk_meta],
+            "chunk_total_declared": declared,
         },
         "notes": "；".join(notes_out),
     }
@@ -559,6 +623,7 @@ def serialize_pack_lines(pack: dict) -> str:
     cov = pack.get("coverage") or {}
     out.append("@meta contract=v"
                f"{pack.get('contract_version') or CONTRACT_VERSION} "
+               f"complete={1 if cov.get('complete') is True else 0} "
                f"coverage={cov.get('source_lines_total')}行/{cov.get('item_count')}条目/"
                f"{cov.get('relation_count')}关系"
                + (f"/{cov.get('chunk_count')}块" if cov.get("chunk_count", 1) != 1 else ""))
@@ -718,7 +783,12 @@ def lines_roundtrip_issues(pack: dict) -> list:
 
 
 def pack_meta_json(pack: dict) -> dict:
-    """版本绑定需要读的字段单独给一张小 JSON——换 serialization 后仍能回读。"""
+    """版本绑定需要读的字段单独给一张小 JSON——换 serialization 后仍能回读。
+
+    `coverage_complete`/`chunk_count` 是装配侧判定「这块材料能不能当统稿底座」要用的
+    字段：行式块只有这张 meta 能被机械解析，整包 coverage 不在里面。
+    """
+    cov = (pack or {}).get("coverage") or {}
     return {
         "kind": "distill_pack",
         "schema_version": pack.get("schema_version"),
@@ -728,6 +798,8 @@ def pack_meta_json(pack: dict) -> dict:
         "distill_prompt_sha256": pack.get("distill_prompt_sha256") or "",
         "material_key": pack.get("material_key") or "",
         "material_available": bool(pack.get("material_available")),
+        "coverage_complete": cov.get("complete") is True,
+        "chunk_count": int(cov.get("chunk_count") or 1),
     }
 
 

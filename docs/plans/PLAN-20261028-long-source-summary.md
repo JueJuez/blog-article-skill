@@ -1,6 +1,6 @@
 # 长源总结效率与质量开发计划
 
-状态：**N1/N2 离线实现完成（契约 v4 / schema v2 / 结构感知切分，未跑模型与语义验收）；当前入口 N3。** 本文是本轮任务、进度与验收的唯一真源。
+状态：**N1/N2/N3 离线实现完成（契约 v4 / schema v2 / 结构感知切分 / 全块回收门 + 全篇统稿契约，未跑模型与语义验收）；当前入口 N4。** 本文是本轮任务、进度与验收的唯一真源。
 确认来源：用户于 2026-10-28 同意“短源整篇直写，长源结构切分 → 分块提炼 → 全篇统稿”，并要求评估旧计划遗留后迁移。
 前序：[低成本质量计划](PLAN-20261026-low-cost-quality.md)已退役为历史记录，**不代表未完成项已验收**；迁移裁定见 §3。理由见[本轮决策](../decisions/DECISION-20261028-long-source-summary.md)。
 
@@ -57,13 +57,13 @@
 
 ## 4. 主线任务与当前状态
 
-顺序为 N1 → N2/N3 → N4 → N5。2026-10-28 状态：N1 与 N2 已完成**离线实现**（契约 v4 / pack schema v2 / 结构感知切分，新增 54 条用例，全套 1760 passed），但**未跑模型、未做真实执行、未独立语义验收**；当前入口转 N3。
+顺序为 N1 → N2/N3 → N4 → N5。2026-10-28 状态：N1–N3 已完成**离线实现**（契约 v4 / pack schema v2 / 结构感知切分 / 全块回收门 + 全篇统稿契约，新增 71 条用例，`tests/` 1730 passed），但**未跑模型、未做真实执行、未独立语义验收**；当前入口转 N4。
 
 | ID | 工作与复用位置 | 完成出口 | 状态 |
 |---|---|---|---|
 | N1 | 核对旧失败产物、规模候选和成本记录；在 `prompts/distill.py`、`shared/distill_pack.py`、`shared/distill_dispatch.py` 明确新粒度与交接协议，先补必要 pytest RED 用例 | 明确段级材料、主线、必要跨段关系、源位置、版本、实际处理范围；数字同段不混口径；列出可观测成本。已定方向不再整体征询 | **离线实现完成（2026-10-28）**：契约 v4（`argument` 段级单元、`readings` 分列口径、`deferred` 跨段交接）、schema v2（`contract_version`/`processed_ranges`/空洞检查）、派发层版本门与成本字段；`tests/test_distill_contract_v4.py` 31 条，全套 1738 passed。**未跑模型/未语义验收**，不称已验收。核对旧产物：`20261027-s9-scale` 现存 pack 均为 schema 1（无 contract_version）、S3/S4 路由与 §2 记录一致，按新版本门全部不可复用（预期行为） |
 | N2 | 用 `shared/source_material.py` 的标题/表格/代码/段落位置改造 `plan_chunks` 与自包含派单；无结构文本按标点句群及容量兜底 | 原文主体行区间无空洞；核心范围与重叠上下文可区分；保留完整单元或显式续接；局部任务不替全文下结论；不额外全量 LLM 分段 | **离线实现完成（2026-10-28）**：`source_material.scan_structure` 为索引与切块单一真源；`plan_chunks` 按结构单元装块，核心区间首尾相接覆盖全文（重叠只进下发范围）；表格/代码块不拦腰切，超长单元切分带 `continued/continues/continuation` 并在任务里说明；字幕/口播按句子边界、无标点按容量兜底；新增 `chunk_scope_issues` 在 ingest 拒收越出核心区间的条目。`tests/test_distill_structural_chunking.py` 23 条。**未跑模型/未语义验收** |
-| N3 | 改块级提炼、`merge_chunk_packs`/装配消费与全篇统稿；沿 `distill_prepare` 的 plan/emit/ingest/prepare 和 `filter_pending` 接线 | 全块完整回收才允许形成可统稿材料；统稿核对跨块条件/指代/冲突，写作按模板重组。同版原文可按行段读取；读不到就保留缺口，不把摘要压缩再压缩当覆盖 | 待开始，当前入口 |
+| N3 | 改块级提炼、`merge_chunk_packs`/装配消费与全篇统稿；沿 `distill_prepare` 的 plan/emit/ingest/prepare 和 `filter_pending` 接线 | 全块完整回收才允许形成可统稿材料；统稿核对跨块条件/指代/冲突，写作按模板重组。同版原文可按行段读取；读不到就保留缺口，不把摘要压缩再压缩当覆盖 | **离线实现完成（2026-10-28）**：① **全块回收双重门**——`--ingest` 先按各块 `total` 校验清单块序必须 1..total（`--limit` 截断清单时回包数照样凑得上，但源没处理完），合并后再按 `coverage_issues` 校验处理范围真覆盖全文，缺块整篇不落盘；消费侧 `load_valid_pack_for_source` 对 `complete≠True`/块序不全返回 `incomplete_coverage`，`prepare` 据此剥掉旧包块回单轮。② **装配块带覆盖声明**（`pack_meta_json.coverage_complete` + `@meta complete=`），`block_is_current` 增 `coverage_incomplete`——只比源/契约 hash 时，不完整 pack 装配出的块会永远停在队列里。③ **全篇统稿契约**（`prompts/synthesis.py`）：多块或有 deferred 的包附带「不做二次压缩 / 跨块对账（deferred 逐条 + 块边界 + 指代条件冲突）/ 块级主线不等于全篇结论」，装配块下发源文件路径、行数与 `source_lines` 语义；路径缺失明说「回源不可用，缺口如实保留」。④ **交接契约版本** `HANDOFF_MARKER`：N3 之前装配的块判 `handoff_upgraded` 只重装 prompt，不重跑提炼。⑤ **合并完整性**：跨块去重键含 type/stance/readings（只看 content 会丢掉「同一句、不同读数口径」），记录 `chunk_indices`/`chunk_total_declared`。⑥ **接线**：`--plan` 报 `pack_ok`/`pack_chunks`，`prepare` provenance 记 `distill_chunks`/`distill_source_path`/`distill_source_lines`/`distill_synthesis`，`filter_pending` 单列 `incomplete` 计数（要补块重提炼，不同于「没有 pack」）。`tests/test_distill_synthesis.py` 17 条。**未跑模型/未语义验收**：统稿是否真的接住跨块指代与冲突属 N4 独立复核范围 |
 | N4 | 按 §5 做一次粒度调试和有界真实配对，记录处理阶段与端到端成本；复用既有评估目录、rubric、异步复核 | 出具保留/放弃/仅适用某类源的明确结论，独立语义和实际成本分别取证。未满足条件不扩量、不称已验收 | 待开始 |
 | N5 | 必要回归、正式入口的有限全链路核验及开关判断；同步 PIPELINES、配置说明、缺陷索引 | 源/契约/材料/写作版本绑定、幂等、旧包剥离、缺块拒收、恢复和队列回收有证据；满足 §5 才评估有限启用，失败保持默认关闭 | 待开始 |
 
@@ -106,6 +106,6 @@ D4 仍靠会话编排消费、D5 缺逐篇语义覆盖率，以及 D6–D9 等�
 - 接手顺序：AGENTS → PIPELINES → 相关 RULES → docs/README → 本文 §2/§4；核对实际 Git 现场、未提交候选与本机证据。旧计划仅在需要追溯对应条目时按 §3 指针读取，不再从头加载。
 - 状态只更新 §4/§6；复杂试验原始产物留既有本机评估/报告目录，正文记录结论、证据路径、成本和下一步，不再追加多份历史“接手任务”。版本、保存位置、失败/恢复行为归 PIPELINES/专项说明，强制规则归 RULES。
 - 实现、离线通过、真实执行、独立语义验证、有限启用、提交推送分别记录。先有真实证据再改状态；旧记录和模型检查不冒充当前验收。
-- 保留源、原始失败件、诊断件、候选和旧稿，不覆盖私人库充当验证；不提交 `.env`、cookie、`notes/` 或私人材料。本次未运行模型、抓取、业务测试或生产写入，也未提交/推送现有工作区改动。
+- 保留源、原始失败件、诊断件、候选和旧稿，不覆盖私人库充当验证；不提交 `.env`、cookie、`notes/` 或私人材料。N1/N2 段落的「未提交/未推送」记录指当时那次会话；N3 的实现与测试随本轮提交（`git log` 见「长源总结 N3」提交），仍未运行模型、抓取、业务测试或生产写入。
 
 2026-10-28 文档核验：10 份文档的 127 个本地链接目标检查通过，旧计划原状态及后续正文与迁移前一致，11 个既有代码/测试/临时文件的 hash 未变；未重查 4 个外部链接。文档检查不计作 N1–N5 的功能或语义验收。

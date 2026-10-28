@@ -104,7 +104,13 @@ def distill_prepare(e: dict) -> str:
     try:
         rep = DD.prepare_entry(e, log_path=log)
     except DD.PrepareIneligible as exc:
-        return "stripped" if exc.stripped else "fallback"
+        if exc.stripped:
+            return "stripped"
+        # 有 pack 但未完整覆盖（缺块/部分读取）：单独计数，别和「没有 pack」混成一个
+        # fallback——前者要补块重提炼，后者多半只是源不适配两阶段。
+        if str(exc.reason).startswith("incomplete_coverage"):
+            return "incomplete"
+        return "fallback"
     if rep["status"] == "prepared":
         return "prepared"
     return "stale" if rep["status"] == "stale_stripped" else "already"
@@ -134,7 +140,7 @@ def _run_queue(path: str, filt, refresh: bool = True, dry_run: bool = False) -> 
             elif r == "skipped":
                 skipped += 1
     distill = {"prepared": 0, "fallback": 0, "already": 0, "stale": 0, "off": 0,
-               "stripped": 0}
+               "stripped": 0, "incomplete": 0}
     if refresh and not dry_run:
         for e in keep:
             r = distill_prepare(e)
