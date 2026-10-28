@@ -487,6 +487,19 @@ CDP 通道从 `unknown_no_html` 变为可数图（拿到 DOM 时按 `images_not_
 落盘侧不变：`save_pending.py` 仍按 `raw_file` 磁盘原文做 `source_sha256` 对账，
 公共门禁的比对依据是完整同版源，不以包替换；保存成功才登记/清队列，失败保留候选按原上限修订。
 
+**写作端两环（流程简化 F7 接线，2026-10-30）**：pack_only 条目写稿后、`save_pending.py` 落盘前
+走组合流程收尾，全部由 `scripts/check_note_coverage.py` 承载（零模型，阈值冻结于
+`check_calibration.json`，label 3-gram < 0.2）：
+1. **机械覆盖自查**：`python scripts/check_note_coverage.py --queue <q> --key <键> --file <稿>`——
+   exit 0 无可疑直接落盘；exit 1 有可疑块走第 2 步；exit 4 源/包失效（按派工回退处理，不硬闯）。
+2. **定向补稿**：`--emit-patch <任务文件>` 生成补稿材料（成稿全文 + 可疑条目素材正文，**不含源全文**），
+   派补稿子 Agent，协议三条必守：①先核对「改写也算含」，成稿以其他表述覆盖即勾销不补；
+   ②确认缺失才补，**纯插入**定点插段，原稿其余逐字不动；③补后刷新稿内 EXTRACT_CHECKLIST。
+3. **只插不改核验**：`--file <补稿稿> --verify-insert-only <原稿>`——exit 0 通过才可落盘；
+   exit 5 说明补稿引入了 replace/delete（F7 停止条件：判定该篇补稿失败，保留原稿走人工定位，
+   不静默采纳改动稿）。
+非 pack_only 条目该脚本报 `not_pack_only` 正常跳过。**F7 试点已过验证（2026-10-30，po 6/6 全胜单轮，全链输入 1.31–1.39×）**，全长度启用待用户裁决；裁决前 `NOTE_DISTILL_DISPATCH` 仍 0，生产不制造 pack_only 条目，本节命令在开关打开或显式试点时生效。
+
 **weread 直连公众号源（2026-09-19 起现役，PLAN-20260919）**：旧 wewe-rss 代理已死，
 接替方案 `monitors/weread.py`。⚠️ **2026-09-26 起不再随 `--mode auto` 自动参与**：因撞人机验证
 无法在无人值守时自动过码，默认 auto 已排除 weread（省 weread 日配额、免白开 CDP）。
