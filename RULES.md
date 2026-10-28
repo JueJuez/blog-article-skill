@@ -128,7 +128,7 @@ AI 总结笔记/                         (OBSIDIAN_VAULT_PATH)
   > 另注：**`Agent` 工具报错 ≠ 子 Agent 没干活**——2026-09-15 曾出现工具报错但目标目录已实际落盘 4 篇的情况。派单「失败」后**先核验目标产物**再决定是否重派。
 - **大批量 → 子 Agent 隔离主线程（防上下文胀爆）**：当待处理内容达到批量阈值（如 >3 条笔记/视频，或单批原文大到会撑爆主会话上下文）时，**必须**用 Agent 工具派发子 Agent 并行处理，勿把全部原文/中间稿堆在主线程。注意：① 子 Agent 上下文是空白的，派发 prompt 必须**自包含**（嵌入输出契约：落盘闸门＝默认本地 Obsidian（2026-09-04 起）、飞书仅 `DISABLE_FEISHU_SYNC=0` 时追加；入口函数 `videos/run.py --url` 或 `skill_main`、`note_type`、YouTube/无字幕规则按需）；② **飞书并发重复坑**：多子 Agent 同时 `save_series` 写飞书会因集级无查重建重复节点（见 §4.7）；**安全模式**＝子 Agent 只**返回成品 Markdown 文本＋元数据**（标题/作者/url/tags/note_type），由编排方**串行**调保存入口（`_save_series_note` / `save_all`）落盘，绝不让多子 Agent 并发各自调 `save_series`。
 
-- **原文素材候选**：模型只选取、定位、归组；素材正文由程序从同版原文提取，主题与疑点独立存放。成稿按需编辑，不要求逐条转述；逐字保真不能替代选材完整或成稿语义验收。**已接入正式装配（流程简化 F2，2026-10-29）**：`distill_input_mode=pack_only` 的条目 prompt 自带完整材料包（已选素材 + 未选区间附录），派工不附原文全文，按需按行段局部回源并登记范围；`NOTE_DISTILL_DISPATCH` 仍保持关闭，启用范围待 F5 有界验证后由用户裁决，实际入口与状态见 PIPELINES 开头。
+- **原文素材候选**：模型只选取、定位、归组；素材正文由程序从同版原文提取，主题与疑点独立存放。成稿按需编辑，不要求逐条转述；逐字保真不能替代选材完整或成稿语义验收。**接线已完成、判不启用（流程简化 F5b，2026-10-30）**：`distill_input_mode=pack_only` 的装配路径保留在代码中，但两源对照显示「成稿只吃包」会丢内容（D1 整章丢弃、S3 丢 5 处 P2 细节），未过质量保留条件；`NOTE_DISTILL_DISPATCH` 保持关闭，两阶段维持 N6「长源适用、默认关闭」。裁决与改善方向见 `notes/_meta/eval/20261029-pack-only-wiring/VERDICT.md`，实际入口与状态见 PIPELINES 开头。
 
 ### 4.2 工程纪律
 - **个人信息保护**：`.env`（含 `OBSIDIAN_VAULT_PATH`、`FEISHU_WIKI_SPACE` 等）与 `notes/` 已被 gitignore，**禁止**手动 `git add` 提交。

@@ -31,7 +31,7 @@
 
 | 主题 | 决策记录 | 实施状态真源 |
 |---|---|---|
-| 总结流程简化（暂定） | [四阶段与材料包消费](DECISION-20261028-summary-flow-simplification.md) | 当前任务与验收只看[流程简化计划](../plans/PLAN-20261028-summary-flow-simplification.md)；普通源单轮、复杂长源按收益保留选材，成稿直接吃完整包。**2026-10-29 F1–F4 已接线**（计划 §4/§8），F5 真实对照待登记预算；开关保持关闭，接线完成不等于启用或验收 |
+| 总结流程简化（暂定） | [四阶段与材料包消费](DECISION-20261028-summary-flow-simplification.md) | 当前任务与验收只看[流程简化计划](../plans/PLAN-20261028-summary-flow-simplification.md)。**2026-10-29 F1–F4 已接线；2026-10-30 F5b 判「pack_only 直接消费不启用」**（D1 整章丢失，证据 `notes/_meta/eval/20261029-pack-only-wiring/VERDICT.md`）；开关保持关闭，两阶段维持 N6 结论 |
 | 长源总结效率与质量（历史） | [总结方式与首次迁移](DECISION-20261028-long-source-summary.md)、[v4 不启用](DECISION-20261028-long-source-not-enabled.md)、[N6 原文素材](DECISION-20261028-source-excerpts.md) | [旧长源计划](../plans/PLAN-20261028-long-source-summary.md)已退役，N1–N6 原始证据保留；原文选取原则继续有效，任务/遗留以流程简化计划为准 |
 | 个人项目低成本质量改进 | [阶段顺序与边界](DECISION-20261026-low-cost-quality.md)、[2026-10-27 图像/图表补充](DECISION-20261027-image-and-chart-policy.md) | [旧计划](../plans/PLAN-20261026-low-cost-quality.md)于 2026-10-28 退役为历史，未全部验收；有效原则保留，遗留与否决项已由新计划逐项裁定 |
 | 输入优化、输出目的与模板讨论 | [2026-10-27 输入/输出范围](DECISION-20261027-input-and-output-scope.md) | 历史讨论及实施证据在旧计划；完整、忠实、可取材和可追溯的目标继续有效，提炼粒度由 2026-10-28 决策调整，当前状态只看新计划 |
