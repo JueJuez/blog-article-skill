@@ -49,9 +49,11 @@ class TestPlanChunks:
         src = _small_source()
         chunks = DD.plan_chunks(src)
         assert len(chunks) == 1
-        assert chunks[0] == {"index": 1, "total": 1, "start_line": 1,
-                             "end_line": len(src.split("\n")),
-                             "chars": len("".join(src.split()))}
+        c = chunks[0]
+        assert c["index"] == 1 and c["total"] == 1
+        assert (c["start_line"], c["end_line"]) == (1, len(src.split("\n")))
+        assert (c["core_start_line"], c["core_end_line"]) == (1, len(src.split("\n")))
+        assert c["chars"] == len("".join(src.split()))
 
     def test_long_source_splits_into_multiple(self):
         chunks = DD.plan_chunks(_big_source())
@@ -122,6 +124,7 @@ class TestChunkRender:
 # ---------------------------------------------------------------- 合并
 
 def _parsed(idx: int, start_line: int, extra_item_id: str = "") -> dict:
+    # 条目必须落在**核心区间**内：分块后下发范围含重叠上下文，条目写在那里会被 scope 门拦下
     items = [{"id": "i1", "type": "number", "stance": "paraphrase",
               "content": f"第{idx}块的读数12元附近",
               "source_lines": [start_line, start_line]}]
@@ -141,7 +144,7 @@ def _parsed(idx: int, start_line: int, extra_item_id: str = "") -> dict:
 class TestMergeChunkPacks:
     def _merge(self, src, n_chunks=2):
         chunks = DD.plan_chunks(src) if n_chunks else DD.plan_chunks(src)
-        parts = [{"chunk": c, "parsed": _parsed(c["index"], c["start_line"], "i2"),
+        parts = [{"chunk": c, "parsed": _parsed(c["index"], c["core_start_line"], "i2"),
                   "prompt_sha256": "h%d" % c["index"]} for c in chunks]
         return DP.merge_chunk_packs(title="T", url="eval://s9/chunk", source_text=src,
                                     distill_prompt_sha256=DT.prompt_hash("T", src),
@@ -209,10 +212,12 @@ def _write_manifest(d: str, src_path: str, src: str, key: str = "abc123") -> lis
             DD.render_chunk_prompt("T", src, c))
         tasks.append({"url": "eval://s9/e2e", "url_key": key, "title": "T",
                       "source_path": src_path, "source_sha256": text_hash(src),
+                      "contract_version": DT.CONTRACT_VERSION,
+                      "schema_version": DP.SCHEMA_VERSION,
                       "distill_prompt_sha256": "h%d" % c["index"],
                       "source_chars": len("".join(src.split())),
                       "task_file": name, "chunk": c})
-    json.dump({"tasks": tasks, "skipped": []},
+    json.dump({"contract_version": DT.CONTRACT_VERSION, "tasks": tasks, "skipped": []},
               open(os.path.join(d, "manifest.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)
     return chunks
@@ -228,7 +233,7 @@ class TestIngestChunks:
         chunks = _write_manifest(str(d), str(src_path), src)
         for c in chunks:
             stem = DD.chunk_filename("abc123", c).replace("_distill.txt", "")
-            json.dump(_parsed(c["index"], c["start_line"], "i2"),
+            json.dump(_parsed(c["index"], c["core_start_line"], "i2"),
                       open(d / f"{stem}.json", "w", encoding="utf-8"), ensure_ascii=False)
         res = DD.ingest_distill_results(str(d), store_dir=str(tmp_path / "packs"))
         assert len(res["saved"]) == 1 and not res["failed"]
@@ -245,7 +250,7 @@ class TestIngestChunks:
         chunks = _write_manifest(str(d), str(src_path), src)
         for c in chunks[:-1]:  # 故意少给一块
             stem = DD.chunk_filename("abc123", c).replace("_distill.txt", "")
-            json.dump(_parsed(c["index"], c["start_line"], "i2"),
+            json.dump(_parsed(c["index"], c["core_start_line"], "i2"),
                       open(d / f"{stem}.json", "w", encoding="utf-8"), ensure_ascii=False)
         res = DD.ingest_distill_results(str(d), store_dir=str(tmp_path / "packs"))
         # 缺块 → 双向留痕：missing 记缺哪个任务文件，failed 记因此整篇未落盘
@@ -262,7 +267,7 @@ class TestIngestChunks:
         n_lines = len(src.split("\n"))
         chunks = _write_manifest(str(d), str(src_path), src)
         for i, c in enumerate(chunks):
-            parsed = _parsed(c["index"], c["start_line"], "i2")
+            parsed = _parsed(c["index"], c["core_start_line"], "i2")
             if i == len(chunks) - 1:
                 parsed["items"][0]["source_lines"] = [n_lines - 1, n_lines + 50]  # 越界
             stem = DD.chunk_filename("abc123", c).replace("_distill.txt", "")
@@ -270,4 +275,6 @@ class TestIngestChunks:
                       ensure_ascii=False)
         res = DD.ingest_distill_results(str(d), store_dir=str(tmp_path / "packs"))
         assert not res["saved"]
-        assert any("越界" in m for it in res["failed"] for m in it["issues"])
+        # N2 起先由「核心区间」门拦（越界行必然越出核心），validate_pack 的越界检查仍兜底
+        assert any(("越界" in m or "核心区间" in m)
+                   for it in res["failed"] for m in it["issues"])

@@ -1,5 +1,11 @@
 # 个人项目低成本质量改进开发计划
 
+**退役状态（2026-10-28）：本计划已结束维护，作为历史实施与试验记录保留；未完成项并未验收通过。** 当前任务、进度与验收迁至[长源总结效率与质量计划](PLAN-20261028-long-source-summary.md)，逐项迁移/取代/不迁移理由见新计划 §3，接手从新计划 §4 的 N1 开始。
+
+以下原状态、阶段表和接手文本均为冻结快照；其中“当前”“下一步”“唯一真源”“从 §8.5 接手”等措辞不再指示后续执行。S2/S4 否决、S5–S8 有限证据及全部失败/修正记录保留，不从本文重新开启历史任务。
+
+---
+
 状态：**S1 初版完成但修订闭环有遗留，S2 无增益结案，S3 两阶段小样本完成，S4 未达保留门槛且不推广；S5 输出契约、S6 材料层首轮、S7 提炼候选已实施；S8 首轮支持长源复杂论证/多案例继续试验；S9 接线、契约 v2 与长源分块已实现，生产默认仍关闭，当前进入缺陷修复、输入规模收敛与有限复验阶段。** 当前进度见 §2，新会话从 §8.5 接手；证据修正与本轮验证边界见 §9.11-S9 第 10 条。
 进度真源：本文 §2；后续持续更新本文，不另建平行任务清单。
 2026-10-27 当前口径：输出目的、输入方向、九类模板调整及暂不做额外延伸的范围均已确认；共同写作契约已冻结。S9 已完成 n=2 隔离真实抽样和同组 v2 复跑，B 的两处数字固化仅在 pack 层核验，尚无 v2 成稿与盲评，不能算完整质量验收。§8.3、§8.4 及 §9 中标明讨论/首轮时点的记录属于历史；下一步只按 §8.5。S1 遗留、S2 否决与 S4 不推广结论保留。
@@ -33,7 +39,7 @@
 | S6 | 原始材料结构、读取范围与回源定位 | S5 细化契约后实施；复用 S3 已有图片工作 | **首轮完成（2026-10-27）**：`shared/source_material.py` 同版结构索引（标题/表格/代码块/段落 1-based 行号可回查 + provenance 同口径 hash 对账 `verify()`）；时间位置与图片状态如实声明（absent / 引用 image_inventory 同款 url_key 互查），文本通道限制固定声明不伪造。接入 ASR 成功分支与 CC 实时路径（转写成功即写 sidecar，失败不阻塞；transcript 缓存保持纯文本）。**量化缺口**：2370 个文章 raw 源 0 个含管道表格（HTML 表格系统性打平，已登记未改抓取）；存量 transcript 无时间戳如实 absent。真实验证：B 页源索引↔台账互查（partial_read 4/24）、存量 transcript 边界、hash 对账。离线 18 条 + 全量回归。见 §9.11 S6 回写 |
 | S7 | 独立提炼契约与隔离候选流程 | S6 有可回查的冻结材料，S5 确定输出边界 | **候选实现完成（2026-10-27）**：`prompts/distill.py`（三类产物契约 + 自包含任务渲染 + `DISTILL_MARKER` 模板隔离断言）+ `shared/distill_pack.py`（build/validate/save/load，同版 hash 对账、行号 sanity、悬空引用、quote 原话机检——全部报告项，字段齐全≠语义完整）。落盘 `notes/_meta/distill_packs/`（与材料索引同款 url_key 互查；同版幂等可续跑；`store_dir` 支持隔离试验）。真实验证：B 页源 36 条目/15 关系/5 quote 一次过校验、行号抽查 3/3，pack 在 `notes/_meta/eval/20261027-distill/packs/`。**S7 阶段未接生产派单**；后续 S8 已试验、S9 已实现有限接线但默认关，当前状态见下方 S8/S9 行。见 §9.11 S7 回写 |
 | S8 | 独立提炼的小样本配对评价 | S7 候选可运行；评价口径与消耗边界已定 | **首轮 5 对完成（2026-10-27），达保留门槛 → 适用范围=长源复杂论证/多案例**：盲评 distill 臂 P1 遗漏 **0**（cur 臂 6：D1 供应链三步/新人素养节/两个模板整块丢失、D3 十万卡算术整段丢失）、确定性失真 **0**（cur 3 项：D1 时序/口径实错）、取材 **15/15**（cur 13+2 无法回答）；短源 D5 无退步但 pack 9k>源 2.2k 不适用；数值密集表格源为 distill 已知弱项（D2 P2 丢失 9 项）。边界：cur D1 覆盖 0.26 属异常低生成、盲评非同题、小样本不外推全库。实录见 §9.11-S8；裁决 `notes/_meta/eval/20261027-distill-round/VERDICT.md`（本机证据） |
-| S9 | 有收益范围的有限接线与复查 | S8 有可定位改善、无新增严重失真且成本可接受 | **已实现、待收口（2026-10-27，HEAD `a84138e` 核查）**：数字绝对量闸 ≥130、提炼契约 v2、>40k 分块合并、源与契约 hash 双绑定已落地；A 三稿数字串命中 17/25→20/25→23/25，仅为机械信号，另有定点回源核验；B 数字固化仅验证到 pack 层。**未解决**：路由回单轮残留旧包、quote 示例自相矛盾、输入规模与分块稳定性、扩样本及独立语义复验。成本口径已更正：A prompt 106,229 字符；B 隔离脚本双包 210,427，单个新版包重装为 141,543 字符。开关仍默认 `0`；顺序与出口见 §8.5，核查证据见 §9.11-S9 第 10 条。 |
+| S9 | 有收益范围的有限接线与复查 | S8 有可定位改善、无新增严重失真且成本可接受 | **已实现、待收口（2026-10-27 晚，起点 HEAD `5fddbc6`）：**数字绝对量闸 ≥130、提炼契约 v3、>40k 分块合并、源与契约 hash 双绑定已落地；A 三稿数字串命中 17/25→20/25→23/25（机械信号，另有点回源核验）。**§8.5 第 1 条的确定缺陷已修并保持开关 0**：回退/源不可读残留旧包、重复装配叠包、`--emit` 的 `url_key` NameError、quote 规则与示例自相矛盾；契约 v2→v3 使旧 pack 全部失效（提炼需重跑）。第 1 条完成不等于启用，定量证据见 §9.11-S9 第 11 条。**仍未解决**：输入规模、分块稳定性与 >40k 工具中断定位、扩样本与独立语义复验。成本口径（字符非 token）：A prompt 106,229；B 双包 210,427 / 单包重装 141,543。开关仍默认 `0`；顺序与出口见 §8.5，核查与修正证据见 §9.11-S9 第 10、11 条。 |
 
 每阶段分别记录：实现、离线验证、真实执行、语义结果、消耗、未解决项。阶段完成不代表全库质量通过；保留或放弃试验都可以是有效结论。
 
@@ -411,6 +417,11 @@ S1 的 22 条是审核发现项，其中仅 8 条已裁定（真错 5、误报 3
 
 ### 8.5 S9 当前接手入口（2026-10-27 核查后）
 
+> **进度注记（2026-10-27 晚，次轮执行后）**：第 1 条（含 RED 用例）已完成并在全量回归下通过，
+> 修正细节与测试计数见 §9.11-S9 第 11 条。**接手从第 2 条开始**（pack 输入规模收敛），
+> 第 3–4 条（有界分块验证、扩样本与独立语义复验、满足出口再有限启用）未开始，`NOTE_DISTILL_DISPATCH` 仍为 `0`。
+> 第 1 条属结构性修正，**不构成质量验收**——「链路干净了」不等于「内容更好了」，启用判断仍要看第 3–4 条。
+
 起点：本次文档更新前代码 HEAD `a84138e` / `master`；接手先核对现场分支、提交、未提交修改和本机证据。S5–S8 与 S9 已实现部分不从头重做，`NOTE_DISTILL_DISPATCH` 维持默认 `0`。核查细节、规模更正及测试限制见 §9.11-S9 第 10 条；本节是后续任务唯一清单。
 
 1. **先修确定缺陷并补必要 RED 用例**：
@@ -626,10 +637,21 @@ S9 接线实施回写（2026-10-27）：第 1–7 条保留初次接线/抽样�
    - **测试**：新增/更新后 `tests/test_distill_dispatch.py` 30 条、`test_distill_pack.py` 20 条、`test_distill_chunking.py` 19 条；全量 1621 passed。
 
 10. **只读进度核查与证据更正（2026-10-27，代码 HEAD `a84138e`）**：本轮核对源码与本机隔离产物，未修改生产代码、配置、队列、原始报告或已落盘笔记；下列缺陷均为待修，不能因文档提交登记为已解决。
-    - **B 规模更正**：`notes/_meta/eval/20261027-s9-fix/arms/B_distill_v2_prompt.txt` 长 210,427 字符，`<<<DISTILL_MATERIAL_PACK>>>` 与结束标记各出现 **2 次**；`_tmp/s9fix_assemble.py` B 旁路直接对已有 v1 包的 `b["prompt"]` 调 `assemble_write_prompt`。先用 `split_write_prompt` 取回纯主体，再将同一 v2 pack 重装，内存测得 **141,543 字符、1 个包**；差额 68,884 为重复保留的旧包块及分隔。A 同目录 prompt 106,229 字符、1 个包。以上为写作 prompt 字符数，不是 token 数，另给的源文本不计在其中；输入膨胀仍在，不能按双包值推断新版成本。原产物与 `REPORT.md` 保留作诊断，本条及 §2/§8.5 采用更正口径。
-    - **路由回单轮仍留旧包（内存复现）**：读取该隔离 `queue.json` 中 B 条目副本与冻结源，调用 `prepare_entry(..., source_text=src, store_dir=隔离packs)`，得到 `single/numeric_heavy`、源长 52,783、不同数字串 191；抛 `PrepareIneligible` 后条目原样且仍含旧包。结构原因：`shared/distill_dispatch.py:prepare_entry` 非 distill 路由提前退出发生在 `split_write_prompt` 及清理之前，`prepare_queue` 的 fallback 分支也不写清理。正常 auto/manual 的 prompt 刷新可能掩盖问题，但直接 `--prepare`、未刷新或 legacy 路径不能依赖它。需补显式回退清理、provenance 更新、写回及 dry-run 护栏。
-    - **quote 冲突的具体诱因**：`prompts/distill.py:_SCHEMA_EXAMPLE` 的 i4 将含模型括号注解「读数存疑」的 `content` 标 `quote`，而 `rules_text` 要求 quote 与源逐字一致，另一条又要求补存疑标注。AST 读取示例可定位冲突；真实回包 6 条被拦的记录见原复跑报告。规则与示例应一起修，示例需一致性测试，输出端逐字机检继续保留；不将所有括号或源作者自己的注解一概降级。
+    - **B 规模更正**：`notes/_meta/eval/20261027-s9-fix/arms/B_distill_v2_prompt.txt` 长 210,427 字符，`<<<DISTILL_MATERIAL_PACK>>>` 与结束标记各出现 **2 次**；`_tmp/s9fix_assemble.py` B 旁路直接对已有 v1 包的 `b["prompt"]` 调 `assemble_write_prompt`。先用 `split_write_prompt` 取回纯主体，再将同一 v2 pack 重装，内存测得 **141,543 字符、1 个包**；差额 68,884 为重复保留的旧包块及分隔。**→ 叠包归一见第 11 条(b)（`strip_pack_blocks` 循环剥离 + 单包断言），历史双包产物仍保留作诊断。** A 同目录 prompt 106,229 字符、1 个包。以上为写作 prompt 字符数，不是 token 数，另给的源文本不计在其中；输入膨胀仍在，不能按双包值推断新版成本。原产物与 `REPORT.md` 保留作诊断，本条及 §2/§8.5 采用更正口径。
+    - **路由回单轮仍留旧包（内存复现）**：读取该隔离 `queue.json` 中 B 条目副本与冻结源，调用 `prepare_entry(..., source_text=src, store_dir=隔离packs)`，得到 `single/numeric_heavy`、源长 52,783、不同数字串 191；抛 `PrepareIneligible` 后条目原样且仍含旧包。结构原因：`shared/distill_dispatch.py:prepare_entry` 非 distill 路由提前退出发生在 `split_write_prompt` 及清理之前，`prepare_queue` 的 fallback 分支也不写清理。正常 auto/manual 的 prompt 刷新可能掩盖问题，但直接 `--prepare`、未刷新或 legacy 路径不能依赖它。需补显式回退清理、provenance 更新、写回及 dry-run 护栏。**→ 已由第 11 条(a) 修复（含生产接线 filter_pending）。**
+    - **quote 冲突的具体诱因**：`prompts/distill.py:_SCHEMA_EXAMPLE` 的 i4 将含模型括号注解「读数存疑」的 `content` 标 `quote`，而 `rules_text` 要求 quote 与源逐字一致，另一条又要求补存疑标注。AST 读取示例可定位冲突；真实回包 6 条被拦的记录见原复跑报告。规则与示例应一起修，示例需一致性测试，输出端逐字机检继续保留；不将所有括号或源作者自己的注解一概降级。**→ 已由第 11 条(c) 修复（契约升 v3，机检保留）。**
     - **离线复验与环境排查**：初次运行 `python -m pytest -q tests/test_distill_dispatch.py tests/test_distill_pack.py tests/test_distill_chunking.py tests/test_filter_pending_refresh.py tests/test_pipeline_gate.py`，解释器 `D:/App/anaconda3/python.exe` 在 pytest 插件加载的 `asyncio → _overlapped` 初始化报 `OSError: [WinError 10106]`；关闭插件自动加载再试，81 项均在公共 fixture 的 setup 阶段报错，业务断言未运行。**后续定位**：执行子进程的 `SystemRoot` 与 `windir` 为空，Git SSH 同时报无法解析远端。通过 `[Environment]::SystemDirectory` 定位 Windows 目录并核实 `System32/kernel32.dll` 存在后，仅在测试/推送命令的子进程环境中设置 `SystemRoot`，`import _overlapped` 及 `git ls-remote` 恢复；按原命令（正常插件加载、保留所有 fixture）复跑 **81 passed in 4.50s**。未改系统配置、重装依赖或修改业务代码；早期初始化失败不计作业务断言失败。全量未重跑，历史计划 1621 与提交 `a84138e` 的 1623 计数差异保留，不作为当前通过数；现有定向用例未覆盖本轮新发现的全部缺陷，待修与必要 RED 用例仍见 §8.5。
     - **质量与范围**：A 的 17/25→20/25→23/25 是数字串机械命中，不能替代全文语义覆盖率；B v2 仍仅做 pack 层定点回源，无成稿/盲评。40k 两次工具中断只作失败样本，准确环节未知，不推出容量上限。S1 五项真错未闭环、S6 文章表格打平/时间轴与文章索引接入缺口保留，按 §8.5 安排后续。
 
-本次文档交付核验（2026-10-27）：6 份相关 Markdown 的 107 个本地链接目标检查通过，§8.4→§8.5→§9 顺序、§2 的 S1–S9 行及 S9 实录 1–10 编号可定位；S1–S4 历史证据段与本次更新前代码 HEAD 逐字一致。已复算 A/B prompt 字符数、包块数及 B 单包重装口径；Git 差异范围仅这 6 份文档，既存未跟踪 `_tmp_prompt_extract.txt` 不纳入。子进程环境排查后 81 项现有定向测试通过，全量未重跑，业务缺陷仍待修；文档/离线检查不替代语义验收。提交及推送状态以 Git 实际记录和远端分支核验为准。
+11. **§8.5 第 1 条缺陷修正回写（2026-10-27 晚，起点 HEAD `5fddbc6`，未提交改动）**：按 §8.5 顺序只做第 1 条，RED 用例先行（新增用例在修复前 17 失败 / 2 通过）。
+    - **(a) `prepare_entry` 先判路由再拆旧包**：入口统一 `strip_pack_blocks(prompt)` 取「干净主体 + 包块数 `n_blocks`」，**再**判源可读性与路由；三种不可装配情形（源不可读 / 路由回单轮 / 无有效 pack 且已装配）共用 `_bail()`：剥包 → `_apply_prompt` 同步清 `distill_pack_key`/`distill_pack_source_sha256`/`distill_prompt_sha256` 并重算 `prompt_sha256` → 落 JSONL（`status` = `source_unavailable` / `route_fallback` / `no_valid_pack`，带 `stripped` 与 `blocks_removed`）。`PrepareIneligible` 新增 `stripped` / `log_status`；`prepare_queue_entry`、`prepare_queue` 按 `exc.stripped` 写回队列。**生产接线同步修**：`filter_pending.distill_prepare` 返回值区分 `stripped`（区别于 `fallback`），`_run_queue` 的写回条件加入 `stripped`——旧代码在这里会把剥包结果丢掉（§8.5 点名「不能仅依赖 `refresh_prompt` 先行重建掩盖」的那条路）。`dry_run` 不写条目但仍报告 `stripped`。
+    - **(b) 重复装配归一**：`strip_pack_blocks` 循环剥离取代「只切第一刀」（历史双包如 `_tmp/s9fix_assemble.py` 的 B 会被完整剥掉）；`already_prepared` 增加「且 `n_blocks == 1`」的前置，重复装配的历史产物会被拆到重装为**恰好一个**包块。`_tmp/` 隔离脚本仍不接生产，归一逻辑在现役协议里。
+    - **(c) quote 规则与示例冲突**：契约 **v2→v3**（`CONTRACT_VERSION` 与 `DISTILL_MARKER` 同步），规则加「带注解的内容不得标 quote」：注解会让 content 不再是逐字原话，这类条目只能 paraphrase，要保留原句就另起一条 quote；示例 i4 由 `quote` 改 `paraphrase`、新增 i5 示范逐字 quote；新增 `ANNOTATION_MARKERS` 与 `example_issues()`（示例自检：quote 含注解 / id 重复 / type·stance 非法 / source_lines 形状 / 关系悬空）。**真实回包的 quote 逐字机检不放松**——`validate_pack` 仍对「标 quote 但源里命不中」报错，带注解且标 quote 照样被拦。**副作用**：hash 变化令旧 pack 全部失效，提炼需重跑（这是版本绑定的预期行为，不是缺陷）。
+    - **(d) 顺手抓到的硬 bug**：`emit_distill_tasks` 里 `chunk_filename(key, chunk)` 的 `key` **未定义** → `--emit` 整步 `NameError`（`git log -S` 定位：分块重构提交 `a84138e` 删掉了循环内的 `key = DP.url_key_of(url, src)` 却留下引用）。即 **自 `a84138e` 起派单再也跑不通**，任何「走过 emit」的产物或结论都要回查是否产自更早版本；已改回 `key = DP.url_key_of(url, src or "")`。
+    - **(e) 可观测性**：`--plan` 行新增 `pending_strip`（曾装配但现在不适用，或本身就是重复装配）——只读阶段就能看见待清理；`--prepare` 报告新增 `stale_stripped` / `fallback_stripped` 计数；装配日志新增 `blocks_after`（单包断言，须恒为 1）。
+    - **测试**：新增 `tests/test_s9_defect_fixes.py` 19 条（回退剥包 9 / 叠包归一 3 / emit 派单 3 / quote 一致 4）；`test_filter_pending_refresh.py` 加 2 条（stripped 必须落盘、纯 fallback 不制造无谓写盘）；`test_distill_pack.py` 契约版本用例由 v2 改 v3 并补「带注解不得标 quote」断言；`test_distill_dispatch.py` 日志用例补 `blocks_after`。去重：`prompts/distill.py` 的去围栏实现提为 `strip_fences` 由 `shared/distill_dispatch.py` import（两份同实现被 `pipeline_gate` 门禁 2 拦下，按纪律**去重而非加基线**）。全量回归计数见下方交付核验。
+    - **边界与未做**：以上均为结构性修正与离线用例，**没有做任何语义验收**，也不构成「可以启用」的证据；`NOTE_DISTILL_DISPATCH` 仍 `0`；§8.5 第 2–4 条未开始。第 1 条完成后，**第 2 条（pack 输入规模）才是当前接手点**。
+
+本次代码修正与文档交付核验（2026-10-27 深夜，第 11 条轮次）：改动文档 2 份（本计划 §2/§8.5/§9.11-S9 第 10–11 条、`docs/PIPELINES.md`「长源两阶段派发」段），本地链接目标检查通过；改动代码 4 处（`shared/distill_dispatch.py`、`prompts/distill.py`、`scripts/filter_pending.py`、`scripts/distill_prepare.py`）。解释器 `D:/App/anaconda3/python.exe`（项目主环境，非托管 3.13），**全量回归 1645 passed / 0 failed**，`tests/test_pipeline_gate.py` 门禁通过（新增重复实现被拦截后按纪律去重，未加基线）；新增 `tests/test_s9_defect_fixes.py` 19 条在修复前 17 失败、修复后全绿，属于 RED 先行而非事后补测。改动尚未提交，`NOTE_DISTILL_DISPATCH` 保持 `0`，未触碰队列、库内笔记、配置与 `.env`；历史隔离产物、双包诊断件与旧稿全部保留。离线用例通过不代表语义质量验收——第 2–4 条未开始。
+
+本次文档交付核验（2026-10-27 晚）：6 份相关 Markdown 的 107 个本地链接目标检查通过，§8.4→§8.5→§9 顺序、§2 的 S1–S9 行及 S9 实录 1–10 编号可定位；S1–S4 历史证据段与本次更新前代码 HEAD 逐字一致。已复算 A/B prompt 字符数、包块数及 B 单包重装口径；Git 差异范围仅这 6 份文档，既存未跟踪 `_tmp_prompt_extract.txt` 不纳入。子进程环境排查后 81 项现有定向测试通过，全量未重跑，业务缺陷仍待修；文档/离线检查不替代语义验收。提交及推送状态以 Git 实际记录和远端分支核验为准。

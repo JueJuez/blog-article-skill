@@ -106,7 +106,10 @@ def main(argv=None) -> int:
                                     % time.strftime("%Y%m%d_%H%M%S"))
         res = DD.prepare_queue(queue, store_dir=args.store_dir, log_path=log_path,
                                dry_run=args.dry_run)
+        stripped = len([f for f in res["fallback"] if f.get("stripped")])
         report["prepare"] = {"prepared": len(res["prepared"]), "already": len(res["already"]),
+                             "stale_stripped": len(res["stale"]),
+                             "fallback_stripped": stripped,
                              "fallback": len(res["fallback"]), "dry_run": args.dry_run,
                              "log": log_path}
         if not args.json:

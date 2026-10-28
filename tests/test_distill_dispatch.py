@@ -312,6 +312,8 @@ class TestPrepare:
         assert rec["route"] == "distill"
         assert rec["source_sha256"] == text_hash(src)
         assert rec["write_prompt_sha256"]
+        # 单包断言（§8.5 第 1 条第 3 点）：装配后包块数必须恒为 1，且要能事后核对
+        assert rec.get("blocks_after") == 1
 
     def test_contract_upgrade_replaces_old_block(self, tmp_path):
         """幂等不能只看源 hash：契约升级后旧版包块必须能被换掉（2026-10-27 实抓）。

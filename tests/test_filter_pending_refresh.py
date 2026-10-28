@@ -100,3 +100,73 @@ class TestRunQueueIntegration:
         stats = _run_queue(str(qpath), lambda es: ([], es))
         assert stats["dropped"] == 1
         assert json.load(open(str(qpath), encoding="utf-8")) == []
+
+
+class TestDistillFallbackPersisted:
+    """S9 §8.5 第 1 条：提炼回退若剥了旧材料包块，必须写回队列文件。
+
+    生产接线（`filter_pending.distill_prepare`）默认返回一个笼统的 `fallback`，
+    `_run_queue` 只把 prepared/stale 计入写回条件 → 剥了包却不落盘，下一轮继续消费
+    失效材料。这里钉死两件事：返回值区分 `stripped`，且 stripped 触发写回。
+    注意日志环境变量必须重定向到 tmp，否则测试会往生产 `notes/_meta` 里写。
+    """
+
+    def _long_source(self, chars: int = 12000) -> str:
+        line = "这一段口语论述用来凑足字数本身不含任何读数也不包含数字口径。\n"
+        out, n = [], 0
+        while n < chars:
+            out.append(line)
+            n += len("".join(line.split()))
+        return "".join(out)
+
+    def _pack(self, src: str, url: str, title: str):
+        from prompts import distill as DT
+        from shared import distill_pack as DP
+        return DP.build_pack(title=title, url=url, source_text=src,
+                             distill_prompt_sha256=DT.prompt_hash(title, src),
+                             parsed={"mainline": {"question": "q", "progression": ["p"],
+                                                 "conclusions": ["c"]},
+                                     "items": [{"id": "i1", "type": "step",
+                                                "stance": "paraphrase",
+                                                "content": "先做背调",
+                                                "source_lines": [1, 1]}],
+                                     "relations": []})
+
+    def test_stripped_pack_is_written_back(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("NOTE_DISTILL_DISPATCH", "1")
+        monkeypatch.setenv("NOTE_DISTILL_DISPATCH_LOG", str(tmp_path / "dispatch.jsonl"))
+        from shared import distill_dispatch as DD
+
+        src = self._long_source()
+        raw = tmp_path / "raw.md"
+        raw.write_text(src, encoding="utf-8")
+        entry = {"url": "https://s9-a", "title": "长源", "raw_file": str(raw),
+                 "prompt": "BASE PROMPT\n", "generation_context": {}}
+        block = DD.render_pack_block(self._pack(src, "https://s9-a", "长源"))
+        entry["prompt"] = entry["prompt"] + "\n\n" + block
+        entry["generation_context"]["distill_pack_key"] = "stale-key"
+        qpath = tmp_path / "pending.json"
+        qpath.write_text(json.dumps([entry], ensure_ascii=False), encoding="utf-8")
+
+        raw.write_text("短源。\n" * 50, encoding="utf-8")       # 源变短 → 回退并剥包
+        stats = _run_queue(str(qpath), lambda es: (es, []))
+        assert stats["distill"]["stripped"] == 1
+        saved = json.load(open(str(qpath), encoding="utf-8"))[0]
+        assert DD.MATERIAL_PACK_BEGIN not in saved["prompt"]
+        assert "distill_pack_key" not in saved["generation_context"]
+
+    def test_plain_fallback_does_not_force_rewrite(self, tmp_path, monkeypatch):
+        """没剥包的回退（顺例：压根没有 pack）保持原语义，不制造无谓写盘。"""
+        monkeypatch.setenv("NOTE_DISTILL_DISPATCH", "1")
+        monkeypatch.setenv("NOTE_DISTILL_DISPATCH_LOG", str(tmp_path / "dispatch2.jsonl"))
+        raw = tmp_path / "raw.md"
+        raw.write_text("短源。\n" * 50, encoding="utf-8")
+        entry = {"url": "https://s9-b", "title": "短源", "raw_file": str(raw),
+                 "prompt": "BASE PROMPT\n", "generation_context": {}}
+        qpath = tmp_path / "pending.json"
+        qpath.write_text(json.dumps([entry], ensure_ascii=False), encoding="utf-8")
+        mtime_before = os.path.getmtime(str(qpath))
+        stats = _run_queue(str(qpath), lambda es: (es, []))
+        assert stats["distill"]["fallback"] == 1
+        assert stats["distill"]["stripped"] == 0
+        assert os.path.getmtime(str(qpath)) == mtime_before

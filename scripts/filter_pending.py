@@ -87,8 +87,13 @@ def distill_prepare(e: dict) -> str:
     """S9 长源两阶段装配（`NOTE_DISTILL_DISPATCH=1` 才生效，默认关闭）。
 
     只有**已存在有效 pack** 的条目会被装配材料包块；短源/数值密集/无 pack/版本失配
-    一律降级单轮（`PrepareIneligible`），不阻塞批次、不改条目。
+    一律降级单轮（`PrepareIneligible`），不阻塞批次。
     必须排在 `refresh_prompt` 之后——刷新会重建 prompt 主体，先装配会被覆盖。
+
+    **回退也可能改写条目**（§8.5 第 1 条）：源变短/变数字密集/源不可读时，
+    `prepare_entry` 会把残留的旧材料包块剥掉，此时 `PrepareIneligible.stripped=True`
+    → 返回 `stripped`，`_run_queue` 必须写回队列；**不能仅依赖 refresh_prompt 先行
+    重建来掩盖**（那条路径只在 type/version 变化时重写 prompt）。
     """
     if os.environ.get("NOTE_DISTILL_DISPATCH") != "1":
         return "off"
@@ -98,8 +103,8 @@ def distill_prepare(e: dict) -> str:
         "dispatch_%s.jsonl" % time.strftime("%Y%m%d"))
     try:
         rep = DD.prepare_entry(e, log_path=log)
-    except DD.PrepareIneligible:
-        return "fallback"
+    except DD.PrepareIneligible as exc:
+        return "stripped" if exc.stripped else "fallback"
     if rep["status"] == "prepared":
         return "prepared"
     return "stale" if rep["status"] == "stale_stripped" else "already"
@@ -128,12 +133,15 @@ def _run_queue(path: str, filt, refresh: bool = True, dry_run: bool = False) -> 
                 refreshed += 1
             elif r == "skipped":
                 skipped += 1
-    distill = {"prepared": 0, "fallback": 0, "already": 0, "stale": 0, "off": 0}
+    distill = {"prepared": 0, "fallback": 0, "already": 0, "stale": 0, "off": 0,
+               "stripped": 0}
     if refresh and not dry_run:
         for e in keep:
             r = distill_prepare(e)
             distill[r] = distill.get(r, 0) + 1
-    if not dry_run and (dropped or refreshed or distill["prepared"] or distill["stale"]):
+    # stripped 也要写回：条目里的失效材料包块被剥掉了，不落盘等于白剥
+    if not dry_run and (dropped or refreshed or distill["prepared"] or distill["stale"]
+                        or distill["stripped"]):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(keep, f, ensure_ascii=False, indent=2)
     return {"kept": len(keep), "dropped": len(dropped),

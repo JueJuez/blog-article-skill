@@ -48,7 +48,8 @@ _SEG_LINES = None
 def _pack(source=_SOURCE, **kw):
     """构造一个最小合法 pack。"""
     base = {
-        "schema_version": 1,
+        "schema_version": DP.SCHEMA_VERSION,
+        "contract_version": DT.CONTRACT_VERSION,
         "kind": "distill_pack",
         "recorded_at": "2026-10-27T13:00:00",
         "url": "https://example.com/a",
@@ -77,6 +78,15 @@ def _pack(source=_SOURCE, **kw):
             {"from": "i3", "to": "i2", "kind": "limits", "note": "报价前提"},
             {"from": "i1", "to": "i3", "kind": "supports", "note": "经验支撑条件"},
         ],
+        "deferred": [],
+        "coverage": {
+            "source_lines_total": len(source.split("\n")),
+            "processed_ranges": [[1, len(source.split("\n"))]],
+            "complete": True,
+            "chunk_count": 1,
+            "item_count": 3,
+            "relation_count": 2,
+        },
         "notes": "",
     }
     base.update(kw)
@@ -218,18 +228,30 @@ def test_distill_prompt_is_self_contained():
     assert "行号" in p
 
 
-def test_contract_v2_number_rules_present():
-    """契约 v2（S9 抽样后）：数字逐行成条 / 不确定读数不补精度 / 先定位再写行号。
+def test_contract_number_rules_present():
+    """契约（N1 粒度改造后）：不混口径 / 不确定读数不补精度 / 先定位再写行号。
 
-    三条都针对实测出来的「数字固化」与行号漂移失真，缺一条等于把已知失真放回链路。
+    v2 的「数字逐行成条」在 v4 退场：它按数字个数制造细条目，是长源条目爆炸的主因。
+    但**不混口径**的约束没有放松，只是换成「同单元内用 readings 分列口径」。
     """
     p = DT.render_distill_prompt("t", _SOURCE)
-    assert "数字逐行成条" in p
+    assert "数字逐行成条" not in p
+    assert "不混口径" in p
+    assert "readings" in p
     assert "不确定读数不许补精度" in p
     assert "读数存疑" in p          # 存疑标法落到 content 里
     assert "不得换算" in p           # 不许把「4.7 一 三」拼成 4.713%
     assert "先定位到该句所在行再写行号" in p
-    assert DT.CONTRACT_VERSION == 2
+
+
+def test_contract_v4_granularity():
+    """契约 v4（N1）：段级论证单元、跨段 deferred、局部不替全篇下结论。"""
+    p = DT.render_distill_prompt("t", _SOURCE)
+    assert "带注解的内容不得标 quote" in p
+    assert "以完整论证单元为条" in p
+    assert "deferred" in p
+    assert DT.CONTRACT_VERSION == 4
+    assert DT.example_issues() == []
 
 
 def test_contract_is_explicitly_versioned():

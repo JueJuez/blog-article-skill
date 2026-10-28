@@ -142,6 +142,22 @@ def _norm_segments(segments):
     return out, round(end, 3)
 
 
+def scan_structure(source_text: str) -> dict:
+    """纯机械结构扫描（**单一真源**：`build_index` 与派单切块共用同一口径）。
+
+    返回 headings / tables / code_blocks / paragraphs，行号均 1-based。
+    切块若另写一套扫描，就会出现「索引认为这块是表格、切块却切在表格中间」的错位。
+    """
+    lines = (source_text or "").split("\n")
+    return {
+        "headings": _scan_headings(lines),
+        "tables": _scan_tables(lines),
+        "code_blocks": _scan_code_blocks(lines),
+        "paragraphs": {"count": len(_scan_paragraph_bounds(lines)),
+                       "bounds": _scan_paragraph_bounds(lines)},
+    }
+
+
 def build_index(source_text: str, *, kind: str, title: str = "", url: str = "",
                 image_key: str = "", timestamps=None, text_complete: bool = True) -> dict:
     """对同版源文本构建结构索引。纯函数，不落盘。
@@ -156,6 +172,7 @@ def build_index(source_text: str, *, kind: str, title: str = "", url: str = "",
     text = source_text or ""
     lines = text.split("\n")
     segs, span = _norm_segments(timestamps)
+    st = scan_structure(text)
     return {
         "schema_version": SCHEMA_VERSION,
         "recorded_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
@@ -167,11 +184,10 @@ def build_index(source_text: str, *, kind: str, title: str = "", url: str = "",
         "chars_total": len(text),
         "chars_nows": _nows_len(text),
         "line_count": len(lines),
-        "headings": _scan_headings(lines),
-        "tables": _scan_tables(lines),
-        "code_blocks": _scan_code_blocks(lines),
-        "paragraphs": {"count": len(_scan_paragraph_bounds(lines)),
-                       "bounds": _scan_paragraph_bounds(lines)},
+        "headings": st["headings"],
+        "tables": st["tables"],
+        "code_blocks": st["code_blocks"],
+        "paragraphs": st["paragraphs"],
         "timestamps": ({"present": True, "span_seconds": span, "segments": segs}
                        if segs else None),
         "coverage": {
