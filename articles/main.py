@@ -953,6 +953,13 @@ def save_summary_only(input_data: dict) -> dict:
     _gate = verify_note_mechanical(summarized_content, input_data.get('note_type', ''),
                                    source_url=original_url, max_words=max_words,
                                    source_chars=source_chars, source_text=source_text, source_author=author)
+    # 数值保真（2026-10-29 用户决策）：带单位读数须在源里逐字核对，换算/取整须同行保留源原串。
+    # 默认 shadow：只写 notes/_meta/numeric_fidelity.jsonl，绝不拦盘；两周后把
+    # NUMERIC_FIDELITY_GATE 切 block 才并入拦截。无 source_text 时不检查（无可接地对象）。
+    # 视频两条落盘路径（videos._summarize_and_save / _save_series_note）共用同一合并器。
+    from prompts.numeric_fidelity import apply_to_gate
+    _gate = apply_to_gate(_gate, summarized_content, source_text or "",
+                          url=original_url or "", title=original_title or "")
     if not _gate["passed"]:
         print("⛔ 机械门禁拦截：" + "；".join(_gate["issues"]))
         # 拦截事件持久化（gate_blockers 台账）：队列路径此前无拦截记录，无法区分
@@ -1099,7 +1106,7 @@ def skill_main(input_data: dict) -> dict:
                 dispatch_source = f.read()
             fields = dispatch_fields(original_title, dispatch_source, note_type,
                                      "manual" if note_type else "auto")
-            return {
+            result = {
                 'success': True, 'need_continue_summary': True,
                 'message': '✅ 已抓取文章内容，等待执行模型（Agent）按笔记模板总结',
                 'article_content': article_content, **fields, 'original_url': original_url,
@@ -1107,6 +1114,19 @@ def skill_main(input_data: dict) -> dict:
                 'raw_file': _LAST_RAW_FILEPATH, 'folder': folder, 'obsidian': obsidian,
                 'publish_time': _LAST_PUBLISH_TIME or publish_time,
             }
+            # 长源（≥10000 字）默认登记一次性提炼队列；短源/时效与框架类保持原单轮。
+            from shared.distill_dispatch import single_entry_handoff
+            handoff = single_entry_handoff({
+                "url": original_url, "title": original_title,
+                "raw_file": _LAST_RAW_FILEPATH, "note_type": fields["note_type"],
+                "prompt": fields["prompt"],
+                "generation_context": fields["generation_context"],
+                "author": author, "tags": tags or [],
+                "folder": folder, "obsidian": obsidian,
+                "publish_time": result["publish_time"],
+            }, source_text=dispatch_source)
+            result.update(handoff)
+            return result
         else:
             return {'success': False, 'message': '内容获取失败'}
     except Exception as e:

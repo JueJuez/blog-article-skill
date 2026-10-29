@@ -104,10 +104,21 @@ def _isolate_draft_stage(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_numeric_fidelity(monkeypatch, tmp_path):
+    """数值保真 shadow 日志（2026-10-29）只能写临时目录，不得灌真实 notes/_meta。"""
+    from prompts import numeric_fidelity
+    monkeypatch.setattr(numeric_fidelity, "LOG_FILE",
+                        str(tmp_path / "numeric_fidelity.jsonl"))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_distill_dispatch(monkeypatch, tmp_path):
     """两阶段默认开启后，派单日志与 pack 读取仍必须隔离真实用户目录。"""
     from shared import distill_pack
+    from shared import distill_dispatch
     monkeypatch.setattr(distill_pack, "PACKS_DIR", str(tmp_path / "distill_packs"))
+    monkeypatch.setattr(distill_dispatch, "ENTRY_QUEUE_DIR",
+                        str(tmp_path / "distill_entries"))
     monkeypatch.setenv("NOTE_DISTILL_DISPATCH_LOG", str(tmp_path / "distill_dispatch.jsonl"))
 
 

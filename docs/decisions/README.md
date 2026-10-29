@@ -26,6 +26,7 @@
 | 知识层 B 组结项 | [B 组结项](DECISION-20261019-b-group-closeout.md) | 知识层计划 §6「B 组结项说明」；B1 已由下游自行解决，B2/B3/B4/B5/B6 **全部不做**；库内无跨源整合层（L2） |
 | 接地审计（payload/分析层数字/表格归属） | [接地审计](DECISION-20261019-grounding-audits.md) | `prompts/content_signals.strip_source_payload`（P0，门禁输入清洗）；`shared/note_grounding.py` + `scripts/audit_note_grounding.py`（P1，只读）；`QUALITY_GATE_PROMPT` 8/9 条与 `build_round` 复核说明（P2）；**不加生成 prompt 补丁**，下一批按有限验证协议记账 |
 | 外部仓库借鉴（open-notebook / open-webui） | [外部基准调研](DECISION-20261024-external-repo-benchmarks.md) | **全部不立项**；三项留档参考（播客出口 / 检索层参数 / insight 独立 embedding）待触发，细节与上游参数存 [references/external-repo-benchmarks](../../references/external-repo-benchmarks.md) |
+| 路由判据与落盘门禁分层 | [门禁审计](DECISION-20261029-gate-audit.md) | `shared/source_types.py`（内容类型，无阈值）+ `shared/distill_dispatch.py`；旧两道数字闸已删。数值保真由 `prompts/numeric_fidelity.py` 执行，`NUMERIC_FIDELITY_GATE` 默认 `shadow`（两周观测后切 `block`），见 RULES §4.2、[config](../../references/config.md) |
 
 ## 已确认的方向与实施状态
 

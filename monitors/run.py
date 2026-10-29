@@ -895,7 +895,9 @@ def _summarize_video_item(it: dict, obsidian: bool, stats: dict, transcript: str
     （避免二次下载音频）；不预置 folder，落盘路由由管线内统一计算。
     """
     _inp = {"url": it["url"], "publish_time": it.get("publish_time", 0),
-            "obsidian": obsidian}
+            "obsidian": obsidian,
+            # 监控条目随后写常驻队列，由 filter_pending 统一交接；不重复登记一次性队列
+            "_entry_handoff": False}
     # 系列排除名单（2026-09-19）：subscriptions.json 配 series_exclude 的账号，
     # 命中的 ugc_season 系列在管线内整体跳过（不总结/不入队）
     try:

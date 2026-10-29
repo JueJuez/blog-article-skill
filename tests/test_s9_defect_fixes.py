@@ -3,8 +3,8 @@
 
 第 1 条要修的三类确定缺陷，本文件按 RED 先行的方式钉住：
 
-1. **`prepare_entry` 先判路由再拆旧包**：已装配条目转为 `single`（源变短/数字密集/
-   数字总量大）或**源不可读**时，旧材料包块不能被原样留在条目里继续消费——
+1. **`prepare_entry` 先判路由再拆旧包**：已装配条目转为 `single`（源变短/变成时效或
+   框架类）或**源不可读**时，旧材料包块不能被原样留在条目里继续消费——
    必须剥掉回单轮，并同步清 `distill_*` provenance（`pitfall`：不能靠
    `filter_pending.refresh_prompt` 先行重建来掩盖，那条路径不会保证先跑）。
 2. **重复装配不得叠加包块**：历史上出现过同一篇挂两个包（隔离试验脚本 double-assemble
@@ -40,8 +40,6 @@ from conftest import v6ize
 _TALK = ("这一段是口语论述用来稀释数字密度本身不含任何读数只是把前因后果和相关背景交代清楚"
          "便于读者理解上下文不计入任何统计口径也不会被当成数据另外还要注意这段不是表格也不是清单")
 
-_NUM_LINE = "2023年Q1营收4540万元，同比增长17.3%，毛利率31.2%，净利率8.7%。"
-
 
 def _fill(line: str, chars: int) -> str:
     out, n = [], 0
@@ -55,18 +53,9 @@ def _long_source(chars: int = 12000) -> str:
     return _fill(_TALK, chars)
 
 
-def _numeric_source(chars: int = 12000) -> str:
-    return _fill(_NUM_LINE, chars)
-
-
-def _numeric_heavy_source(chars: int = 15000) -> str:
-    """低密度但数字串绝对量大（S9-B 型）→ 路由回单轮。"""
-    out, n, k = [], 0, 0
-    while n < chars:
-        k += 1
-        out.append(f"第{k:03d}个观察点在{k * 7 + 100}元附近。{_TALK}\n")
-        n += len("".join(out[-1].split()))
-    return "".join(out)
+def _topic_source(head: str, chars: int = 12000) -> str:
+    """开头一句点明类别（时效/框架），其余为无类别词填充 → 路由判单轮。"""
+    return _fill(head + _TALK, chars)
 
 
 def _mk_pack(source: str, url: str = "eval://s9/T1", title: str = "测试",
@@ -133,25 +122,25 @@ class TestFallbackStripsStaleBlock:
         for k in ("distill_pack_key", "distill_pack_source_sha256", "distill_prompt_sha256"):
             assert k not in gc
 
-    def test_source_becomes_numeric_dense_strips_block(self, tmp_path):
-        """换成数字密集源（S8-D2 型）→ 同样回单轮，旧包不得残留。"""
+    def test_source_becomes_ephemeral_strips_block(self, tmp_path):
+        """换成时效类源（观点/估值/复盘）→ 回单轮，旧包不得残留。"""
         src = _long_source()
         entry, _base = _assembled_entry(tmp_path, src)
-        _write_source(tmp_path, _numeric_source())
+        _write_source(tmp_path, _topic_source("本文讨论黄金与市场估值。"))
         with pytest.raises(DD.PrepareIneligible) as ei:
             DD.prepare_entry(entry, store_dir=str(tmp_path))
-        assert ei.value.reason == "numeric_dense"
+        assert ei.value.reason == "ephemeral_source"
         assert ei.value.stripped is True
         assert DD.MATERIAL_PACK_BEGIN not in entry["prompt"]
 
-    def test_source_becomes_numeric_heavy_strips_block(self, tmp_path):
-        """换成「密度低但数字串量大」的源（S9-B 型，绝对量闸）→ 同样回单轮。"""
+    def test_source_becomes_framework_strips_block(self, tmp_path):
+        """换成框架类源（方法论/底层逻辑）→ 同样回单轮，旧包不得残留。"""
         src = _long_source()
         entry, _base = _assembled_entry(tmp_path, src)
-        _write_source(tmp_path, _numeric_heavy_source())
+        _write_source(tmp_path, _topic_source("本文讨论交易的底层逻辑与方法论。"))
         with pytest.raises(DD.PrepareIneligible) as ei:
             DD.prepare_entry(entry, store_dir=str(tmp_path))
-        assert ei.value.reason == "numeric_heavy"
+        assert ei.value.reason == "framework_source"
         assert ei.value.stripped is True
         assert DD.MATERIAL_PACK_BEGIN not in entry["prompt"]
 

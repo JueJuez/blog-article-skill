@@ -2,9 +2,10 @@
 """S9 有限接线回归测试（PLAN-20261026-low-cost-quality §8.4 / §9.4，2026-10-27）。
 
 协议要点（§8.4 S9 入口第 1–4 条）：
-1. 路由范围：只对**长源**（`source_chars_of` ≥ 10000）复杂论证/多案例走两阶段；
-   数值密集源（数字密度 ≥ 0.08，S8 五源校准：D2=0.174 vs 其余 ≤0.027）与
-   短源（≤5k）维持现役单轮——误判方向必须落在「保守回单轮」。
+1. 路由范围：只对**长源**（`source_chars_of` ≥ 10000）走两阶段，这是成本边界；
+   是否值得两阶段由**内容类型**决定（`shared/source_types`，2026-10-29）：
+   教程 → 两阶段；观点 / 研报 / 宏观 / 行情复盘 / 公司基本面分析 / 框架方法论 → 单轮；
+   未识别 → 两阶段（保守方向是多花成本，不是悄悄降质）。旧的两道数字闸已删除。
 2. 材料包块：与 S8 distill 臂逐字节同款标记与格式；生产 prompt 主体逐字节不变
    （assemble = base 前缀 + 包块）；`DISTILL_MARKER` 模板隔离边界不受影响。
 3. 版本绑定（§9.6）：源 hash 或提炼契约 hash 失配的旧 pack 不得当有效交接——
@@ -40,7 +41,7 @@ from conftest import v6ize
 # ---------------------------------------------------------------- 路由
 
 def _long_source(chars: int = 12000, density_text: str = "正文没有数字。") -> str:
-    """构造指定字数（source_chars_of 口径≈去空白）的低密度长源。"""
+    """构造指定字数（source_chars_of 口径≈去空白）的无类别词长源。"""
     body = (density_text * 10) + "\n"
     out = []
     n = 0
@@ -50,96 +51,76 @@ def _long_source(chars: int = 12000, density_text: str = "正文没有数字。"
     return "\n".join(out)
 
 
-def _numeric_source(chars: int = 12000) -> str:
-    """构造数字密集长源（模拟 S8 D2 型：表格/数字行密集）。"""
-    line = "2023年Q1营收4540万元，同比增长17.3%，毛利率31.2%，净利率8.7%。\n"
-    out = []
-    n = 0
-    while n < chars:
-        out.append(line)
-        n += len("".join(line.split()))
-    return "\n".join(out)
-
-
-# 口语论述填充（无数字），用于把「每行数字」稀释到密度阈值以下——对应 S9-B 型源：
-# 整场是大段论述，数字散布其中，密度算下来不高，但不同数字串的绝对量很大。
-_TALK = ("这一段是口语论述用来稀释数字密度本身不含任何读数只是把前因后果和相关背景交代清楚"
-         "便于读者理解上下文不计入任何统计口径也不会被当成数据另外还要注意这段不是表格也不是清单")
-
-
-def _numeric_heavy_source(chars: int = 15000) -> str:
-    """低密度但数字串绝对量大的长源（S9 真实抽样 B 型：直播复盘串讲大量不同价位）。"""
-    out, n, k = [], 0, 0
-    while n < chars:
-        k += 1
-        line = f"第{k:03d}个观察点在{k * 7 + 100}元附近。{_TALK}\n"
-        out.append(line)
-        n += len("".join(line.split()))
-    return "".join(out)
-
-
-def _numeric_pool_source(chars: int = 13000) -> str:
-    """数字出现频繁但只有固定一小批不同数字的长源（放行侧：数字量可控，提炼不会塌一半）。"""
-    out, n, k = [], 0, 0
-    while n < chars:
-        k += 1
-        line = f"第{(k % 27) + 1}个观察点在{(k % 27) * 3 + 20}元左右。{_TALK}\n"
-        out.append(line)
-        n += len("".join(line.split()))
-    return "".join(out)
-
-
 class TestRoute:
+    """路由判据（2026-10-29 改）：成本边界（源长）+ 内容类型（`shared/source_types`）。
+
+    数字密度 / 不同数字串两道旧闸已删除；这里只钉「类别归属 → 路由」与成本边界，
+    不再断言任何阈值数值（阈值可调 = 没有判据）。
+    """
+
     def test_short_source_stays_single(self):
         d = DD.route_for_source("短源。\n" * 50)
         assert d["route"] == "single"
         assert "short" in d["reason"]
 
-    def test_long_low_density_routes_distill(self):
+    def test_short_tutorial_source_stays_single(self):
+        """成本边界优先：不足 10000 字的教程也不值得两阶段。"""
+        d = DD.route_for_source("手把手教你的短教程。\n" * 50,
+                                title="手把手教学")
+        assert d["route"] == "single"
+        assert d["signals"]["type"] == "tutorial"
+
+    def test_long_unclassified_routes_distill(self):
         d = DD.route_for_source(_long_source())
         assert d["route"] == "distill"
+        assert d["reason"] == "long_source"
         assert d["signals"]["chars"] >= DD.LONG_SOURCE_MIN_CHARS
+        assert d["signals"]["type"] == ""
 
-    def test_long_numeric_dense_stays_single(self):
-        d = DD.route_for_source(_numeric_source())
-        assert d["route"] == "single"
-        assert "numeric" in d["reason"]
-
-    def test_long_numeric_heavy_stays_single(self):
-        """S9 新增闸：密度不高但不同数字串绝对量大（B 型直播复盘）→ 回单轮。"""
-        d = DD.route_for_source(_numeric_heavy_source())
-        assert d["route"] == "single"
-        assert d["reason"] == "numeric_heavy"
-        assert d["signals"]["digit_density"] < DD.DENSE_DIGIT_DENSITY  # 密度闸拦不住它
-        assert d["signals"]["unique_numbers"] >= DD.NUMERIC_HEAVY_UNIQUE_NUMS
-
-    def test_small_number_pool_still_routes_distill(self):
-        """放行侧不误伤：数字常见但只有一小批不同数字 → 仍走两阶段。"""
-        d = DD.route_for_source(_numeric_pool_source())
+    def test_long_tutorial_routes_distill(self):
+        d = DD.route_for_source(_long_source(), title="手把手教学 - 用Claude Code 搭建工作流")
         assert d["route"] == "distill"
-        assert d["signals"]["unique_numbers"] < DD.NUMERIC_HEAVY_UNIQUE_NUMS
+        assert d["signals"]["type"] == "tutorial"
+        assert d["signals"]["hits"]
 
-    def test_numeric_heavy_threshold_sits_in_calibrated_gap(self):
-        """阈值校准回归：S8 五源 + S9 A/B 实测，放行侧最大 95（D3）、拦截侧最小 191（B）。"""
-        assert 95 < DD.NUMERIC_HEAVY_UNIQUE_NUMS <= 191
+    def test_long_series_course_routes_distill(self):
+        """系列课（缠论/交易体系）按教程走两阶段：用户 2026-10-29 追加。"""
+        d = DD.route_for_source(_long_source(), title="《交易体系篇60》硬核复习！")
+        assert d["route"] == "distill"
+        assert d["signals"]["type"] == "tutorial"
+
+    @pytest.mark.parametrize("title,kind,reason", [
+        ("【深度】中国核电、中国广核价值分析", "ephemeral", "ephemeral_source"),
+        ("黄金不值得投资——黄金到底保得是什么值", "ephemeral", "ephemeral_source"),
+        ("交易的底层逻辑与方法论", "framework", "framework_source"),
+        ("下周行情展望（周复盘）", "news", "news_source"),
+    ])
+    def test_long_time_sensitive_source_stays_single(self, title, kind, reason):
+        """时效 / 框架类长源：只看结论，不投资组合路径（用户 2026-10-29 决策）。"""
+        d = DD.route_for_source(_long_source(), title=title)
+        assert d["route"] == "single"
+        assert d["reason"] == reason
+        assert d["signals"]["type"] == kind
+
+    def test_body_head_decides_when_title_is_silent(self):
+        """标题无类别词时，正文开头一句仍可判类型（宏观研究者常在首段点题）。"""
+        src = "本文讨论宏观数据与市场逻辑。\n" + _long_source()
+        d = DD.route_for_source(src)
+        assert d["route"] == "single"
+        assert d["signals"]["type"] == "ephemeral"
 
     def test_boundary_exactly_at_threshold_routes_distill(self):
         # 恰好 10000 去空白字符（≥ 判长源）
         src = _long_source(DD.LONG_SOURCE_MIN_CHARS)
         assert DD.route_for_source(src)["route"] == "distill"
 
-    def test_signals_are_reported_not_fabricated(self):
-        d = DD.route_for_source(_numeric_source())
-        assert d["signals"]["digit_density"] >= DD.DENSE_DIGIT_DENSITY
+    def test_signals_report_type_not_density(self):
+        """signals 只记成本与类别证据，不再回传可调的数字指标。"""
+        d = DD.route_for_source(_long_source(), title="估值分析")
         assert isinstance(d["signals"]["chars"], int)
-
-    def test_dense_threshold_direction_conservative(self):
-        # 密度恰在阈值上：排除（回单轮是安全方向）
-        src = _long_source(12000, "数字12345占位。\n")
-        d = DD.route_for_source(src)
-        assert d["signals"]["digit_density"] > 0  # sanity
-        # 高于阈值 → single
-        assert DD.route_for_source(_numeric_source())["route"] == "single"
+        assert d["signals"]["type"] == "ephemeral"
+        assert "digit_density" not in d["signals"]
+        assert "unique_numbers" not in d["signals"]
 
 
 # ---------------------------------------------------------------- 材料包块

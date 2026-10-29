@@ -186,10 +186,25 @@ def main():
         print("\n⚠️ 未配置外部 AI Provider，已准备好字幕内容，等待外层对话（Agent）按笔记模板总结。")
         print(f"   视频标题: {result.get('original_title', '未知')}")
         print(f"   链接: {result.get('original_url', '未知')}")
-        if result.get('raw_file'):
-            print(f"   📄 原始字幕文件: {result['raw_file']}（可直接 Read 读取）")
+        if result.get('distill_next_action') == 'distill_then_write':
+            print("\n🧪 长源（≥10000 字）已登记两阶段提炼队列：")
+            print(f"   队列: {result.get('distill_queue')}")
+            print(f"   1) 派提炼: {result['distill_commands']['emit']}")
+            print("   2) 子 Agent 按任务文件提炼，回包写入任务目录")
+            print(f"   3) 回收+装配: {result['distill_commands']['ingest']}")
+            print("   4) 重新读取队列 JSON 中已装配的 prompt 后写作（不再附字幕全文）")
+            print(f"   5) 落盘: {result['distill_save']['command']}")
+            return 0
+        if result.get('distill_next_action') == 'write':
+            print("\n🧪 长源材料包已装配，直接按队列 prompt 写作：")
+            print(f"   队列: {result.get('distill_queue')}")
+            print("   1) 读取队列 JSON 的 prompt（已含材料包和未选区间附录），不要再读字幕全文")
+            print(f"   2) 落盘: {result['distill_save']['command']}")
+            return 0
         # 关键：把字幕正文也吐到 stdout，确保经 Bash 执行的执行模型能直接拿到上下文，
         # 不用再去反查/反读文件（曾因 Bash 子进程未回传字幕而丢上下文）。
+        if result.get('raw_file'):
+            print(f"   📄 原始字幕文件: {result['raw_file']}（可直接 Read 读取）")
         content = result.get('article_content') or ''
         if content:
             print("\n" + "=" * 60)

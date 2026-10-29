@@ -24,13 +24,13 @@
 
 ## 当前实现边界
 
-合格源主链路为「入口 → 抓正文/字幕 → 去重、选模板 → 提炼 → 写作 → 既有机械/内容门禁 → 路由、落盘、登记」，不适用源保留原单轮。`FORCE_AGENT_MODE=1` 下由会话 Agent 编排模型步骤，脚本不会自行消费全部待总结队列。监控和 scys 队列使用 `save_pending.py` 保存，由编排方统一清队列；存量重做使用 `resum_save_batch.py` 覆盖已知 `note_path`，两者不能混用。
+合格源主链路为「入口 → 抓正文/字幕 → 去重、选模板 → 提炼 → 写作 → 既有机械/内容门禁 → 路由、落盘、登记」，不适用源保留原单轮。`FORCE_AGENT_MODE=1` 下由会话 Agent 编排模型步骤，脚本不会自行消费全部待总结队列。监控、scys、UP/公众号历史与系列课补齐经 `filter_pending.py` 自动交接；单篇/单视频长源由入口自动登记一次性队列（`notes/_meta/distill_dispatch/entries/`），同样按 ≥10000 字路由。监控和 scys 队列使用 `save_pending.py` 保存，由编排方统一清队列；存量重做使用 `resum_save_batch.py` 覆盖已知 `note_path`，两者不能混用。
 
 `articles/` 承接文章与最终输出，`videos/` 承接字幕、ASR 和视频编排，`monitors/` 承接订阅发现与运行状态，`prompts/` 承接内容契约，`shared/` 承接公共路由、清洗与会话适配，`scripts/` 提供维护入口。CDP 实例机制依赖用户级 `cdp-automation-profile`，项目薄适配层为 `shared/cdp_session.py`；换机须核对该依赖的安装情况。
 
 ## 计划与交接的适用状态
 
-本轮总结流程开发已完成并归档，没有从 F1/F3R 自动续跑的当前任务。现行操作见 PIPELINES，生效决定见[四步主流程决策](decisions/DECISION-20261029-distill-write-default.md)；下表只作历史证据导航。重新立项前核对分支、未提交修改与实际产物，不按历史快照续跑。
+本轮总结流程开发已完成并归档，没有从 F1/F3R 自动续跑的当前任务。现行操作见 PIPELINES，生效决定见[四步主流程决策](decisions/DECISION-20261029-distill-write-default.md)与[门禁审计决策](decisions/DECISION-20261029-gate-audit.md)（2026-10-29：路由改按内容类型、删两道数字闸、数值保真先 shadow 两周）；下表只作历史证据导航。重新立项前核对分支、未提交修改与实际产物，不按历史快照续跑。
 
 | 文档 | 状态与用途 |
 |---|---|

@@ -214,6 +214,21 @@ def main():
         if result.get('tags'):
             print(f"标签: {', '.join(result['tags'])}")
         print("=" * 60)
+        if result.get('distill_next_action') == 'distill_then_write':
+            print("\n🧪 长源（≥10000 字）已登记两阶段提炼队列：")
+            print(f"   队列: {result.get('distill_queue')}")
+            print(f"   1) 派提炼: {result['distill_commands']['emit']}")
+            print("   2) 子 Agent 按任务文件提炼，回包写入任务目录")
+            print(f"   3) 回收+装配: {result['distill_commands']['ingest']}")
+            print("   4) 重新读取队列 JSON 中已装配的 prompt 后写作（不再附原文全文）")
+            print(f"   5) 落盘: {result['distill_save']['command']}")
+            return 0
+        if result.get('distill_next_action') == 'write':
+            print("\n🧪 长源材料包已装配，直接按队列 prompt 写作：")
+            print(f"   队列: {result.get('distill_queue')}")
+            print("   1) 读取队列 JSON 的 prompt（已含材料包和未选区间附录），不要再读原文全文")
+            print(f"   2) 落盘: {result['distill_save']['command']}")
+            return 0
         print("\n💡 外层对话可直接使用 Read 工具读取 notes/_raw_*.md 文件获取完整原文")
         print("\n💡 通用流程说明（适用于任何 AI 平台）：")
         print("""

@@ -17,6 +17,7 @@ sys.path.insert(0, BASE)
 import scripts.backfill_series as bs  # noqa: E402
 from shared.routing import MONITOR_ROOT  # noqa: E402
 from prompts.templates import QUALITY_GATE_SELFCHECK  # noqa: E402
+from prompts.provenance import text_hash  # noqa: E402
 
 SEASON = "Penny的爬虫实战"
 AUTHOR = "测试UP主"
@@ -111,6 +112,13 @@ def test_backfill_lists_season_filters_registry_and_enqueues(tmp_path):
     assert first["raw_file"]
     assert QUALITY_GATE_SELFCHECK and first["prompt"].endswith(QUALITY_GATE_SELFCHECK)
     assert first["note_type"]
+    assert first["generation_context"]["type_origin"] == "auto"
+    assert first["generation_context"]["note_type"] == first["note_type"]
+    assert first["generation_context"]["prompt_sha256"] == text_hash(first["prompt"])
+    with open(first["raw_file"], "w", encoding="utf-8") as f:
+        f.write("台词1")
+    from scripts.filter_pending import refresh_prompt
+    assert refresh_prompt(first) in ("refreshed", "kept")
 
 
 def test_fail_limit_moves_episode_to_manual_review(tmp_path):

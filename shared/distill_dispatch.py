@@ -6,12 +6,12 @@
 历史 S9 的路由、包机械校验和原文版本绑定继续复用。
 
 职责边界（协议四条，与 §8.4 第 1–4 条一一对应）：
-1. **路由从严**：只对长源（`source_chars_of` ≥ `LONG_SOURCE_MIN_CHARS`）且非数字密集
-   （`digit_density` < `DENSE_DIGIT_DENSITY`）且非高数字量（源内不同数字串
-   < `NUMERIC_HEAVY_UNIQUE_NUMS`）的源走两阶段；其余一律 `single`。
-   误判方向必须落在「保守回单轮」——S8 已证短源无增益、数值密集源 P2 丢失多，
-   S9 真实抽样又补了一类：**密度不高但数字串绝对量很大**的直播复盘（美债 B 篇密度
-   仅 0.0373，却有 191 个不同数字串）同样命中该弱项。
+1. **按内容类型路由**（2026-10-29 改）：长源（`source_chars_of` ≥ `LONG_SOURCE_MIN_CHARS`，
+   这是成本边界）再按类别判定——教程与系列课（缠论/交易体系/波浪理论等成体系课程）走两阶段；
+   观点 / 研报 / 宏观 / 行情复盘 / 公司基本面分析 / 框架方法论一律单轮；未识别按可沉淀
+   （两阶段）处理。类别判据见 `shared/source_types.py`，不含可调数值阈值。旧的两道数字闸
+   （密度 0.08 / 不同数字串 130）已删除：全库 139 篇长源里闸①零作用、闸②落在空带，
+   而它们拦的 B 类源本质是「时效」而非「数字多」。
 2. **装配不改主体**：`prepare_entry`（流程简化 F2 起）用 `assemble_pack_only_prompt` =
    生产 prompt 主体（逐字节）+ 材料包块 + 未选区间附录——写作端输入自包含，默认不再
    另读源文件全文，按需按行段回查。`assemble_write_prompt`（无附录的旧输入模式）保留
@@ -36,7 +36,7 @@ from prompts.distill import CONTRACT_VERSION  # noqa: E402
 from prompts import synthesis as SY  # noqa: E402
 from prompts.templates import source_chars_of, render_selection_rights  # noqa: E402
 from shared import distill_pack as DP  # noqa: E402
-from shared.source_metrics import unique_number_count  # noqa: E402
+from shared import source_types as ST  # noqa: E402
 
 MATERIAL_PACK_BEGIN = "<<<DISTILL_MATERIAL_PACK>>>"
 MATERIAL_PACK_END = "<<<END_DISTILL_MATERIAL_PACK>>>"
@@ -47,17 +47,13 @@ def distill_dispatch_enabled() -> bool:
     """已批准的两阶段派单默认启用；显式设 0 可关闭。"""
     return os.environ.get("NOTE_DISTILL_DISPATCH", "1") == "1"
 
-# 路由阈值
+# 单篇/单视频入口的一次性队列目录（长源交接用；与常驻队列消费互不影响）
+ENTRY_QUEUE_DIR = os.path.join(ROOT, "notes", "_meta", "distill_dispatch", "entries")
+
+# 路由参数：只剩**成本/容量**边界，不再有可调的质量阈值。
+# 源长 < LONG_SOURCE_MIN_CHARS → 两阶段不划算，直接单轮；类别判据在 shared/source_types.py。
 LONG_SOURCE_MIN_CHARS = 10000
 SHORT_SOURCE_MAX_CHARS = 5000
-# ① 密度闸（S8 五源校准：D2 密度 0.174，其余四源 ≤0.027 → 0.08 取中间偏保守）
-DENSE_DIGIT_DENSITY = 0.08
-# ② 绝对量闸（S9 真实抽样后新增，2026-10-27）：密度按全文均摊，长直播稿的大段口语论述会
-#    稀释密度——美债 B 篇密度仅 0.0373 却含 191 个不同数字串，仍复现了「数值密集」弱项。
-#    两个已知点的空隙：放行侧最大 95（S8-D3），拦截侧最小 191（S9-B）→ 取 130（偏保守侧，
-#    全库 120 与 150 两档实测结果相同，该区间无样本）。口径 = `shared.source_metrics`
-#    （去标题行与 `> 标题/时间` 元信息块后的不同数字串个数）。
-NUMERIC_HEAVY_UNIQUE_NUMS = 130
 
 # ④ 超长源分块阈值（S9 抽样 §5.1：B 篇 52.8k 字产出 105.6KB pack / 79,496 字符写作 prompt，
 #    「单次任务能承载多大」没有边界结论 → >40k 字先分块提炼，再谈接线）。
@@ -80,11 +76,9 @@ PACK_BLOCK_HEADER = (
     + render_selection_rights().rstrip("\n")
 )
 
-_DIGIT_RE = re.compile(r"[0-9]")
-
 
 class PrepareIneligible(Exception):
-    """该篇不走两阶段（短源/数字密集/无有效 pack/源不可读）——降级单轮，不算失败。
+    """该篇不走两阶段（短源/时效类源/无有效 pack/源不可读）——降级单轮，不算失败。
 
     `stripped`：本次判定是否**真的改了条目**（剥掉过旧材料包块）。True 表示调用方
     必须把队列写回——否则失效包块会留在条目里被下一轮继续消费（§8.5 第 1 条，2026-10-27
@@ -108,26 +102,25 @@ def _text_hash(text: str) -> str:
 
 # ------------------------------------------------------------------ 路由
 
-def route_for_source(source_text: str) -> dict:
+def route_for_source(source_text: str, title: str = "") -> dict:
     """是否走「提炼 → 按 pack 写作」两阶段。返回 {"route","reason","signals"}。
 
-    保守方向：任何判不准的情形都回 `single`；`reason` 便于在报告里分组解释。
+    两层判据：① **成本边界**（源长 < `LONG_SOURCE_MIN_CHARS` 不值得两阶段）；
+    ② **内容类型**（`shared/source_types.classify_source_type`）：教程 → 两阶段，
+    时效类（观点/研报/宏观/复盘/公司基本面分析）与框架类 → 单轮，未识别 → 两阶段。
+
+    类型判定不含可调数值阈值；`signals` 只记录 `chars` 与命中的类别词，便于报告分组。
+    `reason`：`short_source` / `below_long_threshold` / `<type>_source` / `long_source`。
     """
     text = source_text or ""
     chars = source_chars_of(text)
-    density = (len(_DIGIT_RE.findall(text)) / chars) if chars else 0.0
-    uniq = unique_number_count(text)
-    signals = {"chars": int(chars), "digit_density": round(density, 4),
-               "unique_numbers": int(uniq)}
+    kind = ST.classify_source_type(title, text)
+    signals = {"chars": int(chars), "type": kind["type"], "hits": kind["hits"]}
     if chars < LONG_SOURCE_MIN_CHARS:
         reason = "short_source" if chars < SHORT_SOURCE_MAX_CHARS else "below_long_threshold"
         return {"route": "single", "reason": reason, "signals": signals}
-    if density >= DENSE_DIGIT_DENSITY:
-        # S8 弱项：数值密集表格源 P2 丢失增多 → 保持单轮，不做条目粒度改造前不放开
-        return {"route": "single", "reason": "numeric_dense", "signals": signals}
-    if uniq >= NUMERIC_HEAVY_UNIQUE_NUMS:
-        # S9 补录的同一弱项另一张脸：密度低但数字串绝对量大（直播复盘/行情串讲）
-        return {"route": "single", "reason": "numeric_heavy", "signals": signals}
+    if ST.route_for_type(kind["type"]) == "single":
+        return {"route": "single", "reason": f"{kind['type']}_source", "signals": signals}
     return {"route": "distill", "reason": "long_source", "signals": signals}
 
 
@@ -733,7 +726,7 @@ def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
 
     **回退语义（§8.5 第 1 条，2026-10-27 修正）**：
     - **先判路由/源可读性，再决定旧包去留**。旧实现只在走到装配分支时才剥包，于是
-      「曾经装配过、现在源变短 / 变数字密集 / 源不可读」的条目会带着旧包块**原样返回**，
+      「曾经装配过、现在源变短 / 变成时效类 / 源不可读」的条目会带着旧包块**原样返回**，
       等于继续消费一个既不同源也不该走两阶段的材料包。
     - 不可装配的三种情形（源不可读 / 路由回单轮 / 无有效 pack）统一先把历史包块归一，
       该剥就剥并同步清 `distill_*` provenance；`exc.stripped=True` 表示条目已变，
@@ -750,7 +743,7 @@ def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
     prompt = entry.get("prompt", "") or ""
     base_prompt, n_blocks = strip_pack_blocks(prompt)
     src = source_text if source_text is not None else _read_source(entry)
-    decision = route_for_source(src or "")
+    decision = route_for_source(src or "", title=title)
     base_record = {"url": url, "title": title, "route": decision["route"],
                    "reason": decision["reason"], "signals": decision["signals"]}
 
@@ -769,7 +762,7 @@ def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
     # ① 源不可读：明确回退状态，绝不拿读不到的源继续沿用旧包
     if src is None:
         raise _bail("source_unavailable", "source_unavailable")
-    # ② 路由判回单轮（短源/数字密集/数字总量大）：旧包一律剥掉
+    # ② 路由判回单轮（短源/时效类/框架类）：旧包一律剥掉
     if decision["route"] != "distill":
         raise _bail(decision["reason"], "route_fallback")
 
@@ -847,6 +840,112 @@ def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
             "entry": entry, "decision": decision, "pack": pack}
 
 
+# ------------------------------------------------------------------ 单篇/单视频交接
+
+def entry_queue_path(entry: dict, queue_dir: str = "",
+                     source_text: "str | None" = None) -> str:
+    """一次性队列 JSON 路径；同一 URL 的交接可幂等覆盖。"""
+    base = (queue_dir or os.environ.get("NOTE_DISTILL_ENTRY_QUEUE_DIR")
+            or ENTRY_QUEUE_DIR)
+    src = source_text if source_text is not None else (_read_source(entry) or "")
+    key = DP.url_key_of(str(entry.get("url") or ""), src)
+    return os.path.join(base, f"{key}.json")
+
+
+def _write_entry_queue(path: str, entry: dict, dry_run: bool = False) -> bool:
+    if dry_run:
+        return False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump([entry], f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+    return True
+
+
+def _entry_save_payload(path: str, url: str) -> dict:
+    return {
+        "queue": path,
+        "key": url,
+        "command": (f'python scripts/save_pending.py --queue "{path}" '
+                    f'--key "{url}" --file <总结稿.md>'),
+    }
+
+
+def _entry_handoff_payload(path: str, url: str, task_dir: str,
+                           status: str, reason: str = "") -> dict:
+    payload = {
+        "distill_route": "distill",
+        "distill_status": status,
+        "distill_queue": path,
+        "distill_task_dir": task_dir,
+        "distill_next_action": "distill_then_write",
+        "distill_commands": {
+            "emit": (f'python scripts/distill_prepare.py --queue "{path}" '
+                     f'--emit --out "{task_dir}"'),
+            "ingest": (f'python scripts/distill_prepare.py --queue "{path}" '
+                       f'--ingest --dir "{task_dir}" --prepare'),
+        },
+        "distill_save": _entry_save_payload(path, url),
+    }
+    if reason:
+        payload["distill_reason"] = reason
+    return payload
+
+
+def single_entry_handoff(entry: dict, source_text: "str | None" = None,
+                         queue_dir: str = "", store_dir: str = "",
+                         log_path: str = "", dry_run: bool = False) -> dict:
+    """单篇/单视频入口的交接：长源登记一次性队列并尽量装配材料包。
+
+    返回字段由入口直接并入结果；不适用（开关关闭 / 短源 / 时效类源 / 无 URL /
+    源不可读 / 队列写入失败）返回空 dict，保持原单轮行为。
+    """
+    if not distill_dispatch_enabled():
+        return {}
+    url = str(entry.get("url") or "")
+    if not url:
+        return {}
+    src = source_text if source_text is not None else _read_source(entry)
+    if src is None:
+        return {}
+    if route_for_source(src, title=str(entry.get("title") or ""))["route"] != "distill":
+        return {}
+    path = entry_queue_path(entry, queue_dir, source_text=src)
+    task_dir = os.path.join(os.path.dirname(path), "tasks",
+                            os.path.splitext(os.path.basename(path))[0])
+    if dry_run:
+        return {}
+    try:
+        rep = prepare_entry(entry, store_dir=store_dir, log_path=log_path,
+                            source_text=src)
+    except PrepareIneligible as exc:
+        try:
+            _write_entry_queue(path, entry)
+        except OSError as err:
+            print(f"[WARN] 一次性提炼队列写入失败，回退单轮: {err}")
+            return {}
+        return _entry_handoff_payload(path, url, task_dir,
+                                      "needs_distill", exc.reason)
+    try:
+        _write_entry_queue(path, entry)
+    except OSError as err:
+        print(f"[WARN] 一次性提炼队列写入失败，回退单轮: {err}")
+        return {}
+    if rep.get("status") == "stale_stripped":
+        return _entry_handoff_payload(path, url, task_dir,
+                                      "needs_distill", rep.get("reason", ""))
+    return {
+        "distill_route": "distill",
+        "distill_status": rep.get("status", ""),
+        "distill_queue": path,
+        "distill_next_action": "write",
+        "prompt": entry.get("prompt", ""),
+        "generation_context": entry.get("generation_context") or {},
+        "distill_save": _entry_save_payload(path, url),
+    }
+
+
 def _apply_prompt(entry: dict, new_prompt: str, updates: "dict | None" = None,
                   drop_distill: bool = False, dry_run: bool = False) -> None:
     """写回条目的 prompt 与 provenance（`dry_run` 不写）——剥包与装配共用一处，避免
@@ -908,7 +1007,7 @@ def plan_queue(queue_path: str, store_dir: str = "") -> dict:
                          "pending_strip": n_blocks > 0,
                          "note_type": e.get("note_type", "")})
             continue
-        d = route_for_source(src)
+        d = route_for_source(src, title=e.get("title", ""))
         row = {"url": url, "title": e.get("title", ""), "route": d["route"],
                "reason": d["reason"], "signals": d["signals"],
                "note_type": e.get("note_type", "")}
@@ -947,7 +1046,7 @@ def emit_distill_tasks(queue_path: str, out_dir: str, store_dir: str = "") -> di
         url = e.get("url", "") or ""
         title = e.get("title", "") or ""
         src = _read_source(e)
-        d = route_for_source(src or "")
+        d = route_for_source(src or "", title=title)
         if d["route"] != "distill":
             skipped.append({"url": url, "reason": d["reason"]})
             continue

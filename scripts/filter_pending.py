@@ -88,11 +88,11 @@ def refresh_prompt(e: dict) -> str:
 def distill_prepare(e: dict) -> str:
     """长源两阶段装配，默认开启，显式 `NOTE_DISTILL_DISPATCH=0` 可关闭。
 
-    只有**已存在有效 pack** 的条目会被装配材料包块；短源/数值密集仍单轮。
+    只有**已存在有效 pack** 的条目会被装配材料包块；短源/时效与框架类仍单轮。
     合格源无包或版本失配返回 needs_distill，不能静默当作单轮已就绪。
     必须排在 `refresh_prompt` 之后——刷新会重建 prompt 主体，先装配会被覆盖。
 
-    **回退也可能改写条目**（§8.5 第 1 条）：源变短/变数字密集/源不可读时，
+    **回退也可能改写条目**（§8.5 第 1 条）：源变短/类别判为单轮/源不可读时，
     `prepare_entry` 会把残留的旧材料包块剥掉，此时 `PrepareIneligible.stripped=True`
     → 返回 `stripped`，`_run_queue` 必须写回队列；**不能仅依赖 refresh_prompt 先行
     重建来掩盖**（那条路径只在 type/version 变化时重写 prompt）。

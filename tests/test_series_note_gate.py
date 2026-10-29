@@ -76,11 +76,11 @@ class TestSeriesNoteMechanicalGate:
         monkeypatch.setattr(articles_main, "OutputManager",
                             lambda *a, **k: self.manager_calls.append(1) or _StubManager())
 
-    def _save(self, content: str):
+    def _save(self, content: str, source_text: str = ""):
         return videos_main._save_series_note(
             content=content, series_dir=self.series_dir, base_name="第01集_测试",
             author="UP主", url="https://example.com/ep1", tags=["#测试"],
-            note_type="structured", obsidian=False, folder="")
+            note_type="structured", obsidian=False, folder="", source_text=source_text)
 
     def test_compliant_passes_and_saves(self):
         path = self._save(VALID_STRUCT_CONTENT)
@@ -128,6 +128,25 @@ class TestSeriesNoteMechanicalGate:
         assert str(ei.value).startswith("VERIFIER_FAILED")
         assert "原文 URL" in str(ei.value)
         assert self.manager_calls == []
+
+    def test_numeric_fidelity_block_stops_before_formatter(self, monkeypatch):
+        """数值保真 2026-10-29：带单位读数在源里查不到 → block 模式拦在 formatter 之前。"""
+        monkeypatch.setenv("NUMERIC_FIDELITY_GATE", "block")
+        with pytest.raises(ValueError) as ei:
+            self._save(VALID_STRUCT_CONTENT + "\n\n营收4530万元。",
+                       source_text="营收4540万元。")
+        assert str(ei.value).startswith("VERIFIER_FAILED")
+        assert "数值保真" in str(ei.value)
+        assert self.formatter_calls == []
+        assert self.manager_calls == []
+
+    def test_numeric_fidelity_shadow_still_saves(self, monkeypatch):
+        """默认 shadow：同样的问题只留痕，不拦落盘（用户拍板的两周观测节奏）。"""
+        monkeypatch.setenv("NUMERIC_FIDELITY_GATE", "shadow")
+        path = self._save(VALID_STRUCT_CONTENT + "\n\n营收4530万元。",
+                          source_text="营收4540万元。")
+        assert path == os.path.join(self.series_dir, "第01集_测试.md")
+        assert self.manager_calls == [1]
 
 
 class TestSummarizeAndSaveGateWiring:
@@ -192,3 +211,20 @@ class TestSummarizeAndSaveGateWiring:
                              "evidence_report": {"findings": [], "semantic_status": "not_reviewed"}}
         fn, final, degraded, _, _ = self._run(force=True)
         assert fn == "f.md"
+
+    def test_numeric_fidelity_block_raises(self, monkeypatch):
+        """数值保真 2026-10-29：视频实时路径与文章/队列路径同基线，block 才拦。"""
+        monkeypatch.setenv("NUMERIC_FIDELITY_GATE", "block")
+        monkeypatch.setattr(videos_main, "_summarize_segments",
+                            lambda *a, **k: "营收4530万元。")
+        with pytest.raises(ValueError) as ei:
+            self._run(segments="营收4540万元。")
+        assert str(ei.value).startswith("VERIFIER_FAILED")
+        assert "数值保真" in str(ei.value)
+
+    def test_numeric_fidelity_shadow_saves(self, monkeypatch):
+        monkeypatch.setenv("NUMERIC_FIDELITY_GATE", "shadow")
+        monkeypatch.setattr(videos_main, "_summarize_segments",
+                            lambda *a, **k: "营收4530万元。")
+        fn, final, degraded, _, _ = self._run(segments="营收4540万元。")
+        assert fn == "f.md" and degraded is False

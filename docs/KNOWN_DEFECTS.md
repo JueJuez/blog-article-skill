@@ -40,7 +40,8 @@
 | D8 | 存量重做·受控替换 | `controlled_replace.decide` 只比"确定性缺陷数"，相等（含双0）→ 保留旧稿；无缺陷旧稿永不被"更优但无新缺陷"的新稿替换（只防变差、不追求变好） | `shared/controlled_replace.py` `decide`：平手/更差保留旧稿 | 缺陷数相等时引入质量增益维度（覆盖率对齐/评估集分），明确更优才换 |
 | D11 | 长源提炼（N6 原文逐字保真不等于选材完整，本项仍保留） | `coverage.complete=true` 只证明**派单区间**首尾相接覆盖全文，不证明模型逐段提炼：N4 实测两份 pack（v4 36 条 / v2 202 条）都声明全覆盖，独立审计各查出整段空洞（v4 有 L1495–1501 无条目、L1502–1533 行号声明覆盖但正文跳过；v2 有 9 处整段无条目） | `distill_pack.coverage_issues` 只校验 `processed_ranges`（来自块边界），没有段级"已读"信号 | 缺口保留；已用未选区间附录保证可得文本仍可见；前轮语义评估结果保留在归档记录，后续验证需另行立项；不把附录存在当覆盖通过，也不预设新增“已读声明”系统 |
 | D12 | 长源切分 | `CHUNK_MAX_CHARS` 是**软上限**：切点落在跨阈值那一行之后，块可超容量最多一个行长；实测 52,757 字符大段切出 43,393 字符块（容量 40,000，因含 32,887 字符单行 JSON） | `distill_dispatch._split_oversized` 散文分支；`tests/test_distill_structural_chunking.py::test_chunk_size_respects_capacity` 显式允许「≤ 容量 + 最长单行」 | 按容量设计输入时留一行余量；要硬上限需改切点规则（会换 prompt hash，未做） |
-| D13 | 长源统稿 | N3 的多块回收门与全篇统稿**没有真实样本**：全库 ≥30k 源中无一篇同时满足「路由 distill」与「>40k 需切块」 | 30k+ 源要么数字密集/数字量大被路由排除，要么 <40k 单块 | 需一篇 ≥40k 且数字不过密的源才能验证缺块拒收与跨块 deferred 对账；未验证前不声称多块路径已验收 |
+| D13 | 长源统稿 | N3 的多块回收门与全篇统稿**没有真实样本**：全库 ≥30k 源中无一篇同时满足「路由 distill」与「>40k 需切块」；此前 30k+ 源多被数字闸排除 | `shared/distill_dispatch.py` `route_for_source`；`KNOWN_DEFECTS` 旧快照 | 2026-10-29 数字闸已删（改内容类型路由），路由侧不再挡住 ≥30k 源；**仍缺 ≥40k 真实样本**，多块回收门与跨块 deferred 对账未验证，不声称已验收 |
+| D14 | 门禁与业务迭代脱节（2026-10-29 审计） | ① `NOTE_QUALITY_GATE` 的 prompt 只要求 `{score,pass,issues}`，解析器却读 `coverage`/`status`/`reviewer_role`，靠默认值兜过（休眠缺陷，开关默认关）；② `review_flags` 只入异步复审队列，而 AGENTS 默认不消费 → 信号空转；③ 照搬重合阈值 20% 与「可逐字引用」指令只剩约 5pp 余量（F7 实测最高 0.15）；④ `quote_not_found` 对 pack 多段拼接（`SOURCE_GAP`）只有提示级约束，非机械级 | `prompts/verifier.py` / `prompts/content_signals.py` / `scripts/run_async_review.py` / `prompts/evidence.py` | 按「门禁=二值不可调参 / 观测=比例不拦盘 / 策略=类型清单」三层归位：二值判据保留，比例信号只观测或显式消费；是否收紧 ③④ 需先有真实样本再定，不凭手感调阈值 |
 
 ## 各缺陷详述
 

@@ -32,8 +32,8 @@
 - 复用入口，抓取、路由、门禁、登记由代码负责。不要手搓平台私有接口、临时抓取脚本或直接调生产落盘函数绕过门禁。
 - `FORCE_AGENT_MODE=1` 下消费入口返回的 prompt 与原文；批量总结派子 Agent，主会话负责编排与核验。
 - 监控结束在本次会话闭环 monitors / scys 队列：`filter_pending.py` 刷新 prompt 并清已总结条目 → 子 Agent 按条目 prompt 写稿 → `save_pending.py` 落盘 → 编排方统一再清队列。字段与命令见 PIPELINES §4。
-- 当前默认采用「提炼 → 写作 → 既有机械/内容门禁 → 原入口落盘」，不再逐篇派模型核对、自动补稿或修补后复审。`NOTE_DISTILL_DISPATCH` 默认开启，显式 `0` 可关闭；适用范围沿用现有长度路由与数字熔断，切块不变。执行以 PIPELINES 为准；决定与边界见[四步主流程决策](docs/decisions/DECISION-20261029-distill-write-default.md)，完整开发计划已归档。
-- 先读 `filter_pending.py` 的 `distill` / `next_action`：合格源显示 `needs_distill`、`incomplete` 或 `stale` 时，先经 `distill_prepare.py --emit → 子 Agent 提炼 → --ingest --prepare`，不能直接拿未提炼 prompt 写稿；已有同版有效 pack 则复用。单篇入口交接按 PIPELINES §2 复用同一提炼入口。
+- 当前默认采用「提炼 → 写作 → 既有机械/内容门禁 → 原入口落盘」，不再逐篇派模型核对、自动补稿或修补后复审。`NOTE_DISTILL_DISPATCH` 默认开启，显式 `0` 可关闭；适用范围 = 长度成本边界（≥10000 字）+ **内容类型**（`shared/source_types.py`：教程与系列课（缠论/交易体系/波浪理论等）走两阶段，观点/研报/宏观/行情复盘/公司基本面分析/框架方法论走单轮，未识别走两阶段），切块不变；旧的两道数字闸（密度 0.08、不同数字串 130）已于 2026-10-29 删除。执行以 PIPELINES 为准；决定与边界见[四步主流程决策](docs/decisions/DECISION-20261029-distill-write-default.md)与[门禁审计决策](docs/decisions/DECISION-20261029-gate-audit.md)，完整开发计划已归档。
+- 先读 `filter_pending.py` 的 `distill` / `next_action`：合格源显示 `needs_distill`、`incomplete` 或 `stale` 时，先经 `distill_prepare.py --emit → 子 Agent 提炼 → --ingest --prepare`，不能直接拿未提炼 prompt 写稿；已有同版有效 pack 则复用。单篇/单视频入口（≥10000 字且类型判为可沉淀：教程/系列课或未识别）会**自动登记一次性队列**并返回 `distill_*` 交接字段：`distill_then_write` 先提炼再写作，`write` 直接消费队列里的装配 prompt；落盘用 `save_pending.py --queue <JSON路径> --key <url> --file <稿>`。细节按 PIPELINES §2。
 - `generation_context.distill_input_mode == "pack_only"` 时，prompt 已含完整材料（原文素材 + 未选区间附录）；写作只消费该 prompt，默认不再附原文全文或整篇读 `raw_file`，按需按行段回源。写完直接走原保存入口；`check_note_coverage.py` 仅作可选机械报告，可疑不触发默认模型任务，不能将报告当语义通过。
 - 补审工具及测试保留、勿删，后续可按用户要求沿原入口重新编排；当前不接入主流程：`run_async_review.py`（异步复审消费端）、`check_note_coverage.py --emit-patch / --verify-insert-only`（定向补稿及纯插入核验）、`NOTE_QUALITY_GATE`（落盘前第二遍 AI 把关）、`audit_note_grounding.py`（接地审计）。只在用户明确要求或专门评估时运行，不新增每篇的前置/后置步骤，除用户明确要求外不主动消费复审队列。
 - 类型与版本刷新以 PIPELINES §4 为准；`filter_pending.py --dry-run` 只读预览，不清队列。auto可重算type，manual保留，legacy只报差异；版本失配不能用force绕过。

@@ -8,7 +8,7 @@
 
 | 项 | 当前口径 |
 |---|---|
-| 适用源 | 走 `shared/distill_dispatch` 路由的合格源（长源、非数字密集、不同数字串 <130）；不适用源按原路由单轮 |
+| 适用源 | 走 `shared/distill_dispatch` 路由的合格源（≥10000 字成本边界 + 内容类型判为可沉淀：教程/系列课、未识别；观点/研报/宏观/复盘/公司基本面分析/框架方法论走单轮）；不适用源按原路由单轮 |
 | 模型调用 | 提炼 1 次 + 写作 1 次；复用同版有效包时只写作 |
 | 开关 | `NOTE_DISTILL_DISPATCH` 默认 `1`，显式 `0` 关闭自动装配 |
 | 缺包 | `filter_pending.py` 报 `needs_distill` / `incomplete` / `stale` 时，先 `distill_prepare.py --emit → 提炼 → --ingest --prepare`，不能拿未提炼 prompt 直接写稿 |
@@ -67,13 +67,28 @@
 **入口**：`python articles/run.py "<url>"`（或 `from articles import skill_main`）/ `python videos/run.py --url`
 **特点**：文件名由 `generate_filename(publish_time + title)` 推导，落进 folder 路由或【待归类】。
 
-**会话 Agent 接手的两阶段流程（当前默认）**：单篇返回 `need_continue_summary` 后，先按同版磁盘源和现有路由判定。
-对合格源，将返回的派工元数据登记成一次性队列 JSON（列表；`url`/`title` 对应返回的 `original_url`/`original_title`，
-保留 `raw_file`、`note_type`、`prompt`、`generation_context` 及保存元数据，不重复存 `article_content` 全文），
-放在 `notes/_meta/distill_dispatch/`；复用 `scripts/distill_prepare.py --queue <该 JSON 路径>` 的 emit/ingest/prepare，
-按 §4 派提炼后再写作。不适用源保留原单轮；有效 pack 不重复提炼。成稿仍经本节登记的 `articles.skill_main`
-保存分支，传回装配后的 `generation_context`、同版 `raw_file` 和原保存元数据，不直接调用底层落盘函数。
-这属于已有入口的会话编排，不对 `FORCE_AGENT_MODE=0` 外部 provider 新建自动调用链。
+**会话 Agent 接手的两阶段流程（当前默认，2026-10-29 入口接线）**：`articles.skill_main` 与
+`videos.summarize_video` 降级返回 `need_continue_summary` 时，若同版磁盘源 ≥10000 字且**内容类型判为可沉淀**
+（`shared/source_types.py`：教程与系列课（缠论/交易体系/波浪理论等）→ 两阶段；观点 / 研报 / 宏观 / 行情复盘 / 公司基本面分析 / 框架方法论 → 单轮；
+未识别 → 两阶段），入口**自动登记一次性队列**
+`notes/_meta/distill_dispatch/entries/<url_key>.json`（单项列表，`url`/`title` 对应返回的
+`original_url`/`original_title`，含 `raw_file`、`note_type`、`prompt`、`generation_context` 及保存元数据，
+不重复存 `article_content` 全文），并在结果里返回交接字段：
+- `distill_status=needs_distill` / `distill_next_action=distill_then_write`：按 `distill_commands.emit`
+  派提炼 Agent，回包写入任务目录，再跑 `distill_commands.ingest`（`--ingest --dir <任务目录> --prepare`），
+  最后读队列 JSON 中装配后的 prompt 写作；
+- `distill_status=prepared|already_prepared` / `distill_next_action=write`：有效 pack 已在库，
+  直接读队列 JSON 的 `prompt`/`generation_context`，默认不再读原文全文。
+不适用源（短源、时效/框架类源、无 URL 的粘贴或纯本地输入、源不可读、`NOTE_DISTILL_DISPATCH=0`）
+保持原单轮。路由判据只看「信息半衰期/可沉淀性」，不含可调数值阈值；旧的两道数字闸已于
+2026-10-29 删除（见[门禁审计决策](decisions/DECISION-20261029-gate-audit.md)）。成稿仍经本节登记的
+`articles.skill_main` 保存分支（传回装配后的 `generation_context`、
+同版 `raw_file` 与原保存元数据），或队列形态直接
+`python scripts/save_pending.py --queue <一次性队列JSON路径> --key <url> --file <总结稿.md>`
+（按 monitors 字段处理，保留 provenance 对账、去重、机械/内容门禁与数值保真
+`shadow` 留痕，见 RULES §4.2），不直接调用底层落盘函数。
+监控/UP/scys/系列课/公众号历史仍由 `filter_pending.py` 自动完成同一交接；
+本入口只补单篇/单视频，不对 `FORCE_AGENT_MODE=0` 外部 provider 新建自动调用链。
 
 
 **零件（非入口）**：`articles.fetch_web_content`（scys 自动分流 CDP）、`summarize_content`（调 AI）、
@@ -524,7 +539,7 @@ CDP 通道从 `unknown_no_html` 变为可数图（拿到 DOM 时按 `images_not_
 
 **当前默认：提炼 → 写作 → 机械/内容门禁 → 落盘**（[用户确认的生效决定](decisions/DECISION-20261029-distill-write-default.md)）：
 1. `python scripts/filter_pending.py` 先清已总结项并刷新派工。`NOTE_DISTILL_DISPATCH` 默认开启，显式 `0` 可关闭；
-   沿用现有 ≥10k 长源路由、数字密集/高数字量熔断与原分块，不扩大适用范围。
+   沿用现有 ≥10k 长度成本边界、内容类型路由（`shared/source_types.py`）与原分块；旧「数字密集/高数字量」熔断已于 2026-10-29 删除。
 2. 报告有 `needs_distill`、`incomplete`、`stale` 或 `stripped_needs_distill`（`next_action=distill_then_write`）时，先运行
    `python scripts/distill_prepare.py --queue <monitors|scys|JSON路径> --emit --out <任务目录>`，派提炼 Agent，
    然后 `--queue <同队列> --ingest --dir <任务目录> --prepare`。只装配本批回收成功项；失败/缺块不硬推进，不把缺包当单轮。
@@ -532,6 +547,7 @@ CDP 通道从 `unknown_no_html` 变为可数图（拿到 DOM 时按 `images_not_
 3. 写作 Agent 消费装配后的完整 prompt（包内原文 + 未选区间附录），完成后直接执行本节原 `save_pending.py`。
    新 `generation_context` 记 `distill_workflow=distill_write`、`distill_postprocess=mechanical_only`；
    旧流程声明会重装并刷新写作 prompt hash。作者在同次写作中的自检保留，不另起核对 Agent。
+   单篇/单视频的一次性队列同样适用：`python scripts/save_pending.py --queue <JSON路径> --key <url> --file <稿>`。
 4. 原版本/同源/缺块校验、去重、机械/内容保存门禁保持；硬门禁失败按原规则修订，不能 force 绕过。
    **常规流程不再逐篇调用模型核对、自动补稿或修补后复审**。成功保存后仍由编排方统一清队列。
 
@@ -571,6 +587,9 @@ CDP 通道从 `unknown_no_html` 变为可数图（拿到 DOM 时按 `images_not_
 
 **入口**：`python scripts/backfill_series.py --series <名>`（清单外整季补齐）；
 日常增量**无需手工跑**——单集随单篇队列消费（五步管线 `summarize_series_episode`）。
+整季补齐入队时已带预计算 `prompt` + `generation_context`（`type_origin=auto`），
+`filter_pending.py` 会按同一口径刷新类型，并对 ≥10000 字的集数装配材料包；
+短集与时效/框架类集数仍单轮。
 长任务：`scripts/launch_backfill_series_detached.py`。
 **零件**：`summarize_series_episode`、`ensure_series_node`、`convert_series_to_hierarchy.py`。
 

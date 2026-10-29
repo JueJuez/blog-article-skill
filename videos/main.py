@@ -174,6 +174,10 @@ def _summarize_and_save(segments, source_url: str, title: str, author: str,
                         else (segments if isinstance(segments, str) else ""))
     _gate = verify_note_mechanical(final, note_type, source_url=source_url,
                                    source_text=_transcript_text, source_author=author)
+    # 数值保真（2026-10-29）：与文章/队列路径同基线；默认 shadow 只留痕，block 才拦。
+    from prompts.numeric_fidelity import apply_to_gate
+    _gate = apply_to_gate(_gate, final, _transcript_text,
+                          url=source_url, title=title or "")
     if not _gate["passed"]:
         from shared.gate_blockers import log_gate_block
         log_gate_block('video', note_type, source_url, title, _gate['issues'], evidence=_gate['evidence_report'])
@@ -278,6 +282,9 @@ def _save_series_note(content: str, series_dir: str, base_name: str,
     """
     gate = verify_note_mechanical(content, note_type, source_url=url,
                                  source_text=source_text, source_author=author)
+    # 数值保真（2026-10-29）：系列课落盘与单视频/文章同基线；默认 shadow 只留痕。
+    from prompts.numeric_fidelity import apply_to_gate
+    gate = apply_to_gate(gate, content, source_text, url=url, title=base_name)
     if not gate["passed"]:
         from shared.gate_blockers import log_gate_block
         # 拦截事件持久化（gate_blockers 台账）：直连/apply 两条路共用本函数，
@@ -855,9 +862,10 @@ def _finalize_single(title, segments, url, input_data, visual_context: str = "")
         # 与 articles 降级对齐：字幕原文落 raw 文件，外层/监控可 Read 后按模板总结
         raw_file = articles_main.save_raw_content_to_file(article_content, title=title)
         with open(raw_file, encoding="utf-8") as f:
-            fields = dispatch_fields(title, f.read(), note_type,
-                                     "manual" if input_data.get("note_type") else "auto")
-        return {
+            source_text = f.read()
+        fields = dispatch_fields(title, source_text, note_type,
+                                 "manual" if input_data.get("note_type") else "auto")
+        result = {
             "success": True,
             "need_continue_summary": True,
             "message": "✅ 已准备好字幕内容，等待执行模型（Agent）按笔记模板总结",
@@ -871,6 +879,19 @@ def _finalize_single(title, segments, url, input_data, visual_context: str = "")
             "folder": folder,
             "publish_time": publish_time,
         }
+        # 长源（≥10000 字）默认登记一次性提炼队列；短源/时效与框架类保持原单轮。
+        # 监控/系列增量随后会写入常驻队列（由 filter_pending 统一交接），显式跳过以免重复。
+        if input_data.get("_entry_handoff", True):
+            from shared.distill_dispatch import single_entry_handoff
+            handoff = single_entry_handoff({
+                "url": url, "title": title, "raw_file": raw_file,
+                "note_type": fields["note_type"], "prompt": fields["prompt"],
+                "generation_context": fields["generation_context"],
+                "author": author, "tags": tags or [], "folder": folder,
+                "publish_time": publish_time,
+            }, source_text=source_text)
+            result.update(handoff)
+        return result
 
     return {
         "success": True,

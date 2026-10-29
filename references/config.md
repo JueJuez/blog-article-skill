@@ -228,8 +228,10 @@ OPENAI_API_KEY=sk-xxxx
 | `NOTE_ASYNC_REVIEW_RATE` | `0.15` | 触发式的抽样比例；消费端 `scripts/run_async_review.py` 才花钱 |
 | `NOTE_SHORT_GRANULARITY` | `0` | `1` 时短源块再加「禁止并列铺开」条款。**仅对照轮实验用，已否决**（`PLAN-20261019` §4.7：0-2k 能压到 1.49，但会挤掉必留的条件/原则）；生产保持 `0` |
 | `NOTE_THIN_CHECKLIST` | `0` | `1` 时给 2k–10k 源注入 799 字薄清单（S2 实验臂）。**已证伪：不推广，保持 0**（5 篇配对：保留率 96.6% vs 98.3%、失真 4 vs 2、字数 −13.9%），见 `notes/_meta/eval/20261026-thin-checklist/REPORT.md` |
-| `NOTE_DISTILL_DISPATCH` | `1` | 合格源默认提炼＋写作后直接走既有机械/内容门禁与保存入口，显式 `0` 关闭自动装配。已有有效包则复用；缺包/失效包报告待提炼，先经 `scripts/distill_prepare.py --emit → 提炼 → --ingest --prepare`，不静默当单轮就绪。沿用原长度路由和数字熔断，不逐篇模型核对或自动补稿。现行操作见 PIPELINES；决定与证据边界见[四步主流程决策](../docs/decisions/DECISION-20261029-distill-write-default.md)，完整开发计划已归档 |
+| `NOTE_DISTILL_DISPATCH` | `1` | 合格源默认提炼＋写作后直接走既有机械/内容门禁与保存入口，显式 `0` 关闭自动装配。已有有效包则复用；缺包/失效包报告待提炼，先经 `scripts/distill_prepare.py --emit → 提炼 → --ingest --prepare`，不静默当单轮就绪。沿用长度成本边界（≥10000 字）与**内容类型**判据（`shared/source_types.py`：教程/系列课/未识别走两阶段，观点/研报/宏观/复盘/公司基本面分析/框架方法论走单轮；旧数字闸已于 2026-10-29 删除）；监控/UP/scys/系列课/公众号历史经 `filter_pending.py` 自动交接，单篇/单视频入口自动登记一次性队列（`notes/_meta/distill_dispatch/entries/`）。不逐篇模型核对或自动补稿。现行操作见 PIPELINES；决定与证据边界见[四步主流程决策](../docs/decisions/DECISION-20261029-distill-write-default.md)与[门禁审计决策](../docs/decisions/DECISION-20261029-gate-audit.md)，完整开发计划已归档 |
 | `NOTE_DISTILL_DISPATCH_LOG` | 空 | S9 装配留痕 JSONL 路径；空则写 `notes/_meta/distill_dispatch/dispatch_<日期>.jsonl`（测试应显式指向临时目录） |
+| `NUMERIC_FIDELITY_GATE` | `shadow` | 数值保真门禁模式：`shadow` 只记日志不拦盘（**2026-10-29 起的两周观测期**）/ `block` 并入落盘拦截 / `off` 关闭；未知值回落 `shadow`。判据二值、无阈值（见 RULES §4.2） |
+| `NUMERIC_FIDELITY_LOG` | 空 | 数值保真 shadow 日志路径；空则写 `notes/_meta/numeric_fidelity.jsonl`（测试/脚本应显式指向临时目录） |
 
 - 开启后内容失败最多修订两次，每次重审；缺源、partial、无模型、超时或解析失败停止写入并保留候选/待办，force不豁免。
 - 关闭时`verify_note()`返回None，记录未审；`QUALITY_GATE_SELFCHECK`作者自检和现有抽检继续，但不认证独立全文通过。

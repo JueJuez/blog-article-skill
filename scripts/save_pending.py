@@ -3,6 +3,7 @@
 用法:
     python scripts/save_pending.py --queue monitors --key <url>        --file <总结稿.md> [--force]
     python scripts/save_pending.py --queue scys     --key <topicId>     --file <总结稿.md> [--force]
+    python scripts/save_pending.py --queue <一次性队列JSON路径> --key <url> --file <总结稿.md>
 
 为何存在：子 Agent 直接 import articles 常踩两个坑 —— ① .env 必须在 import 前置位
 （feishu.py 在 __init__ 读环境变量）；② `python scripts/x.py` 时 sys.path[0] 是 scripts/。
@@ -11,6 +12,7 @@
 队列字段差异在这里抹平：
 - monitors：键 = url，原文路径字段 = raw_file，落盘目录 = 条目 folder。
 - scys：键 = topicId，原文路径字段 = output，落盘目录 = 生财有术/<project>。
+- 一次性队列（`--queue <JSON路径>`）：按 monitors 字段处理，服务单篇/单视频长源交接。
 
 成功落盘后**不直接改队列**（多子 Agent 并发 read-modify-write 会互相覆盖），
 由主 Agent 收工后跑 `python scripts/filter_pending.py` 按 dedup 索引统一出队。
@@ -31,12 +33,24 @@ QUEUE_PATHS = {
 KEY_FIELDS = {"monitors": "url", "scys": "topicId"}
 
 
+def _queue_path(queue: str) -> str:
+    return QUEUE_PATHS.get(queue, queue)
+
+
+def _queue_kind(queue: str) -> str:
+    return queue if queue in QUEUE_PATHS else "monitors"
+
+
+def _key_field(queue: str) -> str:
+    return KEY_FIELDS.get(_queue_kind(queue), "url")
+
+
 def _load_entry(queue: str, key: str):
-    path = QUEUE_PATHS[queue]
+    path = _queue_path(queue)
     if not os.path.exists(path):
         raise SystemExit(f"[ERR] 队列文件不存在: {path}")
     items = json.load(open(path, "r", encoding="utf-8"))
-    field = KEY_FIELDS[queue]
+    field = _key_field(queue)
     entry = next((e for e in items if str(e.get(field, "")) == str(key)), None)
     if entry is None:
         raise SystemExit(f"[ERR] 队列中找不到 {field}={key}（可能已被消费出队）")
@@ -47,10 +61,11 @@ def build_payload(queue: str, entry: dict, content: str, force: bool) -> dict:
     from prompts.provenance import legacy_context, validate_dispatch
     validate_dispatch(entry)
     context = entry.get("generation_context") or legacy_context(entry.get("note_type", ""))
-    if queue == "monitors":
+    if _queue_kind(queue) == "monitors":
         return {
             "summarized_content": content,
             "generation_context": context,
+            "prompt": entry.get("prompt", ""),
             "original_url": entry.get("url", ""),
             "author": entry.get("author", ""),
             "tags": entry.get("tags", []) or [],
@@ -67,6 +82,7 @@ def build_payload(queue: str, entry: dict, content: str, force: bool) -> dict:
         "summarized_content": content,
         "generation_context": context,
         # scys 无 author 概念：用 project 兜底，路由以 folder 为准
+        "prompt": entry.get("prompt", ""),
         "original_url": entry.get("url", ""),
         "author": "生财有术",
         "tags": [],
@@ -82,7 +98,8 @@ def build_payload(queue: str, entry: dict, content: str, force: bool) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--queue", required=True, choices=sorted(QUEUE_PATHS))
+    ap.add_argument("--queue", required=True,
+                    help="monitors | scys | 一次性队列 JSON 路径（单篇/单视频长源交接）")
     ap.add_argument("--key", required=True, help="monitors 传 url；scys 传 topicId")
     ap.add_argument("--file", required=True, help="子 Agent 写好的总结稿 md 路径")
     ap.add_argument("--review-file", help="独立会话审者的全文审核JSON（可选，作者自检不可冒充）")
@@ -92,6 +109,9 @@ def main() -> int:
     from shared.env import load_env
     load_env()
 
+    if args.queue not in QUEUE_PATHS and not os.path.exists(args.queue):
+        print(f"[ERR] 队列不存在（既不是 monitors/scys，也不是 JSON 路径）: {args.queue}")
+        return 4
     if not os.path.exists(args.file):
         print(f"[ERR] 总结稿不存在: {args.file}")
         return 4

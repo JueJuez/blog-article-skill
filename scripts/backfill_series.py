@@ -153,26 +153,28 @@ def _backfill_one(ep: dict, season_title: str, author: str, report: dict,
         return
     ep_title, segments, t_author = res
     from articles.main import save_raw_content_to_file
-    from articles.prompt import classify_note_type, get_note_prompt, source_chars_of
-    from prompts.templates import QUALITY_GATE_SELFCHECK
+    from prompts.provenance import dispatch_fields
     from shared.chunking import segments_to_text
     from videos.main import series_folder
 
     text = segments_to_text(segments)
     raw_file = save_raw_content_to_file(text, title=ep_title)
-    note_type = classify_note_type(ep_title, text[:4000])
     real_author = author or t_author or ""
+    title = f"第{ep['ep_index']:02d}集_{ep_title}"
+    fields = dispatch_fields(title, text, "", "auto")
     entry = {
         "url": url,
-        "title": f"第{ep['ep_index']:02d}集_{ep_title}",
+        "title": title,
         "author": real_author,
-        "note_type": note_type,
+        "note_type": fields["note_type"],
         "tags": [real_author] if real_author else [],
         "publish_time": 0,
         "folder": series_folder({}, real_author, season_title, url),
         "raw_file": raw_file,
-        # 预计算 prompt（三队列统一口径：monitors/scys/UP）：子 Agent 直接按此总结
-        "prompt": get_note_prompt(note_type, source_chars_of(text)) + QUALITY_GATE_SELFCHECK,
+        # 预计算 prompt + provenance（三队列统一口径：monitors/scys/UP），
+        # filter_pending 可据此刷新类型并对长源装配材料包。
+        "prompt": fields["prompt"],
+        "generation_context": fields["generation_context"],
         "queued_at": int(time.time()),
     }
     pending = _load_pending()
