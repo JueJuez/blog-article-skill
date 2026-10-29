@@ -66,7 +66,8 @@ def _ledger_record_land(run_id: str, stats: dict, scys_pending_n: int = 0) -> No
     """落盘阶段：从 apply_summaries 的 stats 聚合每源 landed/skipped，scys 单独记 pending。"""
     record_task(run_id, "bili", "land:bili", "land", "ok",
                 title=f"video={stats.get('video',0)} dynamic={stats.get('dynamic_full',0)+stats.get('dynamic_light',0)} "
-                      f"charging_skip={stats.get('video_charging_skip',0)} short_skip={stats.get('short_skip',0)}")
+                      f"charging_skip={stats.get('video_charging_skip',0)} short_skip={stats.get('short_skip',0)} "
+                      f"video_short_skip={stats.get('video_short_skip',0)}")
     record_task(run_id, "wechat", "land:wechat", "land", "ok",
                 title=f"article={stats.get('article',0)} ad_skip={stats.get('ad_skip',0)}")
     if stats.get("error", 0):
@@ -85,7 +86,8 @@ def _build_summary(stats: dict, scys_pending_n: int) -> dict:
     out = {
         "bili": {
             "landed": stats.get("video", 0) + stats.get("dynamic_full", 0) + stats.get("dynamic_light", 0),
-            "skipped": stats.get("video_charging_skip", 0) + stats.get("short_skip", 0),
+            "skipped": stats.get("video_charging_skip", 0) + stats.get("short_skip", 0)
+                     + stats.get("video_short_skip", 0),
         },
         "wechat": {
             "landed": stats.get("article", 0),
@@ -992,6 +994,7 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
         "video": 0, "video_charging_skip": 0,
         "dynamic_full": 0, "dynamic_light": 0,
         "article": 0, "ad_skip": 0, "short_skip": 0, "error": 0,
+        "video_short_skip": 0,
         "empty_retry": 0, "short_content": 0,
     }
     # session_holder 由调用方提供时（串行 apply 块 / 并行 worker），会话所有权归调用方；
@@ -1100,6 +1103,14 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
                 badge = it.get("charging_badge") or "充电专属"
                 print(f"[bili-charging-skip] {it['title']}（{badge}，付费内容未抓取正文）")
                 stats["video_charging_skip"] += 1
+                continue
+            # 短视频跳过：低于阈值（默认 60s，BILI_MIN_DURATION_SECS 可调）的碎片视频
+            # 写不出 ≥MIN_WORDS 的有据笔记，且无 CC 时会白耗一次 ASR；-1 表示列表接口未给时长，不拦。
+            _min_secs = int(os.environ.get("BILI_MIN_DURATION_SECS", "60"))
+            _dur = it.get("duration_secs")
+            if isinstance(_dur, int) and 0 <= _dur < _min_secs:
+                print(f"[bili-short-skip] {it['title']}（{_dur}s < {_min_secs}s，短视频跳过不抓取）")
+                stats["video_short_skip"] += 1
                 continue
             # 先探测是否有 CC 字幕：有 → 内联快路径总结；无 → 收集到 asr_deferred，
             # 本轮末尾统一走「有界 ASR 池」批量转写（避免同步 ASR 阻塞整轮抓取，
@@ -1268,6 +1279,7 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
         f"（速览 {stats['dynamic_light']} · 完整 {stats['dynamic_full']}）"
         f" / 文章 {stats['article']}"
         f" | 广告跳过 {stats['ad_skip']} · 过短跳过 {stats['short_skip']}"
+        f" · 短视频跳过 {stats.get('video_short_skip', 0)}"
         f" · 短文跳过 {stats.get('short_content', 0)}"
         f" · scys重复 {stats.get('cross_dup_skip', 0)}"
         f" · 登记表跳过 {stats.get('registry_skip', 0)}"

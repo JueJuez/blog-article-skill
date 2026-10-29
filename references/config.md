@@ -262,6 +262,7 @@ OPENAI_API_KEY=sk-xxxx
 | `BILI_FIRST_WINDOW_DAYS` | 30 | 首跑时间窗口（天）：只处理 N 天内发布的视频/动态（默认值见 `monitors/bilibili.py` 的 `_BILI_FIRST_WINDOW_DAYS`） |
 | `BILI_DAILY_WINDOW_DAYS` | 1 | 每日增量**基础**时间窗口（天）；`auto` 非首次运行时按「距上次成功运行天数 + 1」自动拉长补齐 |
 | `BILI_MAX_WINDOW_DAYS` | 30 | 每日增量窗口**封顶**（天）；断跑超过此天数只补到此处（更长历史用 `--mode first`） |
+| `BILI_MIN_DURATION_SECS` | 60 | 监控抓取侧**短视频跳过阈值**（秒）：列表接口时长低于此值直接跳过不抓（计 `video_short_skip`），无 CC 也不再耗 ASR（2026-10-30 定策，20s 碎片视频写不出 ≥MIN_WORDS 的有据笔记）；时长缺失/解析失败不拦。0=关闭跳过 |
 | `WECHAT_WINDOW_DAYS` | 2 | 公众号每日增量基础窗口（天）；同样支持自动补齐，封顶 `WECHAT_MAX_WINDOW_DAYS` |
 | `WECHAT_MAX_WINDOW_DAYS` | 30 | 公众号每日增量窗口封顶（天） |
 | `WECHAT_SOURCE_ENABLED` | 0 | 旧代理公众号源总开关：原 wewe-rss 代理已死（2026-07-20 平台下线），**永久停用**；接替方案见下方 `WEREAD_SOURCE_ENABLED`（`monitors/wechat.py` 保留不动） |

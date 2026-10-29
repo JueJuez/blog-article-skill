@@ -298,6 +298,20 @@ def _fetch_vlist_page(uid: str, pn: int, ps: int, max_retry: int = 2):
     return [], last_err
 
 
+def _arc_length_secs(length) -> int:
+    """arc-search vlist 的 length（"mm:ss" / "hh:mm:ss"）→ 秒；解析失败返回 -1（不拦）。"""
+    try:
+        parts = [int(p) for p in str(length or "").split(":")]
+    except ValueError:
+        return -1
+    if not parts or any(p < 0 for p in parts):
+        return -1
+    secs = 0
+    for p in parts:
+        secs = secs * 60 + p
+    return secs
+
+
 def _fetch_vlist(uid: str, ps: int = 10, max_retry: int = 2, paginate: bool = False) -> List[Dict]:
     """返回视频 vlist。paginate=True 时翻页直到空页/不足一页（用于「抓全部视频」）。
 
@@ -537,6 +551,7 @@ class BilibiliSource:
                     "route": "video",
                     "is_charging": is_charging,
                     "charging_badge": v.get("elec_arc_badge") or "",
+                    "duration_secs": _arc_length_secs(v.get("length")),
                 })
             # 同源内视频 -> 动态 之间退避，避免短时间密集请求
             if "dynamic" in self.types:
