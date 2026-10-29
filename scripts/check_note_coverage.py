@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""scripts/check_note_coverage.py — pack_only 条目写作端两环的消费入口（F7 接线）。
+"""当前生产主流程不逐篇调用本工具。
+显式运行默认仅报告覆盖疑点（有疑点也 exit 0），源/包不可用仍报错；
+只有用户显式要求 --emit-patch 时才生成下述补稿任务协议，非默认第三轮。
+
+scripts/check_note_coverage.py — pack_only 条目写作端两环的消费入口（F7 接线）。
 
 组合流程（VERDICT §七）：po 写作 → **机械覆盖自查（本脚本，零模型）** → 缺项定向补稿
 → 只插不改核验 → 落盘。仅适用于 `generation_context.distill_input_mode == "pack_only"`
@@ -55,14 +59,21 @@ def _load_entry(queue: str, key: str) -> dict:
 
 
 def _emit_patch_task(path: str, draft: str, source_text: str, pack: dict,
-                     issues: list) -> None:
+                     issues: list, semantic_fix: bool = False) -> None:
     """生成补稿任务文件：协议说明 + 可疑条目素材正文（逐字取自同版源）+ 成稿全文。
 
     与 F5c 验证过的补稿形态一致（patch_material_D1.md）：只给成稿 + 候选素材，
     **不给源文件**——防补稿环节演变成整篇重写。
+
+    F3R（PLAN-20261030-intent-tree-summary §9.3）：补稿前先做一次语义核对（速览/结论、
+    关键案例归属、条件强度）。生产默认 `semantic_fix=False`——语义问题**只报不改**，
+    覆盖缺口仍只做纯插入，`--verify-insert-only` 语义不变。隔离复验传 `True`：允许
+    定点替换/删除写错的事实并逐条记录，该稿作为独立修正版本、不声称通过只插不改。
     """
     from shared.distill_pack import source_excerpt, source_span_issues
+    from shared.note_coverage import SEMANTIC_REVIEW_PRIORITIES
     by_id = {str(it.get("id")): it for it in (pack.get("items") or [])}
+    semantic_lines = SEMANTIC_REVIEW_PRIORITIES.split("\n")
     lines = [
         "# 定向补稿任务（机械自查可疑条目）",
         "",
@@ -74,8 +85,19 @@ def _emit_patch_task(path: str, draft: str, source_text: str, pack: dict,
         "3. **出口③·缺才补**：主干（trunk）内容确认缺失才补：在合适位置**纯插入**，",
         "   原稿其余逐字不动；",
         "4. 补完后**仅对新增覆盖的条目**补登稿内 EXTRACT_CHECKLIST（出口②勾销的不登记）。",
-        "",
+        "5. **语义核对（先于补稿）**：" + semantic_lines[0],
     ]
+    lines += ["   " + ln for ln in semantic_lines[1:]]
+    if semantic_fix:
+        lines += [
+            "   语义问题可按**定点替换 / 删除**修正，逐条记录「原句 → 修订句 → 源行 + 理由」；",
+            "   该稿为独立修正版本，不适用「只插不改」声明。覆盖缺口仍按出口③处理。",
+        ]
+    else:
+        lines += [
+            "   语义问题**只报不改**（写进修补说明：原句 → 问题 → 源行）；本任务对覆盖缺口只做纯插入。",
+        ]
+    lines.append("")
     for x in issues:
         it = by_id.get(str(x.get("ref")))
         if not it:
@@ -95,7 +117,9 @@ def _emit_patch_task(path: str, draft: str, source_text: str, pack: dict,
         if it.get("notes"):
             lines.append(f"\n（素材注：{it['notes']}）")
         lines.append("")
-    lines += ["---", "", "# 成稿全文（补稿只许纯插入，其余不动）", "", draft]
+    draft_heading = ("# 成稿全文（语义问题可定点修正；其余不动）" if semantic_fix else
+                     "# 成稿全文（补稿只许纯插入，其余不动）")
+    lines += ["---", "", draft_heading, "", draft]
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
@@ -149,12 +173,16 @@ def main() -> int:
     rep["status"] = "checked"
     rep["threshold"] = LABEL_3GRAM_THRESHOLD
     rep["calibration"] = CALIBRATION_REF
+    rep["report_only"] = not bool(args.emit_patch)
+    rep["next_action"] = ("explicit_patch_requested" if args.emit_patch else
+                          "save_with_existing_gates")
     print(json.dumps(rep, ensure_ascii=False, indent=1))
     if rep["issues"] and args.emit_patch:
         _emit_patch_task(args.emit_patch, patched, source_text, pack, rep["issues"])
         rep_out = f"补稿任务已生成: {args.emit_patch}"
         print(rep_out)
-    return 1 if rep["issues"] else 0
+    # 覆盖可疑只是候选信号；默认不阻塞原保存入口、不生成第三轮模型任务。
+    return 1 if rep["issues"] and args.emit_patch else 0
 
 
 if __name__ == "__main__":

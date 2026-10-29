@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """scripts/distill_prepare.py — S9 有限接线：长源两阶段的派单/回收/装配入口。
 
-PLAN-20261026-low-cost-quality §8.4（S9 入口）/ §9.11-S9（协议）。**默认不改变生产行为**：
-只有显式跑 `--prepare` 才会把材料包块写进队列条目的 prompt；`--plan / --emit / --ingest`
-只读写各自的评估目录与 pack 存储。
+当前方向：PLAN-20261030-intent-tree-summary §10。生产合格源默认提炼＋写作后直接落盘；
+本入口负责提炼任务、回收与装配，不派逐篇核对/补稿。只有 `--prepare` 才写队列 prompt；
+`--plan / --emit / --ingest` 只读写各自任务目录与 pack 存储。
 
 ## 四步链（与 `run_async_review.py` 同构）
 

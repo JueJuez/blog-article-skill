@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """shared/distill_dispatch.py — S9 有限接线：提炼两阶段的派发协议与装配。
 
-PLAN-20261026-low-cost-quality §8.4（S9 入口）/ §9.11-S9（协议）。**默认不启用**：
-`NOTE_DISTILL_DISPATCH` 关闭时生产路径字节不变，本模块只在显式调用时生效。
+当前方向：PLAN-20261030-intent-tree-summary §10。合格源默认提炼＋写作后直接保存，
+显式 `NOTE_DISTILL_DISPATCH=0` 关闭自动装配；默认不派模型核对或补稿。
+历史 S9 的路由、包机械校验和原文版本绑定继续复用。
 
 职责边界（协议四条，与 §8.4 第 1–4 条一一对应）：
 1. **路由从严**：只对长源（`source_chars_of` ≥ `LONG_SOURCE_MIN_CHARS`）且非数字密集
@@ -39,6 +40,12 @@ from shared.source_metrics import unique_number_count  # noqa: E402
 
 MATERIAL_PACK_BEGIN = "<<<DISTILL_MATERIAL_PACK>>>"
 MATERIAL_PACK_END = "<<<END_DISTILL_MATERIAL_PACK>>>"
+WRITE_FLOW_MARKER = "<<<DISTILL_WRITE_FLOW_V1>>>"
+
+
+def distill_dispatch_enabled() -> bool:
+    """已批准的两阶段派单默认启用；显式设 0 可关闭。"""
+    return os.environ.get("NOTE_DISTILL_DISPATCH", "1") == "1"
 
 # 路由阈值
 LONG_SOURCE_MIN_CHARS = 10000
@@ -169,6 +176,9 @@ UNCOVERED_BEGIN = "<<<DISTILL_UNCOVERED_BEGIN>>>"
 UNCOVERED_END = "<<<END_DISTILL_UNCOVERED>>>"
 
 PACK_ONLY_NOTE = (
+    WRITE_FLOW_MARKER + "\n"
+    "**执行流程：提炼已完成 → 本次写作 → 既有机械/内容门禁 → 原入口落盘。**"
+    "不再逐篇派模型核对或自动补稿；机械覆盖疑点只报告，不据此启动第三次模型调用。\n"
     "**本次输入已完整**：素材正文逐字取自同版源；未被素材选中的源行在下方「未选区间附录」里"
     "逐字补齐。因此**不需要另行读取源文件**——素材按主题归组，不是原文顺序，写稿仍按上面模板组织。"
     "只有需要核对某一行的上下文时才按 `source_lines` 回查同版源，默认不要整篇重读。"
@@ -771,6 +781,8 @@ def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
             # 旧输入模式（包块不含未选区间附录）：源与契约虽同版，写作端输入形态已换，
             # 不能凭版本对账把旧模式块当成新模式已装配（流程简化 F2）。
             current, why = False, "input_mode_changed"
+        if current and n_blocks == 1 and WRITE_FLOW_MARKER not in block:
+            current, why = False, "write_flow_changed"
         if current and n_blocks == 1:
             log_dispatch({**base_record, "status": "already_prepared",
                           "source_sha256": _text_hash(src),
@@ -814,6 +826,8 @@ def prepare_entry(entry: dict, store_dir: str = "", log_path: str = "",
         "distill_pack_source_sha256": pack.get("source_sha256") or "",
         "distill_prompt_sha256": pack.get("distill_prompt_sha256") or "",
         "distill_input_mode": "pack_only",
+        "distill_workflow": "distill_write",
+        "distill_postprocess": "mechanical_only",
         "distill_pack_style": cost["style"],
         "distill_chunks": int(cov.get("chunk_count") or 1),
         "distill_source_path": ref["path"],
@@ -845,7 +859,8 @@ def _apply_prompt(entry: dict, new_prompt: str, updates: "dict | None" = None,
     if drop_distill:
         for k in ("distill_pack_key", "distill_pack_source_sha256", "distill_prompt_sha256",
                   "distill_input_mode", "distill_pack_style", "distill_chunks",
-                  "distill_source_path", "distill_source_lines", "distill_synthesis"):
+                  "distill_source_path", "distill_source_lines", "distill_synthesis",
+                  "distill_workflow", "distill_postprocess"):
             gc.pop(k, None)
     gc.update(updates or {})
     entry["generation_context"] = gc

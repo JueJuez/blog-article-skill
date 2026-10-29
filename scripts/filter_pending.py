@@ -3,7 +3,9 @@
 默认：清已总结项；仅对已知auto/manual且源可读的条目刷新派单。
 auto重算type，manual保留；legacy不改，类型建议差异进入报告。
 --dry-run：仅预览type/prompt，不运行去重、不写队列/登记表；包含已总结条目。
-`NOTE_DISTILL_DISPATCH=1`：刷新后给「长源且已有有效提炼包」的条目追加材料包块（S9，默认关）。
+两阶段默认开启（`NOTE_DISTILL_DISPATCH=0` 可关闭）：刷新后装配有效材料包；合格源无包
+报告 needs_distill，编排方先走 distill_prepare.py，不将其当作单轮已就绪。写作后直接走
+现有机械/内容门禁与保存入口，不默认模型核对或补稿。
 """
 import json
 import os
@@ -84,10 +86,10 @@ def refresh_prompt(e: dict) -> str:
 
 
 def distill_prepare(e: dict) -> str:
-    """S9 长源两阶段装配（`NOTE_DISTILL_DISPATCH=1` 才生效，默认关闭）。
+    """长源两阶段装配，默认开启，显式 `NOTE_DISTILL_DISPATCH=0` 可关闭。
 
-    只有**已存在有效 pack** 的条目会被装配材料包块；短源/数值密集/无 pack/版本失配
-    一律降级单轮（`PrepareIneligible`），不阻塞批次。
+    只有**已存在有效 pack** 的条目会被装配材料包块；短源/数值密集仍单轮。
+    合格源无包或版本失配返回 needs_distill，不能静默当作单轮已就绪。
     必须排在 `refresh_prompt` 之后——刷新会重建 prompt 主体，先装配会被覆盖。
 
     **回退也可能改写条目**（§8.5 第 1 条）：源变短/变数字密集/源不可读时，
@@ -95,15 +97,19 @@ def distill_prepare(e: dict) -> str:
     → 返回 `stripped`，`_run_queue` 必须写回队列；**不能仅依赖 refresh_prompt 先行
     重建来掩盖**（那条路径只在 type/version 变化时重写 prompt）。
     """
-    if os.environ.get("NOTE_DISTILL_DISPATCH") != "1":
-        return "off"
     from shared import distill_dispatch as DD
+    if not DD.distill_dispatch_enabled():
+        return "off"
     log = os.environ.get("NOTE_DISTILL_DISPATCH_LOG") or os.path.join(
         ROOT, "notes", "_meta", "distill_dispatch",
         "dispatch_%s.jsonl" % time.strftime("%Y%m%d"))
     try:
         rep = DD.prepare_entry(e, log_path=log)
     except DD.PrepareIneligible as exc:
+        if exc.decision.get("route") == "distill":
+            if str(exc.reason).startswith("incomplete_coverage"):
+                return "incomplete"
+            return "stripped_needs_distill" if exc.stripped else "needs_distill"
         if exc.stripped:
             return "stripped"
         # 有 pack 但未完整覆盖（缺块/部分读取）：单独计数，别和「没有 pack」混成一个
@@ -140,25 +146,32 @@ def _run_queue(path: str, filt, refresh: bool = True, dry_run: bool = False) -> 
             elif r == "skipped":
                 skipped += 1
     distill = {"prepared": 0, "fallback": 0, "already": 0, "stale": 0, "off": 0,
-               "stripped": 0, "incomplete": 0}
+               "stripped": 0, "incomplete": 0, "needs_distill": 0,
+               "stripped_needs_distill": 0}
     if refresh and not dry_run:
         for e in keep:
             r = distill_prepare(e)
             distill[r] = distill.get(r, 0) + 1
     # stripped 也要写回：条目里的失效材料包块被剥掉了，不落盘等于白剥
     if not dry_run and (dropped or refreshed or distill["prepared"] or distill["stale"]
-                        or distill["stripped"]):
+                        or distill["stripped"] or distill["stripped_needs_distill"]):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(keep, f, ensure_ascii=False, indent=2)
     return {"kept": len(keep), "dropped": len(dropped),
             "prompt_refreshed": refreshed, "prompt_skipped": skipped,
             "distill": distill,
+            "next_action": ("preview_only" if dry_run else
+                            "distill_then_write" if any(distill[k] for k in
+                             ("needs_distill", "stripped_needs_distill", "incomplete", "stale"))
+                            else "write_then_save"),
             "type_differences": differences, "dry_run": dry_run,
             "titles": [e.get("title", "") for e in keep]}
 
 
 def main(argv=None) -> None:
     import argparse
+    from shared.env import load_env
+    load_env()
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="只读报告，不清队列、不刷新派单")
     args = parser.parse_args(argv)

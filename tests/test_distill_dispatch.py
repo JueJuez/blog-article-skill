@@ -400,7 +400,7 @@ class TestFilterPendingHook:
 
     def test_flag_off_keeps_single_round(self, tmp_path, monkeypatch):
         FP, e, _src = self._setup(tmp_path, monkeypatch, with_pack=True)
-        monkeypatch.delenv("NOTE_DISTILL_DISPATCH", raising=False)
+        monkeypatch.setenv("NOTE_DISTILL_DISPATCH", "0")
         assert FP.distill_prepare(e) == "off"
         assert DD.MATERIAL_PACK_BEGIN not in e["prompt"]
 
@@ -414,11 +414,11 @@ class TestFilterPendingHook:
         assert FP.distill_prepare(e) == "already"  # 幂等，不二次拼接
         assert e["prompt"].count(DD.MATERIAL_PACK_BEGIN) == 1
 
-    def test_flag_on_without_pack_falls_back(self, tmp_path, monkeypatch):
+    def test_flag_on_without_pack_waits_for_distill(self, tmp_path, monkeypatch):
         FP, e, _src = self._setup(tmp_path, monkeypatch, with_pack=False)
         monkeypatch.setenv("NOTE_DISTILL_DISPATCH", "1")
         before = e["prompt"]
-        assert FP.distill_prepare(e) == "fallback"
+        assert FP.distill_prepare(e) == "needs_distill"
         assert e["prompt"] == before
 
     def test_refresh_then_prepare_order_keeps_block(self, tmp_path, monkeypatch):

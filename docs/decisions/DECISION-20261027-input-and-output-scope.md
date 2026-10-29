@@ -1,4 +1,5 @@
 # DECISION-20261027-input-and-output-scope
+状态补充（2026-10-29）：下文保留原讨论/实施范围；后续开发已收口归档，现行流程与默认开关见[四步主流程决定](DECISION-20261029-distill-write-default.md)，不按旧待执行提示续跑。
 ## 背景
 用户于 2026-10-27 确认输入优化方向与输出目的，要求先记录开发计划，再讨论输出模板和内容质量；下方正文保留最初讨论时点。[原计划](../plans/PLAN-20261026-low-cost-quality.md)及首次承接的[旧长源计划](../plans/PLAN-20261028-long-source-summary.md)现均退役；目标与输出边界保留，当前任务与验收只看[流程简化计划](../plans/PLAN-20261028-summary-flow-simplification.md)，方向调整见[暂定决策](DECISION-20261028-summary-flow-simplification.md)。
 ## 决策

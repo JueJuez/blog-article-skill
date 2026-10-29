@@ -1,6 +1,6 @@
 # 总结流程简化与材料包消费开发计划
 
-状态：**流程骨架与前轮实施/验收记录；当前开发任务与验收由[意图树计划](PLAN-20261030-intent-tree-summary.md)承接。** 用户已确认只执行该计划 §9 F3R（一轮生成端有限修正与 P4 定向复验，待新会话执行）。本文保留原方案与 F1–F7 历史；F7 已完成且原成本口径待复核，不从本文重新开跑或依据旧倍率启用生产。`NOTE_DISTILL_DISPATCH` 保持 `0`。
+状态：**历史流程骨架及 F1–F7 实施/验收记录，已结束当前执行。** 后续意图树与四步主流程开发已由用户确认完成并[归档](../../_archive/plans/PLAN-20261030-intent-tree-summary.md)。当前操作见 [PIPELINES](../PIPELINES.md)，开关默认 `1`；下文旧 `0` 开关、F3R 待执行提示和接手顺序均为历史，不自动重开。F7 原成本口径偏差及未验证项保留。
 关联：[本轮暂定决策](../decisions/DECISION-20261028-summary-flow-simplification.md)、[原文素材原则](../decisions/DECISION-20261028-source-excerpts.md)、[管线入口](../PIPELINES.md)、[质量规则](../../RULES.md)。任务状态只更新 §4，独立遗留只更新 §6。
 
 ## 1. 要解决的问题与目标

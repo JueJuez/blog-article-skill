@@ -1,6 +1,6 @@
 # 决策：长源两阶段提炼不启用（2026-10-28）
 
-状态：v4 试验结论保留，生产开关仍默认 `0`。后续用户确认 [N6 原文素材候选](DECISION-20261028-source-excerpts.md)，不沿用本轮质量结论评价新方案。
+状态：**已被取代（2026-10-29）**——用户批准[四步主流程决定](DECISION-20261029-distill-write-default.md)后 `NOTE_DISTILL_DISPATCH` 改为默认 `1`；开发计划已完成并[归档](../../_archive/plans/PLAN-20261030-intent-tree-summary.md)。下文 v4 不启用、当轮开关 `0` 及重启条件仅作历史证据，不再约束现行默认，也不用于评价新方案。
 关联：[长源总结效率与质量计划](../plans/PLAN-20261028-long-source-summary.md) §4 N4；[新计划决策](DECISION-20261028-long-source-summary.md)
 
 ## 问题

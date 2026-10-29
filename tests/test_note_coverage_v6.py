@@ -11,6 +11,7 @@
    intent 不进稿 / 不设字数硬闸）进材料包块。
 """
 import io
+import importlib.util
 import os
 import sys
 
@@ -21,6 +22,15 @@ if ROOT not in sys.path:
 import pytest
 
 from shared import note_coverage as NC
+
+
+def _load_check_script():
+    """按路径加载 scripts/check_note_coverage.py（scripts 无 __init__，不能直接 import）。"""
+    path = os.path.join(ROOT, "scripts", "check_note_coverage.py")
+    spec = importlib.util.spec_from_file_location("check_note_coverage_mod", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _pack_v6():
@@ -126,6 +136,52 @@ class TestWritingContractParagraph:
             {"items": [], "hierarchy": {"intent": "", "children": []},
              "coverage": {"complete": True, "chunk_count": 1}}, style="lines")
         assert "选材权" in block
+
+    def test_selection_rights_covers_f3r_three_failures(self):
+        """F3R §9.2：三类生成端失真（案例错配/概括越界/强度漂移）要进写作契约。"""
+        from prompts import templates as T
+        text = T.render_selection_rights()
+        assert "素材归属" in text
+        assert "作用范围" in text
+        assert "强度" in text and "充分条件" in text
+        assert "不得把 A 案例/节点的细节移进 B 案例/节点" in text
+
+    def test_pack_block_carries_f3r_constraints(self):
+        from shared import distill_dispatch as DD
+        block = DD.render_pack_block(
+            {"items": [], "hierarchy": {"intent": "", "children": []},
+             "coverage": {"complete": True, "chunk_count": 1}}, style="json")
+        assert "素材归属随条目走" in block
+        assert "概括回查作用范围" in block
+        assert "强度与条件一致" in block
+
+
+class TestF3RSemanticReview:
+    """F3R §9.3：补稿任务先做语义核对；生产只报不改，隔离复验可定点替换。"""
+
+    def test_semantic_priorities_cover_three_failures(self):
+        text = NC.SEMANTIC_REVIEW_PRIORITIES
+        assert "速览" in text and "骨架" in text and "结论" in text
+        assert "案例归属" in text
+        assert "强度" in text and "条件" in text
+
+    def test_patch_task_reports_semantics_without_rewrite_by_default(self, tmp_path):
+        mod = _load_check_script()
+        p = tmp_path / "patch.md"
+        mod._emit_patch_task(str(p), "成稿正文", "源正文", {"items": []}, [])
+        text = p.read_text(encoding="utf-8")
+        assert "语义核对" in text
+        assert "只报不改" in text
+        assert "定点替换" not in text
+
+    def test_patch_task_semantic_fix_allows_targeted_replace(self, tmp_path):
+        mod = _load_check_script()
+        p = tmp_path / "patch.md"
+        mod._emit_patch_task(str(p), "成稿正文", "源正文", {"items": []}, [],
+                             semantic_fix=True)
+        text = p.read_text(encoding="utf-8")
+        assert "定点替换" in text
+        assert "不适用「只插不改」" in text
 
 
 if __name__ == "__main__":

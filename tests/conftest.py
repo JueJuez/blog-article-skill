@@ -96,6 +96,21 @@ def _strip_oversized_env():
         os.environ.pop(_k, None)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_draft_stage(monkeypatch, tmp_path):
+    """所有门禁测试的候选稿暂存只能写临时目录，不能污染真实 notes。"""
+    from shared import draft_stage
+    monkeypatch.setattr(draft_stage, "STAGE_BASE", str(tmp_path / "staged_drafts"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_distill_dispatch(monkeypatch, tmp_path):
+    """两阶段默认开启后，派单日志与 pack 读取仍必须隔离真实用户目录。"""
+    from shared import distill_pack
+    monkeypatch.setattr(distill_pack, "PACKS_DIR", str(tmp_path / "distill_packs"))
+    monkeypatch.setenv("NOTE_DISTILL_DISPATCH_LOG", str(tmp_path / "distill_dispatch.jsonl"))
+
+
 # ---------------------------------------------------------------- v6 fixture 助手
 
 def v6ize(parsed: dict) -> dict:

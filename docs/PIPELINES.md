@@ -1,8 +1,29 @@
 # 管线入口总表（唯一真源 · 2026-09-17 建立）
 
-**当前开发任务**：用户已确认一轮生成端有限修正与 P4 定向复验，交新会话执行；范围、三调用预算与停止条件以[意图树计划 §9](plans/PLAN-20261030-intent-tree-summary.md#9-已确认一轮生成端有限修正与复验f3r新会话执行)为准。保留切块与提炼 v6，不引入向量检索，不启用多 Agent 分段写作或生产开关，不扩批。下方历史试点“过验证”不等于本轮已完成。
+## 主流程（默认，唯一常规链路）
 
-**流程简化（2026-10-28 立项，2026-10-29/30 F1–F5c 完成：裸 pack_only 判不启用，组合流程过验证待用户裁决启用）**：普通源单轮；复杂长源按收益保留选材。已接线：提炼契约 v5 + pack schema v3（模型只报 `source_spans`，素材正文由程序从同版源逐字提取）；`prepare_entry` 改用 `assemble_pack_only_prompt`（包块 + 未选区间附录；provenance 记 `distill_input_mode=pack_only`；旧输入模式块判 `input_mode_changed` 重装）；`--ingest --prepare` 组合只装配本批回收成功条目。**F5b/F5c 两源真实对照结论**：裸「成稿只吃包」会丢内容（D1 整章丢失）判不启用；组合流程「**po 写作 → 机械覆盖自查（零模型，高召回候选器）→ 定向补稿（先核对缺才补）**」两源通过 §5.7 保留条件——D1 产物 P1=0/失真=0、审计排名三稿第一（≳ ex > cur），成本在登记预算 ex×1.10 内（对单轮仍约 2.2× 输入）。**`NOTE_DISTILL_DISPATCH` 保持 `0`**；用户追加方向（2026-10-30）：试点 4–10k 段组合流程（计划 §4 F7），若证实中短段丢失严重则向全长度启用（可关闭，数字密集两类熔断暂保留）——试点未出结论前仍只在显式评估中使用。两阶段入口仍为 `python scripts/distill_prepare.py --emit --out <DIR>` → 子 Agent 选材 → `--ingest --dir <DIR> --prepare`（默认关闭，仅显式使用）；`--plan` 是可选只读预览。证据与遗留：`notes/_meta/eval/20261029-pack-only-wiring/VERDICT.md`（§六/§七）、[总结流程简化计划](plans/PLAN-20261028-summary-flow-simplification.md)（§4/§8–§10），旧长源计划与低成本计划均为历史。
+```
+提炼 → 写作 → 既有机械/内容门禁 → 原入口落盘
+```
+
+| 项 | 当前口径 |
+|---|---|
+| 适用源 | 走 `shared/distill_dispatch` 路由的合格源（长源、非数字密集、不同数字串 <130）；不适用源按原路由单轮 |
+| 模型调用 | 提炼 1 次 + 写作 1 次；复用同版有效包时只写作 |
+| 开关 | `NOTE_DISTILL_DISPATCH` 默认 `1`，显式 `0` 关闭自动装配 |
+| 缺包 | `filter_pending.py` 报 `needs_distill` / `incomplete` / `stale` 时，先 `distill_prepare.py --emit → 提炼 → --ingest --prepare`，不能拿未提炼 prompt 直接写稿 |
+| 落盘 | 原入口（`save_pending.py` / `save_summary_only`）：去重、版本/同源、机械/内容硬门禁全部保留 |
+| 写作端自检 | 同次写作内的自检与零模型机械对账保留；覆盖疑点只报告，不算语义通过 |
+
+**不在主流程、但保留可用（勿删、勿默认接线）**：`scripts/run_async_review.py`（落盘后异步复审消费端）、
+`scripts/check_note_coverage.py --emit-patch / --verify-insert-only`（定向补稿任务与纯插入核验）、`NOTE_QUALITY_GATE`（落盘前第二遍 AI 把关）、
+`scripts/audit_note_grounding.py`（接地审计）、评估/对照工具箱（§3.3–§3.9）。这些只在用户明确要求或专门
+评估时运行；不构成每篇的前置步骤，报告也不能当作语义通过。决定与已知取舍见[四步主流程决策](decisions/DECISION-20261029-distill-write-default.md)。完整开发计划已完成并[归档](../_archive/plans/PLAN-20261030-intent-tree-summary.md)，不再按旧接手提示续跑。
+
+**历史记录（只读，已被上文取代，勿据此续跑）**：F5–F7 组合流程、N1–N6 原文素材、S9 有限接线的当时口径与证据
+留在下面三段与原计划里；现行默认只看上文与 §4「当前默认」。
+
+**前轮 F5–F7 历史记录（当轮默认关闭与核对补稿要求已由当前 §4 和计划 §10 取代）**：普通源单轮；复杂长源按收益保留选材。已接线：提炼契约 v5 + pack schema v3（模型只报 `source_spans`，素材正文由程序从同版源逐字提取）；`prepare_entry` 改用 `assemble_pack_only_prompt`（包块 + 未选区间附录；provenance 记 `distill_input_mode=pack_only`；旧输入模式块判 `input_mode_changed` 重装）；`--ingest --prepare` 组合只装配本批回收成功条目。**F5b/F5c 两源真实对照结论**：裸「成稿只吃包」会丢内容（D1 整章丢失）判不启用；组合流程「**po 写作 → 机械覆盖自查（零模型，高召回候选器）→ 定向补稿（先核对缺才补）**」两源通过 §5.7 保留条件——D1 产物 P1=0/失真=0、审计排名三稿第一（≳ ex > cur），成本在登记预算 ex×1.10 内（对单轮仍约 2.2× 输入）。**`NOTE_DISTILL_DISPATCH` 当轮保持 `0`**（现行默认 `1`）；用户追加方向（2026-10-30）：试点 4–10k 段组合流程（计划 §4 F7），若证实中短段丢失严重则向全长度启用（可关闭，数字密集两类熔断暂保留）——试点未出结论前仍只在显式评估中使用。两阶段入口仍为 `python scripts/distill_prepare.py --emit --out <DIR>` → 子 Agent 选材 → `--ingest --dir <DIR> --prepare`（默认关闭，仅显式使用）；`--plan` 是可选只读预览。证据与遗留：`notes/_meta/eval/20261029-pack-only-wiring/VERDICT.md`（§六/§七）、[总结流程简化计划](plans/PLAN-20261028-summary-flow-simplification.md)（§4/§8–§10），旧长源计划与低成本计划均为历史。
 
 **原文素材前轮记录（N6，2026-10-28，已实测、未启用）**：提炼契约 v5 / pack schema v3——模型只交原文位置（`source_spans`）、简短主题、必要关联与疑点，素材正文由程序从同版源逐字提取，成稿时按需整理。两源实测（S3 字幕 / D1 长文）：逐字保真通过，有限复核显示成稿失真减少；成本复核发现原表漏算提炼输入，统一含空白字符后总输入相对单轮约 +200%～+236%。实际 token/耗时与可用预算尚待验收，保持不启用。证据见[旧长源计划 §4 N6](plans/PLAN-20261028-long-source-summary.md) 与本机 `notes/_meta/eval/20261028-n6/VERDICT.md`；理由见[原文素材决策](decisions/DECISION-20261028-source-excerpts.md)。该轮写作仍重读全文，不能作为新完整包消费方式的验收；下文 N1–N5 同为前轮记录。
 
@@ -37,7 +58,7 @@
 | 把一篇已有笔记出分享版 HTML | `python scripts/export_note_html.py "<md路径>"` | 见「2.1 分享版 HTML 出口」；新笔记分享不用这条（落盘时带 `share_html`） |
 | **重做前先判「这篇到底该不该改」** | `python scripts/check_resum_necessity.py --queue notes/_meta/resummarize_queue.json`（见 §3.1） | 直接从全量队列开重做（会把好稿改坏，且无法回退） |
 | 建/重算固定评估集（改动的度量基线） | `python scripts/build_eval_set.py` → 填 `forms/`（人工或固定口径 AI 标注） → `python scripts/score_eval_set.py --dir <同目录>`（见 §3.3） | 凭单次生成效果说「变好了」 |
-| **落盘后给笔记做独立语义复审**（不阻塞落盘、不占前台） | `python scripts/run_async_review.py --plan` → `--emit --batch <id>` → 子 Agent 审 → `--ingest --batch <id>` → `--verdict` 入账（见 §3.2 / §3.2.1） | 打开 `NOTE_QUALITY_GATE=1` 把审核卡在落盘前 |
+| **落盘后给笔记做独立语义复审**（不在主流程；不阻塞落盘、不占前台） | `python scripts/run_async_review.py --plan` → `--emit --batch <id>` → 子 Agent 审 → `--ingest --batch <id>` → `--verdict` 入账（见 §3.2 / §3.2.1） | 打开 `NOTE_QUALITY_GATE=1` 把审核卡在落盘前 |
 | 查「段落悬空指代」到底是不是问题 | `python scripts/scan_dangling_refs.py`（只读，见 §3.4） | 直接建改写轮／凭感觉改 prompt |
 | **查分析层数字是否可溯源、表格数字是否挂错讲者** | `python scripts/audit_note_grounding.py --dir <round-dir>`（只读，见 §3.9） | 把它当落盘门禁（它只报告，不拦盘） |
 
@@ -45,6 +66,15 @@
 
 **入口**：`python articles/run.py "<url>"`（或 `from articles import skill_main`）/ `python videos/run.py --url`
 **特点**：文件名由 `generate_filename(publish_time + title)` 推导，落进 folder 路由或【待归类】。
+
+**会话 Agent 接手的两阶段流程（当前默认）**：单篇返回 `need_continue_summary` 后，先按同版磁盘源和现有路由判定。
+对合格源，将返回的派工元数据登记成一次性队列 JSON（列表；`url`/`title` 对应返回的 `original_url`/`original_title`，
+保留 `raw_file`、`note_type`、`prompt`、`generation_context` 及保存元数据，不重复存 `article_content` 全文），
+放在 `notes/_meta/distill_dispatch/`；复用 `scripts/distill_prepare.py --queue <该 JSON 路径>` 的 emit/ingest/prepare，
+按 §4 派提炼后再写作。不适用源保留原单轮；有效 pack 不重复提炼。成稿仍经本节登记的 `articles.skill_main`
+保存分支，传回装配后的 `generation_context`、同版 `raw_file` 和原保存元数据，不直接调用底层落盘函数。
+这属于已有入口的会话编排，不对 `FORCE_AGENT_MODE=0` 外部 provider 新建自动调用链。
+
 
 **零件（非入口）**：`articles.fetch_web_content`（scys 自动分流 CDP）、`summarize_content`（调 AI）、
 `save_summary_only`（去重闸门 + 机械门禁 + 路由，是 `skill_main` 的内部分支）、
@@ -74,13 +104,13 @@
 
 **提炼配对评价（S8 首轮，2026-10-27，仍未接生产）**：5 对冻结源（长文章多案例/数字密集/多对象地图/长视频 ASR/短源负样本，`notes/_meta/eval/20261027-distill-round/MANIFEST.json`，本机证据）两臂对照——cur=生产单轮；distill=提炼子 Agent → pack 校验 → 写作（同 prompt 主体逐字节 + 材料包块）。盲评（每臂一人互不见）：distill P1 遗漏 0 vs cur 6、确定性失真 0 vs cur 3、取材 15/15 vs cur 13+2 无法回答 → **达保留门槛，适用范围=长源（约 ≥10k）复杂论证/多案例**；短源不适用（无增益、pack 相对成本高）；数值密集表格源为 distill 弱项（P2 丢失增多）。S9 接线见下一条。顺手修 `distill_pack.load_pack`/`source_material._path` 伪协议（`eval://`）读不回 bug + 2 条回归测试（36 passed）。裁决与实录见计划 §9.11-S8 与评估目录 VERDICT.md。
 
-**长源两阶段派发（S9 有限接线，2026-10-27，默认不改生产行为）**：`shared/distill_dispatch.py` + `scripts/distill_prepare.py`。**路由从严**——只对 `source_chars_of` ≥ 10000、数字密度 < 0.08、**且源内不同数字串 < 130** 的源走「提炼 → 按 pack 写作」；短源（<5000）、10000 以下、密度密集（`numeric_dense`）与低密度高数字量（`numeric_heavy`，长直播复盘型）一律回单轮（S8 已证短源无增益、数字密集源 P2 丢失增多；S9 抽样补录同一弱项的另一张脸——美债源密度仅 0.0373 却有 191 个不同数字串，且千字归一化在这个区间分不开），判不准都落 `single`。数字串口径下沉 `shared/source_metrics.py`（与 `scripts/measure_fact_density.source_numbers` 同一真源，后者改为引用）。**装配不改主体**——`assemble_write_prompt` = 生产 prompt 主体逐字节 + 材料包块（标记/文案与 S8 distill 臂逐字节同款，实测 24278 字节比对一致），提炼契约 `DISTILL_MARKER` 不进写作 prompt。**版本绑定**——源 hash / 提炼 prompt hash 失配或 `validate_pack` 不过 → `load_valid_pack_for_source` 返回 None，该篇降级单轮、不阻塞批次、不修补旧 pack。**四步链**：`python scripts/distill_prepare.py --plan`（只读路由报告，不写文件；>40k 的源会显示 `chunks` 块数）→ `--emit --out DIR`（单块 `DIR/<url_key>_distill.txt`；超长源每块 `DIR/<url_key>_c<k>of<N>_distill.txt`，任务只含该块片段但行号是 `NNN| ` 全局行号）→ 子 Agent 提炼（每块一份回包）→ `--ingest --dir DIR`（**缺任一块或任一块校验不过 → 整篇不落盘**；多块由 `distill_pack.merge_chunk_packs` 合并：id 加块前缀、关系重映射、重叠区去重、跨块关系不臆造并写进 notes）→ `--prepare`（写队列条目 prompt + `generation_context.distill_pack_key`/`distill_pack_source_sha256`，`prompt_sha256` 同步为装配后 hash，`validate_dispatch` 仍须通过；留痕 `notes/_meta/distill_dispatch/*.jsonl`，`--dry-run` 不写）。**幂等判据是两把锁**：`block_is_current` 同时比对 `source_sha256` 与 `distill_prompt_sha256`——只比源 hash 会让契约升级后队列里的旧包块永远停留（2026-10-27 实抓）。**开关**：默认不启用——`monitors/run.py` 不调用本入口；`scripts/filter_pending.py` 仅在 `NOTE_DISTILL_DISPATCH=1` 时对刷新后的条目装配（顺序必须 refresh → prepare，反了包块会被重建的主体抹掉）。测试 `tests/test_distill_dispatch.py` 31 条 + `test_filter_pending_refresh.py` 11 条 + 分块 `tests/test_distill_chunking.py` 19 条 + 缺陷回归 `tests/test_s9_defect_fixes.py` 19 条。**历史证据**：两轮同组 n=2 隔离抽样、v2 pack 数字修正、规模更正与验证限制见[旧计划](plans/PLAN-20261026-low-cost-quality.md) §2/§9.11-S9 第 10–11 条；**后续由[新计划](plans/PLAN-20261028-long-source-summary.md) N1–N5 承接，已于 2026-10-28 收口（N4 判不保留，见下段）**。B 原 210,427 字符含新旧双包，单包重装为 141,543；A 为 106,229。**回退也会改写条目**（§8.5 第 1 条，2026-10-27 已修）：`prepare_entry` 先判路由源可读性再拆包——源不可读 / 路由回 `single` / 无有效 pack 时把残留包块剥掉并清 `distill_*`（`PrepareIneligible.stripped=True` 表示条目已变，队列须写回；`filter_pending` 计 `stripped` 且纳入写回条件，不能直接依赖 `refresh_prompt` 先行重建来掩盖）；`--plan` 先行给出 `pending_strip`，`--prepare` 报告分列 `stale_stripped`/`fallback_stripped`。重复装配归一为**恰好一个**包块（循环剥离 + 日志 `blocks_after` 单包断言）。`--emit` 的 `url_key` 未定义 NameError（分块重构引入，自提交 `a84138e` 起派单跑不通）已修。提炼契约的 quote/paraphrase 口径（「带模型注解的 content 不得标 quote，只能 paraphrase」、示例 i4 改 paraphrase、`example_issues()` 自检）**在提交历史里没有单独的 v3**——`a84138e` 提交的是 v2，该口径来自当时会话内未提交的 v3；N1 直接落地为 **v4**（见下一条），所以 v3 不可复现，旧 pack 一律按版本门失效、提炼需重跑。**后续任务已收口（2026-10-28）**：输入成本、新分块稳定性、失败定位、独立语义复验与有限启用由新计划 N1–N5 承接并已完成结论——N4 实测判「不保留」（两源无可定位改善、端到端输入 +165%/+196%），N5 机械门槛 9/9 实测通过；旧固定字数档实验不再作为执行清单，`NOTE_DISTILL_DISPATCH` 保持默认 `0`。
+**长源两阶段派发（S9 有限接线，2026-10-27，当轮「默认不改生产行为」；现行默认已开启，见本文开头「主流程」）**：`shared/distill_dispatch.py` + `scripts/distill_prepare.py`。**路由从严**——只对 `source_chars_of` ≥ 10000、数字密度 < 0.08、**且源内不同数字串 < 130** 的源走「提炼 → 按 pack 写作」；短源（<5000）、10000 以下、密度密集（`numeric_dense`）与低密度高数字量（`numeric_heavy`，长直播复盘型）一律回单轮（S8 已证短源无增益、数字密集源 P2 丢失增多；S9 抽样补录同一弱项的另一张脸——美债源密度仅 0.0373 却有 191 个不同数字串，且千字归一化在这个区间分不开），判不准都落 `single`。数字串口径下沉 `shared/source_metrics.py`（与 `scripts/measure_fact_density.source_numbers` 同一真源，后者改为引用）。**装配不改主体**——`assemble_write_prompt` = 生产 prompt 主体逐字节 + 材料包块（标记/文案与 S8 distill 臂逐字节同款，实测 24278 字节比对一致），提炼契约 `DISTILL_MARKER` 不进写作 prompt。**版本绑定**——源 hash / 提炼 prompt hash 失配或 `validate_pack` 不过 → `load_valid_pack_for_source` 返回 None，该篇降级单轮、不阻塞批次、不修补旧 pack。**四步链**：`python scripts/distill_prepare.py --plan`（只读路由报告，不写文件；>40k 的源会显示 `chunks` 块数）→ `--emit --out DIR`（单块 `DIR/<url_key>_distill.txt`；超长源每块 `DIR/<url_key>_c<k>of<N>_distill.txt`，任务只含该块片段但行号是 `NNN| ` 全局行号）→ 子 Agent 提炼（每块一份回包）→ `--ingest --dir DIR`（**缺任一块或任一块校验不过 → 整篇不落盘**；多块由 `distill_pack.merge_chunk_packs` 合并：id 加块前缀、关系重映射、重叠区去重、跨块关系不臆造并写进 notes）→ `--prepare`（写队列条目 prompt + `generation_context.distill_pack_key`/`distill_pack_source_sha256`，`prompt_sha256` 同步为装配后 hash，`validate_dispatch` 仍须通过；留痕 `notes/_meta/distill_dispatch/*.jsonl`，`--dry-run` 不写）。**幂等判据是两把锁**：`block_is_current` 同时比对 `source_sha256` 与 `distill_prompt_sha256`——只比源 hash 会让契约升级后队列里的旧包块永远停留（2026-10-27 实抓）。**开关（当轮）**：默认不启用——`monitors/run.py` 不调用本入口；`scripts/filter_pending.py` 仅在 `NOTE_DISTILL_DISPATCH=1` 时对刷新后的条目装配（顺序必须 refresh → prepare，反了包块会被重建的主体抹掉）。测试 `tests/test_distill_dispatch.py` 31 条 + `test_filter_pending_refresh.py` 11 条 + 分块 `tests/test_distill_chunking.py` 19 条 + 缺陷回归 `tests/test_s9_defect_fixes.py` 19 条。**历史证据**：两轮同组 n=2 隔离抽样、v2 pack 数字修正、规模更正与验证限制见[旧计划](plans/PLAN-20261026-low-cost-quality.md) §2/§9.11-S9 第 10–11 条；**后续由[新计划](plans/PLAN-20261028-long-source-summary.md) N1–N5 承接，已于 2026-10-28 收口（N4 判不保留，见下段）**。B 原 210,427 字符含新旧双包，单包重装为 141,543；A 为 106,229。**回退也会改写条目**（§8.5 第 1 条，2026-10-27 已修）：`prepare_entry` 先判路由源可读性再拆包——源不可读 / 路由回 `single` / 无有效 pack 时把残留包块剥掉并清 `distill_*`（`PrepareIneligible.stripped=True` 表示条目已变，队列须写回；`filter_pending` 计 `stripped` 且纳入写回条件，不能直接依赖 `refresh_prompt` 先行重建来掩盖）；`--plan` 先行给出 `pending_strip`，`--prepare` 报告分列 `stale_stripped`/`fallback_stripped`。重复装配归一为**恰好一个**包块（循环剥离 + 日志 `blocks_after` 单包断言）。`--emit` 的 `url_key` 未定义 NameError（分块重构引入，自提交 `a84138e` 起派单跑不通）已修。提炼契约的 quote/paraphrase 口径（「带模型注解的 content 不得标 quote，只能 paraphrase」、示例 i4 改 paraphrase、`example_issues()` 自检）**在提交历史里没有单独的 v3**——`a84138e` 提交的是 v2，该口径来自当时会话内未提交的 v3；N1 直接落地为 **v4**（见下一条），所以 v3 不可复现，旧 pack 一律按版本门失效、提炼需重跑。**后续任务已收口（2026-10-28）**：输入成本、新分块稳定性、失败定位、独立语义复验与有限启用由新计划 N1–N5 承接并已完成结论——N4 实测判「不保留」（两源无可定位改善、端到端输入 +165%/+196%），N5 机械门槛 9/9 实测通过；旧固定字数档实验不再作为执行清单，`NOTE_DISTILL_DISPATCH` 保持默认 `0`。
 
-**长源总结 N1：粒度与交接协议（2026-10-28，离线实现，默认仍关）**：契约 **v4**（`prompts/distill.py`，`DISTILL_MARKER` 同步）+ pack **schema v2**（`shared/distill_pack.py`）。① **段级论证单元**：条目首选 `type=argument`，一个完整观点/论证连同依据、案例、步骤、条件、例外、数字归属写成一条；**不再「数字逐行成条」**，也不为每个数字单列。② **数字同段不混口径**：单元内多读数走 `readings` 数组，逐项给 `value` + 对象/单位/期间/基准/确定性；两个读数没有任何区分字段即「未声明口径」，`validate_pack` 拦下（`prompts.distill.readings_issues` 为单一真源，示例自检与真实回包同口径）。③ **必要跨段关系**：段内关系写进单元正文，只有跨单元的依赖/限制/冲突才进 `relations`；分块任务把跨块才看得清的指代/条件/相反读数写进 `deferred`，**局部任务不得替全篇下结论**。④ **实际处理范围**：`coverage.processed_ranges` 记 1-based 行区间（来自派单块边界，不采信模型自报）；`complete=True` 必须真覆盖全文，有洞即报「空洞」；`complete=False` 如实声明部分读取。⑤ **版本绑定**：pack 与包块 meta 同时记 `contract_version`/`schema_version`；`load_valid_pack_for_source` 对旧契约返回 `contract_version_mismatch`，`block_is_current` 判 `contract_upgraded`，`--emit` 任务书与 manifest 记契约版本、`--ingest` 拒收旧契约回包。⑥ **成本可观测**：`measure_assembly` 增报 `schema_version`/`contract_version`/`arguments`/`readings`/`deferred`/`source_lines_total`/`processed_ranges`/`chunk_count`；token 与耗时取不到仍写 `unknown`。行式序列化同步支持 `@q`（读数）与 `@f`（deferred），`lines_roundtrip_issues` 逐条比对——压缩不得丢口径或跨段交接。测试 `tests/test_distill_contract_v4.py` 31 条；契约升级令旧 pack 与旧任务书全部失效，需重跑提炼（版本绑定的预期行为）。
+**长源总结 N1：粒度与交接协议（2026-10-28，离线实现，当轮默认关；现行默认已开启）**：契约 **v4**（`prompts/distill.py`，`DISTILL_MARKER` 同步）+ pack **schema v2**（`shared/distill_pack.py`）。① **段级论证单元**：条目首选 `type=argument`，一个完整观点/论证连同依据、案例、步骤、条件、例外、数字归属写成一条；**不再「数字逐行成条」**，也不为每个数字单列。② **数字同段不混口径**：单元内多读数走 `readings` 数组，逐项给 `value` + 对象/单位/期间/基准/确定性；两个读数没有任何区分字段即「未声明口径」，`validate_pack` 拦下（`prompts.distill.readings_issues` 为单一真源，示例自检与真实回包同口径）。③ **必要跨段关系**：段内关系写进单元正文，只有跨单元的依赖/限制/冲突才进 `relations`；分块任务把跨块才看得清的指代/条件/相反读数写进 `deferred`，**局部任务不得替全篇下结论**。④ **实际处理范围**：`coverage.processed_ranges` 记 1-based 行区间（来自派单块边界，不采信模型自报）；`complete=True` 必须真覆盖全文，有洞即报「空洞」；`complete=False` 如实声明部分读取。⑤ **版本绑定**：pack 与包块 meta 同时记 `contract_version`/`schema_version`；`load_valid_pack_for_source` 对旧契约返回 `contract_version_mismatch`，`block_is_current` 判 `contract_upgraded`，`--emit` 任务书与 manifest 记契约版本、`--ingest` 拒收旧契约回包。⑥ **成本可观测**：`measure_assembly` 增报 `schema_version`/`contract_version`/`arguments`/`readings`/`deferred`/`source_lines_total`/`processed_ranges`/`chunk_count`；token 与耗时取不到仍写 `unknown`。行式序列化同步支持 `@q`（读数）与 `@f`（deferred），`lines_roundtrip_issues` 逐条比对——压缩不得丢口径或跨段交接。测试 `tests/test_distill_contract_v4.py` 31 条；契约升级令旧 pack 与旧任务书全部失效，需重跑提炼（版本绑定的预期行为）。
 
 **长源总结 N2：结构感知切分（2026-10-28，离线实现）**：`shared/source_material.scan_structure` 成为材料索引与切块的**单一结构真源**（标题/表格/代码块/段落，`build_index` 改为引用）。`plan_chunks` 从「每 40k 字切一刀 + 回退 40 行」改为：先按标题、段落、表格、代码块边界切**结构单元**（表格/代码块内部不许下刀），再按容量贪心装块；无结构文本（字幕/口播，换行不算语义边界）按**句子结束符**切，无标点才按容量硬切。每块给出两套行区间：`start_line–end_line` 是**下发范围**（含前一块尾部 `context_lines` 行重叠，字数为 `delivered_chars`），`core_start_line–core_end_line` 是**核心区间**（本块负责提炼，字数为 `chars`）；核心区间首尾相接、恰好覆盖 1..总行数，重叠只出现在下发范围。超过容量的单元切分时带 `continued`/`continues`/`continuation`（表格/代码/长段的后半），派单文案明确「接续/尚未结束/不要重复提炼」；`chunk_scope_issues` 在 `--ingest` 拒收 `source_lines` 越出核心区间的回包（重叠上下文不得重复建条目）。`merge_chunk_packs` 的 `processed_ranges` 改用核心区间（不再把重叠计入「读过的行」）。全程纯机械，**不增加 LLM 分段调用**。边界用例：标题边界、表格整块、代码整块、超长代码块续接、字幕句群、无标点兜底、超长单行、末块；测试 `tests/test_distill_structural_chunking.py` 23 条。全篇统稿与装配消费见下一条 N3。
 
-**长源总结 N3：全块回收门与全篇统稿（2026-10-28，离线实现，默认仍关）**：写作侧消费契约与回收门槛，不新增模型调用。① **全块完整回收才形成可统稿材料**（`shared/distill_dispatch.py`）：`--ingest` 先按每块自报的 `total` 校验清单块序必须 `1..total`（`--limit` 截断 manifest 时回包数照样凑得上，但源没处理完），合并后再用 `distill_pack.coverage_issues` 校验处理范围真覆盖全文，任一不满足整篇不落盘；消费侧 `load_valid_pack_for_source` 对 `complete≠True` 或块序不全返回 `incomplete_coverage`，`--prepare` 据此剥掉旧包块回单轮（`filter_pending` 单列 `incomplete` 计数）。② **装配块自带覆盖声明**：`pack_meta_json.coverage_complete` 与行式 `@meta complete=`，`block_is_current` 增 `coverage_incomplete`——只比源/契约 hash 时，不完整 pack 装配出的块会永远停在队列里被当成「已就绪」。③ **全篇统稿契约**（新模块 `prompts/synthesis.py`）：多块或有 `deferred` 的包在块头附「不做二次压缩 / 跨块对账（deferred 逐条 + 块边界 + 指代条件冲突）/ 块级主线不等于全篇结论」，并下发**回源核对**信息（源文件路径、总行数、`source_lines` 为 1-based 行号）；源路径缺失时明说「回源不可用，缺口如实保留」，与 `PACK_BLOCK_HEADER` 的单块简版并存。④ **装配契约版本** `HANDOFF_MARKER`：N3 之前装配的块判 `handoff_upgraded`，只重装 prompt 不重跑提炼（与「提炼契约升级要重跑 pack」区分开）。⑤ **合并完整性**：跨块去重键改为（type, stance, content, readings）——只看 content 会把「同一句、不同读数口径」的另一块条目静默丢掉；`coverage` 记 `chunk_indices`/`chunk_total_declared`。⑥ **接线**：`--plan` 增 `pack_ok`/`pack_chunks`；`prepare` 的 provenance 增 `distill_chunks`/`distill_source_path`/`distill_source_lines`/`distill_synthesis`，剥包时一并清掉。测试 `tests/test_distill_synthesis.py` 17 条。**边界**：统稿是否真的接住跨块指代、条件与冲突属语义问题，由 N4 独立复核，机械门只保证「缺块不进统稿、deferred 与块边界一定送到写作端」。`NOTE_DISTILL_DISPATCH` 仍默认 `0`。
+**长源总结 N3：全块回收门与全篇统稿（2026-10-28，离线实现，当轮默认关；现行默认已开启）**：写作侧消费契约与回收门槛，不新增模型调用。① **全块完整回收才形成可统稿材料**（`shared/distill_dispatch.py`）：`--ingest` 先按每块自报的 `total` 校验清单块序必须 `1..total`（`--limit` 截断 manifest 时回包数照样凑得上，但源没处理完），合并后再用 `distill_pack.coverage_issues` 校验处理范围真覆盖全文，任一不满足整篇不落盘；消费侧 `load_valid_pack_for_source` 对 `complete≠True` 或块序不全返回 `incomplete_coverage`，`--prepare` 据此剥掉旧包块回单轮（`filter_pending` 单列 `incomplete` 计数）。② **装配块自带覆盖声明**：`pack_meta_json.coverage_complete` 与行式 `@meta complete=`，`block_is_current` 增 `coverage_incomplete`——只比源/契约 hash 时，不完整 pack 装配出的块会永远停在队列里被当成「已就绪」。③ **全篇统稿契约**（新模块 `prompts/synthesis.py`）：多块或有 `deferred` 的包在块头附「不做二次压缩 / 跨块对账（deferred 逐条 + 块边界 + 指代条件冲突）/ 块级主线不等于全篇结论」，并下发**回源核对**信息（源文件路径、总行数、`source_lines` 为 1-based 行号）；源路径缺失时明说「回源不可用，缺口如实保留」，与 `PACK_BLOCK_HEADER` 的单块简版并存。④ **装配契约版本** `HANDOFF_MARKER`：N3 之前装配的块判 `handoff_upgraded`，只重装 prompt 不重跑提炼（与「提炼契约升级要重跑 pack」区分开）。⑤ **合并完整性**：跨块去重键改为（type, stance, content, readings）——只看 content 会把「同一句、不同读数口径」的另一块条目静默丢掉；`coverage` 记 `chunk_indices`/`chunk_total_declared`。⑥ **接线**：`--plan` 增 `pack_ok`/`pack_chunks`；`prepare` 的 provenance 增 `distill_chunks`/`distill_source_path`/`distill_source_lines`/`distill_synthesis`，剥包时一并清掉。测试 `tests/test_distill_synthesis.py` 17 条。**边界**：统稿是否真的接住跨块指代、条件与冲突属语义问题，由 N4 独立复核，机械门只保证「缺块不进统稿、deferred 与块边界一定送到写作端」。`NOTE_DISTILL_DISPATCH` 当轮默认 `0`（现行已改为默认 `1`）。
 
 会话独立审核可由`save_pending.py --review-file <报告.json>`随稿提交；存量重做读取稿件旁的`<稿.md>.review.json`（或批次条目的`review_file`）。报告必须绑定完整源、实际清理后的稿件正文及派单prompt，明确不同于作者的审者ID与全文字符范围。协议见[全文审核说明](../references/fulltext-review.md)，未知历史版本不得补造。
 已有draft-only/Landing两段出口同样受审核准入约束：新草稿元数据携带源/正文/审核版本和格式化文件hash；显式审核时旧草稿无版本、或草稿文件被改动，都保留草稿并停止Landing，不能绕过新门禁。
@@ -162,6 +192,9 @@ Obsidian Charts 插件与 HTML 导出器是它的两个消费者，互不另外�
 [DECISION-20261018-controlled-replace](decisions/DECISION-20261018-controlled-replace.md)。
 
 ### 3.2 落盘后异步审核（T7 ②，2026-10-18）
+
+> **不在主流程**：入队零模型调用（一行 JSONL），消费端必须显式跑。主流程只有本文开头那四步；
+> 本节是「有人/有空时再审」的独立工具，不是第 5 步，也不阻塞任何落盘。
 
 **问题**：全套独立语义审核（`prompts/semantic_review.review_fulltext`：分块全文、独立会话审者、
 `coverage=full` 才认）**早就建好了，但只能卡在落盘前**，开关 `NOTE_QUALITY_GATE` 默认 `0`
@@ -485,27 +518,33 @@ CDP 通道从 `unknown_no_html` 变为可数图（拿到 DOM 时按 `images_not_
 的条目，prompt 自带完整材料包（已选原文素材 + 未选区间附录 + 版本绑定与回源路径）——
 **派工时不再附原文全文、不指示子 Agent 整篇读 `raw_file`**；子 Agent 只消费条目 prompt，
 需要核对某行上下文时按 `source_lines`/行段局部读源并在稿内登记回查范围。
-条目 prompt 无包块（`distill_input_mode` 缺失）的条目维持现役单轮派工（prompt + 原文）。
+条目无包块时先看路由和待提炼状态：不适用源仍单轮（prompt + 原文）；合格源缺包/失效包先提炼，不能直接写作。
 落盘侧不变：`save_pending.py` 仍按 `raw_file` 磁盘原文做 `source_sha256` 对账，
 公共门禁的比对依据是完整同版源，不以包替换；保存成功才登记/清队列，失败保留候选按原上限修订。
 
-**写作端两环（流程简化 F7 接线，2026-10-30）**：pack_only 条目写稿后、`save_pending.py` 落盘前
-走组合流程收尾，全部由 `scripts/check_note_coverage.py` 承载（零模型，阈值冻结于
-`check_calibration.json`，label 3-gram < 0.2）：
-1. **机械覆盖自查**：`python scripts/check_note_coverage.py --queue <q> --key <键> --file <稿>`——
-   exit 0 无可疑直接落盘；exit 1 有可疑块走第 2 步；exit 4 源/包失效（按派工回退处理，不硬闯）。
-2. **定向补稿**：`--emit-patch <任务文件>` 生成补稿材料（成稿全文 + 可疑条目素材正文，**不含源全文**），
-   派补稿子 Agent，**三出口协议**必守（意图树 v6，2026-10-31）：①改写也算含——成稿以其他表述
-   覆盖即勾销不补；②**核实为可舍弃**——确属重复表述/元信息/过程叙述/寒暄/与主线无关的岔题
-   （或 support 且主线放得下），勾销不补，稿尾记一行 `舍弃：条目 <id> —— 一句理由`；
-   ③缺才补——主干（trunk）内容确认缺失才**纯插入**定点插段，原稿其余逐字不动；
-   补后**仅对新增覆盖的条目**刷新稿内 EXTRACT_CHECKLIST（出口②勾销的不登记）。
-   v6 起机械自查仅拦截 trunk 条目（`shared/note_coverage.py` tier 过滤），support/drop
-   缺落点进 info 报告观察不拦。
-3. **只插不改核验**：`--file <补稿稿> --verify-insert-only <原稿>`——exit 0 通过才可落盘；
-   exit 5 说明补稿引入了 replace/delete（F7 停止条件：判定该篇补稿失败，保留原稿走人工定位，
-   不静默采纳改动稿）。
-非 pack_only 条目该脚本报 `not_pack_only` 正常跳过。**F7 试点已过验证（2026-10-30，po 6/6 全胜单轮，全链输入按当时口径 1.31–1.39×）**，全长度启用待用户裁决。**意图树契约 v6 批 A（2026-10-31）**：自查升 trunk-only、补稿升三出口（见上），P1 v6 全胜（压缩率 1.16→0.99、零失真）、P4 触发停止点①（3 处失真全为写作回退）；**成本口径复核发现 F7 的 1.31–1.39× 分母偏大（装配后 prompt+源当单轮臂），按登记口径复算 F7 亦 >3×——启用成本账须重算**；生成端有限修正与 P4 定向复验已确认（计划 §9，待新会话执行）；六源扩批及生产开关仍暂缓。裁决前 `NOTE_DISTILL_DISPATCH` 仍 0，生产不制造 pack_only 条目，本节命令在开关打开或显式试点时生效。
+**当前默认：提炼 → 写作 → 机械/内容门禁 → 落盘**（[用户确认的生效决定](decisions/DECISION-20261029-distill-write-default.md)）：
+1. `python scripts/filter_pending.py` 先清已总结项并刷新派工。`NOTE_DISTILL_DISPATCH` 默认开启，显式 `0` 可关闭；
+   沿用现有 ≥10k 长源路由、数字密集/高数字量熔断与原分块，不扩大适用范围。
+2. 报告有 `needs_distill`、`incomplete`、`stale` 或 `stripped_needs_distill`（`next_action=distill_then_write`）时，先运行
+   `python scripts/distill_prepare.py --queue <monitors|scys|JSON路径> --emit --out <任务目录>`，派提炼 Agent，
+   然后 `--queue <同队列> --ingest --dir <任务目录> --prepare`。只装配本批回收成功项；失败/缺块不硬推进，不把缺包当单轮。
+   已有同版有效 pack 则直接复用，不重跑提炼。
+3. 写作 Agent 消费装配后的完整 prompt（包内原文 + 未选区间附录），完成后直接执行本节原 `save_pending.py`。
+   新 `generation_context` 记 `distill_workflow=distill_write`、`distill_postprocess=mechanical_only`；
+   旧流程声明会重装并刷新写作 prompt hash。作者在同次写作中的自检保留，不另起核对 Agent。
+4. 原版本/同源/缺块校验、去重、机械/内容保存门禁保持；硬门禁失败按原规则修订，不能 force 绕过。
+   **常规流程不再逐篇调用模型核对、自动补稿或修补后复审**。成功保存后仍由编排方统一清队列。
+
+**可选机械诊断（非逐篇前置）**：`python scripts/check_note_coverage.py --queue <q> --key <键> --file <稿>`
+默认只报告覆盖疑点（`report_only=true`，有可疑也 exit 0），不生成补稿任务、不把疑点记为语义审核通过；
+源/包不可用仍 exit 4。用户显式要求补稿时才用 `--emit-patch <文件>`（可疑时 exit 1），
+并沿用该工具的三出口与 `--verify-insert-only` 协议（违规 exit 5）。这些显式工具不进入当前默认链。
+
+**旧组合步骤保留、勿删**：代码、命令、测试和历史证据均继续维护。后续用户要求接回时，复用「写作 → 覆盖自查 → 核实疑点/必要时定向补稿 → 只插不改核验 → 原门禁与落盘」；落盘前独立审核与落盘后异步复审仍分别沿原入口显式启用。归档计划不等于停用这些工具，也不自动恢复逐篇调用。
+
+**证据边界**：F7 六稿中四稿核对前后逐字相同，另两稿仅插入 236/299 字，说明部分收益已在提炼＋写作结束时存在；
+前轮 D1 裸稿曾漏整章、F3R 未核对稿仍有串例/强度漂移。当前两阶段启用是用户对速度与质量的取舍，
+不改写历史否决/未通过结果，不承诺每篇优于单轮、语义零错误或与单轮同速。F3R 本身已收口，不继续消耗模型预算。
 
 **weread 直连公众号源（2026-09-19 起现役，PLAN-20260919）**：旧 wewe-rss 代理已死，
 接替方案 `monitors/weread.py`。⚠️ **2026-09-26 起不再随 `--mode auto` 自动参与**：因撞人机验证

@@ -246,6 +246,18 @@ class TestCoverageFirstGeneration:
         assert templates_mod.source_chars_of("") == 0
 
 
+def test_blocked_drafts_use_test_directory(tmp_path):
+    """门禁用例的暂存也须隔离，不能把模拟候选稿写进真实 notes。"""
+    from pathlib import Path
+    from shared import draft_stage
+
+    assert Path(draft_stage.STAGE_BASE).is_relative_to(tmp_path), "暂存目录未隔离到测试目录"
+    result = draft_stage.stage_blocked("测试候选稿", reason="test", quiet=True)
+    assert result["ok"] is True
+    assert Path(result["draft"]).is_relative_to(tmp_path)
+    assert Path(result["meta"]).is_relative_to(tmp_path)
+
+
 class TestSaveSummaryOnlyGate:
     """门禁接入 save_summary_only：拦截不落盘、不 dedup，子 Agent 可按 issues 修复重试。"""
 

@@ -213,7 +213,10 @@ class TestCostTelemetryIsHonest:
                          log_path=log_path, pack_style="lines")
         rec = json.loads(open(log_path, encoding="utf-8").readlines()[-1])
         assert rec["cost"]["style"] == "lines"
-        assert rec["cost"]["savings_pct"] > 40
+        # 2026-10-31 F3R：材料包头部的写作契约（选材权 + 素材归属/强度）加长，
+        # 它是 json 与 lines 两种形态共有的固定开销，会稀释 lines 的相对压缩率；
+        # 这里断言的是「行式仍明显更小」，非固定字节比例。
+        assert rec["cost"]["savings_pct"] > 35
         assert entry["generation_context"]["distill_pack_style"] == "lines"
         assert entry["prompt"].count(DD.MATERIAL_PACK_BEGIN) == 1
 

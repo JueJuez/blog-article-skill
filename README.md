@@ -46,7 +46,9 @@ python tools/project_import/assets/main.py "<仓库URL>"
 
 ## 总结与落盘
 
-一次性总结使用入口返回的 prompt、原文及元数据，生成稿件后经 `articles.main.save_summary_only` 保存。批量任务先跑 `python scripts/filter_pending.py`，由子 Agent 消费条目已计算的 prompt，再经 `scripts/save_pending.py` 落盘；成功后由编排方统一清队列。可先用 `python scripts/filter_pending.py --dry-run` 预览type差异（不去重、不写盘）；已知auto会重选型，manual保留，legacy只报告差异。详见 [监控说明](monitors/README.md) 与 PIPELINES §4。
+合格长源默认「提炼 → 写作 → 既有机械/内容门禁 → 原入口落盘」，`NOTE_DISTILL_DISPATCH` 默认开启、显式 `0` 可关闭；不适用源仍走原单轮。提炼与写作由会话 Agent 编排，完整材料包已含未选区间时，写作默认不再整篇读取原文。单篇按 PIPELINES §2 交接，批量按 §4 先刷新队列、缺包先提炼，再由子 Agent 写作并经 `scripts/save_pending.py` 保存；成功后编排方统一清队列。
+
+可用 `python scripts/filter_pending.py --dry-run` 只读预览类型差异。覆盖自查、定向补稿、纯插入核验与独立审核等旧组合步骤全部保留，按需显式启用；当前默认不逐篇调用。详见 [PIPELINES](docs/PIPELINES.md) 与[监控说明](monitors/README.md)。
 
 模板和质量纪律由 `prompts/templates.py` 维护；落盘经过机械与内容门禁，失败须修稿或明确报告。飞书双写、镜像及本地兜底见 [RULES.md](RULES.md) §3.0。
 
@@ -61,7 +63,7 @@ python tools/project_import/assets/main.py "<仓库URL>"
 | 公众号登录、请求统计与风控 | [weread 手册](references/weread-direct-source.md) |
 | 生财有术抓取 | [scys SOP](references/scys-fetch-sop.md) |
 | 配置、术语、测试 | [配置](references/config.md)、[术语](references/glossary.md)、[测试约定](references/testing_rules.md) |
-| 模板质量开发与批次4接手 | [开发计划](docs/plans/PLAN-20261014-template-quality.md) §5、§8、§9；批次0欠项与整体语义验收仍保留 |
+| 总结流程决定与已完成开发记录 | [四步主流程决定](docs/decisions/DECISION-20261029-distill-write-default.md)、[完整计划归档](./_archive/plans/PLAN-20261030-intent-tree-summary.md)；其他计划及历史见 docs/README |
 | 决策与历史 | [决策索引](docs/decisions/README.md) |
 | 开源项目库 | [项目抽取说明](tools/project_import/README.md) |
 

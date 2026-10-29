@@ -31,10 +31,10 @@
 
 | 主题 | 决策记录 | 实施状态真源 |
 |---|---|---|
-| 总结流程简化（暂定） | [四阶段与材料包消费](DECISION-20261028-summary-flow-simplification.md) | 当前任务与验收只看[流程简化计划](../plans/PLAN-20261028-summary-flow-simplification.md)。**2026-10-29 F1–F4 已接线；2026-10-30 F5b 判裸 pack_only 不启用、F5c 组合流程（含机械自查+定向补稿）两源验证通过**（证据同目录 VERDICT §六/§七）；开关保持关闭，限定启用建议待用户裁决 |
-| 长源总结效率与质量（历史） | [总结方式与首次迁移](DECISION-20261028-long-source-summary.md)、[v4 不启用](DECISION-20261028-long-source-not-enabled.md)、[N6 原文素材](DECISION-20261028-source-excerpts.md) | [旧长源计划](../plans/PLAN-20261028-long-source-summary.md)已退役，N1–N6 原始证据保留；原文选取原则继续有效，任务/遗留以流程简化计划为准 |
+| 四步主流程与旧组合能力保留 | [2026-10-29 生效决定](DECISION-20261029-distill-write-default.md)、[前轮暂定方案](DECISION-20261028-summary-flow-simplification.md) | 默认提炼＋写作后经既有门禁落盘；旧自查/补稿/纯插入核验/复审等代码、入口与测试保留，按需接回。[开发计划已归档](../../_archive/plans/PLAN-20261030-intent-tree-summary.md)，旧关闭开关与待裁决提示只代表历史 |
+| 长源总结效率与质量（历史） | [总结方式与首次迁移](DECISION-20261028-long-source-summary.md)、[v4 不启用](DECISION-20261028-long-source-not-enabled.md)、[N6 原文素材](DECISION-20261028-source-excerpts.md) | [旧长源计划](../plans/PLAN-20261028-long-source-summary.md)已退役，N1–N6 原始证据保留；原文选取原则继续有效，现行开关与流程看 2026-10-29 生效决定 |
 | 个人项目低成本质量改进 | [阶段顺序与边界](DECISION-20261026-low-cost-quality.md)、[2026-10-27 图像/图表补充](DECISION-20261027-image-and-chart-policy.md) | [旧计划](../plans/PLAN-20261026-low-cost-quality.md)于 2026-10-28 退役为历史，未全部验收；有效原则保留，遗留与否决项已由新计划逐项裁定 |
-| 输入优化、输出目的与模板讨论 | [2026-10-27 输入/输出范围](DECISION-20261027-input-and-output-scope.md) | 历史讨论及实施证据在旧计划；完整、忠实、可取材和可追溯的目标继续有效，提炼粒度由 2026-10-28 决策调整，当前状态只看新计划 |
+| 输入优化、输出目的与模板讨论 | [2026-10-27 输入/输出范围](DECISION-20261027-input-and-output-scope.md) | 历史讨论及实施证据保留；完整、忠实、可取材和可追溯的目标继续有效，当前操作见 PIPELINES，后续开发已归档 |
 
 ## 历史关系与阅读方式
 
