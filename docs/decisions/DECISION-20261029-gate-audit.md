@@ -81,3 +81,5 @@
   2026-10-29 追加归教程。
 - 门禁过期项另登记 [KNOWN_DEFECTS](../KNOWN_DEFECTS.md) D14：`NOTE_QUALITY_GATE` 字段错位、
   `review_flags` 空转、照搬 20% 余量、多段 pack 的 quote 约束——保留观察，未在本次改动。
+- 存量重做（`scripts/resum_save_batch.py`）走受控替换，未接数值保真；是否把数值缺口计入
+  「更少缺陷才替换」的比较，待两周 shadow 数据出来再定。
