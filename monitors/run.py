@@ -134,8 +134,8 @@ SUB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subscriptio
 AUTH_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".wechat_auth.json")
 # 公众号正文限流重试队列：正文抓空（疑似微信限流）的文章暂存于此，下次运行优先重抓
 PENDING_REFETCH_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_refetch.json")
-# 降级待总结队列：无外部 AI 时抓到的原文（raw 文件）在此排队，由外层执行模型总结后
-# 调 articles.save_summary_only 落盘（含 folder 归档），完成降级闭环
+# 降级待总结队列：无外部 AI 时抓到的原文（raw 文件）在此排队，由 filter_pending 刷新
+# prompt/装配材料包、派子 Agent 写稿后经 save_pending 落盘（含 folder 归档），完成降级闭环
 PENDING_SUMMARY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_summaries.json")
 # 每类型「安全上限」（防极端 UP 单窗口发几百条刷爆笔记）；真正的内容量由
 # 时间窗口（BILI_FIRST_WINDOW_DAYS / BILI_DAILY_WINDOW_DAYS）约束，不是这个 count。
@@ -842,10 +842,14 @@ def discover_all(subs: dict, state: dict, mode: str = "auto",
     return all_new
 
 
-def _summarize_article(it: dict, title: str, content: str, obsidian: bool, stats: dict) -> None:
+def _summarize_article(it: dict, title: str, content: str, obsidian: bool, stats: dict,
+                       stat_key: str = "article") -> None:
     """把已抓到正文的文章送进总结管线（去广告 → 净化 → skill_main → 入队）。
 
-    供「主循环直连成功」与「批量 CDP 兜底成功」两处复用，逻辑单一事实源。
+    供「主循环直连/批量 CDP 兜底」与「B站完整动态」三处复用，逻辑单一事实源；
+    `stat_key` 只决定计入哪个计数器（article / dynamic_full）。
+    监控条目随后写 monitors 常驻队列，由 `filter_pending.py` 统一交接提炼与派单，
+    这里显式 `_entry_handoff=False`，不重复登记一次性队列。
     """
     real_title = title or it.get("title", "")
     if is_fully_ad(real_title, content or ""):
@@ -875,14 +879,37 @@ def _summarize_article(it: dict, title: str, content: str, obsidian: bool, stats
                           "publish_time": it.get("publish_time", 0),
                           "original_title": real_title,
                           "tags": [c for c in [_cat] if c],
-                          "folder": _item_folder(it), "obsidian": obsidian})
+                          "folder": _item_folder(it), "obsidian": obsidian,
+                          "_entry_handoff": False})
         msg = res.get("message", "") if isinstance(res, dict) else str(res)
         print(f"[{it['source']}] {it['title']}: {msg}")
         _queue_pending_summary(it, res if isinstance(res, dict) else {})
-        stats["article"] += 1
+        stats[stat_key] += 1
     except Exception as e:
         print(f"[error] {it['title']}: {e}", file=sys.stderr)
         stats["error"] += 1
+
+
+def pending_agent_hint(kind: str, path: str, count: int) -> str:
+    """待总结队列的接单说明（三处打印的唯一真源，避免各自漂移回旧流程）。
+
+    `kind` 为 "scys" 时用 scys 队列键与计数单位，其余（含未知值）按 monitors 处理。
+    """
+    is_scys = kind == "scys"
+    head = ("🤖 NEED_AGENT_SCYS_SUMMARY: scys %d 篇待总结。清单见 %s\n" % (count, path)
+            if is_scys else
+            "🤖 NEED_AGENT_SUMMARY: %d 条内容已抓取，等待执行模型（Agent）总结。清单见 %s\n"
+            % (count, path))
+    queue = "scys --key <topicId>" if is_scys else "monitors --key <url>"
+    emit = ('python scripts/distill_prepare.py --queue scys --emit' if is_scys
+            else 'python scripts/distill_prepare.py --emit')
+    return (head +
+            "   处理路径：python scripts/filter_pending.py（刷新 prompt、清已总结）"
+            "→ 条目报 needs_distill / incomplete / stale 时先 "
+            + emit + " → 子 Agent 提炼 → --ingest --prepare；"
+            "就绪后派子 Agent 按条目 prompt 写稿 → "
+            "python scripts/save_pending.py --queue " + queue + " --file <稿件.md> "
+            "→ 编排方统一再跑 filter_pending.py 出队。")
 
 
 def _summarize_video_item(it: dict, obsidian: bool, stats: dict, transcript: str = None) -> None:
@@ -1117,22 +1144,9 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
                     print(f"[error] {it['title']}: {e}", file=sys.stderr)
                     stats["error"] += 1
                 continue
-            src_text = f"{purified}\n\n---\n原文链接：{it['url']}"
-            try:
-                from articles.main import skill_main
-                _cat = it.get("category", "")
-                res = skill_main({"content": src_text, "author": it.get("mp_name", ""),
-                                  "publish_time": it.get("publish_time", 0),
-                                  "original_title": it.get("title", ""),
-                                  "tags": [c for c in [_cat] if c],
-                                  "folder": _item_folder(it), "obsidian": obsidian})
-                msg = res.get("message", "") if isinstance(res, dict) else str(res)
-                print(f"[bilibili-动态] {it['title']}: {msg}")
-                _queue_pending_summary(it, res if isinstance(res, dict) else {})
-                stats["dynamic_full"] += 1
-            except Exception as e:
-                print(f"[error] {it['title']}: {e}", file=sys.stderr)
-                stats["error"] += 1
+            # 完整动态与文章走同一总结入口（不重复登记一次性队列，计数器另计）
+            _summarize_article(it, it.get("title", ""), purified, obsidian, stats,
+                               stat_key="dynamic_full")
         else:
             continue
 
@@ -1265,14 +1279,7 @@ def apply_summaries(items: list, obsidian: bool = False, session=None,
     _summary_path = os.environ.get("MON_PENDING_SUMMARY_PATH", PENDING_SUMMARY_PATH)
     pending = _load_json(_summary_path, [])
     if pending:
-        print(
-            f"\n🤖 NEED_AGENT_SUMMARY: {len(pending)} 条内容已抓取，等待执行模型（Agent）总结。"
-            f"清单见 {_summary_path}\n"
-            f"   处理路径：Read 条目 prompt（已按 note_type 预计算，含质量自检段）"
-            f"→ 按该 prompt 总结 → 调 articles.main.save_summary_only("
-            f"{{summarized_content, original_url, author, tags, original_title, publish_time, folder}}) "
-            f"落盘 → 从队列移除该条。"
-        )
+        print("\n" + pending_agent_hint("monitors", _summary_path, len(pending)))
 
     # P0 Ledger：把限流待重试篇数并入 stats，供 main 聚合记录
     stats["refetch_pending"] = len(refetch_next)
@@ -1433,10 +1440,7 @@ def main():
             scys_pending = _load_json(SCYS_PENDING_PATH, [])
             scys_pending_n = len(scys_pending)
             if scys_pending:
-                print(f"\n🤖 NEED_AGENT_SCYS_SUMMARY: scys {len(scys_pending)} 篇待总结。"
-                      f"清单见 {SCYS_PENDING_PATH}\n"
-                      f"   处理路径：Read 条目 output 指向的 md 原文 → 按模板总结 → "
-                      f"save_summary_only 落飞书（folder=生财有术/<领域>）→ 从队列移除该条。")
+                print("\n" + pending_agent_hint("scys", SCYS_PENDING_PATH, scys_pending_n))
         if _session_holder["obj"] is not None:
             _session_holder["obj"].close()
         _ledger_record_land(run_id, stats, scys_pending_n)  # P0 Ledger：落盘阶段每源计数

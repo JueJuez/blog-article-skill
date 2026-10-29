@@ -52,11 +52,12 @@
 
 ## 验证
 
-- 全量 `python -m pytest -q`：1945 passed（改动前基线 1890；本轮新增 9 条，含视频两条落盘路径接线）。
+- 全量 `python -m pytest -q`：1951 passed（改动前基线 1890；本轮新增 15 条，含视频两条落盘路径
+  接线与监控管线补漏）。
 - 新增回归：`tests/test_source_types.py`（类型与优先级、系列课归教程、未知类别不降级）、
   `tests/test_numeric_fidelity.py`（判据、模式、shadow 不拦盘、block 拦截、日志隔离、
   `apply_to_gate` 合并器）、`tests/test_series_note_gate.py`（视频两条落盘路径 shadow 放行 /
-  block 拦截）。
+  block 拦截）、`tests/test_monitor_handoff.py`（监控文章/动态不重复登记、接单提示指向统一入口）。
 - 修订旧回归：`tests/test_distill_dispatch.py`（删除阈值空带断言，改类型路由 + 系列课用例）、
   `tests/test_s9_defect_fixes.py`（换源回退改用时效/框架类源）、`tests/test_single_entry_handoff.py`。
 - 未新增真实抓取或生产落盘；关键词表的实测依据见 `_tmp/measure_source_types.py` 与
@@ -75,6 +76,13 @@
 
 ## 遗留
 
+- **2026-10-29 补漏（监控接入）**：监控文章/完整动态路径原先直接调 `articles.skill_main`，
+未传 `_entry_handoff`，长源会在一次性队列与 monitors 常驻队列各登记一份；运行结束的三处接单
+提示也仍让模型直调 `save_summary_only` 并手改队列，绕过 `filter_pending.py` /
+`distill_prepare.py` / `save_pending.py`。现已统一：`skill_main` 识别 `_entry_handoff`
+（默认 True），监控三处文章入口收敛到 `_summarize_article` 并显式传 False，接单提示收敛为
+`pending_agent_hint` 单一真源。监控短动态速览（`save_summarized_article` 原文直存）按原设计
+不经过总结门禁与数值保真（无总结、无可比对的转写差距）。
 - 类别词表是启发式：公司基本面分析靠 `【深度】` 系列体裁标记 + 财务词，仍有源可能落到「未识别」
   （走两阶段，方向保守）。每次增删词都要重新测量命中与误伤。
 - 框架类现只保留「解释性框架」（方法论/底层逻辑/知识体系/分析框架/心法）；系列课词已按用户

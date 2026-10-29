@@ -53,7 +53,7 @@
    - B站视频/动态：视频 `summarize_video`；动态 API 正文内联，短动态存「速览」、完整动态走重模板。B站无字幕自动进 ASR 兜底（需本机装 `yt_dlp faster_whisper ctranslate2 imageio_ffmpeg`，2026-09-03 已装）。
    - FORCE_AGENT_MODE=1：**不自动总结**，全部进 `pending_summaries.json` 队列。
 4. **scys 增量（`subscriptions.json` 配了 `scys` 列表才跑）**：逐领域子进程跑 `scripts/scys_batch_fetch.py`（默认近 7 天窗口、精华过滤按 `scys_projects.json` 默认、翻 2 页列表），抓到的原文进 `notes/_scraped/scys/pending_summaries.json` 队列（与批量补齐共用，`.lock` 互斥防并发写坏 state）。登录态走统一 `SharedCdpSession`（默认 `CdpAutomationProfile\Chrome` 目录，由 `ensure_cdp_profile.py` 每天首跑全量、当天复用），不影响公众号/B站。
-5. **Agent 总结闭环**：本会话（执行模型）读队列 → 派**子 Agent** 消费条目已预计算的 prompt 总结（入队时已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好，2026-09-05 起三队列统一）→ `save_summary_only` 落盘（默认本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0）→ 出队。**原子化**：成功才出队，中断可安全重跑。scys 队列同理（folder=生财有术/<领域>，语义见 `references/scys-fetch-sop.md` §9）。
+5. **Agent 总结闭环**：本会话（执行模型）先跑 `python scripts/filter_pending.py`（刷新 prompt、清已总结、装配材料包；长源报 `needs_distill` 时先 `distill_prepare.py --emit → 提炼 → --ingest --prepare`）→ 派**子 Agent** 消费条目已预计算的 prompt（入队时已按分类器选定模板 + `QUALITY_GATE_SELFCHECK` 算好，2026-09-05 起三队列统一）→ `python scripts/save_pending.py --queue monitors|scys --key <url|topicId> --file <稿件.md>` 落盘（默认本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0）→ 编排方统一再跑 `filter_pending.py` 出队。**原子化**：成功才出队，中断可安全重跑。scys 队列同理（folder=生财有术/<领域>，语义见 `references/scys-fetch-sop.md` §9）。
 6. **看健康度行**：末尾 `📊 本轮健康度：...` 一行，异常（错误/限流待重试高）一眼可见。
 
 **异常恢复**：weread cookie 失效→自动截登录页面，等待用户完成登录 / 人机验证→会话内模型过码 / 配额到线→熔断跳过（小时配额下一小时恢复，日配额次日恢复）/ 正文限流→`pending_refetch`（`python run.py --refetch-only` 统一重抓）。（旧代理的 401×3/空轮退避随源停用而失效。）
@@ -141,7 +141,7 @@ B站系列课（多集连续内容）不再走独立闭环：**单集与散文�
 **核心语义（用户决策 · D6/D8）**：
 - **增量（每日 `auto`）**：UP 更新后，登记表按 URL 键过滤已总结的集，**只把未总结的新集**入队，避免重复总结。
 - **点名才补**：不主动回溯旧集、不抓整季；点名补齐整季走 `python scripts/backfill_series.py --series <名>`（登记表自动滤已总结，同集失败 3 次转人工）。
-- **落地与单篇同路**：子 Agent 消费 `pending_summaries.json` 预计算 prompt 总结并 `save_summary_only` 落盘（默认本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0），无独立系列队列。
+- **落地与单篇同路**：子 Agent 消费 `pending_summaries.json` 预计算 prompt 写稿，经 `save_pending.py` 落盘（内部走 `save_summary_only` 的去重与机械/内容门禁，默认本地 Obsidian，2026-09-04 起，见 `RULES.md` §3.0），无独立系列队列。
 
 **两队列 / 一登记表（务必分清）**：
 

@@ -285,7 +285,7 @@ Playwright `connect_over_cdp` **可以**创建多个 `page` 并发在同一 cont
 2. 让用户提供一个「需登录的 URL」。
 3. 走统一入口（不要手搓抓取）：单篇 → `articles/run.py "<URL>"` 或 `articles.skill_main`（scys 链接自动分流）；订阅/批量 → `monitors/run.py --mode auto --apply` / `scripts/scys_batch_fetch.py`；scys 补跑单源 → `python monitors/run_source.py --source scys`。
 4. 需要诊断登录态环境时，跑 `python scripts/login_cdp_fetch.py smoke`（仅端口探测，不抓取）。若 `[FAIL]`：把错误原样贴回用户——**无需用户手动启调试端口**，`SharedCdpSession` 会自动健康复用 / 按需克隆非默认 `CdpAutomationProfile\Chrome` 目录 + 调试端口接管（见 §1.1）。
-5. 抓到正文后按 `articles/skill_main` 的模板（`structured` / `key_points` 等）总结，调 `save_summary_only` 落盘（**默认本地 Obsidian**，2026-09-04 起；恢复飞书双写设 `DISABLE_FEISHU_SYNC=0`）。
+5. 抓到正文后按入口返回的交接走：长源先按 `distill_commands`（`distill_prepare.py --emit → 提炼 → --ingest --prepare`），再按 prompt 写稿，统一用 `python scripts/save_pending.py --queue "<一次性队列路径>" --key <url> --file <稿.md>` 落盘；订阅/批量路径先跑 `python scripts/filter_pending.py` 再派单，落盘用 `--queue monitors|scys`。落盘内部保留去重、机械/内容门禁与数值保真（默认 `shadow`，见 RULES §4.2）；**默认本地 Obsidian**（2026-09-04 起；恢复飞书双写设 `DISABLE_FEISHU_SYNC=0`）。
 
 ---
 
@@ -542,7 +542,7 @@ URL 是否需登录？
 │   │   · scys 单篇/批量 → articles.skill_main（自动分流）/ scripts/scys_batch_fetch.py
 │   │   · 订阅监控（公众号/B站）→ monitors/run.py --mode auto --apply
 │   │   · scys 补跑单源 → monitors/run_source.py --source scys
-│   ├─ 抓到后：按 articles/skill_main 模板总结 → save_summary_only 落盘（默认本地 Obsidian）
+│   ├─ 抓到后：按入口返回的 prompt 写稿（长源先提炼）→ save_pending.py 落盘（默认本地 Obsidian）
 │   └─ 仅诊断时：python scripts/login_cdp_fetch.py smoke（端口探测，不抓取）
 └─ 拿不准 → 默认走 articles/skill_main，非登录墙报错再升级
 

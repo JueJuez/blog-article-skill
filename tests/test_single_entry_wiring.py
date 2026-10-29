@@ -41,6 +41,22 @@ def test_videos_queue_callers_can_skip_one_off_handoff(monkeypatch):
     assert "distill_route" not in res
 
 
+def test_articles_queue_callers_can_skip_one_off_handoff(tmp_path, monkeypatch):
+    """监控/补齐等常驻队列调用方要显式跳过一次性交接，避免两处各登记一份。"""
+    from articles import main as am
+    raw = tmp_path / "raw.md"
+    raw.write_text(LONG_SOURCE, encoding="utf-8")
+    monkeypatch.setattr(am, "_LAST_RAW_FILEPATH", str(raw))
+    monkeypatch.setattr(am, "_LAST_PUBLISH_TIME", 0)
+    monkeypatch.setattr(
+        am, "summarize_and_save",
+        lambda *a, **kw: (None, LONG_SOURCE, "https://example.com/queued", "长源", None))
+    res = am.skill_main({"content": "x", "url": "https://example.com/queued",
+                         "_entry_handoff": False})
+    assert res.get("need_continue_summary") is True
+    assert "distill_route" not in res
+
+
 def test_articles_short_source_keeps_single_round(tmp_path, monkeypatch):
     from articles import main as am
     short = "短源内容。\n" * 50

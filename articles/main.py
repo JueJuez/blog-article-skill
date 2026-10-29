@@ -1115,17 +1115,20 @@ def skill_main(input_data: dict) -> dict:
                 'publish_time': _LAST_PUBLISH_TIME or publish_time,
             }
             # 长源（≥10000 字）默认登记一次性提炼队列；短源/时效与框架类保持原单轮。
-            from shared.distill_dispatch import single_entry_handoff
-            handoff = single_entry_handoff({
-                "url": original_url, "title": original_title,
-                "raw_file": _LAST_RAW_FILEPATH, "note_type": fields["note_type"],
-                "prompt": fields["prompt"],
-                "generation_context": fields["generation_context"],
-                "author": author, "tags": tags or [],
-                "folder": folder, "obsidian": obsidian,
-                "publish_time": result["publish_time"],
-            }, source_text=dispatch_source)
-            result.update(handoff)
+            # 常驻队列调用方（监控/补齐）传 `_entry_handoff: False`：条目随后进
+            # monitors/scys 队列，由 filter_pending 统一交接，不能两处各登记一份。
+            if input_data.get("_entry_handoff", True):
+                from shared.distill_dispatch import single_entry_handoff
+                handoff = single_entry_handoff({
+                    "url": original_url, "title": original_title,
+                    "raw_file": _LAST_RAW_FILEPATH, "note_type": fields["note_type"],
+                    "prompt": fields["prompt"],
+                    "generation_context": fields["generation_context"],
+                    "author": author, "tags": tags or [],
+                    "folder": folder, "obsidian": obsidian,
+                    "publish_time": result["publish_time"],
+                }, source_text=dispatch_source)
+                result.update(handoff)
             return result
         else:
             return {'success': False, 'message': '内容获取失败'}

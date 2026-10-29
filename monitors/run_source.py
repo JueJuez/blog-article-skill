@@ -199,10 +199,7 @@ def run_scys_backfill(subs: dict, mode: str, apply: bool, obsidian: bool) -> Non
     scys_pending = run._load_json(run.SCYS_PENDING_PATH, [])
     scys_pending_n = len(scys_pending)
     if scys_pending:
-        print(f"\n🤖 NEED_AGENT_SCYS_SUMMARY: scys {scys_pending_n} 篇待总结。"
-              f"清单见 {run.SCYS_PENDING_PATH}\n"
-              f"   处理路径：Read 条目 output 指向的 md 原文 → 按模板总结 → "
-              f"save_summary_only 落飞书（folder=生财有术/<领域>）→ 从队列移除该条。")
+        print("\n" + run.pending_agent_hint("scys", run.SCYS_PENDING_PATH, scys_pending_n))
     _record_and_finalize(run_id, started,
                          {"video": 0, "article": 0}, scys_pending_n)
 
@@ -233,7 +230,8 @@ def run_all_backfill(subs: dict, mode: str, apply: bool,
         scys_pending = run._load_json(run.SCYS_PENDING_PATH, [])
         scys_pending_n = len(scys_pending)
         if scys_pending:
-            print(f"\n🤖 NEED_AGENT_SCYS_SUMMARY: scys {scys_pending_n} 篇待总结。")
+            print("\n" + run.pending_agent_hint("scys", run.SCYS_PENDING_PATH,
+                                               scys_pending_n))
     _record_and_finalize(run_id, started, stats, scys_pending_n)
 
 

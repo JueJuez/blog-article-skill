@@ -149,6 +149,10 @@ python videos/run.py --url "https://www.youtube.com/watch?v=XXXX"
    - （不指定则 `videos.main` 会用 `classify_note_type` 自动判定）
 3. 用对应模板（`prompts.get_note_prompt(note_type)`）撰写总结。
 4. 调用保存（关键，否则等于没存）：
+   - 入口返回 `distill_next_action`（长源 ≥10000 字且判为可沉淀）→ 先按 `distill_commands`
+     提炼（`distill_prepare.py --emit → 提炼 → --ingest --prepare`），再按 prompt 写稿，
+     用 `python scripts/save_pending.py --queue "<一次性队列路径>" --key <url> --file <稿.md>` 落盘。
+   - 短源（无交接字段）直接调用保存：
    ```python
    from articles.main import save_summary_only
    save_summary_only({
@@ -159,7 +163,7 @@ python videos/run.py --url "https://www.youtube.com/watch?v=XXXX"
        "note_type": "key_points",
    })
    ```
-   （`save_summary_only` 自带 dedup 闸门 + 机械质量门禁 + folder 自动路由，`folder` 不传即可；拦截返回 `VERIFIER_FAILED:<issues>` 时按 issues 修复重试。）
+   （两条路径都过 dedup 闸门 + 机械/内容门禁 + 数值保真 `shadow` + folder 自动路由，`folder` 不传即可；拦截返回 `VERIFIER_FAILED:<issues>` 时按 issues 修复重试。）
 5. 告知用户：一句话结论 + 笔记类型 + 成品路径。
 
 ---
@@ -170,7 +174,7 @@ python videos/run.py --url "https://www.youtube.com/watch?v=XXXX"
 2. ✅ 确认 Chrome 装在 `C:\Program Files\Google\Chrome\Application\chrome.exe`（默认即在）。
 3. ✅ 无需 kill 用户 Chrome；CDP 用共享克隆实例（连接只断开，实例常驻，最后持有者才关灯）。
 4. ✅ 直接跑 `videos/run.py --url <链接>`，让脚本自己处理 ensure_endpoint 编排。
-5. ✅ 若无 AI Provider，按第 4 节步骤 3 走降级，并务必调用 `save_summary_only` 存盘。
+5. ✅ 若无 AI Provider，按第 4 节步骤 3 走降级：长源先提炼再写稿，统一用 `save_pending.py`（短源可直接 `save_summary_only`）存盘。
 
 ---
 
