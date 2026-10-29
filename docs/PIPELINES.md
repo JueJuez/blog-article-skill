@@ -513,6 +513,10 @@ CDP 通道从 `unknown_no_html` 变为可数图（拿到 DOM 时按 `images_not_
 **零件**：`monitors/run_source.py`、`monitors/bilibili.py`、`monitors/weread.py`、`monitors/wechat.py`（旧代理，永久停用）、
 `monitors/state.py`、`pending_summaries.json` 队列、`scripts/filter_pending.py`（派单前清洗，属于队列维护不是入口；2026-10-06 起清洗时**默认按当前模板重算队列内预计算 prompt**——长跑补齐进程加载的模板可能落后于仓库，老条目消费前统一刷新）。
 
+**B站短视频跳过（2026-10-30）**：抓取侧按列表接口时长跳过 <`BILI_MIN_DURATION_SECS`（默认 60s）的视频（计 `video_short_skip`），不探测字幕、不耗 ASR、不进队列——碎片视频写不出 ≥`MIN_WORDS`(300) 的有据笔记。时长未知不拦；UP 批量补齐（§6）不受此阈值影响。
+
+**UP 改名处理先例（2026-10-30 · 价投小猪仔→小猪仔步履不停）**：B站 API `owner.name` 实时反映改名，不改订阅表会导致路由把新名当名单外作者（系列误落【我的总结】/作者/，与【监控】历史分裂）。处置：① `subscriptions.json` 规范名跟随现名、旧名降 `aliases`；② 历史目录整体改名 + 错位笔记按同名系列归位；③ `summary_registry.json` 的 `filename`/`folder` 同步（注意个别条目是反斜杠路径，替换要兼容两种分隔符）；④ 存量笔记文件名与正文作者行统一新名（源视频标题里的旧名引用不动）。下次 UP 再改名照此办理。
+
 **派单刷新边界（2026-10-15取代旧的无差别刷新）**：仅已知auto且源可读的条目重算type与prompt，manual保留type；legacy只报建议差异，原type/prompt/路径不改，只有chars而无全文的条目跳过。`python scripts/filter_pending.py --dry-run` 仅预览分类/刷新，不执行去重或写入（包含已总结条目）；默认命令继续去重并保存允许的刷新。报告含分类变更理由。本次开发仅运行dry-run，不改生产队列。`save_pending.py` 与通用保存/原路径重做入口校验已记录版本，失配报 `PROVENANCE_MISMATCH`，force不能豁免；新schema不为旧稿猜历史版本。
 
 **队列消费落盘 runner（2026-09-24 新增 · 子 Agent 派单的唯一落盘出口）**：
